@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenScribe Home</title>
+  <style>
+    :root {
+      --bg: #efe8dc;
+      --panel: rgba(255, 251, 245, 0.94);
+      --ink: #1b1d1f;
+      --muted: #5b605f;
+      --line: #d8c9ae;
+      --accent: #9f3a2d;
+      --accent-strong: #7f251b;
+      --success: #316b4d;
+      --error: #9a2e2e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #f7f2ea 0%, var(--bg) 100%);
+    }
+    main { max-width: 1180px; margin: 0 auto; display: grid; gap: 20px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(72, 51, 30, 0.08);
+    }
+    .topbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); }
+    input, select, textarea {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font: inherit;
+      background: white;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 0; border-bottom: 1px solid rgba(212, 199, 171, 0.8); text-align: left; vertical-align: top; }
+    button {
+      width: fit-content;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-strong); }
+    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
+    .flash.success { color: var(--success); }
+    .flash.error { color: var(--error); }
+    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; background: rgba(159, 58, 45, 0.08); color: var(--accent-strong); font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel topbar">
+      <div>
+        <div class="pill">{{ current_user.team_role.value if current_user.team_role else "user" }}</div>
+        <h1>You logged in.</h1>
+        <p>Signed in as {{ current_user.full_name or current_user.email }}.</p>
+      </div>
+      <form method="post" action="/logout">
+        <button type="submit">Sign out</button>
+      </form>
+    </section>
+
+    {% if message %}
+    <div class="panel flash {{ message_kind }}">{{ message }}</div>
+    {% endif %}
+
+    {% if is_manager %}
+    <section class="grid">
+      <div class="panel">
+        <h2>Create a managed user</h2>
+        <p>Create a team account directly. The temporary password must be shared out-of-band and the user will be forced through onboarding on first login.</p>
+        <form method="post" action="/home/users">
+          <label>
+            Full name
+            <input type="text" name="full_name" maxlength="255">
+          </label>
+          <label>
+            Email
+            <input type="email" name="email" required>
+          </label>
+          <label>
+            Temporary password
+            <input type="password" name="temporary_password" required minlength="8">
+          </label>
+          <label>
+            Team role
+            <select name="team_role">
+              <option value="user">user</option>
+              <option value="leader">leader</option>
+            </select>
+          </label>
+          <label>
+            Account status
+            <select name="status">
+              <option value="active">active</option>
+              <option value="locked">locked</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label>
+            <input type="checkbox" name="mfa_required" value="true" checked>
+            Require MFA
+          </label>
+          <button type="submit">Create user</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Account requests for your team</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for account_request in account_requests %}
+            <tr>
+              <td>{{ account_request.requested_name }}<br><small>{{ account_request.requested_team_name }}</small></td>
+              <td>{{ account_request.requested_email }}<br><small>{{ account_request.request_details or "" }}</small></td>
+              <td>
+                <span class="pill">{{ account_request.status.value }}</span>
+                {% if account_request.status.value == "pending" %}
+                <form method="post" action="/home/account-requests/{{ account_request.id }}/approve" style="margin-top: 12px;">
+                  <label>
+                    Temporary password
+                    <input type="password" name="temporary_password" required minlength="8">
+                  </label>
+                  <label>
+                    Team role
+                    <select name="team_role">
+                      <option value="user">user</option>
+                      <option value="leader">leader</option>
+                    </select>
+                  </label>
+                  <label>
+                    Review notes
+                    <textarea name="review_notes"></textarea>
+                  </label>
+                  <button type="submit">Approve</button>
+                </form>
+                <form method="post" action="/home/account-requests/{{ account_request.id }}/reject" style="margin-top: 12px;">
+                  <label>
+                    Rejection notes
+                    <textarea name="review_notes" required></textarea>
+                  </label>
+                  <button type="submit">Reject</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Managed users</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Onboarding</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in manageable_users %}
+          <tr>
+            <td>{{ user.full_name or "-" }}</td>
+            <td>{{ user.email }}</td>
+            <td><span class="pill">{{ user.onboarding_state.value }}</span></td>
+            <td><span class="pill">{{ user.status.value }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenScribe Onboarding</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: #fffaf0;
+      --ink: #1b1d1f;
+      --muted: #5b605f;
+      --line: #d4c7ab;
+      --accent: #9f3a2d;
+      --accent-strong: #7f251b;
+      --success: #316b4d;
+      --error: #9a2e2e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    main {
+      width: min(760px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 28px;
+      display: grid;
+      gap: 16px;
+      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+    }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); }
+    input, textarea {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font: inherit;
+      background: white;
+    }
+    button, a {
+      width: fit-content;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      background: var(--accent);
+      color: white;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button:hover, a:hover { background: var(--accent-strong); }
+    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
+    .flash.success { color: var(--success); }
+    .flash.error { color: var(--error); }
+    .code-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+      font-family: monospace;
+    }
+    .code-list div {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: white;
+    }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <div>Restricted onboarding for {{ current_user.email }}</div>
+    <h1>Complete onboarding before normal access.</h1>
+    <p>Managed accounts are restricted to password change, TOTP setup, recovery codes, and logout until onboarding finishes.</p>
+
+    {% if message %}
+    <div class="flash {{ message_kind }}">{{ message }}</div>
+    {% endif %}
+
+    {% if current_user.onboarding_state.value == "pending_password_change" %}
+    <section>
+      <h2>Step 1. Change your password</h2>
+      <form method="post" action="/onboarding/password">
+        <label>
+          New password
+          <input type="password" name="new_password" required minlength="8">
+        </label>
+        <button type="submit">Save password</button>
+      </form>
+    </section>
+    {% elif current_user.onboarding_state.value == "pending_totp_enrollment" %}
+    <section>
+      <h2>Step 2. Enroll TOTP</h2>
+      {% if not totp_secret %}
+      <form method="post" action="/onboarding/totp/start">
+        <button type="submit">Generate TOTP secret</button>
+      </form>
+      {% else %}
+      <p>Secret: <strong>{{ totp_secret }}</strong></p>
+      <p>Provisioning URI: <small>{{ totp_uri }}</small></p>
+      <form method="post" action="/onboarding/totp/verify">
+        <label>
+          6-digit TOTP code
+          <input type="text" name="code" required minlength="6" maxlength="8">
+        </label>
+        <button type="submit">Verify TOTP</button>
+      </form>
+      {% endif %}
+    </section>
+    {% elif current_user.onboarding_state.value == "pending_recovery_codes" %}
+    <section>
+      <h2>Step 3. Recovery codes</h2>
+      <p>You may generate one-time recovery codes now, or skip this optional step.</p>
+      <div class="actions">
+        <form method="post" action="/onboarding/recovery-codes">
+          <button type="submit">Generate recovery codes</button>
+        </form>
+        <form method="post" action="/onboarding/skip-recovery-codes">
+          <button type="submit">Skip recovery codes</button>
+        </form>
+      </div>
+    </section>
+    {% else %}
+    <section>
+      <h2>Onboarding complete</h2>
+      <p>Your account now has normal access.</p>
+      <div class="actions">
+        <a href="/home">Go to home</a>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if recovery_codes %}
+    <section>
+      <h2>Your recovery codes</h2>
+      <p>Save these now. They will not be shown again.</p>
+      <div class="code-list">
+        {% for code in recovery_codes %}
+        <div>{{ code }}</div>
+        {% endfor %}
+      </div>
+      <div class="actions">
+        <a href="/home">Continue</a>
+      </div>
+    </section>
+    {% endif %}
+
+    <form method="post" action="/logout">
+      <button type="submit">Sign out</button>
+    </form>
+  </main>
+</body>
+</html>

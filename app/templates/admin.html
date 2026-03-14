@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenScribe Admin</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: #fffaf0;
+      --ink: #1b1d1f;
+      --muted: #5b605f;
+      --line: #d4c7ab;
+      --accent: #9f3a2d;
+      --accent-strong: #7f251b;
+      --success: #316b4d;
+      --error: #9a2e2e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+    }
+    main { max-width: 1280px; margin: 0 auto; padding: 48px 20px 64px; display: grid; gap: 20px; }
+    .hero, .topbar, .grid { display: grid; gap: 20px; }
+    .topbar { grid-template-columns: 1fr auto; align-items: center; }
+    .grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .panel {
+      background: rgba(255, 250, 240, 0.92);
+      border: 1px solid rgba(212, 199, 171, 0.9);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+    }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font: inherit;
+      background: white;
+    }
+    textarea { min-height: 80px; }
+    button {
+      width: fit-content;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-strong); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 0; border-bottom: 1px solid rgba(212, 199, 171, 0.8); text-align: left; vertical-align: top; }
+    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; background: rgba(159, 58, 45, 0.08); color: var(--accent-strong); font-size: 0.82rem; }
+    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
+    .flash.success { color: var(--success); }
+    .flash.error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero panel">
+      <div class="pill">System admin</div>
+      <h1>Admin foundation for teams, managed onboarding, and account-request review.</h1>
+      <p>System admins can manage teams, create users directly, and approve or reject incoming access requests across all teams.</p>
+    </section>
+
+    <section class="topbar panel">
+      <div>Signed in as {{ current_user.email }}</div>
+      <form method="post" action="/logout">
+        <button type="submit">Sign out</button>
+      </form>
+    </section>
+
+    {% if message %}
+    <div class="panel flash {{ message_kind }}">{{ message }}</div>
+    {% endif %}
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Create team</h2>
+        <form method="post" action="/admin/teams">
+          <label>
+            Team name
+            <input type="text" name="name" required maxlength="255">
+          </label>
+          <label>
+            Status
+            <select name="status">
+              {% for status in team_statuses %}
+              <option value="{{ status.value }}">{{ status.value }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Default retention days
+            <input type="number" name="default_retention_days" min="1" value="30" required>
+          </label>
+          <button type="submit">Create team</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Create managed user</h2>
+        <form method="post" action="/admin/users">
+          <label>
+            Full name
+            <input type="text" name="full_name" maxlength="255">
+          </label>
+          <label>
+            Email
+            <input type="email" name="email" required>
+          </label>
+          <label>
+            Temporary password
+            <input type="password" name="temporary_password" required minlength="8">
+          </label>
+          <label>
+            Team
+            <select name="team_id">
+              <option value="">Select a team</option>
+              {% for team in teams %}
+              <option value="{{ team.id }}">{{ team.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Team role
+            <select name="team_role">
+              <option value="">Select a role</option>
+              {% for role in team_roles %}
+              <option value="{{ role.value }}">{{ role.value }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Account status
+            <select name="status">
+              {% for status in user_statuses %}
+              <option value="{{ status.value }}">{{ status.value }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <input type="checkbox" name="is_system_admin" value="true">
+            System admin
+          </label>
+          <label>
+            <input type="checkbox" name="mfa_required" value="true" checked>
+            Require MFA
+          </label>
+          <button type="submit">Create user</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Teams</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Retention</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for team in teams %}
+            <tr>
+              <td>{{ team.name }}</td>
+              <td><span class="pill">{{ team.status.value }}</span></td>
+              <td>{{ team.default_retention_days }} days</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Users</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Team</th>
+              <th>Onboarding</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for user in users %}
+            <tr>
+              <td>{{ user.full_name or "-" }}</td>
+              <td>{{ user.email }}</td>
+              <td>{{ user.team.name if user.team else "System" }}</td>
+              <td><span class="pill">{{ user.onboarding_state.value }}</span></td>
+              <td><span class="pill">{{ user.status.value }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Account requests</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Requester</th>
+            <th>Team</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for account_request in account_requests %}
+          <tr>
+            <td>{{ account_request.requested_name }}<br><small>{{ account_request.requested_email }}</small><br><small>{{ account_request.request_details or "" }}</small></td>
+            <td>{{ account_request.requested_team_name }}</td>
+            <td>
+              <span class="pill">{{ account_request.status.value }}</span>
+              {% if account_request.status.value == "pending" %}
+              <form method="post" action="/admin/account-requests/{{ account_request.id }}/approve" style="margin-top: 12px;">
+                <label>
+                  Team
+                  <select name="team_id">
+                    {% for team in teams %}
+                    <option value="{{ team.id }}">{{ team.name }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  Temporary password
+                  <input type="password" name="temporary_password" required minlength="8">
+                </label>
+                <label>
+                  Team role
+                  <select name="team_role">
+                    <option value="user">user</option>
+                    <option value="leader">leader</option>
+                  </select>
+                </label>
+                <label>
+                  Review notes
+                  <textarea name="review_notes"></textarea>
+                </label>
+                <button type="submit">Approve and create user</button>
+              </form>
+              <form method="post" action="/admin/account-requests/{{ account_request.id }}/reject" style="margin-top: 12px;">
+                <label>
+                  Rejection notes
+                  <textarea name="review_notes" required></textarea>
+                </label>
+                <button type="submit">Reject</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

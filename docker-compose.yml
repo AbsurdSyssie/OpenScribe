@@ -1,9 +1,6 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
-    container_name: ambient_scribe_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ambient_scribe
@@ -16,14 +13,12 @@ services:
 
   redis:
     image: redis:7
-    container_name: ambient_scribe_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
 
   vault:
     image: hashicorp/vault:1.17
-    container_name: ambient_scribe_vault
     restart: unless-stopped
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: root

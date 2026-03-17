@@ -17,9 +17,26 @@ from .auth import (
     TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
-from .stt import SttConfigDetail, SttConfigUpsert, SttInspectFieldTip, SttInspectRequest, SttInspectResult, SttModelOption
+from .stt import (
+    SttConfigDetail,
+    SttConfigUpsert,
+    SttInspectFieldTip,
+    SttInspectRequest,
+    SttInspectResult,
+    SttModelOption,
+    SttSelectionDetail,
+    SttSelectionUpsert,
+)
 from .teams import TeamCreate, TeamDetail, TeamListItem
-from .transcripts import TranscriptCommit, TranscriptCreate, TranscriptDetail, TranscriptListItem, TranscriptStart
+from .transcripts import (
+    TranscriptCommit,
+    TranscriptCreate,
+    TranscriptDetail,
+    TranscriptIngestionAccepted,
+    TranscriptIngestionJobDetail,
+    TranscriptListItem,
+    TranscriptStart,
+)
 from .users import UserCreate, UserDetail, UserListItem
 
 __all__ = [
@@ -45,12 +62,16 @@ __all__ = [
     "SttInspectRequest",
     "SttInspectResult",
     "SttModelOption",
+    "SttSelectionDetail",
+    "SttSelectionUpsert",
     "TeamCreate",
     "TeamDetail",
     "TeamListItem",
     "TranscriptCommit",
     "TranscriptCreate",
     "TranscriptDetail",
+    "TranscriptIngestionAccepted",
+    "TranscriptIngestionJobDetail",
     "TranscriptListItem",
     "TranscriptStart",
     "UserCreate",

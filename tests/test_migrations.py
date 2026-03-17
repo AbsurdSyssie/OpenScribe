@@ -46,12 +46,14 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "account_requests",
         "teams",
         "team_stt_configs",
+        "team_stt_selections",
         "users",
         "user_trusted_devices",
         "user_sessions",
         "user_mfa_methods",
         "user_recovery_codes",
         "transcripts",
+        "transcript_ingestion_jobs",
         "transcript_versions",
     }
 
@@ -130,14 +132,18 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     trusted_device_columns = {column["name"] for column in inspector.get_columns("user_trusted_devices")}
     request_columns = {column["name"] for column in inspector.get_columns("account_requests")}
     stt_columns = {column["name"] for column in inspector.get_columns("team_stt_configs")}
+    stt_selection_columns = {column["name"] for column in inspector.get_columns("team_stt_selections")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
+    transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
     assert {"device_token_hash", "last_mfa_verified_at", "expires_at", "revoke_reason"} <= trusted_device_columns
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns
-    assert {"team_id", "adapter_kind", "base_url", "transcribe_path", "vault_secret_ref", "response_text_path"} <= stt_columns
-    assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "ingestion_mode"} <= transcript_columns
+    assert {"team_id", "adapter_kind", "base_url", "transcribe_path", "vault_secret_ref", "response_text_path", "available_models_json"} <= stt_columns
+    assert {"team_id", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
+    assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
+    assert {"transcript_id", "job_kind", "chunk_sequence_no", "status", "celery_task_id", "result_text_encrypted"} <= transcript_ingestion_job_columns
 
 
 @pytest.mark.migration
@@ -195,7 +201,7 @@ def test_alembic_head_supports_new_stt_adapter_values():
                 """
                 INSERT INTO team_stt_configs (
                     id, team_id, label, adapter_kind, base_url, transcribe_path, auth_mode, model_name,
-                    file_field_name, language, response_text_path, extra_form_fields_json, vault_secret_ref,
+                    available_models_json, file_field_name, language, response_text_path, extra_form_fields_json, vault_secret_ref,
                     is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
                 )
                 VALUES (
@@ -203,10 +209,11 @@ def test_alembic_head_supports_new_stt_adapter_values():
                     '00000000-0000-0000-0000-000000000021',
                     'OpenAI Cloud',
                     'openai_cloud',
-                    'https://api.openai.com',
+                    'https://api.openai.com/v1',
                     '/v1/audio/transcriptions',
                     'bearer',
                     'gpt-4o-mini-transcribe',
+                    '[]'::json,
                     'file',
                     NULL,
                     'text',

@@ -2,6 +2,7 @@ import os
 import fcntl
 from collections.abc import Generator
 from typing import Callable
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +11,20 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.models import AccountRequest, AccountRequestStatus, Team, TeamRole, TeamStatus, User, UserOnboardingState, UserStatus
+from app.models import (
+    AccountRequest,
+    AccountRequestStatus,
+    SttAdapterKind,
+    SttAuthMode,
+    Team,
+    TeamRole,
+    TeamStatus,
+    TeamSttConfig,
+    TeamSttSelection,
+    User,
+    UserOnboardingState,
+    UserStatus,
+)
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
 from tests.db_utils import (
@@ -52,10 +66,11 @@ def test_run_lock() -> Generator[None, None, None]:
         try:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise pytest.Exit(
+            pytest.exit(
                 "Another pytest run is already using the shared OpenScribe test database. "
-                "Wait for it to finish before starting another test run."
-            ) from exc
+                "Wait for it to finish before starting another test run.",
+                returncode=2,
+            )
         yield
     finally:
         try:
@@ -186,6 +201,83 @@ def make_account_request(db_session: Session) -> Callable[..., AccountRequest]:
     return factory
 
 
+@pytest.fixture
+def make_stt_config(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., TeamSttConfig]:
+    def factory(
+        *,
+        team: Team | None = None,
+        actor: User | None = None,
+        label: str = "Provisioned STT",
+        adapter_kind: SttAdapterKind = SttAdapterKind.openai_compatible_rest,
+        base_url: str = "http://127.0.0.1:9000",
+        transcribe_path: str = "/v1/audio/transcriptions",
+        model_name: str | None = "whisper-1",
+        available_models_json: list[str] | None = None,
+        file_field_name: str = "file",
+        language: str | None = "en",
+        response_text_path: str = "text",
+        extra_form_fields_json: dict[str, str] | None = None,
+        is_active: bool = True,
+    ) -> TeamSttConfig:
+        resolved_team = team or make_team()
+        resolved_actor = actor or make_user(email=f"stt-admin-{resolved_team.id}@example.com", password="password-1", is_system_admin=True)
+        config = TeamSttConfig(
+            team_id=resolved_team.id,
+            label=label,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            transcribe_path=transcribe_path,
+            auth_mode=SttAuthMode.bearer,
+            model_name=model_name,
+            available_models_json=available_models_json or [],
+            file_field_name=file_field_name,
+            language=language,
+            response_text_path=response_text_path,
+            extra_form_fields_json=extra_form_fields_json or {},
+            vault_secret_ref=f"secret:openscribe/stt/team/{resolved_team.id}/config/{uuid4()}",
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+            updated_by_user_id=resolved_actor.id,
+        )
+        db_session.add(config)
+        db_session.commit()
+        db_session.refresh(config)
+        return config
+
+    return factory
+
+
+@pytest.fixture
+def make_stt_selection(db_session: Session, make_user: Callable[..., User]) -> Callable[..., TeamSttSelection]:
+    def factory(
+        *,
+        config: TeamSttConfig,
+        actor: User | None = None,
+        model_name_override: str | None = None,
+        language_override: str | None = None,
+    ) -> TeamSttSelection:
+        resolved_actor = actor or make_user(
+            email=f"leader-{config.team_id}@example.com",
+            password="password-1",
+            team=db_session.get(Team, config.team_id),
+            team_role=TeamRole.leader,
+            is_system_admin=False,
+        )
+        selection = TeamSttSelection(
+            team_id=config.team_id,
+            stt_config_id=config.id,
+            model_name_override=model_name_override,
+            language_override=language_override,
+            selected_by_user_id=resolved_actor.id,
+        )
+        db_session.add(selection)
+        db_session.commit()
+        db_session.refresh(selection)
+        return selection
+
+    return factory
+
+
 @pytest.fixture(autouse=True)
 def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_write_team_stt_bearer_token(*, team_id, config_id, bearer_token):
@@ -200,3 +292,14 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
+
+
+@pytest.fixture(autouse=True)
+def stub_transcript_ingestion_enqueue(monkeypatch: pytest.MonkeyPatch):
+    class FakeTaskResult:
+        id = "test-task-id"
+
+    def fake_enqueue_transcript_ingestion_job(*, job_id, audio_bytes):
+        return FakeTaskResult()
+
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fake_enqueue_transcript_ingestion_job)

@@ -262,24 +262,32 @@ Status: `Completed`
 - [x] add explicit STT adapter family classification
 - [x] limit the first auth mode to bearer token only
 - [x] store bearer tokens in Vault and persist only `vault_secret_ref` in Postgres
-- [x] add leader own-team STT config UI on `/home`
-- [x] add system-admin selected-team STT config UI on `/admin`
-- [ ] refine the STT UI/backend so system admins own endpoint/credential provisioning and leaders own active service/model selection
-- [x] add `GET /api/v1/stt-config`
-- [x] add `POST /api/v1/stt-config`
+- [x] add leader own-team STT selection UI on `/home`
+- [x] add system-admin selected-team STT provisioning UI on `/admin`
+- [x] remove leader access to STT credential provisioning and secret rotation
+- [x] allow multiple admin-provisioned STT endpoint rows per team
+- [x] add separate team-level active STT selection that leaders may change without touching secrets
+- [x] add `GET /api/v1/stt-configs`
+- [x] add `GET /api/v1/stt-configs/{config_id}`
+- [x] add `POST /api/v1/stt-configs`
+- [x] add `DELETE /api/v1/stt-configs/{config_id}`
+- [x] add `GET /api/v1/stt-selection`
+- [x] add `GET /api/v1/stt-selection/options`
+- [x] add `POST /api/v1/stt-selection`
+- [x] add `DELETE /api/v1/stt-selection`
 - [x] block ordinary users, onboarding sessions, and pending-MFA sessions from STT config routes
 - [x] reject unsafe remote non-HTTPS endpoints while allowing local/dev HTTP targets
 - [x] add API, UI, migration, and docs coverage
 
 ### Implemented decisions
 
-- one STT config row per team in the current slice
 - adapter family is explicit and currently includes `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
 - constrained REST metadata only, not arbitrary request scripting
 - OpenAPI inspection is generic-only; known OpenAI adapters use built-in request defaults
 - bearer token rotation is write-only
 - responses expose only `has_secret`, not the raw token or Vault reference
-- this slice is configuration-only and does not yet upload audio or call the STT provider
-- the intended steady-state authority split is:
+- this slice now feeds the transcript-ingestion runtime through the active team STT selection
+- the implemented steady-state authority split is:
   - system admins provision STT endpoints and credentials
   - leaders choose or clear the active service/model for their team
+  - leaders do not rotate or delete credentials

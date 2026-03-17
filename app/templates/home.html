@@ -91,148 +91,70 @@
     {% if is_manager %}
     <section class="grid">
       <div class="panel">
-        <h2>Team STT endpoint</h2>
-        <p>The team can have one active STT endpoint in MVP. Clear the current endpoint first if you want to start again from a blank add form.</p>
-        {% if stt_config %}
-        <h3>Current endpoint</h3>
-        <p><span class="pill">{{ stt_config.label }}</span> <span class="pill">{{ stt_config.adapter_kind.value }}</span> {{ stt_config.base_url }}{{ stt_config.transcribe_path }}</p>
-        <p><small>Secret configured: {{ "yes" if stt_config.has_secret else "no" }}. Response path: {{ stt_config.response_text_path }}.</small></p>
-        <form method="post" action="/home/stt-config/clear" onsubmit="return confirm('Clear the current STT endpoint and remove its saved secret reference?');">
-          <button type="submit">Clear current STT endpoint</button>
+        <h2>Team STT selection</h2>
+        <p>System admins provision endpoint credentials. Leaders only choose which provisioned endpoint and model the team should use.</p>
+        {% if stt_selection %}
+        <h3>Current active selection</h3>
+        <p>
+          <span class="pill">{{ stt_selection.config.label }}</span>
+          <span class="pill">{{ stt_selection.config.adapter_kind.value }}</span>
+          {{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }}
+        </p>
+        <p><small>Resolved model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}. Resolved language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}.</small></p>
+        <form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
+          <button type="submit">Clear active STT selection</button>
         </form>
-        <h3>Add or replace endpoint</h3>
         {% else %}
-        <h3>Add endpoint</h3>
+        <p><small>No active STT selection is set for this team yet.</small></p>
         {% endif %}
-        <form method="post" action="/home/stt-config/inspect" data-stt-inspect-form>
+
+        {% if selectable_stt_configs %}
+        <h3>Choose active endpoint</h3>
+        <form method="post" action="/home/stt-selection">
           <label>
-            Label
-            <input type="text" name="label" maxlength="255" value="{{ stt_form.label }}">
-          </label>
-          <label>
-            Adapter family
-            <select name="adapter_kind" data-stt-adapter-select>
-              <option value="generic_rest" {% if stt_form.adapter_kind == "generic_rest" %}selected{% endif %}>generic_rest</option>
-              <option value="openai_cloud" {% if stt_form.adapter_kind == "openai_cloud" %}selected{% endif %}>openai_cloud</option>
-              <option value="openai_compatible_rest" {% if stt_form.adapter_kind == "openai_compatible_rest" %}selected{% endif %}>openai_compatible_rest</option>
-            </select>
-          </label>
-          <p data-show-for="openai_cloud"{% if stt_form.adapter_kind != "openai_cloud" %} hidden{% endif %}><small>The official OpenAI adapter uses the known transcription contract and defaults to `https://api.openai.com/v1`.</small></p>
-          <input type="hidden" name="base_url" value="{{ stt_form.base_url or 'https://api.openai.com/v1' }}" data-openai-base-url {% if stt_form.adapter_kind != "openai_cloud" %}disabled{% endif %}>
-          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
-            Base URL
-            <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
-          </label>
-          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
-            OpenAPI path
-            <input type="text" name="openapi_path" data-require-for="generic_rest" required value="{{ stt_form.openapi_path }}">
-          </label>
-          <input type="hidden" name="openapi_path" value="" data-non-generic-openapi {% if stt_form.adapter_kind == "generic_rest" %}disabled{% endif %}>
-          <label>
-            {% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token for inspection{% endif %}
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token for inspection{% endif %}</span>
-            <input type="password" name="bearer_token">
-          </label>
-          <button type="submit">Inspect endpoint</button>
-        </form>
-        {% if stt_inspection %}
-        <p><small>Detected adapter: {{ stt_inspection.adapter_kind.value }}. Path: {{ stt_inspection.transcribe_path }}. Candidate endpoints: {{ stt_inspection.candidate_paths | join(", ") }}.</small></p>
-        {% if stt_inspection.operation_summary %}
-        <p><small>Operation summary: {{ stt_inspection.operation_summary }}</small></p>
-        {% endif %}
-        {% if stt_inspection.notes %}
-        <ul>
-          {% for note in stt_inspection.notes %}
-          <li><small>{{ note }}</small></li>
-          {% endfor %}
-        </ul>
-        {% endif %}
-        {% if stt_inspection.field_tips %}
-        <div class="tips">
-          {% for tip in stt_inspection.field_tips %}
-          <div class="tip">
-            <div>
-              <strong>{{ tip.name }}</strong>
-              <span class="pill">{{ tip.role }}</span>
-              {% if tip.required %}
-              <span class="pill">required</span>
-              {% endif %}
-            </div>
-            {% if tip.default_value %}
-            <p><small>Default: {{ tip.default_value }}</small></p>
-            {% endif %}
-            {% if tip.description %}
-            <p><small>{{ tip.description }}</small></p>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
-        {% endif %}
-        <p><small>Only the fields relevant to the selected adapter are required. The bearer token is stored in Vault and cannot be read back from the UI.</small></p>
-        <form method="post" action="/home/stt-config" data-stt-save-form>
-          <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
-          <label>
-            Label
-            <input type="text" name="label" required maxlength="255" value="{{ stt_form.label }}">
-          </label>
-          <input type="hidden" name="base_url" value="{{ stt_form.base_url }}" data-openai-base-url {% if stt_form.adapter_kind != "openai_cloud" %}disabled{% endif %}>
-          {% if stt_form.adapter_kind == "openai_cloud" %}
-          <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
-          <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
-          <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
-          {% endif %}
-          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
-            Base URL
-            <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
-          </label>
-          {% if stt_form.adapter_kind == "openai_compatible_rest" %}
-          <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
-          <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
-          <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
-          {% endif %}
-          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
-            Transcribe path
-            <input type="text" name="transcribe_path" data-require-for="generic_rest" required value="{{ stt_form.transcribe_path }}">
-          </label>
-          <label>
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token{% endif %}</span>
-            <input type="password" name="bearer_token" {% if not stt_config %}required{% endif %}>
-          </label>
-          <label>
-            Model
-            {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
-            <select name="provider_model">
-              {% for model in stt_form.available_model_options %}
-              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+            Provisioned endpoint
+            <select name="stt_config_id" required>
+              {% for config in selectable_stt_configs %}
+              <option value="{{ config.id }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>
+                {{ config.label }} ({{ config.adapter_kind.value }})
+              </option>
               {% endfor %}
             </select>
-            {% else %}
-            <input type="text" name="provider_model" value="{{ stt_form.model_name }}">
-            {% endif %}
-          </label>
-          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
-            File field name
-            <input type="text" name="file_field_name" value="{{ stt_form.file_field_name }}">
           </label>
           <label>
-            Language
-            <input type="text" name="language" value="{{ stt_form.language }}">
-          </label>
-          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
-            Response text path
-            <input type="text" name="response_text_path" value="{{ stt_form.response_text_path }}">
+            Model override
+            <input type="text" name="provider_model" value="{{ stt_selection.model_name_override if stt_selection else '' }}">
           </label>
           <label>
-            Extra form fields JSON
-            <textarea name="extra_form_fields_json">{{ stt_form.extra_form_fields_json }}</textarea>
+            Language override
+            <input type="text" name="language" value="{{ stt_selection.language_override if stt_selection else '' }}">
           </label>
-          <label>
-            <input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}>
-            Active
-          </label>
-          <button type="submit">Save STT config</button>
+          <button type="submit">Save active STT selection</button>
         </form>
+        <table>
+          <thead>
+            <tr>
+              <th>Provisioned endpoint</th>
+              <th>Default model</th>
+              <th>Language</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for config in selectable_stt_configs %}
+            <tr>
+              <td>
+                <strong>{{ config.label }}</strong><br>
+                <small>{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</small>
+              </td>
+              <td>{{ config.model_name or "not set" }}</td>
+              <td>{{ config.language or "not set" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No STT endpoints have been provisioned for this team yet. Ask a system admin to add one.</small></p>
+        {% endif %}
       </div>
 
       <div class="panel">

@@ -21,6 +21,7 @@ The app and tests use separate databases by default:
 - test DB: `ambient_scribe_test`
 - app rate-limit store: `redis://localhost:6379/0`
 - test rate-limit store: `redis://localhost:6379/15`
+- Celery broker/result backend: `redis://localhost:6379/2`
 - Vault dev address: `http://127.0.0.1:8200`
 - Vault dev token: `root`
 
@@ -39,6 +40,8 @@ alembic upgrade head
 ```
 
 This starts Docker services, loads `.env`, applies migrations, and runs the FastAPI dev server.
+
+It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 
 By default, `./start-dev.sh` also seeds a reusable dev team and two dev accounts into the app database:
 
@@ -75,6 +78,18 @@ The current STT-config slice writes bearer tokens into Vault through:
 
 The default local values in `.env.example` match the Docker dev Vault container.
 
+The queued transcript-ingestion path uses:
+
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
+- `CELERY_LOG_LEVEL`
+
+You can disable the worker startup in `./start-dev.sh` with:
+
+```bash
+DEV_START_CELERY=false
+```
+
 ## Local URLs
 
 - API docs: `http://127.0.0.1:8080/docs`
@@ -87,9 +102,10 @@ The default local values in `.env.example` match the Docker dev Vault container.
 
 ## Current manager STT configuration UI
 
-- leaders manage their own team's STT config from `/home`
-- system admins manage a selected team's STT config from `/admin?team_id=<team_uuid>`
-- the UI accepts metadata and a replacement bearer token
+- leaders manage only their own team's active STT selection from `/home`
+- system admins provision and manage a selected team's STT endpoint rows from `/admin?team_id=<team_uuid>`
+- system admins also manage the active team STT selection from `/admin?team_id=<team_uuid>`
+- the UI accepts metadata and a replacement bearer token only in the admin provisioning flow
 - the UI does not reveal the stored token or the raw Vault reference
 
 ## First access

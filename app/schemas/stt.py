@@ -1,4 +1,5 @@
 from datetime import datetime
+import ipaddress
 from uuid import UUID
 from urllib.parse import urlparse
 
@@ -14,7 +15,14 @@ def _validate_stt_base_url(value: str) -> str:
     if not parsed.netloc:
         raise ValueError("STT base URL must include a host")
     host = (parsed.hostname or "").lower()
-    is_localish = host in {"localhost", "127.0.0.1", "0.0.0.0"} or host.startswith("192.168.") or host.startswith("10.") or host.startswith("172.")
+    is_localish = host == "localhost"
+    if not is_localish:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            is_localish = ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
     if parsed.scheme != "https" and not is_localish:
         raise ValueError("Remote STT endpoints must use https")
     return value.rstrip("/")
@@ -22,6 +30,7 @@ def _validate_stt_base_url(value: str) -> str:
 
 class SttConfigUpsert(BaseModel):
     model_config = {"protected_namespaces": ()}
+    config_id: UUID | None = None
     team_id: UUID | None = None
     label: str = Field(min_length=1, max_length=255)
     adapter_kind: SttAdapterKind = SttAdapterKind.generic_rest
@@ -118,6 +127,7 @@ class SttConfigDetail(BaseModel):
     transcribe_path: str
     auth_mode: SttAuthMode
     model_name: str | None
+    available_models_json: list[str]
     file_field_name: str
     language: str | None
     response_text_path: str
@@ -130,6 +140,33 @@ class SttConfigDetail(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class SttSelectionUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    team_id: UUID | None = None
+    stt_config_id: UUID
+    model_name_override: str | None = Field(default=None, max_length=255)
+    language_override: str | None = Field(default=None, max_length=32)
+
+
+class SttSelectionDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    id: UUID
+    team_id: UUID
+    stt_config_id: UUID
+    selected_by_user_id: UUID
+    selected_config_label: str
+    selected_config_adapter_kind: SttAdapterKind
+    selected_config_base_url: str
+    selected_config_transcribe_path: str
+    model_name_override: str | None
+    language_override: str | None
+    resolved_model_name: str | None
+    resolved_language: str | None
+    available_models_json: list[str]
+    created_at: datetime
+    updated_at: datetime
 
 
 class SttInspectRequest(BaseModel):

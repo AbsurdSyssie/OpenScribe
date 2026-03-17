@@ -94,8 +94,8 @@
 
     <section class="grid">
       <div class="panel">
-        <h2>Team STT endpoint</h2>
-        <p>Each team has one active STT endpoint in MVP. Clear the current endpoint first if you want to start again from a blank add form.</p>
+        <h2>Team STT endpoints</h2>
+        <p>System admins provision endpoint rows and credentials here. Team leaders only choose the active endpoint and model from the provisioned options.</p>
         <form method="get" action="/admin">
           <label>
             Team
@@ -108,19 +108,87 @@
           </label>
         </form>
         {% if selected_team_id %}
-        {% if stt_config %}
-        <h3>Current endpoint</h3>
-        <p><span class="pill">{{ stt_config.label }}</span> <span class="pill">{{ stt_config.adapter_kind.value }}</span> {{ stt_config.base_url }}{{ stt_config.transcribe_path }}</p>
-        <p><small>Secret configured: {{ "yes" if stt_config.has_secret else "no" }}. Response path: {{ stt_config.response_text_path }}.</small></p>
-        <form method="post" action="/admin/stt-config/clear" onsubmit="return confirm('Clear the current STT endpoint and remove its saved secret reference for this team?');">
+        {% if stt_selection %}
+        <h3>Current active selection</h3>
+        <p><span class="pill">{{ stt_selection.config.label }}</span> <span class="pill">{{ stt_selection.config.adapter_kind.value }}</span> {{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }}</p>
+        <p><small>Resolved model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}. Resolved language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}.</small></p>
+        <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
-          <button type="submit">Clear current STT endpoint</button>
+          <button type="submit">Clear active STT selection</button>
         </form>
-        <h3>Add or replace endpoint</h3>
         {% else %}
-        <h3>Add endpoint</h3>
+        <p><small>No active STT selection is set for this team yet.</small></p>
         {% endif %}
-        <form method="post" action="/admin/stt-config/inspect" data-stt-inspect-form>
+
+        {% if selectable_stt_configs %}
+        <h3>Set active team selection</h3>
+        <form method="post" action="/admin/stt-selection">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <label>
+            Provisioned endpoint
+            <select name="stt_config_id" required>
+              {% for config in selectable_stt_configs %}
+              <option value="{{ config.id }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>
+                {{ config.label }} ({{ config.adapter_kind.value }})
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Model override
+            <input type="text" name="provider_model" value="{{ stt_selection.model_name_override if stt_selection else '' }}">
+          </label>
+          <label>
+            Language override
+            <input type="text" name="language" value="{{ stt_selection.language_override if stt_selection else '' }}">
+          </label>
+          <button type="submit">Save active STT selection</button>
+        </form>
+        {% endif %}
+
+        <h3>Provisioned endpoints</h3>
+        {% if stt_configs %}
+        <table>
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Defaults</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for config in stt_configs %}
+            <tr>
+              <td>
+                <strong>{{ config.label }}</strong><br>
+                <small>{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</small><br>
+                <small>Secret configured: {{ "yes" if config.vault_secret_ref else "no" }}</small>
+              </td>
+              <td>
+                <small>Model: {{ config.model_name or "not set" }}</small><br>
+                <small>Language: {{ config.language or "not set" }}</small>
+              </td>
+              <td>
+                <form method="get" action="/admin">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="stt_config_id" value="{{ config.id }}">
+                  <button type="submit">Edit</button>
+                </form>
+                <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned STT endpoint and its saved secret?');">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No STT endpoints are provisioned for this team yet.</small></p>
+        {% endif %}
+
+        <h3>{% if stt_config %}Edit provisioned endpoint{% else %}Add provisioned endpoint{% endif %}</h3>
+        <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <label>
             Label
@@ -186,8 +254,9 @@
         {% endif %}
         {% endif %}
         <p><small>Only the fields relevant to the selected adapter are required. The bearer token is written to Vault and is never shown again.</small></p>
-        <form method="post" action="/admin/stt-config" data-stt-save-form>
+        <form method="post" action="/admin/stt-configs" data-stt-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="config_id" value="{{ stt_form.config_id }}">
           <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
           <label>
             Label
@@ -248,7 +317,7 @@
             <input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}>
             Active
           </label>
-          <button type="submit">Save STT config</button>
+          <button type="submit">{% if stt_form.config_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
         </form>
         {% endif %}
       </div>

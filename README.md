@@ -29,5 +29,5 @@ Primary local URLs:
 
 Quick start:
 
-- run `./start-dev.sh` from the project root to start infra, apply migrations, and launch the dev server
+- run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker, and launch the dev server
 - by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly

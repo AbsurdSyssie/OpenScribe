@@ -207,11 +207,12 @@ Security rules for that slice:
 - raw audio blobs must not be persisted in Postgres in the first STT slice
 - logs may contain provider metadata and failure codes, but not transcript text, audio payloads, or secret material
 
-Implemented now in the first STT-configuration slice:
+Implemented now in the STT configuration slice:
 
-- each team may have one STT config row in `team_stt_configs`
-- leaders may manage only their own team's current config
-- system admins may manage any team's config, but must choose the team explicitly
+- each team may have multiple provisioned STT config rows in `team_stt_configs`
+- the active team STT policy is stored separately in `team_stt_selections`
+- leaders may manage only their own team's active selection
+- system admins may manage any team's provisioned config rows and active selection, but must choose the team explicitly
 - the first auth mode is bearer token only
 - the first request shape is constrained REST metadata for multipart upload, not arbitrary request scripting
 - the official OpenAI adapter is a known-contract path and is intended to use the official Python SDK at runtime rather than OpenAPI discovery
@@ -224,9 +225,13 @@ Implemented now in the first STT-configuration slice:
 Implemented now in the first transcript chunk-ingestion slice:
 
 - owner-only `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
+- owner-only `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- queued transcript-ingestion jobs in `transcript_ingestion_jobs`
 - backend audio normalization to `16 kHz` mono PCM WAV before provider submission
-- backend fetch of the team STT bearer token from Vault at request time
-- backend append of provider-returned text into the transcript draft
+- backend fetch of the selected team STT bearer token from Vault at processing time
+- sequence-aware application of completed live chunks using `next_live_chunk_sequence_no_applied`
+- backend append of provider-returned live chunk text into the transcript draft
+- backend replacement of the draft text for completed file/batch ingestion
 - no raw audio persistence in Postgres
 
 Planned storage direction:

@@ -73,20 +73,21 @@ What it does:
 - trusted-device revocation when a user is locked
 - reactivation resetting a user into password-change onboarding
 - hard-delete user removal with transcript/version cascade
-- leader STT config creation and fetch for the leader's own team
-- system-admin STT config creation and fetch for a selected team
-- leader STT OpenAPI inspection and inferred-field response
-- STT config route blocking for unauthenticated, ordinary-user, onboarding, and pending-MFA callers
-- STT config validation for remote HTTPS-only and leader team scope
+- system-admin STT config provisioning, fetch, inspection, and delete for a selected team
+- leader team STT selection and clear flow using admin-provisioned options
+- STT provisioning/selection route blocking for unauthenticated, ordinary-user, onboarding, and pending-MFA callers
+- STT config validation for remote HTTPS-only and leader team-selection scope
 - transcript owner-only access and version history
 - transcript start creating the root for the current user and persisting `ingestion_mode`
 - transcript list responses including the persisted `ingestion_mode`
-- owner-only live audio chunk upload
+- owner-only live audio chunk queueing
 - live audio chunk upload rejecting non-`live_chunked` transcripts
-- live audio chunk upload rejecting teams without an active STT config
-- owner-only whole-file ingestion
+- duplicate live chunk sequence rejection
+- sequence-aware live chunk worker application
+- live chunk worker failure when no active team STT selection exists
+- owner-only whole-file ingestion queueing
 - whole-file ingestion rejecting transcripts in the wrong ingestion mode
-- whole-file ingestion rejecting teams without an active STT config
+- whole-file worker failure when no active team STT selection exists
 - whole-file ingestion moving the transcript to `ready` after successful provider completion
 - STT provider execution using the team config, Vault secret, and configured response text path
 
@@ -99,10 +100,12 @@ What it does:
 - leader home page with request-review and direct-user-create tools
 - leader home page suspend/reactivate controls for manageable users
 - leader home page delete control for manageable users
-- leader home page STT config form
-- leader home page STT inspect-before-save flow
+- leader home page STT selection form
+- leader home page STT selection clear flow
 - OpenAI Cloud STT inspection loading a server-side filtered model list into the browser form
 - STT inspect pages rendering inferred values into the save form, not just the API inspection result
+- admin page provisioned-endpoint add/edit/delete flow
+- admin page active STT selection flow for the selected team
 - browser manager-account routes redirecting unauthenticated requests to `/login`
 - admin page showing teams, users, and account requests
 - admin page protected-account marker for the current system-admin account

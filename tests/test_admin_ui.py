@@ -1,7 +1,7 @@
 import pyotp
 from sqlalchemy import select
 
-from app.models import TeamRole, TeamSttConfig, UserStatus
+from app.models import TeamRole, TeamSttConfig, TeamSttSelection, UserStatus
 
 
 class FakeHttpxResponse:
@@ -183,92 +183,55 @@ def test_leader_home_can_suspend_and_reactivate_team_user(client, db_session, ma
     assert member.must_change_password is True
 
 
-def test_leader_home_can_save_stt_config(client, db_session, make_team, make_user):
+def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(client, db_session, make_team, make_user, make_stt_config):
     team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Team STT endpoint" in page.text
+    assert "Team STT selection" in page.text
+    assert "Provisioned endpoint" in page.text
+    assert "Clinic STT" in page.text
 
     save = client.post(
-        "/home/stt-config",
+        "/home/stt-selection",
         data={
-            "label": "Clinic STT",
-            "base_url": "http://127.0.0.1:7000",
-            "transcribe_path": "/v1/audio/transcriptions",
-            "bearer_token": "secret-token",
+            "stt_config_id": str(config.id),
             "provider_model": "whisper-1",
-            "file_field_name": "file",
             "language": "en",
-            "response_text_path": "text",
-            "extra_form_fields_json": "{\"chunk_mode\":\"memory\"}",
-            "is_active": "true",
         },
         follow_redirects=False,
     )
     assert save.status_code == 303
     assert save.headers["location"] == "/home"
+    selection = db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
+    assert selection is not None
+    assert selection.stt_config_id == config.id
 
 
-def test_leader_home_can_clear_stt_config_and_return_to_blank_add_flow(client, db_session, make_team, make_user):
+def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoint(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
-    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT")
+    leader = make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    make_stt_selection(config=config, actor=leader)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    client.post(
-        "/home/stt-config",
-        data={
-            "label": "Clinic STT",
-            "adapter_kind": "openai_compatible_rest",
-            "base_url": "http://127.0.0.1:7000",
-            "bearer_token": "secret-token",
-            "provider_model": "whisper-1",
-            "language": "en",
-            "extra_form_fields_json": "{\"chunk_mode\":\"memory\"}",
-            "is_active": "true",
-        },
-        follow_redirects=False,
-    )
-
     page = client.get("/home")
-    assert "Current endpoint" in page.text
-    assert "Clear current STT endpoint" in page.text
+    assert "Current active selection" in page.text
+    assert "Clear active STT selection" in page.text
 
-    cleared = client.post("/home/stt-config/clear", follow_redirects=False)
+    cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/home"
 
     page_after = client.get("/home")
-    assert "Add endpoint" in page_after.text
-    assert "Current endpoint" not in page_after.text
-    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
-
-
-def test_leader_home_can_inspect_stt_config_before_saving(client, make_team, make_user):
-    team = make_team(name="Clinic North")
-    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-
-    client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    inspect = client.post(
-        "/home/stt-config/inspect",
-        data={
-            "label": "Clinic STT",
-            "base_url": "http://127.0.0.1:7000",
-            "adapter_kind": "openai_compatible_rest",
-            "bearer_token": "secret-token",
-        },
-    )
-
-    assert inspect.status_code == 200
-    assert "STT endpoint inspected" in inspect.text
-    assert "openai_compatible_rest" in inspect.text
-    assert "/v1/audio/transcriptions" in inspect.text
-    assert 'name="provider_model"' in inspect.text
-    assert 'value="whisper-1"' in inspect.text
-    assert 'name="bearer_token"' in inspect.text
-    assert "Audio file upload." in inspect.text
-    assert "Model to use." in inspect.text
+    assert "Choose active endpoint" in page_after.text
+    assert "Current active selection" not in page_after.text
+    assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
+    assert db_session.get(TeamSttConfig, config.id) is not None
 
 
 def test_leader_home_can_delete_team_user(client, db_session, make_team, make_user):
@@ -305,36 +268,10 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, make_team
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get(f"/admin?team_id={team.id}")
     assert page.status_code == 200
-    assert "Team STT endpoint" in page.text
+    assert "Team STT endpoints" in page.text
 
     save = client.post(
-        "/admin/stt-config",
-        data={
-            "team_id": str(team.id),
-            "label": "Admin STT",
-            "base_url": "https://stt.example.com",
-            "transcribe_path": "/transcribe",
-            "bearer_token": "secret-token",
-            "provider_model": "general",
-            "file_field_name": "file",
-            "language": "en",
-            "response_text_path": "text",
-            "extra_form_fields_json": "{\"model\":\"general\"}",
-            "is_active": "true",
-        },
-        follow_redirects=False,
-    )
-    assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}"
-
-
-def test_admin_page_can_clear_selected_team_stt_config(client, db_session, make_team, make_user):
-    team = make_team(name="Clinic North")
-    make_user(email="admin@example.com", password="password-1", is_system_admin=True)
-
-    client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    client.post(
-        "/admin/stt-config",
+        "/admin/stt-configs",
         data={
             "team_id": str(team.id),
             "label": "Admin STT",
@@ -348,19 +285,44 @@ def test_admin_page_can_clear_selected_team_stt_config(client, db_session, make_
         },
         follow_redirects=False,
     )
+    assert save.status_code == 303
+    assert save.headers["location"] == f"/admin?team_id={team.id}"
+
+
+def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=admin)
+
+    client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
 
     page = client.get(f"/admin?team_id={team.id}")
-    assert "Current endpoint" in page.text
-    assert "Clear current STT endpoint" in page.text
+    assert "Current active selection" in page.text
+    assert "Clear active STT selection" in page.text
 
-    cleared = client.post("/admin/stt-config/clear", data={"team_id": str(team.id)}, follow_redirects=False)
+    cleared = client.post("/admin/stt-selection/clear", data={"team_id": str(team.id)}, follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == f"/admin?team_id={team.id}"
 
     page_after = client.get(f"/admin?team_id={team.id}")
-    assert "Add endpoint" in page_after.text
-    assert "Current endpoint" not in page_after.text
-    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
+    assert "Add provisioned endpoint" in page_after.text
+    assert "Current active selection" not in page_after.text
+    assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
+    assert db_session.get(TeamSttConfig, config.id) is not None
+
+
+def test_admin_page_can_delete_selected_team_stt_config(client, db_session, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+
+    client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
+    delete = client.post(f"/admin/stt-configs/{config.id}/delete", data={"team_id": str(team.id)}, follow_redirects=False)
+
+    assert delete.status_code == 303
+    assert delete.headers["location"] == f"/admin?team_id={team.id}"
+    assert db_session.get(TeamSttConfig, config.id) is None
 
 
 def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team, make_user, monkeypatch):
@@ -373,7 +335,7 @@ def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team,
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
     inspect = client.post(
-        "/admin/stt-config/inspect",
+        "/admin/stt-configs/inspect",
         data={
             "team_id": str(team.id),
             "label": "Admin STT",

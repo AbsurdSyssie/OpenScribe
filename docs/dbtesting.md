@@ -24,9 +24,16 @@ If `TEST_DATABASE_URL` matches `DATABASE_URL`, pytest fails immediately before a
 ## Test database lifecycle
 
 - the test helper creates `ambient_scribe_test` automatically if it does not exist
-- normal API and UI tests reset tables in the test database only
+- normal API and UI tests reset the `public` schema in the test database before each test
+- test engines use `NullPool` so Postgres connections do not hold stale cached plans across schema drops
+- normal API and UI tests flush the test Redis rate-limit store only
 - migration tests reset the `public` schema in the test database only
 - the application database is not dropped or recreated by pytest
+
+Why this matters:
+
+- plain `drop_all()/create_all()` on a reused pooled Postgres connection can leave enum and cached-plan state behind after interrupted runs
+- recreating the whole `public` schema is the more reliable isolation boundary for this repo’s Postgres test setup
 
 ## What we test at the DB boundary
 
@@ -115,7 +122,7 @@ Behavior in plain language:
 
 - the cookie holds an opaque token, not serialized user state
 - the DB stores only the hashed token in `user_sessions`
-- onboarding sessions and full sessions are tracked explicitly
+- onboarding, pending-MFA, and full sessions are tracked explicitly
 - locking a user revokes all active sessions immediately
 
 Brief test shape:
@@ -130,6 +137,228 @@ Expected:
 
 - request fails with `401`
 - existing session rows are marked revoked
+
+### Manager suspension and reactivation
+
+Behavior in plain language:
+
+- `suspended` is a distinct persisted user status
+- manager suspension blocks login without deleting content
+- manager suspension revokes active sessions and trusted-device records immediately
+- leader scope is limited to non-system-admin users in the leader’s own team
+- manager reactivation currently resets the user into password-change onboarding and disables prior MFA setup
+
+Brief test shape:
+
+```python
+suspended = client.post(f"/api/v1/users/{member.id}/suspend")
+reactivated = client.post(f"/api/v1/users/{member.id}/reactivate")
+```
+
+Expected:
+
+- suspend returns `status = suspended`
+- later login attempts fail while suspended
+- reactivate returns `status = active`
+- reactivated user has:
+  - `must_change_password = true`
+  - `onboarding_state = pending_password_change`
+  - `mfa_enabled = false`
+
+### Manager deletion
+
+Behavior in plain language:
+
+- manager delete is a hard-delete path, not a soft-delete path
+- leaders may delete only non-system-admin users in their own team
+- system admins may delete other users across teams
+- self-delete through manager routes is blocked
+- deleting a user removes currently implemented transcript roots and transcript versions immediately
+- account-request rows that point at the deleted user are preserved, but their nullable user references are cleared
+
+Brief test shape:
+
+```python
+deleted = client.delete(f"/api/v1/users/{member.id}")
+```
+
+Expected:
+
+- response is `204`
+- the `users` row is gone
+- owned `transcripts` rows are gone
+- owned `transcript_versions` rows are gone via transcript-root cascade
+- preserved `account_requests` rows have `linked_user_id = null`
+
+### Manager-route auth boundary
+
+Behavior in plain language:
+
+- manager account routes are not public
+- unauthenticated callers cannot suspend, reactivate, or delete users
+- ordinary users cannot use those routes
+- onboarding-only and pending-MFA sessions cannot use those routes
+
+Brief test shape:
+
+```python
+client.post(f"/api/v1/users/{user_id}/suspend")
+client.post(f"/api/v1/users/{user_id}/reactivate")
+client.delete(f"/api/v1/users/{user_id}")
+```
+
+Expected:
+
+- no session cookie returns `401`
+- normal non-manager user returns `403 forbidden`
+- onboarding-only session returns `403 onboarding_incomplete`
+- pending-MFA session returns `403 mfa_required`
+
+### Team STT configuration
+
+Behavior in plain language:
+
+- each team stores at most one STT config row
+- the row stores endpoint metadata and a Vault secret reference, never the raw bearer token
+- inspection may fetch the OpenAPI document and infer defaults, but does not persist a row by itself
+- browser inspection must render the inferred values back into the save form in the same response
+- leaders may create and update only their own team's config
+- leaders may clear only their own team's config
+- system admins may create and update a selected team's config
+- system admins may clear a selected team's config
+- normal users, onboarding sessions, and pending-MFA sessions may not access STT config routes
+- the API returns `has_secret` but does not reveal the bearer token or the raw Vault ref
+- remote non-local endpoints must use `https://`
+- local and RFC1918 development HTTP endpoints are accepted in this first slice
+
+Brief test shape:
+
+```python
+inspection = client.post("/api/v1/stt-config/inspect", json={...})
+created = client.post("/api/v1/stt-config", json={...})
+fetched = client.get("/api/v1/stt-config")
+persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+```
+
+Expected:
+
+- inspection returns inferred request and response fields without storing a row
+- manager-scope create succeeds
+- manager-scope clear removes the row and the next fetch returns `null`
+- `fetched.json()["has_secret"] is True`
+- `vault_secret_ref` is present only in the database row, not the response
+- cross-team leader access fails with `403`
+- invalid remote `http://` endpoint fails with `422`
+
+### Transcript start and ingestion mode
+
+Behavior in plain language:
+
+- transcript start creates the root for the current authenticated owner
+- `team_id` is derived from the current user rather than trusted from the request
+- system-admin accounts may not own transcript content
+- the transcript root persists `ingestion_mode` so later capture flows share one contract
+- if omitted, the start flow currently implies `live_chunked`
+
+Brief test shape:
+
+```python
+started = client.post(
+    "/api/v1/transcripts/start",
+    json={"title": "Visit note", "ingestion_mode": "live_chunked"},
+)
+```
+
+Expected:
+
+- response is `201`
+- `owner_user_id` matches the logged-in user
+- `team_id` matches the logged-in user's team
+- `ingestion_mode` is persisted and returned
+- system-admin callers get `403`
+
+### Live audio chunk ingestion
+
+Behavior in plain language:
+
+- live chunk uploads are owner-only
+- live chunk uploads are allowed only when the transcript ingestion mode is `live_chunked`
+- the backend normalizes uploaded audio before STT submission
+- the backend requires an active team STT config before provider execution
+- provider-returned text is appended into the current transcript draft
+- transcript status moves to `transcribing`
+
+Brief test shape:
+
+```python
+uploaded = client.post(
+    f"/api/v1/transcripts/{transcript_id}/audio-chunks",
+    files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+    data={"chunk_sequence_no": "1"},
+)
+```
+
+Expected:
+
+- unauthenticated callers get `401`
+- non-owners get `403`
+- non-`live_chunked` transcripts get `409`
+- missing active team STT config gets `422`
+- successful uploads append provider text to `current_draft_text_encrypted`
+
+### Whole-file ingestion
+
+Behavior in plain language:
+
+- whole-file ingestion is owner-only
+- whole-file ingestion is allowed only when the transcript ingestion mode is `file_upload` or `microphone_batch`
+- the backend normalizes uploaded audio before STT submission
+- the backend requires an active team STT config before provider execution
+- provider-returned text replaces the current transcript draft for the file-ingestion flow
+- transcript status moves to `ready`
+
+Brief test shape:
+
+```python
+uploaded = client.post(
+    f"/api/v1/transcripts/{transcript_id}/audio-file",
+    files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+)
+```
+
+Expected:
+
+- unauthenticated callers get `401`
+- non-owners get `403`
+- `live_chunked` transcripts get `409`
+- missing active team STT config gets `422`
+- successful uploads write provider text into `current_draft_text_encrypted`
+
+### Trusted devices and MFA freshness
+
+Behavior in plain language:
+
+- trusted devices are stored separately from normal sessions
+- the browser cookie stores only an opaque trusted-device token
+- the DB stores only the hashed trusted-device token
+- a trusted device lets a completed user skip TOTP only if the last real MFA verification was within 24 hours
+- using the trusted device without redoing MFA does not extend the freshness window
+- locking a user revokes trusted-device records as well as sessions
+
+Brief test shape:
+
+```python
+challenge = client.post("/api/v1/auth/mfa/totp", json={"code": code, "remember_device": True})
+client.post("/api/v1/auth/logout")
+login_again = login(client, email="managed@example.com", password="BetterPass1")
+```
+
+Expected:
+
+- the first post-onboarding login requires `pending_mfa`
+- the challenge may issue a remembered-browser cookie
+- a fresh trusted device allows a later password login to return `auth_level = full`
+- if `last_mfa_verified_at` is stale, the same browser returns to `pending_mfa`
 
 ### MFA and recovery codes
 
@@ -167,10 +396,23 @@ Current migration tests verify:
 - head schema includes:
   - `account_requests`
   - `user_sessions`
+  - `user_trusted_devices`
   - `user_mfa_methods`
   - `user_recovery_codes`
 - `users` now includes:
   - `full_name`
   - `must_change_password`
   - `onboarding_state`
+- head supports `users.status = suspended`
 - normalized uniqueness rules for teams and emails still hold at head
+
+## Rate-limit test isolation
+
+Tests use `TEST_RATE_LIMIT_STORAGE_URL`, not `RATE_LIMIT_STORAGE_URL`.
+
+By default:
+
+- app limiter storage lives in Redis DB `0`
+- test limiter storage lives in Redis DB `15`
+
+The test harness flushes the test limiter store before and after each non-migration test so counters do not leak between cases.

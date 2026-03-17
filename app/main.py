@@ -1,17 +1,21 @@
+import json
 import os
 from dataclasses import dataclass
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .errors import AppError, app_error_handler, http_error_handler, validation_error_handler
-from .models import TeamRole, TeamStatus, Transcript, TranscriptStatus, TranscriptVersion, User, UserSession, UserStatus, transcript_expiry
+from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
+from .models import SessionAuthLevel, SttAdapterKind, TeamRole, TeamStatus, Transcript, TranscriptStatus, TranscriptVersion, User, UserSession, UserStatus, transcript_expiry
 from .schemas import (
     AccountRequestApprove,
     AccountRequestCreate,
@@ -22,8 +26,13 @@ from .schemas import (
     ErrorResponse,
     LoginRequest,
     LoginResponse,
+    MfaChallengeRequest,
     PasswordChangeRequest,
     RecoveryCodesResponse,
+    SttConfigDetail,
+    SttInspectRequest,
+    SttInspectResult,
+    SttConfigUpsert,
     TeamCreate,
     TeamDetail,
     TeamListItem,
@@ -33,9 +42,17 @@ from .schemas import (
     TranscriptCreate,
     TranscriptDetail,
     TranscriptListItem,
+    TranscriptStart,
+    TrustedDeviceStatusResponse,
     UserCreate,
     UserDetail,
     UserListItem,
+)
+from .services.stt import (
+    delete_stt_config as delete_stt_config_service,
+    get_stt_config as get_stt_config_service,
+    inspect_stt_contract as inspect_stt_contract_service,
+    upsert_stt_config as upsert_stt_config_service,
 )
 from .services.admin import (
     approve_account_request as approve_account_request_service,
@@ -43,29 +60,46 @@ from .services.admin import (
     create_bootstrap_admin,
     create_team as create_team_service,
     create_user as create_user_service,
+    delete_user as delete_user_service,
     list_manageable_account_requests as list_manageable_account_requests_service,
     list_manageable_users as list_manageable_users_service,
     list_teams as list_teams_service,
     list_users as list_users_service,
+    reactivate_user as reactivate_user_service,
     reject_account_request as reject_account_request_service,
+    suspend_user as suspend_user_service,
     user_count as user_count_service,
     hash_password,
 )
 from .services.auth import (
     SESSION_COOKIE_NAME,
+    TRUSTED_DEVICE_COOKIE_NAME,
     authenticate_user,
     create_session,
     current_pending_totp_method,
     determine_auth_level,
     generate_recovery_codes,
+    login_auth_level,
+    provisioning_qr_svg_data_uri,
     provisioning_uri,
     resolve_authenticated_session,
+    resolve_trusted_device,
     revoke_session_by_token,
     rotate_session,
     skip_recovery_codes,
     start_totp_enrollment,
+    touch_trusted_device_seen,
+    trusted_device_fresh_until,
+    trusted_device_satisfies_mfa,
     update_password_for_onboarding,
+    verify_login_totp,
     verify_totp_enrollment,
+)
+from .services.transcripts import (
+    create_transcript_from_payload,
+    ingest_audio_chunk,
+    ingest_audio_file,
+    start_transcript as start_transcript_service,
 )
 
 
@@ -79,10 +113,20 @@ class AuthenticatedContext:
 app = FastAPI(title="OpenScribe MVP")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 api = APIRouter(prefix="/api/v1")
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=os.getenv("RATE_LIMIT_STORAGE_URL", "redis://localhost:6379/0"),
+    headers_enabled=False,
+)
+app.state.limiter = limiter
+LOGIN_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="login")
+MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
+ACCOUNT_REQUEST_RATE_LIMIT = limiter.shared_limit("3/hour", scope="account_request")
 
 app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)
+app.add_exception_handler(RateLimitExceeded, rate_limit_error_handler)
 
 
 def _set_session_cookie(response: JSONResponse | RedirectResponse, token: str) -> None:
@@ -97,18 +141,39 @@ def _set_session_cookie(response: JSONResponse | RedirectResponse, token: str) -
     )
 
 
+def _set_trusted_device_cookie(response: JSONResponse | RedirectResponse, token: str) -> None:
+    response.set_cookie(
+        key=TRUSTED_DEVICE_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        path="/",
+        max_age=60 * 60 * 24 * 30,
+    )
+
+
 def _clear_session_cookie(response: JSONResponse | RedirectResponse) -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _clear_trusted_device_cookie(response: JSONResponse | RedirectResponse) -> None:
+    response.delete_cookie(TRUSTED_DEVICE_COOKIE_NAME, path="/")
 
 
 def _post_login_redirect(context: AuthenticatedContext) -> str:
     if context.session.auth_level.value == "onboarding":
         return "/onboarding"
+    if context.session.auth_level.value == "pending_mfa":
+        return "/mfa/challenge"
     return "/admin" if context.user.is_system_admin else "/home"
 
 
 def _post_login_redirect_for_user(user: User) -> str:
-    return "/onboarding" if determine_auth_level(user).value == "onboarding" else ("/admin" if user.is_system_admin else "/home")
+    auth_level = determine_auth_level(user)
+    if auth_level.value == "onboarding":
+        return "/onboarding"
+    return "/admin" if user.is_system_admin else "/home"
 
 
 def _user_count(db: Session) -> int:
@@ -138,6 +203,8 @@ def require_authenticated_context(request: Request, db: Session = Depends(get_db
 
 
 def require_full_context(context: AuthenticatedContext = Depends(require_authenticated_context)) -> AuthenticatedContext:
+    if context.session.auth_level.value == "pending_mfa":
+        raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
     if context.session.auth_level is not determine_auth_level(context.user):
         raise AppError(401, "unauthorized", "Authentication required")
     if context.session.auth_level.value != "full":
@@ -163,6 +230,8 @@ def _page_context_or_redirect(request: Request, db: Session, *, require_full: bo
     context = _current_context_optional(request, db)
     if context is None:
         return None, RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    if context.session.auth_level.value == "pending_mfa":
+        return None, RedirectResponse(url="/mfa/challenge", status_code=status.HTTP_303_SEE_OTHER)
     if require_full and context.session.auth_level.value != "full":
         return None, RedirectResponse(url="/onboarding", status_code=status.HTTP_303_SEE_OTHER)
     return context, None
@@ -205,15 +274,24 @@ def render_admin(
     db: Session,
     *,
     current_user: User,
+    selected_team_id: str | None = None,
+    stt_inspection: SttInspectResult | None = None,
+    stt_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
 ):
+    selected_uuid = UUID(selected_team_id) if selected_team_id else None
+    stt_config = get_stt_config_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     context = {
         "request": request,
         "current_user": current_user,
         "teams": list_teams_service(db),
         "users": list_users_service(db),
+        "selected_team_id": selected_team_id,
+        "stt_config": stt_config,
+        "stt_inspection": stt_inspection,
+        "stt_form": stt_form_override or stt_form_defaults(stt_config, None),
         "account_requests": list_manageable_account_requests_service(db, current_user),
         "team_statuses": list(TeamStatus),
         "team_roles": list(TeamRole),
@@ -229,21 +307,100 @@ def render_home(
     db: Session,
     *,
     current_user: User,
+    stt_inspection: SttInspectResult | None = None,
+    stt_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
 ):
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
+    stt_config = get_stt_config_service(db, current_user) if is_manager else None
     context = {
         "request": request,
         "current_user": current_user,
         "is_manager": is_manager,
         "manageable_users": list_manageable_users_service(db, current_user) if is_manager else [],
         "account_requests": list_manageable_account_requests_service(db, current_user) if is_manager else [],
+        "stt_config": stt_config,
+        "stt_inspection": stt_inspection,
+        "stt_form": stt_form_override or stt_form_defaults(stt_config, None),
         "message": message,
         "message_kind": message_kind,
     }
     return templates.TemplateResponse(request, "home.html", context, status_code=status_code)
+
+
+def stt_config_response(config) -> SttConfigDetail:
+    return SttConfigDetail(
+        id=config.id,
+        team_id=config.team_id,
+        label=config.label,
+        adapter_kind=config.adapter_kind,
+        base_url=config.base_url,
+        transcribe_path=config.transcribe_path,
+        auth_mode=config.auth_mode,
+        model_name=config.model_name,
+        file_field_name=config.file_field_name,
+        language=config.language,
+        response_text_path=config.response_text_path,
+        extra_form_fields_json=config.extra_form_fields_json or {},
+        is_active=config.is_active,
+        has_secret=bool(config.vault_secret_ref),
+        created_by_user_id=config.created_by_user_id,
+        updated_by_user_id=config.updated_by_user_id,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, object]:
+    if inspection is not None:
+        return {
+            "label": "",
+            "adapter_kind": inspection.adapter_kind.value,
+            "base_url": inspection.base_url,
+            "openapi_path": inspection.openapi_path or "/openapi.json",
+            "transcribe_path": inspection.transcribe_path,
+            "model_name": inspection.model_name or "",
+            "available_models": inspection.available_models,
+            "available_model_options": [option.model_dump(mode="json") for option in inspection.available_model_options],
+            "file_field_name": inspection.file_field_name,
+            "language": inspection.language or "",
+            "response_text_path": inspection.response_text_path,
+            "extra_form_fields_json": json.dumps(inspection.extra_form_fields_json) if inspection.extra_form_fields_json else "",
+            "is_active": True,
+        }
+    if config is not None:
+        return {
+            "label": config.label,
+            "adapter_kind": config.adapter_kind.value,
+            "base_url": config.base_url,
+            "openapi_path": "/openapi.json" if config.adapter_kind is SttAdapterKind.generic_rest else "",
+            "transcribe_path": config.transcribe_path,
+            "model_name": config.model_name or "",
+            "available_models": [],
+            "available_model_options": [],
+            "file_field_name": config.file_field_name,
+            "language": config.language or "",
+            "response_text_path": config.response_text_path,
+            "extra_form_fields_json": json.dumps(config.extra_form_fields_json) if config.extra_form_fields_json else "",
+            "is_active": config.is_active,
+        }
+    return {
+        "label": "",
+        "adapter_kind": SttAdapterKind.generic_rest.value,
+        "base_url": "",
+        "openapi_path": "/openapi.json",
+        "transcribe_path": "/v1/audio/transcriptions",
+        "model_name": "",
+        "available_models": [],
+        "available_model_options": [],
+        "file_field_name": "file",
+        "language": "",
+        "response_text_path": "text",
+        "extra_form_fields_json": "",
+        "is_active": True,
+    }
 
 
 def render_onboarding(
@@ -252,6 +409,7 @@ def render_onboarding(
     current_user: User,
     totp_secret: str | None = None,
     totp_uri: str | None = None,
+    totp_qr_svg_data_uri: str | None = None,
     recovery_codes: list[str] | None = None,
     message: str | None = None,
     message_kind: str = "error",
@@ -262,11 +420,44 @@ def render_onboarding(
         "current_user": current_user,
         "totp_secret": totp_secret,
         "totp_uri": totp_uri,
+        "totp_qr_svg_data_uri": totp_qr_svg_data_uri,
         "recovery_codes": recovery_codes,
         "message": message,
         "message_kind": message_kind,
     }
     return templates.TemplateResponse(request, "onboarding.html", context, status_code=status_code)
+
+
+def render_mfa_challenge(
+    request: Request,
+    *,
+    current_user: User,
+    message: str | None = None,
+    message_kind: str = "error",
+    status_code: int = 200,
+):
+    context = {
+        "request": request,
+        "current_user": current_user,
+        "message": message,
+        "message_kind": message_kind,
+    }
+    return templates.TemplateResponse(request, "mfa_challenge.html", context, status_code=status_code)
+
+
+def parse_extra_form_fields_json(raw_value: str) -> dict[str, str]:
+    if not raw_value.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise AppError(422, "business_rule_violation", "Extra form fields must be valid JSON", {"field": "extra_form_fields_json"}) from exc
+    if not isinstance(parsed, dict):
+        raise AppError(422, "business_rule_violation", "Extra form fields must be a JSON object", {"field": "extra_form_fields_json"})
+    cleaned: dict[str, str] = {}
+    for key, value in parsed.items():
+        cleaned[str(key)] = str(value)
+    return cleaned
 
 
 @app.get("/health")
@@ -279,16 +470,25 @@ error_responses = {
     403: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
+    429: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
 }
 
 
 @api.post("/auth/login", response_model=LoginResponse, responses=error_responses)
-def api_login(payload: LoginRequest, db: Session = Depends(get_db)):
+@LOGIN_RATE_LIMIT
+def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
-    token = create_session(db, user)
-    auth_level = determine_auth_level(user)
-    body = LoginResponse(authenticated=True, auth_level=auth_level, redirect_to="/onboarding" if auth_level.value == "onboarding" else ("/admin" if user.is_system_admin else "/home"))
+    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
+    auth_level = login_auth_level(user, trusted_device)
+    if trusted_device and auth_level is SessionAuthLevel.full:
+        touch_trusted_device_seen(db, trusted_device)
+    token = create_session(db, user, auth_level=auth_level)
+    body = LoginResponse(
+        authenticated=True,
+        auth_level=auth_level,
+        redirect_to="/onboarding" if auth_level.value == "onboarding" else ("/mfa/challenge" if auth_level.value == "pending_mfa" else ("/admin" if user.is_system_admin else "/home")),
+    )
     response = JSONResponse(body.model_dump(mode="json"))
     _set_session_cookie(response, token)
     return response
@@ -301,6 +501,37 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
         revoke_session_by_token(db, token, reason="logout")
     response = JSONResponse(LoginResponse(authenticated=False).model_dump(mode="json"))
     _clear_session_cookie(response)
+    return response
+
+
+@api.post("/auth/mfa/totp", response_model=LoginResponse, responses=error_responses)
+@MFA_RATE_LIMIT
+def api_login_mfa_totp(
+    payload: MfaChallengeRequest,
+    request: Request,
+    context: AuthenticatedContext = Depends(require_authenticated_context),
+    db: Session = Depends(get_db),
+):
+    if context.session.auth_level is not SessionAuthLevel.pending_mfa:
+        raise AppError(409, "conflict", "MFA challenge is not pending for this session")
+    user, trusted_device_token = verify_login_totp(
+        db,
+        context.user,
+        code=payload.code,
+        remember_device=payload.remember_device,
+        device_label=request.headers.get("user-agent"),
+    )
+    token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
+    response = JSONResponse(
+        LoginResponse(
+            authenticated=True,
+            auth_level=determine_auth_level(user),
+            redirect_to="/admin" if user.is_system_admin else "/home",
+        ).model_dump(mode="json")
+    )
+    _set_session_cookie(response, token)
+    if trusted_device_token:
+        _set_trusted_device_cookie(response, trusted_device_token)
     return response
 
 
@@ -318,8 +549,18 @@ def api_me(context: AuthenticatedContext = Depends(require_authenticated_context
     )
 
 
+@api.get("/auth/trusted-device", response_model=TrustedDeviceStatusResponse, responses=error_responses)
+def api_trusted_device_status(request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
+    cookie = request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME)
+    device = resolve_trusted_device(db, context.user, cookie)
+    if device and trusted_device_satisfies_mfa(device):
+        return TrustedDeviceStatusResponse(trusted=True, requires_mfa=False, freshness_expires_at=trusted_device_fresh_until(device))
+    return TrustedDeviceStatusResponse(trusted=device is not None, requires_mfa=True, freshness_expires_at=trusted_device_fresh_until(device) if device else None)
+
+
 @api.post("/account-requests", response_model=AccountRequestDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
-def create_account_request(payload: AccountRequestCreate, db: Session = Depends(get_db)):
+@ACCOUNT_REQUEST_RATE_LIMIT
+def create_account_request(request: Request, payload: AccountRequestCreate, db: Session = Depends(get_db)):
     return create_account_request_service(db, payload)
 
 
@@ -357,7 +598,12 @@ def api_onboarding_password(payload: PasswordChangeRequest, context: Authenticat
 @api.post("/onboarding/totp/start", response_model=TotpEnrollmentStartResponse, responses=error_responses)
 def api_onboarding_totp_start(context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
     method = start_totp_enrollment(db, context.user)
-    return TotpEnrollmentStartResponse(secret=method.secret, provisioning_uri=provisioning_uri(context.user, method))
+    uri = provisioning_uri(context.user, method)
+    return TotpEnrollmentStartResponse(
+        secret=method.secret,
+        provisioning_uri=uri,
+        qr_code_svg_data_uri=provisioning_qr_svg_data_uri(uri),
+    )
 
 
 @api.post("/onboarding/totp/verify", response_model=CurrentUserResponse, responses=error_responses)
@@ -416,35 +662,50 @@ def list_users(context: AuthenticatedContext = Depends(require_user_manager), db
     return list_manageable_users_service(db, context.user)
 
 
+@api.get("/stt-config", response_model=SttConfigDetail | None, responses=error_responses)
+def get_stt_config(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    config = get_stt_config_service(db, context.user, team_id=team_id)
+    return stt_config_response(config) if config else None
+
+
+@api.post("/stt-config/inspect", response_model=SttInspectResult, responses=error_responses)
+def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return inspect_stt_contract_service(db, context.user, payload)
+
+
+@api.post("/stt-config", response_model=SttConfigDetail, responses=error_responses)
+def upsert_stt_config(payload: SttConfigUpsert, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return stt_config_response(upsert_stt_config_service(db, context.user, payload))
+
+
+@api.delete("/stt-config", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_stt_config(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    delete_stt_config_service(db, context.user, team_id=team_id)
+
+
+@api.post("/users/{user_id}/suspend", response_model=UserDetail, responses=error_responses)
+def suspend_user(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return suspend_user_service(db, context.user, user_id)
+
+
+@api.post("/users/{user_id}/reactivate", response_model=UserDetail, responses=error_responses)
+def reactivate_user(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return reactivate_user_service(db, context.user, user_id)
+
+
+@api.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_user(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    delete_user_service(db, context.user, user_id)
+
+
 @api.post("/transcripts", response_model=TranscriptDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
 def create_transcript(payload: TranscriptCreate, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    current_user = context.user
-    owner = db.get(User, payload.owner_user_id)
-    if not owner:
-        raise AppError(404, "not_found", "Owner user not found", {"resource": "user", "user_id": str(payload.owner_user_id)})
-    if current_user.id != payload.owner_user_id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
-    if owner.team_id != payload.team_id:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "Owner user does not belong to the provided team",
-            {"owner_user_id": str(payload.owner_user_id), "team_id": str(payload.team_id)},
-        )
-    retention_days = payload.retention_days_applied or owner.team.default_retention_days
-    transcript = Transcript(
-        owner_user_id=payload.owner_user_id,
-        team_id=payload.team_id,
-        title=payload.title,
-        current_draft_text_encrypted=payload.current_draft_text_encrypted,
-        status=TranscriptStatus.recording,
-        retention_days_applied=retention_days,
-        retention_expires_at=transcript_expiry(retention_days),
-    )
-    db.add(transcript)
-    db.commit()
-    db.refresh(transcript)
-    return transcript
+    return create_transcript_from_payload(db, context.user, payload)
+
+
+@api.post("/transcripts/start", response_model=TranscriptDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
+def start_transcript(payload: TranscriptStart, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return start_transcript_service(db, context.user, payload)
 
 
 @api.post("/transcripts/{transcript_id}/commit", response_model=TranscriptDetail, responses=error_responses)
@@ -470,6 +731,44 @@ def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: A
     return transcript
 
 
+@api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptDetail, responses=error_responses)
+def upload_transcript_audio_chunk(
+    transcript_id: UUID,
+    audio: UploadFile = File(...),
+    chunk_sequence_no: int = Form(..., ge=1),
+    declared_duration_seconds: float | None = Form(default=None, gt=0),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    del chunk_sequence_no
+    audio_bytes = audio.file.read()
+    return ingest_audio_chunk(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=audio.filename or "chunk.bin",
+        declared_duration_seconds=declared_duration_seconds,
+    )
+
+
+@api.post("/transcripts/{transcript_id}/audio-file", response_model=TranscriptDetail, responses=error_responses)
+def upload_transcript_audio_file(
+    transcript_id: UUID,
+    audio: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    audio_bytes = audio.file.read()
+    return ingest_audio_file(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=audio.filename or "audio.bin",
+    )
+
+
 @api.get("/users/{user_id}/transcripts", response_model=list[TranscriptListItem], responses=error_responses)
 def list_user_transcripts(user_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     if user_id != context.user.id:
@@ -487,13 +786,19 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/login", response_class=HTMLResponse)
+@LOGIN_RATE_LIMIT
 def login_submit(request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     try:
         user = authenticate_user(db, email, password)
     except AppError as exc:
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
-    token = create_session(db, user)
-    response = RedirectResponse(url=_post_login_redirect_for_user(user), status_code=status.HTTP_303_SEE_OTHER)
+    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
+    auth_level = login_auth_level(user, trusted_device)
+    if trusted_device and auth_level is SessionAuthLevel.full:
+        touch_trusted_device_seen(db, trusted_device)
+    token = create_session(db, user, auth_level=auth_level)
+    redirect_to = "/onboarding" if auth_level is SessionAuthLevel.onboarding else ("/mfa/challenge" if auth_level is SessionAuthLevel.pending_mfa else _post_login_redirect_for_user(user))
+    response = RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(response, token)
     return response
 
@@ -514,6 +819,7 @@ def request_access_page(request: Request):
 
 
 @app.post("/request-access", response_class=HTMLResponse)
+@ACCOUNT_REQUEST_RATE_LIMIT
 def request_access_submit(
     request: Request,
     requested_name: str = Form(...),
@@ -567,7 +873,49 @@ def onboarding_page(request: Request, db: Session = Depends(get_db)):
     method = current_pending_totp_method(db, context.user)
     secret = method.secret if method and context.user.onboarding_state.value == "pending_totp_enrollment" else None
     uri = provisioning_uri(context.user, method) if method and secret else None
-    return render_onboarding(request, current_user=context.user, totp_secret=secret, totp_uri=uri)
+    qr_uri = provisioning_qr_svg_data_uri(uri) if uri else None
+    return render_onboarding(request, current_user=context.user, totp_secret=secret, totp_uri=uri, totp_qr_svg_data_uri=qr_uri)
+
+
+@app.get("/mfa/challenge", response_class=HTMLResponse)
+def mfa_challenge_page(request: Request, db: Session = Depends(get_db)):
+    context = _current_context_optional(request, db)
+    if context is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    if context.session.auth_level is SessionAuthLevel.pending_mfa:
+        return render_mfa_challenge(request, current_user=context.user)
+    return RedirectResponse(url=_post_login_redirect(context), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/mfa/challenge", response_class=HTMLResponse)
+@MFA_RATE_LIMIT
+def mfa_challenge_submit(
+    request: Request,
+    code: str = Form(...),
+    remember_device: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    context = _current_context_optional(request, db)
+    if context is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    if context.session.auth_level is not SessionAuthLevel.pending_mfa:
+        return RedirectResponse(url=_post_login_redirect(context), status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        user, trusted_device_token = verify_login_totp(
+            db,
+            context.user,
+            code=code,
+            remember_device=remember_device == "true",
+            device_label=request.headers.get("user-agent"),
+        )
+        token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
+    except AppError as exc:
+        return render_mfa_challenge(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
+    _set_session_cookie(response, token)
+    if trusted_device_token:
+        _set_trusted_device_cookie(response, trusted_device_token)
+    return response
 
 
 @app.post("/onboarding/password", response_class=HTMLResponse)
@@ -597,6 +945,7 @@ def onboarding_totp_start_submit(request: Request, db: Session = Depends(get_db)
         current_user=refreshed_user,
         totp_secret=method.secret,
         totp_uri=provisioning_uri(refreshed_user, method),
+        totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(provisioning_uri(refreshed_user, method)),
         message="TOTP secret created. Enter the 6-digit code from your authenticator app.",
         message_kind="success",
     )
@@ -616,6 +965,7 @@ def onboarding_totp_verify_submit(request: Request, code: str = Form(...), db: S
             current_user=context.user,
             totp_secret=method.secret if method else None,
             totp_uri=provisioning_uri(context.user, method) if method else None,
+            totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(provisioning_uri(context.user, method)) if method else None,
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
@@ -645,6 +995,7 @@ def onboarding_recovery_codes_submit(request: Request, db: Session = Depends(get
             "message_kind": "success",
             "totp_secret": None,
             "totp_uri": None,
+            "totp_qr_svg_data_uri": None,
         },
     )
     _set_session_cookie(response, token)
@@ -712,6 +1063,132 @@ def home_create_user(
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/home/stt-config", response_class=HTMLResponse)
+def home_upsert_stt_config(
+    request: Request,
+    label: str = Form(...),
+    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    transcribe_path: str = Form(""),
+    bearer_token: str = Form(""),
+    provider_model: str = Form(""),
+    file_field_name: str = Form(""),
+    language: str = Form(""),
+    response_text_path: str = Form(""),
+    extra_form_fields_json: str = Form(""),
+    is_active: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        upsert_stt_config_service(
+            db,
+            context.user,
+            SttConfigUpsert(
+                label=label,
+                adapter_kind=SttAdapterKind(adapter_kind),
+                base_url=base_url,
+                transcribe_path=transcribe_path,
+                bearer_token=bearer_token or None,
+                model_name=provider_model or None,
+                file_field_name=file_field_name or "file",
+                language=language or None,
+                response_text_path=response_text_path or "text",
+                extra_form_fields_json=parse_extra_form_fields_json(extra_form_fields_json),
+                is_active=is_active == "true",
+            ),
+        )
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/stt-config/clear", response_class=HTMLResponse)
+def home_clear_stt_config(request: Request, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_stt_config_service(db, context.user)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/stt-config/inspect", response_class=HTMLResponse)
+def home_inspect_stt_config(
+    request: Request,
+    label: str = Form(""),
+    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    openapi_path: str = Form(""),
+    bearer_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        inspection = inspect_stt_contract_service(
+            db,
+            context.user,
+            SttInspectRequest(
+                adapter_kind=SttAdapterKind(adapter_kind),
+                base_url=base_url,
+                openapi_path=openapi_path or None,
+                bearer_token=bearer_token or None,
+            ),
+        )
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        stt_inspection=inspection,
+        stt_form_override={**stt_form_defaults(None, inspection), "label": label, "adapter_kind": inspection.adapter_kind.value},
+        message="STT endpoint inspected. Review the inferred fields before saving.",
+    )
+
+
+@app.post("/home/users/{user_id}/suspend", response_class=HTMLResponse)
+def home_suspend_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        suspend_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/users/{user_id}/reactivate", response_class=HTMLResponse)
+def home_reactivate_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        reactivate_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/users/{user_id}/delete", response_class=HTMLResponse)
+def home_delete_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/home/account-requests/{request_id}/approve", response_class=HTMLResponse)
 def home_approve_account_request(
     request: Request,
@@ -755,13 +1232,13 @@ def home_reject_account_request(request: Request, request_id: UUID, review_notes
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, db: Session = Depends(get_db)):
+def admin_page(request: Request, team_id: str | None = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(request, db, current_user=context.user)
+    return render_admin(request, db, current_user=context.user, selected_team_id=team_id)
 
 
 @app.post("/admin/teams", response_class=HTMLResponse)
@@ -815,6 +1292,155 @@ def admin_create_user(
         detail = exc.message if isinstance(exc, AppError) else "Invalid user form submission"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
         return render_admin(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-config", response_class=HTMLResponse)
+def admin_upsert_stt_config(
+    request: Request,
+    team_id: str = Form(...),
+    label: str = Form(...),
+    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    transcribe_path: str = Form(""),
+    bearer_token: str = Form(""),
+    provider_model: str = Form(""),
+    file_field_name: str = Form(""),
+    language: str = Form(""),
+    response_text_path: str = Form(""),
+    extra_form_fields_json: str = Form(""),
+    is_active: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        upsert_stt_config_service(
+            db,
+            context.user,
+            SttConfigUpsert(
+                team_id=UUID(team_id),
+                label=label,
+                adapter_kind=SttAdapterKind(adapter_kind),
+                base_url=base_url,
+                transcribe_path=transcribe_path,
+                bearer_token=bearer_token or None,
+                model_name=provider_model or None,
+                file_field_name=file_field_name or "file",
+                language=language or None,
+                response_text_path=response_text_path or "text",
+                extra_form_fields_json=parse_extra_form_fields_json(extra_form_fields_json),
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT configuration"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-config/clear", response_class=HTMLResponse)
+def admin_clear_stt_config(request: Request, team_id: str = Form(...), db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_stt_config_service(db, context.user, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-config/inspect", response_class=HTMLResponse)
+def admin_inspect_stt_config(
+    request: Request,
+    team_id: str = Form(...),
+    label: str = Form(""),
+    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    openapi_path: str = Form(""),
+    bearer_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        inspection = inspect_stt_contract_service(
+            db,
+            context.user,
+            SttInspectRequest(
+                team_id=UUID(team_id),
+                adapter_kind=SttAdapterKind(adapter_kind),
+                base_url=base_url,
+                openapi_path=openapi_path or None,
+                bearer_token=bearer_token or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT inspection request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        stt_inspection=inspection,
+        stt_form_override={**stt_form_defaults(None, inspection), "label": label, "adapter_kind": inspection.adapter_kind.value},
+        message="STT endpoint inspected. Review the inferred fields before saving.",
+    )
+
+
+@app.post("/admin/users/{user_id}/suspend", response_class=HTMLResponse)
+def admin_suspend_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        suspend_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/reactivate", response_class=HTMLResponse)
+def admin_reactivate_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        reactivate_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/delete", response_class=HTMLResponse)
+def admin_delete_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_user_service(db, context.user, user_id)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 

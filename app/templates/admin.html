@@ -62,6 +62,15 @@
     .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
     .flash.success { color: var(--success); }
     .flash.error { color: var(--error); }
+    .tips { display: grid; gap: 10px; margin: 14px 0; }
+    .tip {
+      border: 1px solid rgba(212, 199, 171, 0.8);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .tip strong { display: inline-block; margin-right: 8px; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -84,6 +93,166 @@
     {% endif %}
 
     <section class="grid">
+      <div class="panel">
+        <h2>Team STT endpoint</h2>
+        <p>Each team has one active STT endpoint in MVP. Clear the current endpoint first if you want to start again from a blank add form.</p>
+        <form method="get" action="/admin">
+          <label>
+            Team
+            <select name="team_id" onchange="this.form.submit()">
+              <option value="">Select a team</option>
+              {% for team in teams %}
+              <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </form>
+        {% if selected_team_id %}
+        {% if stt_config %}
+        <h3>Current endpoint</h3>
+        <p><span class="pill">{{ stt_config.label }}</span> <span class="pill">{{ stt_config.adapter_kind.value }}</span> {{ stt_config.base_url }}{{ stt_config.transcribe_path }}</p>
+        <p><small>Secret configured: {{ "yes" if stt_config.has_secret else "no" }}. Response path: {{ stt_config.response_text_path }}.</small></p>
+        <form method="post" action="/admin/stt-config/clear" onsubmit="return confirm('Clear the current STT endpoint and remove its saved secret reference for this team?');">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <button type="submit">Clear current STT endpoint</button>
+        </form>
+        <h3>Add or replace endpoint</h3>
+        {% else %}
+        <h3>Add endpoint</h3>
+        {% endif %}
+        <form method="post" action="/admin/stt-config/inspect" data-stt-inspect-form>
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <label>
+            Label
+            <input type="text" name="label" maxlength="255" value="{{ stt_form.label }}">
+          </label>
+          <label>
+            Adapter family
+            <select name="adapter_kind" data-stt-adapter-select>
+              <option value="generic_rest" {% if stt_form.adapter_kind == "generic_rest" %}selected{% endif %}>generic_rest</option>
+              <option value="openai_cloud" {% if stt_form.adapter_kind == "openai_cloud" %}selected{% endif %}>openai_cloud</option>
+              <option value="openai_compatible_rest" {% if stt_form.adapter_kind == "openai_compatible_rest" %}selected{% endif %}>openai_compatible_rest</option>
+            </select>
+          </label>
+          <p data-show-for="openai_cloud"{% if stt_form.adapter_kind != "openai_cloud" %} hidden{% endif %}><small>The official OpenAI adapter uses the known transcription contract and defaults to `https://api.openai.com/v1`.</small></p>
+          <input type="hidden" name="base_url" value="{{ stt_form.base_url or 'https://api.openai.com/v1' }}" data-openai-base-url {% if stt_form.adapter_kind != "openai_cloud" %}disabled{% endif %}>
+          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
+            Base URL
+            <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
+          </label>
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            OpenAPI path
+            <input type="text" name="openapi_path" data-require-for="generic_rest" required value="{{ stt_form.openapi_path }}">
+          </label>
+          <input type="hidden" name="openapi_path" value="" data-non-generic-openapi {% if stt_form.adapter_kind == "generic_rest" %}disabled{% endif %}>
+          <label>
+            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token for inspection{% endif %}</span>
+            <input type="password" name="bearer_token">
+          </label>
+          <button type="submit">Inspect endpoint</button>
+        </form>
+        {% if stt_inspection %}
+        <p><small>Detected adapter: {{ stt_inspection.adapter_kind.value }}. Path: {{ stt_inspection.transcribe_path }}. Candidate endpoints: {{ stt_inspection.candidate_paths | join(", ") }}.</small></p>
+        {% if stt_inspection.operation_summary %}
+        <p><small>Operation summary: {{ stt_inspection.operation_summary }}</small></p>
+        {% endif %}
+        {% if stt_inspection.notes %}
+        <ul>
+          {% for note in stt_inspection.notes %}
+          <li><small>{{ note }}</small></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if stt_inspection.field_tips %}
+        <div class="tips">
+          {% for tip in stt_inspection.field_tips %}
+          <div class="tip">
+            <div>
+              <strong>{{ tip.name }}</strong>
+              <span class="pill">{{ tip.role }}</span>
+              {% if tip.required %}
+              <span class="pill">required</span>
+              {% endif %}
+            </div>
+            {% if tip.default_value %}
+            <p><small>Default: {{ tip.default_value }}</small></p>
+            {% endif %}
+            {% if tip.description %}
+            <p><small>{{ tip.description }}</small></p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% endif %}
+        <p><small>Only the fields relevant to the selected adapter are required. The bearer token is written to Vault and is never shown again.</small></p>
+        <form method="post" action="/admin/stt-config" data-stt-save-form>
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
+          <label>
+            Label
+            <input type="text" name="label" required maxlength="255" value="{{ stt_form.label }}">
+          </label>
+          <input type="hidden" name="base_url" value="{{ stt_form.base_url }}" data-openai-base-url {% if stt_form.adapter_kind != "openai_cloud" %}disabled{% endif %}>
+          {% if stt_form.adapter_kind == "openai_cloud" %}
+          <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
+          <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
+          <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
+          {% endif %}
+          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
+            Base URL
+            <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
+          </label>
+          {% if stt_form.adapter_kind == "openai_compatible_rest" %}
+          <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
+          <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
+          <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
+          {% endif %}
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            Transcribe path
+            <input type="text" name="transcribe_path" data-require-for="generic_rest" required value="{{ stt_form.transcribe_path }}">
+          </label>
+          <label>
+            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token{% endif %}</span>
+            <input type="password" name="bearer_token" {% if not stt_config %}required{% endif %}>
+          </label>
+          <label>
+            Model
+            {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
+            <select name="provider_model">
+              {% for model in stt_form.available_model_options %}
+              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input type="text" name="provider_model" value="{{ stt_form.model_name }}">
+            {% endif %}
+          </label>
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            File field name
+            <input type="text" name="file_field_name" value="{{ stt_form.file_field_name }}">
+          </label>
+          <label>
+            Language
+            <input type="text" name="language" value="{{ stt_form.language }}">
+          </label>
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            Response text path
+            <input type="text" name="response_text_path" value="{{ stt_form.response_text_path }}">
+          </label>
+          <label>
+            Extra form fields JSON
+            <textarea name="extra_form_fields_json">{{ stt_form.extra_form_fields_json }}</textarea>
+          </label>
+          <label>
+            <input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}>
+            Active
+          </label>
+          <button type="submit">Save STT config</button>
+        </form>
+        {% endif %}
+      </div>
+
       <div class="panel">
         <h2>Create team</h2>
         <form method="post" action="/admin/teams">
@@ -187,27 +356,48 @@
       <div class="panel">
         <h2>Users</h2>
         <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Team</th>
-              <th>Onboarding</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for user in users %}
-            <tr>
-              <td>{{ user.full_name or "-" }}</td>
-              <td>{{ user.email }}</td>
-              <td>{{ user.team.name if user.team else "System" }}</td>
-              <td><span class="pill">{{ user.onboarding_state.value }}</span></td>
-              <td><span class="pill">{{ user.status.value }}</span></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Team</th>
+            <th>Onboarding</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+          <tr>
+            <td>{{ user.full_name or "-" }}</td>
+            <td>{{ user.email }}</td>
+            <td>{{ user.team.name if user.team else "System" }}</td>
+            <td><span class="pill">{{ user.onboarding_state.value }}</span></td>
+            <td><span class="pill">{{ user.status.value }}</span></td>
+            <td>
+              {% if user.id != current_user.id %}
+                {% if user.status.value == "active" %}
+                <form method="post" action="/admin/users/{{ user.id }}/suspend">
+                  <button type="submit">Suspend</button>
+                </form>
+                {% elif user.status.value in ("suspended", "disabled") %}
+                <form method="post" action="/admin/users/{{ user.id }}/reactivate">
+                  <button type="submit">Reactivate</button>
+                </form>
+                {% else %}
+                <span class="pill">Security state</span>
+                {% endif %}
+                <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');" style="margin-top: 10px;">
+                  <button type="submit">Delete permanently</button>
+                </form>
+              {% else %}
+              <span class="pill">Protected</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       </div>
     </section>
 
@@ -270,5 +460,50 @@
       </table>
     </section>
   </main>
+  <script>
+    (() => {
+      function applyAdapterState(form) {
+        const adapterField = form.querySelector('[data-stt-adapter-select], input[name="adapter_kind"]');
+        if (!adapterField) return;
+        const adapter = adapterField.value;
+        form.querySelectorAll('[data-show-for]').forEach((el) => {
+          el.hidden = el.getAttribute('data-show-for') !== adapter;
+        });
+        form.querySelectorAll('[data-hide-for]').forEach((el) => {
+          el.hidden = el.getAttribute('data-hide-for') === adapter;
+        });
+        form.querySelectorAll('[data-show-for], [data-hide-for]').forEach((container) => {
+          container.querySelectorAll('input, select, textarea').forEach((field) => {
+            field.disabled = container.hidden;
+          });
+        });
+        form.querySelectorAll('[data-require-for]').forEach((field) => {
+          const adapters = field.getAttribute('data-require-for').split(/\s+/).filter(Boolean);
+          field.required = !field.disabled && adapters.includes(adapter);
+        });
+        form.querySelectorAll('[data-stt-token-label]').forEach((el) => {
+          el.textContent = adapter === 'openai_cloud' ? 'API key' : (form.matches('[data-stt-inspect-form]') ? 'Bearer token for inspection' : 'Bearer token');
+        });
+        form.querySelectorAll('[data-openai-base-url]').forEach((el) => {
+          el.disabled = adapter !== 'openai_cloud';
+          if (adapter === 'openai_cloud') {
+            el.value = el.value || 'https://api.openai.com/v1';
+          }
+        });
+        form.querySelectorAll('[data-non-generic-openapi]').forEach((el) => {
+          el.disabled = adapter === 'generic_rest';
+        });
+      }
+
+      document.querySelectorAll('[data-stt-inspect-form], [data-stt-save-form]').forEach((form) => {
+        const adapterField = form.querySelector('[data-stt-adapter-select], input[name="adapter_kind"]');
+        if (!adapterField) return;
+        if (adapterField.tagName === 'SELECT') {
+          adapterField.addEventListener('change', () => applyAdapterState(form));
+        }
+        applyAdapterState(form);
+      });
+    })();
+  </script>
 </body>
 </html>

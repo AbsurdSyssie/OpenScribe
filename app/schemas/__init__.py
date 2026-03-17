@@ -9,14 +9,17 @@ from .auth import (
     CurrentUserResponse,
     LoginRequest,
     LoginResponse,
+    MfaChallengeRequest,
     PasswordChangeRequest,
     RecoveryCodesResponse,
     TotpEnrollmentStartResponse,
     TotpVerifyRequest,
+    TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
+from .stt import SttConfigDetail, SttConfigUpsert, SttInspectFieldTip, SttInspectRequest, SttInspectResult, SttModelOption
 from .teams import TeamCreate, TeamDetail, TeamListItem
-from .transcripts import TranscriptCommit, TranscriptCreate, TranscriptDetail, TranscriptListItem
+from .transcripts import TranscriptCommit, TranscriptCreate, TranscriptDetail, TranscriptListItem, TranscriptStart
 from .users import UserCreate, UserDetail, UserListItem
 
 __all__ = [
@@ -28,12 +31,20 @@ __all__ = [
     "CurrentUserResponse",
     "LoginRequest",
     "LoginResponse",
+    "MfaChallengeRequest",
     "PasswordChangeRequest",
     "RecoveryCodesResponse",
     "TotpEnrollmentStartResponse",
     "TotpVerifyRequest",
+    "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "SttConfigDetail",
+    "SttConfigUpsert",
+    "SttInspectFieldTip",
+    "SttInspectRequest",
+    "SttInspectResult",
+    "SttModelOption",
     "TeamCreate",
     "TeamDetail",
     "TeamListItem",
@@ -41,6 +52,7 @@ __all__ = [
     "TranscriptCreate",
     "TranscriptDetail",
     "TranscriptListItem",
+    "TranscriptStart",
     "UserCreate",
     "UserDetail",
     "UserListItem",

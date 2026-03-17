@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,7 @@ class TeamStatus(str, enum.Enum):
 
 class UserStatus(str, enum.Enum):
     active = "active"
+    suspended = "suspended"
     locked = "locked"
     disabled = "disabled"
 
@@ -39,6 +40,12 @@ class TranscriptStatus(str, enum.Enum):
     failed = "failed"
 
 
+class TranscriptIngestionMode(str, enum.Enum):
+    file_upload = "file_upload"
+    microphone_batch = "microphone_batch"
+    live_chunked = "live_chunked"
+
+
 class AccountRequestStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
@@ -49,6 +56,7 @@ class AccountRequestStatus(str, enum.Enum):
 
 class SessionAuthLevel(str, enum.Enum):
     onboarding = "onboarding"
+    pending_mfa = "pending_mfa"
     full = "full"
 
 
@@ -60,6 +68,16 @@ class SessionStatus(str, enum.Enum):
 
 class MfaMethodType(str, enum.Enum):
     totp = "totp"
+
+
+class SttAuthMode(str, enum.Enum):
+    bearer = "bearer"
+
+
+class SttAdapterKind(str, enum.Enum):
+    generic_rest = "generic_rest"
+    openai_cloud = "openai_cloud"
+    openai_compatible_rest = "openai_compatible_rest"
 
 
 def utcnow() -> datetime:
@@ -116,6 +134,10 @@ class User(Base):
         foreign_keys="AccountRequest.reviewed_by_user_id",
     )
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    trusted_devices: Mapped[list["UserTrustedDevice"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     mfa_methods: Mapped[list["UserMfaMethod"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     recovery_codes: Mapped[list["UserRecoveryCode"]] = relationship(
         back_populates="user",
@@ -170,6 +192,23 @@ class UserSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
+class UserTrustedDevice(Base):
+    __tablename__ = "user_trusted_devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    device_token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_mfa_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="trusted_devices")
+
+
 class UserMfaMethod(Base):
     __tablename__ = "user_mfa_methods"
 
@@ -197,6 +236,33 @@ class UserRecoveryCode(Base):
     user: Mapped[User] = relationship(back_populates="recovery_codes")
 
 
+class TeamSttConfig(Base):
+    __tablename__ = "team_stt_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), unique=True, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    adapter_kind: Mapped[SttAdapterKind] = mapped_column(Enum(SttAdapterKind), default=SttAdapterKind.generic_rest, nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    transcribe_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth_mode: Mapped[SttAuthMode] = mapped_column(Enum(SttAuthMode), default=SttAuthMode.bearer, nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_field_name: Mapped[str] = mapped_column(String(255), default="file", nullable=False)
+    language: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    response_text_path: Mapped[str] = mapped_column(String(255), default="text", nullable=False)
+    extra_form_fields_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    vault_secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
+
+
 class Transcript(Base):
     __tablename__ = "transcripts"
 
@@ -205,6 +271,11 @@ class Transcript(Base):
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingestion_mode: Mapped[TranscriptIngestionMode] = mapped_column(
+        Enum(TranscriptIngestionMode),
+        default=TranscriptIngestionMode.live_chunked,
+        nullable=False,
+    )
     status: Mapped[TranscriptStatus] = mapped_column(
         Enum(TranscriptStatus), default=TranscriptStatus.recording, nullable=False
     )

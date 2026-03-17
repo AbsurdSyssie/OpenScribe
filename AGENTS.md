@@ -89,10 +89,12 @@ All coding agents must follow the architecture and process rules in this file. T
 
 ### Provider rules
 - System admin provisions provider credentials per team.
+- For STT in MVP, system admins provision the available team STT endpoints and their credentials.
+- Team leaders may choose which admin-provisioned STT service/model is active for their team and may clear that team-level selection, but they may not view or recover raw provider secrets.
 - Multiple LLM providers/models may be allowed per team.
 - User chooses one active LLM for all LLM actions until changed.
 - If invalid, fallback is the team default.
-- Transcription provider is fixed per team in MVP.
+- Transcription provider is fixed per team in MVP, but the active team policy may be selected from the admin-provisioned STT options for that team.
 - Pseudonymisation provider is fixed globally in MVP.
 
 ---
@@ -282,6 +284,7 @@ Prefer:
 - synthetic test data
 - migrations that are easy to review
 - strict validation on structured LLM output
+- Keep code modular, ideally files no longer than 1k lines
 
 Avoid:
 - speculative abstraction
@@ -289,3 +292,4 @@ Avoid:
 - broad refactors without tests
 - content-bearing debug logs
 - weakening constraints for convenience
+- Long monolithic files / modules

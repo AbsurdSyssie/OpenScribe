@@ -99,11 +99,13 @@ PROJECT ARCHITECTURE PRINCIPLES
 
 10. Provider resolution
 - System admin provisions provider credentials per team.
+- For STT in MVP, system admins provision the available team STT endpoints and their credentials.
+- Team leaders may choose which admin-provisioned STT service/model is active for their team and may clear that team-level selection, but they may not view or recover raw provider secrets.
 - DB stores Vault references only.
 - Multiple LLM providers/models may be allowed per team.
 - User chooses one active LLM for all LLM actions until changed.
 - If user preference becomes invalid, fall back to team default.
-- Transcription provider is fixed per team in MVP.
+- Transcription provider is fixed per team in MVP, but the active team policy may be selected from the admin-provisioned STT options for that team.
 - Pseudonymisation provider is centrally fixed across the platform in MVP.
 
 IMPLEMENTATION RULES

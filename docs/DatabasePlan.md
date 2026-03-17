@@ -209,7 +209,7 @@ Recommended fields:
 * `team_id`
 * `team_role` (`leader`, `user`)
 * `is_system_admin`
-* `status` (`active`, `locked`, `disabled`)
+* `status` (`active`, `suspended`, `locked`, `disabled`)
 * `must_change_password`
 * `onboarding_state`
 * `mfa_required`
@@ -231,6 +231,18 @@ Behavior:
 * locking a user does not alter content state
 * full system-level user deletion deletes transcript-derived content immediately
 * full system-level user deletion also deletes the user’s personal templates and quick actions immediately
+
+Planned account-administration clarification:
+
+* manager-initiated suspension should be modeled separately from destructive deletion semantics
+* the current `status` field should carry explicit meanings in code and docs before adding more manager actions
+* if a reversible manager suspension is introduced, it should revoke sessions immediately without deleting content
+* if manager deletion is introduced, it should still follow the same hard-delete cascade rules as system-level deletion
+* a useful working meaning is:
+  * `suspended` for manager action
+  * `locked` for temporary security/auth-abuse restriction
+  * `disabled` for stronger security/platform disable
+* in the first implementation, reactivation from `suspended` or `disabled` may share the same password-reset and MFA-trust-reset path for simplicity
 
 ## 5.3 `account_requests`
 
@@ -837,6 +849,7 @@ Rules:
 * DB stores Vault reference only
 * raw provider secrets are not stored in DB
 * one team may have multiple active credentials/providers for same provider type if needed
+* for the first transcript-capture slice, transcription credentials should be resolved through this table rather than a separate ad hoc STT secret store
 
 ## 13.3 `team_provider_policies`
 
@@ -863,6 +876,7 @@ Behavior:
 * if invalid, app falls back to team default
 * transcription provider is fixed per team in MVP
 * pseudonymisation provider is fixed globally in MVP
+* the active transcription provider policy is what transcript chunk ingestion resolves when forwarding audio to STT
 
 ## 13.4 `user_provider_preferences`
 
@@ -935,11 +949,23 @@ Recommended fields:
 Examples:
 
 * account locked
+* account suspended
+* account reactivated
+* account deleted
 * account request submitted
 * password reset requested
 * template deleted
 * transcript deleted
 * retention delete completed
+
+When destructive user deletion is performed, the audit metadata should snapshot enough non-content context to remain meaningful after the user row is gone:
+
+* target user id
+* target email
+* target team id
+* target role / admin flag
+* actor user id
+* reason
 
 ## 14.2 `job_runs`
 
@@ -1001,6 +1027,14 @@ System-level full deletion should:
 * remove watcher access to those original assets
 * leave independent forks owned by others intact
 
+Current clarification for manager deletion:
+
+* if team leaders are allowed to fully delete users in their own team, that action must follow the same hard-delete cascade semantics
+* leader deletion must still be team-scoped and must never apply to system-admin accounts
+* self-delete through manager routes is blocked
+* account-request foreign keys that point at the deleted user may need to be nulled before the `users` row is removed
+* logger-based metadata is acceptable for the first implementation, but account-lifecycle actions should later be persisted into `audit_events`
+
 ## 15.5 Team deletion
 
 Blocked until explicit cleanup completes.
@@ -1037,6 +1071,8 @@ The database should enforce structural truths where practical.
 * provider fallback resolution
 * MFA first-login workflow
 * team deletion eligibility checks
+* manager scope checks for suspend/reactivate/delete authority
+* last-active-system-admin protection
 
 ---
 
@@ -1098,6 +1134,25 @@ A coding agent should know these features still need implementation around the D
 * commit transcript version on save/blur/action
 * transcript root deletion with cascade
 * retention cleanup worker
+* team transcription endpoint resolution through provider policy and Vault-backed credentials
+
+## 18.2a First transcript-capture MVP direction
+
+The first capture-oriented transcript slice should be implemented in this order:
+
+* team-managed transcription provider configuration
+* transcript root creation at recording start
+* client VAD chunk upload to backend
+* backend forwarding to external STT endpoint
+* update `transcripts.current_draft_text_encrypted`
+* keep transcript commit/version creation separate from chunk ingestion
+
+Recommended data-handling rules:
+
+* do not store raw audio blobs in Postgres
+* store provider metadata and Vault secret references only
+* if chunk-level observability is needed, store metadata-only rows such as sequence, duration, provider request id, status, and error code
+* do not let manager access to provider configuration imply transcript-content readability
 
 ## 18.3 Pseudonymisation features
 

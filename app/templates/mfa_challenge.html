@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenScribe MFA</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: #fffaf0;
+      --ink: #1b1d1f;
+      --muted: #5b605f;
+      --line: #d4c7ab;
+      --accent: #9f3a2d;
+      --accent-strong: #7f251b;
+      --error: #9a2e2e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    main {
+      width: min(620px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 28px;
+      display: grid;
+      gap: 16px;
+      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+    }
+    form { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); }
+    input {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font: inherit;
+      background: white;
+    }
+    button {
+      width: fit-content;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-strong); }
+    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); color: var(--error); }
+  </style>
+</head>
+<body>
+  <main>
+    <div>Additional verification for {{ current_user.email }}</div>
+    <h1>Enter your TOTP code.</h1>
+    <p>This login needs multi-factor verification before normal access is granted.</p>
+
+    {% if message %}
+    <div class="flash">{{ message }}</div>
+    {% endif %}
+
+    <form method="post" action="/mfa/challenge">
+      <label>
+        6-digit TOTP code
+        <input type="text" name="code" required minlength="6" maxlength="8">
+      </label>
+      <label>
+        <input type="checkbox" name="remember_device" value="true">
+        Remember this browser for 24 hours
+      </label>
+      <button type="submit">Verify and continue</button>
+    </form>
+
+    <form method="post" action="/logout">
+      <button type="submit">Sign out</button>
+    </form>
+  </main>
+</body>
+</html>

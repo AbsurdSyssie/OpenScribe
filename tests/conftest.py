@@ -1,25 +1,67 @@
 import os
+import fcntl
 from collections.abc import Generator
 from typing import Callable
 
 import pytest
 from fastapi.testclient import TestClient
+from redis import Redis
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.models import AccountRequest, AccountRequestStatus, Team, TeamRole, TeamStatus, User, UserOnboardingState, UserStatus
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
-from tests.db_utils import ensure_database_exists, ensure_safe_test_database_url
+from tests.db_utils import (
+    ensure_database_exists,
+    ensure_safe_test_database_url,
+    ensure_safe_test_rate_limit_storage_url,
+)
 
 from app.db import Base, get_db
+
+
+TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
+os.environ["RATE_LIMIT_STORAGE_URL"] = TEST_RATE_LIMIT_STORAGE_URL
+
 from app.main import app
 
 
 TEST_DATABASE_URL = ensure_safe_test_database_url()
 ensure_database_exists(TEST_DATABASE_URL)
-test_engine = create_engine(TEST_DATABASE_URL, future=True)
+test_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
 TestingSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False, future=True)
+rate_limit_redis = Redis.from_url(TEST_RATE_LIMIT_STORAGE_URL)
+TEST_RUN_LOCK_PATH = "/tmp/openscribe_pytest.lock"
+
+
+def reset_public_schema() -> None:
+    test_engine.dispose()
+    with test_engine.connect() as connection:
+        connection = connection.execution_options(isolation_level="AUTOCOMMIT")
+        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public AUTHORIZATION CURRENT_USER"))
+        connection.execute(text("GRANT ALL ON SCHEMA public TO CURRENT_USER"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_run_lock() -> Generator[None, None, None]:
+    lock_handle = open(TEST_RUN_LOCK_PATH, "w")
+    try:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise pytest.Exit(
+                "Another pytest run is already using the shared OpenScribe test database. "
+                "Wait for it to finish before starting another test run."
+            ) from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_handle.close()
 
 
 @pytest.fixture(autouse=True)
@@ -28,12 +70,11 @@ def reset_database(request: pytest.FixtureRequest) -> Generator[None, None, None
         yield
         return
 
-    Base.metadata.drop_all(bind=test_engine)
+    rate_limit_redis.flushdb()
+    reset_public_schema()
     Base.metadata.create_all(bind=test_engine)
     yield
-    with test_engine.begin() as connection:
-        for table in reversed(Base.metadata.sorted_tables):
-            connection.execute(text(f"TRUNCATE TABLE {table.name} RESTART IDENTITY CASCADE"))
+    rate_limit_redis.flushdb()
 
 
 @pytest.fixture
@@ -143,3 +184,19 @@ def make_account_request(db_session: Session) -> Callable[..., AccountRequest]:
         return account_request
 
     return factory
+
+
+@pytest.fixture(autouse=True)
+def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
+    def fake_write_team_stt_bearer_token(*, team_id, config_id, bearer_token):
+        return f"secret:openscribe/stt/team/{team_id}/config/{config_id}"
+
+    def fake_delete_team_stt_bearer_token(*, team_id, config_id):
+        return None
+
+    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+        return "test-stt-token"
+
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write_team_stt_bearer_token)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)

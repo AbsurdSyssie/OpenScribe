@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import secrets
 
 from sqlalchemy import func, select
@@ -12,8 +13,10 @@ from app.models import (
     AccountRequestStatus,
     Team,
     TeamRole,
+    Transcript,
     User,
     UserOnboardingState,
+    UserStatus,
     utcnow,
 )
 from app.normalization import normalize_email, normalize_team_name_key
@@ -24,6 +27,9 @@ from app.schemas import (
     TeamCreate,
     UserCreate,
 )
+from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
+
+audit_logger = logging.getLogger("openscribe.audit")
 
 
 def hash_password(password: str) -> str:
@@ -137,6 +143,123 @@ def list_manageable_users(db: Session, actor: User) -> list[User]:
         raise AppError(403, "forbidden", "User-management access required")
     stmt = stmt.where(User.team_id == actor.team_id, User.is_system_admin.is_(False))
     return list(db.scalars(stmt).unique())
+
+
+def _active_system_admin_count(db: Session) -> int:
+    return (
+        db.scalar(
+            select(func.count(User.id)).where(
+                User.is_system_admin.is_(True),
+                User.status == UserStatus.active,
+            )
+        )
+        or 0
+    )
+
+
+def _log_account_lifecycle_event(*, actor: User, target: User, event: str) -> None:
+    audit_logger.info(
+        "account_lifecycle",
+        extra={
+            "event": event,
+            "actor_user_id": str(actor.id),
+            "actor_is_system_admin": actor.is_system_admin,
+            "actor_team_id": str(actor.team_id) if actor.team_id else None,
+            "target_user_id": str(target.id),
+            "target_email": target.email,
+            "target_team_id": str(target.team_id) if target.team_id else None,
+            "target_team_role": target.team_role.value if target.team_role else None,
+            "target_status": target.status.value,
+            "target_is_system_admin": target.is_system_admin,
+        },
+    )
+
+
+def _get_manageable_user(db: Session, actor: User, user_id) -> User:
+    user = db.scalar(select(User).options(joinedload(User.team)).where(User.id == user_id))
+    if user is None:
+        raise AppError(404, "not_found", "User not found", {"resource": "user", "user_id": str(user_id)})
+    if actor.id == user.id:
+        raise AppError(403, "forbidden", "You may not manage your own account")
+    if actor.is_system_admin:
+        return user
+    if actor.team_role is not TeamRole.leader or actor.team_id is None:
+        raise AppError(403, "forbidden", "User-management access required")
+    if user.is_system_admin:
+        raise AppError(403, "forbidden", "Leaders may not manage system-admin accounts")
+    if user.team_id != actor.team_id:
+        raise AppError(403, "forbidden", "Leaders may only manage users in their own team")
+    return user
+
+
+def suspend_user(db: Session, actor: User, user_id) -> User:
+    user = _get_manageable_user(db, actor, user_id)
+    if user.status is UserStatus.suspended:
+        raise AppError(409, "conflict", "User is already suspended", {"status": user.status.value})
+    if user.is_system_admin and user.status is UserStatus.active and _active_system_admin_count(db) <= 1:
+        raise AppError(409, "conflict", "Cannot suspend the last active system-admin account")
+
+    user.status = UserStatus.suspended
+    db.add(user)
+    db.commit()
+    revoke_sessions_for_user(db, user, reason="user_suspended")
+    revoke_trusted_devices_for_user(db, user, reason="user_suspended")
+    db.refresh(user)
+    _log_account_lifecycle_event(actor=actor, target=user, event="account_suspended")
+    return user
+
+
+def reactivate_user(db: Session, actor: User, user_id) -> User:
+    user = _get_manageable_user(db, actor, user_id)
+    if user.status not in {UserStatus.suspended, UserStatus.disabled}:
+        raise AppError(409, "conflict", "User is not eligible for reactivation", {"status": user.status.value})
+
+    user.status = UserStatus.active
+    user.must_change_password = True
+    user.onboarding_state = UserOnboardingState.pending_password_change
+    user.mfa_enabled = False
+
+    for method in list(user.mfa_methods):
+        db.delete(method)
+    for code in list(user.recovery_codes):
+        db.delete(code)
+
+    db.add(user)
+    db.commit()
+    revoke_sessions_for_user(db, user, reason="user_reactivated_reset")
+    revoke_trusted_devices_for_user(db, user, reason="user_reactivated_reset")
+    db.refresh(user)
+    _log_account_lifecycle_event(actor=actor, target=user, event="account_reactivated")
+    return user
+
+
+def delete_user(db: Session, actor: User, user_id) -> None:
+    user = _get_manageable_user(db, actor, user_id)
+    if user.is_system_admin and user.status is UserStatus.active and _active_system_admin_count(db) <= 1:
+        raise AppError(409, "conflict", "Cannot delete the last active system-admin account")
+
+    _log_account_lifecycle_event(actor=actor, target=user, event="account_deleted")
+
+    revoke_sessions_for_user(db, user, reason="user_deleted")
+    revoke_trusted_devices_for_user(db, user, reason="user_deleted")
+
+    linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
+    for request in linked_requests:
+        request.linked_user_id = None
+        db.add(request)
+
+    reviewed_requests = db.scalars(select(AccountRequest).where(AccountRequest.reviewed_by_user_id == user.id))
+    for request in reviewed_requests:
+        request.reviewed_by_user_id = None
+        db.add(request)
+
+    transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
+    for transcript in transcripts:
+        db.delete(transcript)
+
+    db.flush()
+    db.delete(user)
+    db.commit()
 
 
 def user_count(db: Session) -> int:

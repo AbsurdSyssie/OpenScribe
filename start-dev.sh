@@ -48,4 +48,8 @@ PY
 
 .venv/bin/alembic upgrade head
 
+if [[ "${DEV_SEED_TEST_ACCOUNTS:-true}" == "true" ]]; then
+  .venv/bin/python scripts/seed_dev_accounts.py
+fi
+
 exec .venv/bin/fastapi dev app/main.py --host "${APP_HOST}" --port "${APP_PORT}"

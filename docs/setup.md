@@ -19,6 +19,10 @@ The app and tests use separate databases by default:
 
 - app DB: `ambient_scribe`
 - test DB: `ambient_scribe_test`
+- app rate-limit store: `redis://localhost:6379/0`
+- test rate-limit store: `redis://localhost:6379/15`
+- Vault dev address: `http://127.0.0.1:8200`
+- Vault dev token: `root`
 
 ## Apply database migrations
 
@@ -36,14 +40,57 @@ alembic upgrade head
 
 This starts Docker services, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
+By default, `./start-dev.sh` also seeds a reusable dev team and two dev accounts into the app database:
+
+- team: `Dev Test Team`
+- leader: `dev.leader@example.com` / `test1234`
+- user: `dev.user@example.com` / `test1234`
+
+These seeded accounts are:
+
+- active
+- onboarding-complete
+- `mfa_required = false`
+- `mfa_enabled = false`
+
+You can disable this behavior by setting:
+
+```bash
+DEV_SEED_TEST_ACCOUNTS=false
+```
+
+You can override the defaults with:
+
+- `DEV_TEST_TEAM_NAME`
+- `DEV_TEST_LEADER_EMAIL`
+- `DEV_TEST_LEADER_PASSWORD`
+- `DEV_TEST_USER_EMAIL`
+- `DEV_TEST_USER_PASSWORD`
+
+The current STT-config slice writes bearer tokens into Vault through:
+
+- `VAULT_ADDR`
+- `VAULT_TOKEN`
+- `VAULT_KV_MOUNT`
+
+The default local values in `.env.example` match the Docker dev Vault container.
+
 ## Local URLs
 
-- API docs: `http://127.0.0.1:8000/docs`
-- Account request page: `http://127.0.0.1:8000/request-access`
-- Login / bootstrap: `http://127.0.0.1:8000/login`
-- Onboarding: `http://127.0.0.1:8000/onboarding`
-- User home: `http://127.0.0.1:8000/home`
-- Admin UI: `http://127.0.0.1:8000/admin`
+- API docs: `http://127.0.0.1:8080/docs`
+- Account request page: `http://127.0.0.1:8080/request-access`
+- Login / bootstrap: `http://127.0.0.1:8080/login`
+- Onboarding: `http://127.0.0.1:8080/onboarding`
+- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
+- User home: `http://127.0.0.1:8080/home`
+- Admin UI: `http://127.0.0.1:8080/admin`
+
+## Current manager STT configuration UI
+
+- leaders manage their own team's STT config from `/home`
+- system admins manage a selected team's STT config from `/admin?team_id=<team_uuid>`
+- the UI accepts metadata and a replacement bearer token
+- the UI does not reveal the stored token or the raw Vault reference
 
 ## First access
 
@@ -83,6 +130,12 @@ After the first user exists:
   - optional recovery code generation
 - only then does normal app access unlock
 
+### Later logins for managed accounts
+
+- after onboarding completes, email + password may still redirect to `/mfa/challenge`
+- entering a valid TOTP code completes the login
+- users may remember the current browser for 24 hours, which skips the TOTP step only within that freshness window
+
 ## Reset local auth state and bootstrap again
 
 Use this when you want to wipe local app data and create a fresh first system-admin account.
@@ -97,7 +150,7 @@ The app uses an opaque session cookie. Clear it before retrying:
 
 - sign out through `/logout`, or
 - open `/login` in a private/incognito window, or
-- clear cookies for `127.0.0.1:8000`
+- clear cookies for `127.0.0.1:8080`
 
 ### Database reset
 
@@ -111,7 +164,7 @@ export $(grep -v '^#' .env | xargs)
 Clear the app data in dependency order:
 
 ```sql
-TRUNCATE TABLE user_recovery_codes, user_mfa_methods, user_sessions, transcript_versions, transcripts, account_requests, users, teams RESTART IDENTITY CASCADE;
+TRUNCATE TABLE user_recovery_codes, user_mfa_methods, user_trusted_devices, user_sessions, transcript_versions, transcripts, account_requests, users, teams RESTART IDENTITY CASCADE;
 ```
 
 ### Expected result after reset

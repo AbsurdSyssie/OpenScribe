@@ -1,14 +1,15 @@
 # Team STT Configuration
 
-This document defines the first implementation slice for team speech-to-text endpoint management.
+This document defines the current speech-to-text endpoint-management model and the intended boundaries around secrets, team policy, and runtime provider use.
 
-The goal is to let a team use one active STT configuration that users can later consume indirectly through transcript capture, without exposing credentials or transcript content to leaders or users.
+The goal is to let a team use one active STT selection that users later consume indirectly through transcript capture, without exposing credentials or transcript content to leaders or users.
 
 ## Objective
 
 Add the first STT-management surface with:
 
-- one active STT config per team in MVP
+- admin-provisioned STT endpoint rows per team
+- one active team STT selection at a time
 - OpenAPI inspection only for the generic adapter family
 - known-contract adapters for OpenAI-hosted and OpenAI-compatible endpoints
 - explicit adapter families instead of fully generic runtime execution
@@ -19,7 +20,7 @@ Add the first STT-management surface with:
   - team leaders choose or clear the active service/model for their team
 - no credential reveal path
 
-This is a configuration slice only. It does not yet implement audio upload to the provider.
+This configuration model now feeds the transcript-ingestion runtime. Users consume only the resolved active team STT selection during chunk or file upload.
 
 ## Why this shape
 
@@ -31,7 +32,7 @@ The broader architecture already defines a future provider layer with:
 
 That full provider layer is not implemented in runtime code yet.
 
-So the first STT implementation uses a dedicated team STT config table that still matches the same architectural rules:
+The corrected and now-implemented shape preserves the same architectural rules:
 
 - metadata in Postgres
 - secret reference in Postgres
@@ -41,7 +42,7 @@ So the first STT implementation uses a dedicated team STT config table that stil
 
 This keeps the first slice small without inventing a second secret model.
 
-Decision update:
+Implemented authority split:
 
 - raw STT endpoints and credentials are system-admin-managed
 - team leaders configure policy, not secrets
@@ -118,15 +119,6 @@ Both OpenAI adapter families still keep:
 - metadata in Postgres
 - bearer token in Vault
 - no secret reveal path
-
-Current management flow:
-
-- one current STT endpoint summary per team
-- a clear action that removes the saved config row and its Vault-backed secret reference
-- a blank add flow after clear
-- adapter-specific add fields so known adapters only ask for the fields they actually need
-
-Target authority split:
 
 - system admins add the team STT endpoints and credentials
 - team leaders choose which provisioned service and model are active for their team
@@ -207,9 +199,15 @@ First implementation rules:
 
 ## Database fit
 
-First implementation table:
+Implemented storage model:
 
 - `team_stt_configs`
+  - admin-provisioned endpoint rows for a team
+  - contains endpoint metadata plus `vault_secret_ref`
+- `team_stt_selections`
+  - one row per team
+  - points at one provisioned STT config row
+  - stores leader/system-admin selection overrides such as active model/language when they differ from the provisioned defaults
 
 Recommended fields:
 
@@ -233,8 +231,9 @@ Recommended fields:
 
 Constraints:
 
-- one config row per team in the first slice
-- `team_id` unique
+- multiple config rows per team
+- no team-level unique constraint on `team_stt_configs.team_id`
+- one active selection per team via `team_stt_selections.team_id`
 - foreign keys to `teams` and actor `users`
 
 Future fit:
@@ -248,49 +247,61 @@ Future fit:
 
 ### Leader home
 
-Add a dedicated STT panel on `/home` with:
+The implemented leader UI shows:
 
-- current team STT summary
-- initial inspect form:
-  - adapter family
-  - base URL
-  - OpenAPI path only for `generic_rest`
-  - optional bearer token for inspection
-- inferred field summary after inspection
-- create/update form prefilled from the inspection result or known adapter defaults
-- `openai_cloud` uses a model selector after inspection when the SDK returns available models
-- secret rotation field
-- active flag
+- provisioned endpoint list for the leader's team
+- active team STT selection summary
+- choose-active flow
+- model selection for the chosen provisioned service
+- clear-selection action
+
+Leaders do not see bearer-token entry fields in the steady-state UI.
 
 ### Admin page
 
-Add a system-admin STT panel on `/admin` with:
+The implemented system-admin STT panel on `/admin` includes:
 
 - team selector
-- current config summary for the selected team
+- current active team selection summary for the selected team
+- provisioned endpoint list for the selected team
 - initial inspect form for the selected team
 - inferred field summary after inspection
 - create/update form prefilled from the inspection result
-- active flag
+- delete action for provisioned endpoints
 
 ## API shape
 
-First implementation routes:
+Current routes:
 
-- `GET /api/v1/stt-config`
-  - leader: current team config
-  - system admin: requires `team_id`
-- `POST /api/v1/stt-config/inspect`
-  - leader: inspect for own team scope
-  - system admin: inspect for selected team scope
+- `GET /api/v1/stt-configs`
+  - system admin only
+  - requires `team_id`
+- `GET /api/v1/stt-configs/{config_id}`
+  - system admin only
+  - requires `team_id`
+- `POST /api/v1/stt-configs/inspect`
+  - system admin only
+  - requires `team_id`
 - `generic_rest`: fetches `base_url + openapi_path`
 - `openai_cloud`: returns built-in contract defaults and a filtered model list through the SDK without OpenAPI fetch
 - `openai_compatible_rest`: returns built-in contract defaults without OpenAPI fetch
   - returns inferred or adapter-default request/response fields without saving config
-- `POST /api/v1/stt-config`
-  - create or replace the config for the scoped team
-
-The first slice keeps this intentionally small. We do not need multiple CRUD endpoints for one-per-team configuration yet.
+- `POST /api/v1/stt-configs`
+  - system-admin-only create/update of a provisioned endpoint row
+- `DELETE /api/v1/stt-configs/{config_id}`
+  - system-admin-only delete of a provisioned endpoint row and its Vault-backed secret
+- `GET /api/v1/stt-selection`
+  - leader for own team
+  - system admin with explicit `team_id`
+- `GET /api/v1/stt-selection/options`
+  - leader for own team
+  - system admin with explicit `team_id`
+- `POST /api/v1/stt-selection`
+  - leader for own team
+  - system admin with explicit `team_id`
+- `DELETE /api/v1/stt-selection`
+  - leader for own team
+  - system admin with explicit `team_id`
 
 ## Inspection rules
 
@@ -329,24 +340,21 @@ The first slice keeps this intentionally small. We do not need multiple CRUD end
 
 ## Testable checkpoints
 
-- leader can create/update only their own team STT config
-- system admin can create/update a chosen team's STT config
-- leader can inspect a generic STT OpenAPI document and receive inferred config defaults
+- system admin can create/update/delete a chosen team's provisioned STT endpoint rows
+- leader can choose/clear only their own team STT selection
 - system admin can inspect a generic STT OpenAPI document for a selected team and receive inferred defaults
 - system admin can inspect `openai_cloud` without any OpenAPI document and receive a filtered model list
-- leader can inspect `openai_compatible_rest` without any OpenAPI document
-- ordinary user cannot access STT config routes
-- onboarding-only and pending-MFA sessions cannot access STT config routes
+- ordinary user cannot access STT provisioning or selection routes
+- onboarding-only and pending-MFA sessions cannot access STT provisioning or selection routes
 - DB stores Vault secret reference only
 - UI never reveals the stored secret
 - invalid non-HTTPS remote URLs are rejected
 - local/dev HTTP URLs are accepted
-- one team has at most one STT config row in the first slice
+- one team may have many provisioned STT config rows but only one active selection row
 
 ## Explicit non-goals
 
-- no audio chunk upload in this slice
-- no provider health-check execution in this slice
+- no provider health-check execution yet
 - no arbitrary custom headers beyond bearer auth
 - no full OpenAPI ingestion and dynamic form generation
 - no transcript-provider usage events yet

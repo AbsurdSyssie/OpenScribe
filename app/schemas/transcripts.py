@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models import TranscriptIngestionMode, TranscriptStatus
+from app.models import TranscriptIngestionJobKind, TranscriptIngestionJobStatus, TranscriptIngestionMode, TranscriptStatus
 
 
 class TranscriptCreate(BaseModel):
@@ -42,3 +42,21 @@ class TranscriptListItem(BaseModel):
 
 class TranscriptDetail(TranscriptListItem):
     current_draft_text_encrypted: str | None = None
+
+
+class TranscriptIngestionJobDetail(BaseModel):
+    id: UUID
+    transcript_id: UUID
+    job_kind: TranscriptIngestionJobKind
+    chunk_sequence_no: int | None
+    source_filename: str
+    status: TranscriptIngestionJobStatus
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TranscriptIngestionAccepted(BaseModel):
+    transcript: TranscriptDetail
+    job: TranscriptIngestionJobDetail

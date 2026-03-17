@@ -84,7 +84,7 @@ Shared invariants:
 - transcript root remains the retention and deletion root
 - all transcript-derived content remains owner-only
 - backend normalizes audio before provider submission
-- backend resolves the active team STT config and Vault-backed secret
+- backend resolves the active team STT selection and Vault-backed secret
 - backend owns persisted draft text updates
 - commit/version semantics remain separate from ingestion semantics
 
@@ -173,11 +173,16 @@ The client sends the audio blob plus chunk metadata to the backend.
 The backend:
 
 - verifies the current user owns the transcript
+- creates a queued transcript-ingestion job and returns `202 Accepted`
+
+The worker path then:
+
 - normalizes the uploaded audio to a canonical backend format before provider submission
-- resolves the team transcription provider and Vault-backed credential reference
+- resolves the active team transcription selection and Vault-backed credential reference
 - fetches the secret from Vault
 - forwards the chunk to the external STT endpoint
 - receives transcript text from the provider
+- applies completed live chunks in sequence order
 - updates `transcripts.current_draft_text_encrypted`
 - records operational metadata without storing raw audio or raw secrets in the database
 
@@ -193,7 +198,7 @@ The existing commit flow remains:
 
 ### Team-managed STT configuration
 
-The MVP should support one active transcription path per team.
+The MVP now supports one active transcription selection per team chosen from one or more admin-provisioned STT endpoint rows.
 
 Recommended model direction:
 
@@ -240,8 +245,9 @@ Implemented now for `live_chunked`:
 - optional `declared_duration_seconds`
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `live_chunked`
-- backend audio normalization before provider submission
-- provider text append into `current_draft_text_encrypted`
+- queued ingestion job response
+- backend worker audio normalization before provider submission
+- provider text append into `current_draft_text_encrypted` only when completed chunks can be applied in order
 
 Planned start request additions:
 
@@ -269,7 +275,8 @@ Implemented now for `file_upload` and `microphone_batch`:
 - multipart `audio`
 - owner-only enforcement
 - rejection when the transcript ingestion mode is neither `file_upload` nor `microphone_batch`
-- backend audio normalization before provider submission
+- queued ingestion job response
+- backend worker audio normalization before provider submission
 - provider transcript text written into `current_draft_text_encrypted`
 - transcript status set to `ready` after successful provider completion
 

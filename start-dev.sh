@@ -52,4 +52,20 @@ if [[ "${DEV_SEED_TEST_ACCOUNTS:-true}" == "true" ]]; then
   .venv/bin/python scripts/seed_dev_accounts.py
 fi
 
-exec .venv/bin/fastapi dev app/main.py --host "${APP_HOST}" --port "${APP_PORT}"
+CELERY_WORKER_PID=""
+
+cleanup() {
+  if [[ -n "${CELERY_WORKER_PID}" ]]; then
+    kill "${CELERY_WORKER_PID}" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
+  echo "Starting Celery worker..."
+  .venv/bin/celery -A app.celery_app:celery_app worker --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
+  CELERY_WORKER_PID=$!
+fi
+
+.venv/bin/fastapi dev app/main.py --host "${APP_HOST}" --port "${APP_PORT}"

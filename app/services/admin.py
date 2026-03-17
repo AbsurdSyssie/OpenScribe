@@ -13,6 +13,8 @@ from app.models import (
     AccountRequestStatus,
     Team,
     TeamRole,
+    TeamSttConfig,
+    TeamSttSelection,
     Transcript,
     User,
     UserOnboardingState,
@@ -252,6 +254,21 @@ def delete_user(db: Session, actor: User, user_id) -> None:
     for request in reviewed_requests:
         request.reviewed_by_user_id = None
         db.add(request)
+
+    stt_configs_created = db.scalars(select(TeamSttConfig).where(TeamSttConfig.created_by_user_id == user.id))
+    for config in stt_configs_created:
+        config.created_by_user_id = actor.id
+        db.add(config)
+
+    stt_configs_updated = db.scalars(select(TeamSttConfig).where(TeamSttConfig.updated_by_user_id == user.id))
+    for config in stt_configs_updated:
+        config.updated_by_user_id = actor.id
+        db.add(config)
+
+    stt_selections = db.scalars(select(TeamSttSelection).where(TeamSttSelection.selected_by_user_id == user.id))
+    for selection in stt_selections:
+        selection.selected_by_user_id = actor.id
+        db.add(selection)
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
     for transcript in transcripts:

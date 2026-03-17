@@ -5,59 +5,19 @@ from uuid import UUID, uuid4
 import httpx
 from openai import OpenAI
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import SttAdapterKind, Team, TeamRole, TeamSttConfig, User
-from app.schemas import SttConfigUpsert, SttInspectFieldTip, SttInspectRequest, SttInspectResult, SttModelOption
+from app.models import SttAdapterKind, Team, TeamRole, TeamSttConfig, TeamSttSelection, User
+from app.schemas import (
+    SttConfigUpsert,
+    SttInspectFieldTip,
+    SttInspectRequest,
+    SttInspectResult,
+    SttModelOption,
+    SttSelectionUpsert,
+)
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
-
-
-def _resolve_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
-    if actor.is_system_admin:
-        if team_id is None:
-            raise AppError(422, "business_rule_violation", "Team is required for system-admin STT management", {"field": "team_id"})
-        team = db.get(Team, team_id)
-        if team is None:
-            raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(team_id)})
-        return team
-
-    if actor.team_role is not TeamRole.leader or actor.team_id is None:
-        raise AppError(403, "forbidden", "STT configuration access required")
-    if team_id is not None and team_id != actor.team_id:
-        raise AppError(403, "forbidden", "Leaders may only manage STT configuration for their own team")
-    team = db.get(Team, actor.team_id)
-    if team is None:
-        raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(actor.team_id)})
-    return team
-
-
-def get_stt_config(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamSttConfig | None:
-    team = _resolve_scoped_team(db, actor, team_id=team_id)
-    return db.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
-
-
-def delete_stt_config(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
-    team = _resolve_scoped_team(db, actor, team_id=team_id)
-    config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
-    if config is None:
-        raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "team_id": str(team.id)})
-    delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
-    db.delete(config)
-    db.commit()
-
-
-def active_team_stt_config(db: Session, *, team_id: UUID) -> TeamSttConfig:
-    config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team_id, TeamSttConfig.is_active.is_(True)))
-    if config is None:
-        raise AppError(422, "business_rule_violation", "No active STT config for team", {"team_id": str(team_id)})
-    return config
-
-
-def _normalized_known_adapter_fields(adapter_kind: SttAdapterKind) -> tuple[str, str, str]:
-    if adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
-        return "/v1/audio/transcriptions", "file", "text"
-    raise ValueError(f"Unsupported known adapter kind: {adapter_kind}")
 
 
 SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
@@ -66,6 +26,147 @@ SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
     "gpt-4o-transcribe-diarize",
     "whisper-1",
 )
+
+
+def _resolve_team(db: Session, *, team_id: UUID) -> Team:
+    team = db.get(Team, team_id)
+    if team is None:
+        raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(team_id)})
+    return team
+
+
+def _resolve_admin_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin STT provisioning access required")
+    if team_id is None:
+        raise AppError(422, "business_rule_violation", "Team is required for system-admin STT management", {"field": "team_id"})
+    return _resolve_team(db, team_id=team_id)
+
+
+def _resolve_selection_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
+    if actor.is_system_admin:
+        if team_id is None:
+            raise AppError(422, "business_rule_violation", "Team is required for STT selection management", {"field": "team_id"})
+        return _resolve_team(db, team_id=team_id)
+
+    if actor.team_role is not TeamRole.leader or actor.team_id is None:
+        raise AppError(403, "forbidden", "STT selection access required")
+    if team_id is not None and team_id != actor.team_id:
+        raise AppError(403, "forbidden", "Leaders may only manage STT selection for their own team")
+    return _resolve_team(db, team_id=actor.team_id)
+
+
+def list_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
+    team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
+    stmt = select(TeamSttConfig).where(TeamSttConfig.team_id == team.id).order_by(TeamSttConfig.created_at.desc(), TeamSttConfig.id.desc())
+    return list(db.scalars(stmt))
+
+
+def get_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> TeamSttConfig:
+    team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
+    config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == config_id, TeamSttConfig.team_id == team.id))
+    if config is None:
+        raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(config_id)})
+    return config
+
+
+def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> None:
+    config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
+    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id))
+    if selection is not None:
+        db.delete(selection)
+        db.flush()
+    delete_team_stt_bearer_token(team_id=config.team_id, config_id=config.id)
+    db.delete(config)
+    db.commit()
+
+
+def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    stmt = select(TeamSttConfig).where(TeamSttConfig.team_id == team.id, TeamSttConfig.is_active.is_(True)).order_by(TeamSttConfig.created_at.desc(), TeamSttConfig.id.desc())
+    return list(db.scalars(stmt))
+
+
+def get_team_stt_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamSttSelection | None:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    return db.scalar(
+        select(TeamSttSelection)
+        .options(joinedload(TeamSttSelection.config))
+        .where(TeamSttSelection.team_id == team.id)
+    )
+
+
+def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert) -> TeamSttSelection:
+    team = _resolve_selection_scoped_team(db, actor, team_id=payload.team_id)
+    config = db.scalar(
+        select(TeamSttConfig).where(
+            TeamSttConfig.id == payload.stt_config_id,
+            TeamSttConfig.team_id == team.id,
+            TeamSttConfig.is_active.is_(True),
+        )
+    )
+    if config is None:
+        raise AppError(404, "not_found", "Selectable STT config not found", {"resource": "stt_config", "config_id": str(payload.stt_config_id)})
+
+    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
+    if selection is None:
+        selection = TeamSttSelection(
+            id=uuid4(),
+            team_id=team.id,
+            stt_config_id=config.id,
+            model_name_override=payload.model_name_override.strip() if payload.model_name_override else None,
+            language_override=payload.language_override.strip() if payload.language_override else None,
+            selected_by_user_id=actor.id,
+        )
+        db.add(selection)
+    else:
+        selection.stt_config_id = config.id
+        selection.model_name_override = payload.model_name_override.strip() if payload.model_name_override else None
+        selection.language_override = payload.language_override.strip() if payload.language_override else None
+        selection.selected_by_user_id = actor.id
+        db.add(selection)
+
+    db.commit()
+    db.refresh(selection)
+    return db.scalar(
+        select(TeamSttSelection)
+        .options(joinedload(TeamSttSelection.config))
+        .where(TeamSttSelection.id == selection.id)
+    ) or selection
+
+
+def clear_team_stt_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
+    if selection is None:
+        raise AppError(404, "not_found", "STT selection not found", {"resource": "stt_selection", "team_id": str(team.id)})
+    db.delete(selection)
+    db.commit()
+
+
+def active_team_stt_selection(db: Session, *, team_id: UUID) -> TeamSttSelection:
+    selection = db.scalar(
+        select(TeamSttSelection)
+        .options(joinedload(TeamSttSelection.config))
+        .where(TeamSttSelection.team_id == team_id)
+    )
+    if selection is None or selection.config is None or not selection.config.is_active:
+        raise AppError(422, "business_rule_violation", "No active STT selection for team", {"team_id": str(team_id)})
+    return selection
+
+
+def resolve_selected_team_stt(db: Session, *, team_id: UUID) -> tuple[TeamSttSelection, TeamSttConfig, str | None, str | None]:
+    selection = active_team_stt_selection(db, team_id=team_id)
+    config = selection.config
+    resolved_model_name = selection.model_name_override or config.model_name
+    resolved_language = selection.language_override or config.language
+    return selection, config, resolved_model_name, resolved_language
+
+
+def _normalized_known_adapter_fields(adapter_kind: SttAdapterKind) -> tuple[str, str, str]:
+    if adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
+        return "/v1/audio/transcriptions", "file", "text"
+    raise ValueError(f"Unsupported known adapter kind: {adapter_kind}")
 
 
 def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[str]:
@@ -89,14 +190,7 @@ def _fallback_openai_transcription_models() -> list[str]:
 
 
 def _openai_model_options(models: list[str], *, source: str) -> list[SttModelOption]:
-    return [
-        SttModelOption(
-            id=model,
-            source=source,
-            label=f"{model} ({source})",
-        )
-        for model in models
-    ]
+    return [SttModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
 
 
 def _extract_response_text(payload: dict[str, Any], path: str) -> str:
@@ -113,13 +207,22 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
     return text
 
 
-def _transcribe_via_http(config: TeamSttConfig, *, bearer_token: str, audio_bytes: bytes, filename: str, content_type: str) -> str:
+def _transcribe_via_http(
+    config: TeamSttConfig,
+    *,
+    bearer_token: str,
+    model_name: str | None,
+    language: str | None,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
     url = f"{config.base_url.rstrip('/')}{config.transcribe_path}"
     form_fields = dict(config.extra_form_fields_json or {})
-    if config.model_name:
-        form_fields["model"] = config.model_name
-    if config.language:
-        form_fields["language"] = config.language
+    if model_name:
+        form_fields["model"] = model_name
+    if language:
+        form_fields["language"] = language
     try:
         response = httpx.post(
             url,
@@ -139,16 +242,24 @@ def _transcribe_via_http(config: TeamSttConfig, *, bearer_token: str, audio_byte
     return _extract_response_text(payload, config.response_text_path)
 
 
-def _transcribe_via_openai_cloud(config: TeamSttConfig, *, bearer_token: str, audio_bytes: bytes, filename: str) -> str:
+def _transcribe_via_openai_cloud(
+    config: TeamSttConfig,
+    *,
+    bearer_token: str,
+    model_name: str | None,
+    language: str | None,
+    audio_bytes: bytes,
+    filename: str,
+) -> str:
     client = OpenAI(api_key=bearer_token, base_url=config.base_url)
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     kwargs: dict[str, Any] = {
         "file": audio_file,
-        "model": config.model_name or "whisper-1",
+        "model": model_name or "whisper-1",
     }
-    if config.language:
-        kwargs["language"] = config.language
+    if language:
+        kwargs["language"] = language
     if response_format := (config.extra_form_fields_json or {}).get("response_format"):
         kwargs["response_format"] = response_format
     try:
@@ -174,13 +285,22 @@ def transcribe_with_team_stt(
     filename: str,
     content_type: str,
 ) -> str:
-    config = active_team_stt_config(db, team_id=team_id)
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id)
     bearer_token = read_team_stt_bearer_token(team_id=team_id, config_id=config.id)
     if config.adapter_kind is SttAdapterKind.openai_cloud:
-        return _transcribe_via_openai_cloud(config, bearer_token=bearer_token, audio_bytes=audio_bytes, filename=filename)
+        return _transcribe_via_openai_cloud(
+            config,
+            bearer_token=bearer_token,
+            model_name=resolved_model_name,
+            language=resolved_language,
+            audio_bytes=audio_bytes,
+            filename=filename,
+        )
     return _transcribe_via_http(
         config,
         bearer_token=bearer_token,
+        model_name=resolved_model_name,
+        language=resolved_language,
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -188,9 +308,24 @@ def transcribe_with_team_stt(
 
 
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
-    team = _resolve_scoped_team(db, actor, team_id=payload.team_id)
-    config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    config = None
+    if payload.config_id is not None:
+        config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == payload.config_id, TeamSttConfig.team_id == team.id))
+        if config is None:
+            raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(payload.config_id)})
     creating = config is None
+
+    available_models_json: list[str] = []
+    if payload.adapter_kind is SttAdapterKind.openai_cloud:
+        if payload.bearer_token:
+            try:
+                available_models_json = _list_openai_transcription_models(api_key=payload.bearer_token, base_url=payload.base_url)
+            except AppError:
+                available_models_json = _fallback_openai_transcription_models()
+        elif config is not None:
+            available_models_json = list(config.available_models_json or [])
+
     if config is None:
         config = TeamSttConfig(
             id=uuid4(),
@@ -203,6 +338,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             transcribe_path=payload.transcribe_path,
             auth_mode=payload.auth_mode,
             model_name=payload.model_name.strip() if payload.model_name else None,
+            available_models_json=available_models_json,
             file_field_name=payload.file_field_name.strip(),
             language=payload.language.strip() if payload.language else None,
             response_text_path=payload.response_text_path.strip(),
@@ -219,6 +355,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.transcribe_path = payload.transcribe_path
         config.auth_mode = payload.auth_mode
         config.model_name = payload.model_name.strip() if payload.model_name else None
+        config.available_models_json = available_models_json or list(config.available_models_json or [])
         config.file_field_name = payload.file_field_name.strip()
         config.language = payload.language.strip() if payload.language else None
         config.response_text_path = payload.response_text_path.strip()
@@ -401,7 +538,7 @@ def _infer_response_text_path(schema: dict[str, Any] | None) -> str:
 
 
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
-    _resolve_scoped_team(db, actor, team_id=payload.team_id)
+    _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     if payload.adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
         transcribe_path, file_field_name, response_text_path = _normalized_known_adapter_fields(payload.adapter_kind)
         available_models: list[str] = []
@@ -422,6 +559,9 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
                 default_model = available_models[0]
             notes.append("This adapter uses the official OpenAI transcription contract and loads available models through the OpenAI Python SDK.")
         else:
+            available_models = _fallback_openai_transcription_models()
+            available_model_options = _openai_model_options(available_models, source="default")
+            default_model = available_models[0]
             notes.append("This adapter is intended for OpenAI-compatible REST transcription endpoints on custom hosts.")
         return SttInspectResult(
             base_url=payload.base_url,
@@ -438,27 +578,9 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             available_models=available_models,
             available_model_options=available_model_options,
             field_tips=[
-                SttInspectFieldTip(
-                    name="file",
-                    role="file",
-                    default_value=None,
-                    description="Audio file upload.",
-                    required=True,
-                ),
-                SttInspectFieldTip(
-                    name="model",
-                    role="model",
-                    default_value=default_model,
-                    description="Model to use.",
-                    required=True,
-                ),
-                SttInspectFieldTip(
-                    name="language",
-                    role="language",
-                    default_value=None,
-                    description="Optional language code.",
-                    required=False,
-                ),
+                SttInspectFieldTip(name="file", role="file", default_value=None, description="Audio file upload.", required=True),
+                SttInspectFieldTip(name="model", role="model", default_value=default_model, description="Model to use.", required=True),
+                SttInspectFieldTip(name="language", role="language", default_value=None, description="Optional language code.", required=False),
             ],
             notes=notes,
         )
@@ -471,7 +593,7 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
         response = httpx.get(openapi_url, headers=headers, timeout=10.0)
     except httpx.HTTPError as exc:
         raise AppError(502, "stt_inspection_failed", "Could not reach the STT OpenAPI document") from exc
-    if response.status_code == 401 or response.status_code == 403:
+    if response.status_code in {401, 403}:
         raise AppError(401, "unauthorized", "STT OpenAPI document rejected the provided credentials")
     if response.status_code >= 400:
         raise AppError(502, "stt_inspection_failed", "STT OpenAPI document request failed", {"status_code": response.status_code})
@@ -487,9 +609,7 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
     properties = request_schema.get("properties") or {}
     if not isinstance(properties, dict):
         properties = {}
-    required_fields = {
-        str(item) for item in (request_schema.get("required") or []) if isinstance(item, str)
-    }
+    required_fields = {str(item) for item in (request_schema.get("required") or []) if isinstance(item, str)}
 
     file_field_name = _infer_file_field_name(properties)
     model_name = _pick_property_value(properties, "model", "model_name")
@@ -504,11 +624,7 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
 
     response_text_path = _infer_response_text_path(_response_schema_for_operation(document, operation))
     adapter_kind = SttAdapterKind.generic_rest
-    if (
-        transcribe_path == "/v1/audio/transcriptions"
-        and file_field_name == "file"
-        and ("model" in properties or "model_name" in properties)
-    ):
+    if transcribe_path == "/v1/audio/transcriptions" and file_field_name == "file" and ("model" in properties or "model_name" in properties):
         adapter_kind = SttAdapterKind.openai_compatible_rest
     field_tips: list[SttInspectFieldTip] = [
         SttInspectFieldTip(
@@ -573,6 +689,7 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
         candidate_paths=candidate_paths,
         operation_summary=operation.get("summary"),
         available_models=[],
+        available_model_options=[],
         field_tips=field_tips,
         notes=notes,
     )

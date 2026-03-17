@@ -218,15 +218,15 @@ Expected:
 
 Behavior in plain language:
 
-- each team stores at most one STT config row
+- system admins provision one or more STT config rows per team
+- each team may have at most one active STT selection row
 - the row stores endpoint metadata and a Vault secret reference, never the raw bearer token
 - inspection may fetch the OpenAPI document and infer defaults, but does not persist a row by itself
 - browser inspection must render the inferred values back into the save form in the same response
-- leaders may create and update only their own team's config
-- leaders may clear only their own team's config
-- system admins may create and update a selected team's config
-- system admins may clear a selected team's config
-- normal users, onboarding sessions, and pending-MFA sessions may not access STT config routes
+- leaders may choose or clear only their own team's active STT selection
+- leaders may not create, update, or delete credential-bearing config rows
+- system admins may create, update, inspect, and delete a selected team's config rows
+- normal users, onboarding sessions, and pending-MFA sessions may not access STT provisioning or selection routes
 - the API returns `has_secret` but does not reveal the bearer token or the raw Vault ref
 - remote non-local endpoints must use `https://`
 - local and RFC1918 development HTTP endpoints are accepted in this first slice
@@ -234,17 +234,18 @@ Behavior in plain language:
 Brief test shape:
 
 ```python
-inspection = client.post("/api/v1/stt-config/inspect", json={...})
-created = client.post("/api/v1/stt-config", json={...})
-fetched = client.get("/api/v1/stt-config")
-persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+inspection = client.post("/api/v1/stt-configs/inspect", json={...})
+created = client.post("/api/v1/stt-configs", json={...})
+selection = client.post("/api/v1/stt-selection", json={...})
+persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == config_id))
 ```
 
 Expected:
 
 - inspection returns inferred request and response fields without storing a row
-- manager-scope create succeeds
-- manager-scope clear removes the row and the next fetch returns `null`
+- system-admin provisioning succeeds
+- leader selection succeeds only for a provisioned own-team option
+- clearing the team selection removes only the `team_stt_selections` row
 - `fetched.json()["has_secret"] is True`
 - `vault_secret_ref` is present only in the database row, not the response
 - cross-team leader access fails with `403`
@@ -283,10 +284,11 @@ Behavior in plain language:
 
 - live chunk uploads are owner-only
 - live chunk uploads are allowed only when the transcript ingestion mode is `live_chunked`
-- the backend normalizes uploaded audio before STT submission
-- the backend requires an active team STT config before provider execution
-- provider-returned text is appended into the current transcript draft
-- transcript status moves to `transcribing`
+- the API route queues an ingestion job and returns `202`
+- live chunk processing normalizes uploaded audio before STT submission
+- the worker requires an active team STT selection before provider execution
+- provider-returned text is appended into the current transcript draft only when completed chunks can be applied in order
+- transcript status stays `transcribing`
 
 Brief test shape:
 
@@ -296,6 +298,7 @@ uploaded = client.post(
     files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
     data={"chunk_sequence_no": "1"},
 )
+process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-audio")
 ```
 
 Expected:
@@ -303,8 +306,9 @@ Expected:
 - unauthenticated callers get `401`
 - non-owners get `403`
 - non-`live_chunked` transcripts get `409`
-- missing active team STT config gets `422`
-- successful uploads append provider text to `current_draft_text_encrypted`
+- duplicate `chunk_sequence_no` gets `409`
+- missing active team STT selection fails in worker processing and marks the job `failed`
+- successful worker processing appends provider text to `current_draft_text_encrypted` in sequence order
 
 ### Whole-file ingestion
 
@@ -312,8 +316,9 @@ Behavior in plain language:
 
 - whole-file ingestion is owner-only
 - whole-file ingestion is allowed only when the transcript ingestion mode is `file_upload` or `microphone_batch`
-- the backend normalizes uploaded audio before STT submission
-- the backend requires an active team STT config before provider execution
+- the API route queues an ingestion job and returns `202`
+- worker processing normalizes uploaded audio before STT submission
+- the worker requires an active team STT selection before provider execution
 - provider-returned text replaces the current transcript draft for the file-ingestion flow
 - transcript status moves to `ready`
 
@@ -324,6 +329,7 @@ uploaded = client.post(
     f"/api/v1/transcripts/{transcript_id}/audio-file",
     files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
 )
+process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
 ```
 
 Expected:
@@ -331,8 +337,8 @@ Expected:
 - unauthenticated callers get `401`
 - non-owners get `403`
 - `live_chunked` transcripts get `409`
-- missing active team STT config gets `422`
-- successful uploads write provider text into `current_draft_text_encrypted`
+- missing active team STT selection fails in worker processing and marks the job `failed`
+- successful worker processing writes provider text into `current_draft_text_encrypted`
 
 ### Trusted devices and MFA freshness
 

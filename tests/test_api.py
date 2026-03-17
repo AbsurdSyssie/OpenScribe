@@ -11,6 +11,8 @@ from app.models import (
     SttAuthMode,
     TeamRole,
     TeamSttConfig,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobStatus,
     Transcript,
     TranscriptVersion,
     User,
@@ -21,6 +23,7 @@ from app.models import (
 )
 from app.services.audio import NormalizedAudio
 from app.services.stt import transcribe_with_team_stt
+from app.services.transcripts import process_transcript_ingestion_job
 
 
 def assert_error(response, *, status_code: int, code: str, message: str):
@@ -260,22 +263,21 @@ def test_leader_can_review_only_own_team_requests_and_approve_them(client, make_
     assert approved.json()["team_id"] == str(team.id)
 
 
-def test_leader_can_create_and_read_team_stt_config_without_secret_reveal(client, db_session, make_team, make_user):
+def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
-    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
-    login(client, email="leader@example.com", password="password-1")
+    login(client, email="admin@example.com", password="password-1")
     created = client.post(
-        "/api/v1/stt-config",
+        "/api/v1/stt-configs",
         json={
+            "team_id": str(team.id),
             "label": "Clinic STT",
+            "adapter_kind": "openai_compatible_rest",
             "base_url": "http://127.0.0.1:7000",
-            "transcribe_path": "/v1/audio/transcriptions",
             "bearer_token": "super-secret-token",
             "model_name": "whisper-1",
-            "file_field_name": "file",
             "language": "en",
-            "response_text_path": "text",
             "extra_form_fields_json": {"chunk_mode": "memory"},
             "is_active": True,
         },
@@ -285,89 +287,56 @@ def test_leader_can_create_and_read_team_stt_config_without_secret_reveal(client
     body = created.json()
     assert body["team_id"] == str(team.id)
     assert body["has_secret"] is True
-    assert body["adapter_kind"] == "generic_rest"
+    assert body["adapter_kind"] == "openai_compatible_rest"
     assert "vault_secret_ref" not in body
+    assert body["available_models_json"] == []
 
-    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == UUID(body["id"])))
     assert persisted is not None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
 
-    fetched = client.get("/api/v1/stt-config")
+    listed = client.get(f"/api/v1/stt-configs?team_id={team.id}")
+    assert listed.status_code == 200
+    assert [item["label"] for item in listed.json()] == ["Clinic STT"]
+
+    fetched = client.get(f"/api/v1/stt-configs/{body['id']}?team_id={team.id}")
     assert fetched.status_code == 200
     assert fetched.json()["label"] == "Clinic STT"
     assert "super-secret-token" not in fetched.text
 
 
-def test_system_admin_can_manage_stt_config_for_selected_team(client, make_team, make_user):
+def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=admin)
+
+    login(client, email="admin@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/stt-configs/{config.id}?team_id={team.id}")
+    assert deleted.status_code == 204
+
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is None
+
+    selection = client.get(f"/api/v1/stt-selection?team_id={team.id}")
+    assert selection.status_code == 200
+    assert selection.json() is None
+    fetched = client.get(f"/api/v1/stt-configs?team_id={team.id}")
+    assert fetched.status_code == 200
+    assert fetched.json() == []
+
+
+def test_system_admin_can_inspect_stt_openapi_and_get_prefilled_fields(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
-    login(client, email="admin@example.com", password="password-1")
-    created = client.post(
-        "/api/v1/stt-config",
-        json={
-            "team_id": str(team.id),
-            "label": "Admin STT",
-            "base_url": "https://stt.example.com",
-            "transcribe_path": "/transcribe",
-            "bearer_token": "token-1",
-            "response_text_path": "results.transcript",
-            "extra_form_fields_json": {"model": "general"},
-            "is_active": True,
-        },
-    )
-    assert created.status_code == 200
-    assert created.json()["team_id"] == str(team.id)
-    assert created.json()["adapter_kind"] == "generic_rest"
-
-    fetched = client.get(f"/api/v1/stt-config?team_id={team.id}")
-    assert fetched.status_code == 200
-    assert fetched.json()["label"] == "Admin STT"
-
-
-def test_manager_can_clear_stt_config_without_leaking_secret(client, db_session, make_team, make_user):
-    team = make_team(name="Clinic North")
-    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-
-    login(client, email="leader@example.com", password="password-1")
-    created = client.post(
-        "/api/v1/stt-config",
-        json={
-            "label": "Clinic STT",
-            "base_url": "http://127.0.0.1:7000",
-            "transcribe_path": "/v1/audio/transcriptions",
-            "bearer_token": "super-secret-token",
-            "model_name": "whisper-1",
-            "file_field_name": "file",
-            "language": "en",
-            "response_text_path": "text",
-            "extra_form_fields_json": {"chunk_mode": "memory"},
-            "is_active": True,
-        },
-    )
-    assert created.status_code == 200
-
-    deleted = client.delete("/api/v1/stt-config")
-    assert deleted.status_code == 204
-
-    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
-    assert persisted is None
-
-    fetched = client.get("/api/v1/stt-config")
-    assert fetched.status_code == 200
-    assert fetched.json() is None
-
-
-def test_leader_can_inspect_stt_openapi_and_get_prefilled_fields(client, make_team, make_user, monkeypatch):
-    team = make_team(name="Clinic North")
-    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-
     monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(STT_OPENAPI_DOCUMENT))
 
-    login(client, email="leader@example.com", password="password-1")
+    login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
-        "/api/v1/stt-config/inspect",
+        "/api/v1/stt-configs/inspect",
         json={
+            "team_id": str(team.id),
             "adapter_kind": "generic_rest",
             "base_url": "http://127.0.0.1:7000",
             "openapi_path": "/openapi.json",
@@ -400,7 +369,7 @@ def test_system_admin_can_inspect_openai_cloud_without_openapi_fetch(client, mak
 
     login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
-        "/api/v1/stt-config/inspect",
+        "/api/v1/stt-configs/inspect",
         json={
             "team_id": str(team.id),
             "adapter_kind": "openai_cloud",
@@ -435,7 +404,7 @@ def test_openai_cloud_inspection_falls_back_to_built_in_models_when_sdk_lookup_f
 
     login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
-        "/api/v1/stt-config/inspect",
+        "/api/v1/stt-configs/inspect",
         json={
             "team_id": str(team.id),
             "adapter_kind": "openai_cloud",
@@ -462,26 +431,30 @@ def test_openai_cloud_inspection_falls_back_to_built_in_models_when_sdk_lookup_f
     assert any("fell back to the built-in supported transcription model list" in note for note in body["notes"])
 
 
-def test_stt_config_routes_require_manager_scope_and_full_auth(client, make_team, make_user):
+def test_stt_routes_require_admin_provisioning_or_leader_selection_scope_and_full_auth(client, make_team, make_user):
     team = make_team(name="Clinic North")
-    leader = make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-    normal_user = make_user(email="member@example.com", password="password-2", team=team, team_role=TeamRole.user)
-    admin = make_user(email="admin@example.com", password="password-3", is_system_admin=True)
+    make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    make_user(email="member@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    make_user(email="admin@example.com", password="password-3", is_system_admin=True)
 
-    unauth = client.get("/api/v1/stt-config")
+    unauth = client.get(f"/api/v1/stt-configs?team_id={team.id}")
     assert_error(unauth, status_code=401, code="unauthorized", message="Authentication required")
-    unauth_inspect = client.post("/api/v1/stt-config/inspect", json={"base_url": "http://127.0.0.1:7000"})
+    unauth_inspect = client.post("/api/v1/stt-configs/inspect", json={"team_id": str(team.id), "base_url": "http://127.0.0.1:7000"})
     assert_error(unauth_inspect, status_code=401, code="unauthorized", message="Authentication required")
-    unauth_delete = client.delete("/api/v1/stt-config")
-    assert_error(unauth_delete, status_code=401, code="unauthorized", message="Authentication required")
+    unauth_options = client.get("/api/v1/stt-selection/options")
+    assert_error(unauth_options, status_code=401, code="unauthorized", message="Authentication required")
+    unauth_clear = client.delete("/api/v1/stt-selection")
+    assert_error(unauth_clear, status_code=401, code="unauthorized", message="Authentication required")
 
     login(client, email="member@example.com", password="password-2")
-    forbidden = client.get("/api/v1/stt-config")
-    assert_error(forbidden, status_code=403, code="forbidden", message="User-management access required")
-    forbidden_inspect = client.post("/api/v1/stt-config/inspect", json={"base_url": "http://127.0.0.1:7000"})
-    assert_error(forbidden_inspect, status_code=403, code="forbidden", message="User-management access required")
-    forbidden_delete = client.delete("/api/v1/stt-config")
-    assert_error(forbidden_delete, status_code=403, code="forbidden", message="User-management access required")
+    forbidden = client.get(f"/api/v1/stt-configs?team_id={team.id}")
+    assert_error(forbidden, status_code=403, code="forbidden", message="System admin access required")
+    forbidden_inspect = client.post("/api/v1/stt-configs/inspect", json={"team_id": str(team.id), "base_url": "http://127.0.0.1:7000"})
+    assert_error(forbidden_inspect, status_code=403, code="forbidden", message="System admin access required")
+    forbidden_options = client.get("/api/v1/stt-selection/options")
+    assert_error(forbidden_options, status_code=403, code="forbidden", message="STT selection access required")
+    forbidden_clear = client.delete("/api/v1/stt-selection")
+    assert_error(forbidden_clear, status_code=403, code="forbidden", message="STT selection access required")
     client.post("/api/v1/auth/logout")
 
     client.post(
@@ -504,12 +477,14 @@ def test_stt_config_routes_require_manager_scope_and_full_auth(client, make_team
 
     onboarding_login = login(client, email="managed@example.com", password="TempPass1")
     assert onboarding_login.status_code == 200
-    onboarding = client.get("/api/v1/stt-config")
+    onboarding = client.get(f"/api/v1/stt-configs?team_id={team.id}")
     assert_error(onboarding, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
-    onboarding_inspect = client.post("/api/v1/stt-config/inspect", json={"base_url": "http://127.0.0.1:7000"})
+    onboarding_inspect = client.post("/api/v1/stt-configs/inspect", json={"team_id": str(team.id), "base_url": "http://127.0.0.1:7000"})
     assert_error(onboarding_inspect, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
-    onboarding_delete = client.delete("/api/v1/stt-config")
-    assert_error(onboarding_delete, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
+    onboarding_options = client.get("/api/v1/stt-selection/options")
+    assert_error(onboarding_options, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
+    onboarding_clear = client.delete("/api/v1/stt-selection")
+    assert_error(onboarding_clear, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
     client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
@@ -520,49 +495,135 @@ def test_stt_config_routes_require_manager_scope_and_full_auth(client, make_team
     mfa_login = login(client, email="managed@example.com", password="BetterPass1")
     assert mfa_login.status_code == 200
     assert mfa_login.json()["auth_level"] == "pending_mfa"
-    pending_mfa = client.get("/api/v1/stt-config")
+    pending_mfa = client.get(f"/api/v1/stt-configs?team_id={team.id}")
     assert_error(pending_mfa, status_code=403, code="mfa_required", message="Complete TOTP verification before accessing this route")
-    pending_mfa_inspect = client.post("/api/v1/stt-config/inspect", json={"base_url": "http://127.0.0.1:7000"})
+    pending_mfa_inspect = client.post("/api/v1/stt-configs/inspect", json={"team_id": str(team.id), "base_url": "http://127.0.0.1:7000"})
     assert_error(pending_mfa_inspect, status_code=403, code="mfa_required", message="Complete TOTP verification before accessing this route")
-    pending_mfa_delete = client.delete("/api/v1/stt-config")
-    assert_error(pending_mfa_delete, status_code=403, code="mfa_required", message="Complete TOTP verification before accessing this route")
+    pending_mfa_options = client.get("/api/v1/stt-selection/options")
+    assert_error(pending_mfa_options, status_code=403, code="mfa_required", message="Complete TOTP verification before accessing this route")
+    pending_mfa_clear = client.delete("/api/v1/stt-selection")
+    assert_error(pending_mfa_clear, status_code=403, code="mfa_required", message="Complete TOTP verification before accessing this route")
 
 
-def test_stt_config_validates_urls_and_leader_team_scope(client, make_team, make_user):
+def test_stt_config_validates_urls_and_enforces_admin_provisioning_plus_leader_team_selection_scope(
+    client, make_team, make_user, make_stt_config
+):
     north = make_team(name="Clinic North")
     south = make_team(name="Clinic South")
+    make_user(email="admin@example.com", password="password-2", is_system_admin=True)
     make_user(email="leader@example.com", password="password-1", team=north, team_role=TeamRole.leader)
 
-    login(client, email="leader@example.com", password="password-1")
+    login(client, email="admin@example.com", password="password-2")
 
     bad_remote = client.post(
-        "/api/v1/stt-config",
+        "/api/v1/stt-configs",
         json={
+            "team_id": str(north.id),
             "label": "Bad STT",
             "base_url": "http://stt.example.com",
-            "transcribe_path": "/transcribe",
+            "model_name": "whisper-1",
             "bearer_token": "token-1",
-            "response_text_path": "text",
-            "extra_form_fields_json": {},
+            "adapter_kind": "openai_compatible_rest",
             "is_active": True,
         },
     )
     assert bad_remote.status_code == 422
 
-    cross_team = client.post(
-        "/api/v1/stt-config",
+    bad_public_172 = client.post(
+        "/api/v1/stt-configs",
         json={
-            "team_id": str(south.id),
-            "label": "Other Team STT",
-            "base_url": "http://127.0.0.1:7000",
-            "transcribe_path": "/transcribe",
+            "team_id": str(north.id),
+            "label": "Bad 172 STT",
+            "base_url": "http://172.5.1.2:7000",
+            "model_name": "whisper-1",
             "bearer_token": "token-1",
-            "response_text_path": "text",
-            "extra_form_fields_json": {},
+            "adapter_kind": "openai_compatible_rest",
             "is_active": True,
         },
     )
-    assert_error(cross_team, status_code=403, code="forbidden", message="Leaders may only manage STT configuration for their own team")
+    assert bad_public_172.status_code == 422
+
+    allowed_private_172 = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(north.id),
+            "label": "Private 172 STT",
+            "base_url": "http://172.16.1.2:7000",
+            "model_name": "whisper-1",
+            "bearer_token": "token-1",
+            "adapter_kind": "openai_compatible_rest",
+            "is_active": True,
+        },
+    )
+    assert allowed_private_172.status_code == 200
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="leader@example.com", password="password-1")
+    admin = make_user(email="admin-provisioner@example.com", password="password-3", is_system_admin=True)
+    north_config = make_stt_config(team=north, actor=admin)
+    south_config = make_stt_config(team=south, actor=admin, label="South STT")
+
+    forbidden_provision = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(north.id),
+            "label": "Leader Provision Attempt",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:7000",
+            "bearer_token": "token-1",
+            "model_name": "whisper-1",
+        },
+    )
+    assert_error(forbidden_provision, status_code=403, code="forbidden", message="System admin access required")
+
+    allowed_selection = client.post(
+        "/api/v1/stt-selection",
+        json={"stt_config_id": str(north_config.id), "model_name_override": "whisper-1"},
+    )
+    assert allowed_selection.status_code == 200
+
+    cross_team = client.post(
+        "/api/v1/stt-selection",
+        json={"team_id": str(south.id), "stt_config_id": str(south_config.id)},
+    )
+    assert_error(cross_team, status_code=403, code="forbidden", message="Leaders may only manage STT selection for their own team")
+
+
+def test_leader_can_choose_and_clear_team_stt_selection(client, db_session, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(team=team, actor=admin, model_name="whisper-1", available_models_json=["whisper-1", "gpt-4o-mini-transcribe"])
+
+    login(client, email="leader@example.com", password="password-2")
+    options = client.get("/api/v1/stt-selection/options")
+    assert options.status_code == 200
+    assert [item["id"] for item in options.json()] == [str(config.id)]
+
+    selected = client.post(
+        "/api/v1/stt-selection",
+        json={
+            "stt_config_id": str(config.id),
+            "model_name_override": "gpt-4o-mini-transcribe",
+            "language_override": "en",
+        },
+    )
+    assert selected.status_code == 200
+    body = selected.json()
+    assert body["stt_config_id"] == str(config.id)
+    assert body["selected_config_label"] == config.label
+    assert body["resolved_model_name"] == "gpt-4o-mini-transcribe"
+    assert body["resolved_language"] == "en"
+    assert body["available_models_json"] == ["whisper-1", "gpt-4o-mini-transcribe"]
+
+    fetched = client.get("/api/v1/stt-selection")
+    assert fetched.status_code == 200
+    assert fetched.json()["stt_config_id"] == str(config.id)
+
+    cleared = client.delete("/api/v1/stt-selection")
+    assert cleared.status_code == 204
+    assert client.get("/api/v1/stt-selection").json() is None
+    assert db_session.get(TeamSttConfig, config.id) is not None
 
 
 def test_leader_can_suspend_and_reactivate_own_team_user(client, make_team, make_user):
@@ -1189,47 +1250,13 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
     assert_error(forbidden_admin, status_code=403, code="forbidden", message="System-admin accounts cannot own transcript content")
 
 
-def test_live_audio_chunk_upload_updates_owner_transcript_draft(client, db_session, make_team, make_user, monkeypatch):
+def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-    config = TeamSttConfig(
-        team_id=team.id,
-        label="Compatible STT",
-        adapter_kind=SttAdapterKind.openai_compatible_rest,
-        base_url="http://127.0.0.1:9000",
-        transcribe_path="/v1/audio/transcriptions",
-        auth_mode=SttAuthMode.bearer,
-        model_name="whisper-1",
-        file_field_name="file",
-        language="en",
-        response_text_path="text",
-        extra_form_fields_json={"response_format": "verbose_json"},
-        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
-        is_active=True,
-        created_by_user_id=owner.id,
-        updated_by_user_id=owner.id,
-    )
-    db_session.add(config)
-    db_session.commit()
 
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked", "current_draft_text_encrypted": "draft-1"})
     transcript_id = started.json()["id"]
-
-    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
-        assert audio_bytes == b"raw-audio"
-        assert source_filename == "chunk.webm"
-        return NormalizedAudio(filename="chunk.wav", content_type="audio/wav", data=b"normalized-audio")
-
-    def fake_transcribe_with_team_stt(db, *, team_id, audio_bytes, filename, content_type):
-        assert team_id == team.id
-        assert audio_bytes == b"normalized-audio"
-        assert filename == "chunk.wav"
-        assert content_type == "audio/wav"
-        return "chunk text"
-
-    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
-    monkeypatch.setattr("app.services.transcripts.transcribe_with_team_stt", fake_transcribe_with_team_stt)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
@@ -1237,12 +1264,18 @@ def test_live_audio_chunk_upload_updates_owner_transcript_draft(client, db_sessi
         data={"chunk_sequence_no": "1", "declared_duration_seconds": "12"},
     )
 
-    assert uploaded.status_code == 200
-    assert uploaded.json()["current_draft_text_encrypted"] == "draft-1\nchunk text"
-    assert uploaded.json()["status"] == "transcribing"
+    assert uploaded.status_code == 202
+    assert uploaded.json()["transcript"]["status"] == "transcribing"
+    assert uploaded.json()["transcript"]["current_draft_text_encrypted"] == "draft-1"
+    assert uploaded.json()["job"]["job_kind"] == "live_chunk"
+    assert uploaded.json()["job"]["chunk_sequence_no"] == 1
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
-    assert persisted.current_draft_text_encrypted == "draft-1\nchunk text"
+    assert persisted.current_draft_text_encrypted == "draft-1"
+    job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
+    assert job is not None
+    assert job.status is TranscriptIngestionJobStatus.queued
+    assert job.celery_task_id == "test-task-id"
 
 
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
@@ -1282,17 +1315,19 @@ def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
-def test_audio_chunk_upload_requires_active_team_stt_config(client, make_team, make_user, monkeypatch):
+def test_duplicate_live_chunk_sequence_is_rejected(client, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked"})
     transcript_id = started.json()["id"]
 
-    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
-        return NormalizedAudio(filename="chunk.wav", content_type="audio/wav", data=b"normalized-audio")
-
-    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+    first = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "1"},
+    )
+    assert first.status_code == 202
 
     response = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
@@ -1300,31 +1335,134 @@ def test_audio_chunk_upload_requires_active_team_stt_config(client, make_team, m
         data={"chunk_sequence_no": "1"},
     )
 
-    assert_error(response, status_code=422, code="business_rule_violation", message="No active STT config for team")
+    assert_error(response, status_code=409, code="conflict", message="Chunk sequence number has already been submitted")
 
 
-def test_audio_file_upload_updates_file_upload_transcript_draft(client, db_session, make_team, make_user, monkeypatch):
+def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-    config = TeamSttConfig(
-        team_id=team.id,
-        label="Compatible STT",
-        adapter_kind=SttAdapterKind.openai_compatible_rest,
-        base_url="http://127.0.0.1:9000",
-        transcribe_path="/v1/audio/transcriptions",
-        auth_mode=SttAuthMode.bearer,
-        model_name="whisper-1",
-        file_field_name="file",
-        language="en",
-        response_text_path="text",
-        extra_form_fields_json={"response_format": "verbose_json"},
-        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
-        is_active=True,
-        created_by_user_id=owner.id,
-        updated_by_user_id=owner.id,
+    admin = make_user(email="admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    login(client, email="owner@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked", "current_draft_text_encrypted": "draft-1"})
+    transcript_id = started.json()["id"]
+
+    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
+        return NormalizedAudio(filename=source_filename.replace(".webm", ".wav"), content_type="audio/wav", data=audio_bytes + b"-normalized")
+
+    def fake_transcribe_with_team_stt(db, *, team_id, audio_bytes, filename, content_type):
+        assert team_id == team.id
+        assert content_type == "audio/wav"
+        if filename == "chunk-1.wav":
+            return "first chunk"
+        if filename == "chunk-2.wav":
+            return "second chunk"
+        raise AssertionError(f"unexpected filename {filename}")
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_team_stt", fake_transcribe_with_team_stt)
+
+    queued_one = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-chunks",
+        files={"audio": ("chunk-1.webm", b"chunk-1", "audio/webm")},
+        data={"chunk_sequence_no": "1", "declared_duration_seconds": "12"},
     )
-    db_session.add(config)
-    db_session.commit()
+    queued_two = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-chunks",
+        files={"audio": ("chunk-2.webm", b"chunk-2", "audio/webm")},
+        data={"chunk_sequence_no": "2", "declared_duration_seconds": "10"},
+    )
+
+    job_one_id = UUID(queued_one.json()["job"]["id"])
+    job_two_id = UUID(queued_two.json()["job"]["id"])
+
+    processed_two = process_transcript_ingestion_job(db_session, job_id=job_two_id, audio_bytes=b"chunk-2")
+    assert processed_two.status is TranscriptIngestionJobStatus.completed
+
+    transcript_after_two = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript_after_two is not None
+    assert transcript_after_two.current_draft_text_encrypted == "draft-1"
+    assert transcript_after_two.next_live_chunk_sequence_no_applied == 1
+
+    processed_one = process_transcript_ingestion_job(db_session, job_id=job_one_id, audio_bytes=b"chunk-1")
+    assert processed_one.status is TranscriptIngestionJobStatus.applied
+
+    transcript_after_one = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript_after_one is not None
+    assert transcript_after_one.current_draft_text_encrypted == "draft-1\nfirst chunk\nsecond chunk"
+    assert transcript_after_one.next_live_chunk_sequence_no_applied == 3
+    assert transcript_after_one.status.value == "transcribing"
+
+    refreshed_two = db_session.get(TranscriptIngestionJob, job_two_id)
+    assert refreshed_two is not None
+    assert refreshed_two.status is TranscriptIngestionJobStatus.applied
+
+
+def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    login(client, email="owner@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked"})
+    transcript_id = started.json()["id"]
+    queued = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "1"},
+    )
+    job_id = UUID(queued.json()["job"]["id"])
+
+    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
+        return NormalizedAudio(filename="chunk.wav", content_type="audio/wav", data=b"normalized-audio")
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+
+    try:
+        process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-audio")
+    except Exception as exc:
+        assert isinstance(exc, Exception)
+    else:
+        raise AssertionError("Expected live chunk processing to fail without an active STT selection")
+
+    failed_job = db_session.get(TranscriptIngestionJob, job_id)
+    assert failed_job is not None
+    assert failed_job.status is TranscriptIngestionJobStatus.failed
+    assert failed_job.error_code == "business_rule_violation"
+
+
+def test_audio_file_upload_queues_job_for_file_modes(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    login(client, email="owner@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "file_upload"})
+    transcript_id = started.json()["id"]
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    assert uploaded.status_code == 202
+    assert uploaded.json()["transcript"]["status"] == "transcribing"
+    assert uploaded.json()["job"]["job_kind"] == "audio_file"
+    assert uploaded.json()["job"]["chunk_sequence_no"] is None
+    persisted = db_session.get(Transcript, UUID(transcript_id))
+    assert persisted is not None
+    assert persisted.current_draft_text_encrypted is None
+    job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
+    assert job is not None
+    assert job.status is TranscriptIngestionJobStatus.queued
+    assert job.celery_task_id == "test-task-id"
+
+
+def test_processing_audio_file_job_updates_transcript_draft_and_marks_ready(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
 
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "file_upload"})
@@ -1349,10 +1487,11 @@ def test_audio_file_upload_updates_file_upload_transcript_draft(client, db_sessi
         f"/api/v1/transcripts/{transcript_id}/audio-file",
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
+    job_id = UUID(uploaded.json()["job"]["id"])
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
 
-    assert uploaded.status_code == 200
-    assert uploaded.json()["current_draft_text_encrypted"] == "full file transcript"
-    assert uploaded.json()["status"] == "ready"
+    assert uploaded.status_code == 202
+    assert processed.status is TranscriptIngestionJobStatus.applied
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
     assert persisted.current_draft_text_encrypted == "full file transcript"
@@ -1393,7 +1532,7 @@ def test_audio_file_route_enforces_owner_scope_and_file_modes(client, make_team,
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
-def test_audio_file_upload_requires_active_team_stt_config(client, make_team, make_user, monkeypatch):
+def test_processing_audio_file_requires_active_team_stt_selection(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     login(client, email="owner@example.com", password="password-1")
@@ -1409,11 +1548,25 @@ def test_audio_file_upload_requires_active_team_stt_config(client, make_team, ma
         f"/api/v1/transcripts/{transcript_id}/audio-file",
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
+    job_id = UUID(response.json()["job"]["id"])
 
-    assert_error(response, status_code=422, code="business_rule_violation", message="No active STT config for team")
+    assert response.status_code == 202
+    try:
+        process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    except Exception as exc:
+        assert isinstance(exc, Exception)
+    else:
+        raise AssertionError("Expected file ingestion processing to fail without an active STT selection")
+
+    failed_job = db_session.get(TranscriptIngestionJob, job_id)
+    assert failed_job is not None
+    assert failed_job.status is TranscriptIngestionJobStatus.failed
+    assert failed_job.error_code == "business_rule_violation"
 
 
-def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_response_path(db_session, make_team, make_user, monkeypatch):
+def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_response_path(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     config = TeamSttConfig(
@@ -1435,6 +1588,7 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     )
     db_session.add(config)
     db_session.commit()
+    make_stt_selection(config=config, actor=owner)
 
     captured = {}
 

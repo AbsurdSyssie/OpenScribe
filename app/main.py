@@ -33,6 +33,8 @@ from .schemas import (
     SttInspectRequest,
     SttInspectResult,
     SttConfigUpsert,
+    SttSelectionDetail,
+    SttSelectionUpsert,
     TeamCreate,
     TeamDetail,
     TeamListItem,
@@ -41,6 +43,8 @@ from .schemas import (
     TranscriptCommit,
     TranscriptCreate,
     TranscriptDetail,
+    TranscriptIngestionAccepted,
+    TranscriptIngestionJobDetail,
     TranscriptListItem,
     TranscriptStart,
     TrustedDeviceStatusResponse,
@@ -52,6 +56,11 @@ from .services.stt import (
     delete_stt_config as delete_stt_config_service,
     get_stt_config as get_stt_config_service,
     inspect_stt_contract as inspect_stt_contract_service,
+    get_team_stt_selection as get_team_stt_selection_service,
+    list_selectable_stt_configs as list_selectable_stt_configs_service,
+    list_stt_configs as list_stt_configs_service,
+    clear_team_stt_selection as clear_team_stt_selection_service,
+    set_team_stt_selection as set_team_stt_selection_service,
     upsert_stt_config as upsert_stt_config_service,
 )
 from .services.admin import (
@@ -96,11 +105,14 @@ from .services.auth import (
     verify_totp_enrollment,
 )
 from .services.transcripts import (
+    attach_task_id_to_ingestion_job,
     create_transcript_from_payload,
-    ingest_audio_chunk,
-    ingest_audio_file,
+    mark_ingestion_job_enqueue_failed,
+    queue_audio_chunk_ingestion,
+    queue_audio_file_ingestion,
     start_transcript as start_transcript_service,
 )
+from .tasks import enqueue_transcript_ingestion_job
 
 
 @dataclass(slots=True)
@@ -218,6 +230,14 @@ def require_system_admin(context: AuthenticatedContext = Depends(require_full_co
     return context
 
 
+def require_stt_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+    if context.user.is_system_admin:
+        return context
+    if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
+        return context
+    raise AppError(403, "forbidden", "STT selection access required")
+
+
 def require_user_manager(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
@@ -275,6 +295,7 @@ def render_admin(
     *,
     current_user: User,
     selected_team_id: str | None = None,
+    selected_stt_config_id: str | None = None,
     stt_inspection: SttInspectResult | None = None,
     stt_form_override: dict[str, object] | None = None,
     message: str | None = None,
@@ -282,16 +303,22 @@ def render_admin(
     status_code: int = 200,
 ):
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
-    stt_config = get_stt_config_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+    edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
+    stt_selection = get_team_stt_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     context = {
         "request": request,
         "current_user": current_user,
         "teams": list_teams_service(db),
         "users": list_users_service(db),
         "selected_team_id": selected_team_id,
-        "stt_config": stt_config,
+        "selected_stt_config_id": selected_stt_config_id,
+        "stt_configs": stt_configs,
+        "stt_config": edit_stt_config,
+        "stt_selection": stt_selection,
         "stt_inspection": stt_inspection,
-        "stt_form": stt_form_override or stt_form_defaults(stt_config, None),
+        "stt_form": stt_form_override or stt_form_defaults(edit_stt_config, None),
+        "selectable_stt_configs": list_selectable_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
         "account_requests": list_manageable_account_requests_service(db, current_user),
         "team_statuses": list(TeamStatus),
         "team_roles": list(TeamRole),
@@ -307,23 +334,21 @@ def render_home(
     db: Session,
     *,
     current_user: User,
-    stt_inspection: SttInspectResult | None = None,
-    stt_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
 ):
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
-    stt_config = get_stt_config_service(db, current_user) if is_manager else None
+    stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
+    selectable_stt_configs = list_selectable_stt_configs_service(db, current_user) if is_manager else []
     context = {
         "request": request,
         "current_user": current_user,
         "is_manager": is_manager,
         "manageable_users": list_manageable_users_service(db, current_user) if is_manager else [],
         "account_requests": list_manageable_account_requests_service(db, current_user) if is_manager else [],
-        "stt_config": stt_config,
-        "stt_inspection": stt_inspection,
-        "stt_form": stt_form_override or stt_form_defaults(stt_config, None),
+        "stt_selection": stt_selection,
+        "selectable_stt_configs": selectable_stt_configs,
         "message": message,
         "message_kind": message_kind,
     }
@@ -340,6 +365,7 @@ def stt_config_response(config) -> SttConfigDetail:
         transcribe_path=config.transcribe_path,
         auth_mode=config.auth_mode,
         model_name=config.model_name,
+        available_models_json=list(config.available_models_json or []),
         file_field_name=config.file_field_name,
         language=config.language,
         response_text_path=config.response_text_path,
@@ -353,9 +379,33 @@ def stt_config_response(config) -> SttConfigDetail:
     )
 
 
+def stt_selection_response(selection) -> SttSelectionDetail:
+    config = selection.config
+    resolved_model_name = selection.model_name_override or config.model_name
+    resolved_language = selection.language_override or config.language
+    return SttSelectionDetail(
+        id=selection.id,
+        team_id=selection.team_id,
+        stt_config_id=selection.stt_config_id,
+        selected_by_user_id=selection.selected_by_user_id,
+        selected_config_label=config.label,
+        selected_config_adapter_kind=config.adapter_kind,
+        selected_config_base_url=config.base_url,
+        selected_config_transcribe_path=config.transcribe_path,
+        model_name_override=selection.model_name_override,
+        language_override=selection.language_override,
+        resolved_model_name=resolved_model_name,
+        resolved_language=resolved_language,
+        available_models_json=list(config.available_models_json or []),
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
 def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, object]:
     if inspection is not None:
         return {
+            "config_id": "",
             "label": "",
             "adapter_kind": inspection.adapter_kind.value,
             "base_url": inspection.base_url,
@@ -372,14 +422,18 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         }
     if config is not None:
         return {
+            "config_id": str(config.id),
             "label": config.label,
             "adapter_kind": config.adapter_kind.value,
             "base_url": config.base_url,
             "openapi_path": "/openapi.json" if config.adapter_kind is SttAdapterKind.generic_rest else "",
             "transcribe_path": config.transcribe_path,
             "model_name": config.model_name or "",
-            "available_models": [],
-            "available_model_options": [],
+            "available_models": list(config.available_models_json or []),
+            "available_model_options": [
+                {"id": model, "source": "saved", "label": f"{model} (saved)"}
+                for model in (config.available_models_json or [])
+            ],
             "file_field_name": config.file_field_name,
             "language": config.language or "",
             "response_text_path": config.response_text_path,
@@ -387,6 +441,7 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "is_active": config.is_active,
         }
     return {
+        "config_id": "",
         "label": "",
         "adapter_kind": SttAdapterKind.generic_rest.value,
         "base_url": "",
@@ -662,25 +717,50 @@ def list_users(context: AuthenticatedContext = Depends(require_user_manager), db
     return list_manageable_users_service(db, context.user)
 
 
-@api.get("/stt-config", response_model=SttConfigDetail | None, responses=error_responses)
-def get_stt_config(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
-    config = get_stt_config_service(db, context.user, team_id=team_id)
-    return stt_config_response(config) if config else None
+@api.get("/stt-configs", response_model=list[SttConfigDetail], responses=error_responses)
+def list_stt_configs(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return [stt_config_response(config) for config in list_stt_configs_service(db, context.user, team_id=team_id)]
 
 
-@api.post("/stt-config/inspect", response_model=SttInspectResult, responses=error_responses)
-def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+@api.get("/stt-configs/{config_id}", response_model=SttConfigDetail, responses=error_responses)
+def get_stt_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return stt_config_response(get_stt_config_service(db, context.user, config_id=config_id, team_id=team_id))
+
+
+@api.post("/stt-configs/inspect", response_model=SttInspectResult, responses=error_responses)
+def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return inspect_stt_contract_service(db, context.user, payload)
 
 
-@api.post("/stt-config", response_model=SttConfigDetail, responses=error_responses)
-def upsert_stt_config(payload: SttConfigUpsert, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+@api.post("/stt-configs", response_model=SttConfigDetail, responses=error_responses)
+def upsert_stt_config(payload: SttConfigUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return stt_config_response(upsert_stt_config_service(db, context.user, payload))
 
 
-@api.delete("/stt-config", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
-def delete_stt_config(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
-    delete_stt_config_service(db, context.user, team_id=team_id)
+@api.delete("/stt-configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_stt_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    delete_stt_config_service(db, context.user, config_id=config_id, team_id=team_id)
+
+
+@api.get("/stt-selection", response_model=SttSelectionDetail | None, responses=error_responses)
+def get_stt_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
+    selection = get_team_stt_selection_service(db, context.user, team_id=team_id)
+    return stt_selection_response(selection) if selection else None
+
+
+@api.get("/stt-selection/options", response_model=list[SttConfigDetail], responses=error_responses)
+def list_stt_selection_options(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
+    return [stt_config_response(config) for config in list_selectable_stt_configs_service(db, context.user, team_id=team_id)]
+
+
+@api.post("/stt-selection", response_model=SttSelectionDetail, responses=error_responses)
+def set_stt_selection(payload: SttSelectionUpsert, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
+    return stt_selection_response(set_team_stt_selection_service(db, context.user, payload))
+
+
+@api.delete("/stt-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_stt_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
+    clear_team_stt_selection_service(db, context.user, team_id=team_id)
 
 
 @api.post("/users/{user_id}/suspend", response_model=UserDetail, responses=error_responses)
@@ -731,7 +811,7 @@ def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: A
     return transcript
 
 
-@api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptDetail, responses=error_responses)
+@api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 def upload_transcript_audio_chunk(
     transcript_id: UUID,
     audio: UploadFile = File(...),
@@ -740,19 +820,29 @@ def upload_transcript_audio_chunk(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    del chunk_sequence_no
     audio_bytes = audio.file.read()
-    return ingest_audio_chunk(
+    transcript, job = queue_audio_chunk_ingestion(
         db,
         context.user,
         transcript_id=transcript_id,
-        audio_bytes=audio_bytes,
         filename=audio.filename or "chunk.bin",
+        chunk_sequence_no=chunk_sequence_no,
         declared_duration_seconds=declared_duration_seconds,
+    )
+    try:
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+    except Exception as exc:
+        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue live chunk ingestion")
+        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue live chunk ingestion") from exc
+    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    refreshed_transcript = db.get(Transcript, transcript.id) or transcript
+    return TranscriptIngestionAccepted(
+        transcript=TranscriptDetail.model_validate(refreshed_transcript, from_attributes=True),
+        job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
     )
 
 
-@api.post("/transcripts/{transcript_id}/audio-file", response_model=TranscriptDetail, responses=error_responses)
+@api.post("/transcripts/{transcript_id}/audio-file", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 def upload_transcript_audio_file(
     transcript_id: UUID,
     audio: UploadFile = File(...),
@@ -760,12 +850,22 @@ def upload_transcript_audio_file(
     db: Session = Depends(get_db),
 ):
     audio_bytes = audio.file.read()
-    return ingest_audio_file(
+    transcript, job = queue_audio_file_ingestion(
         db,
         context.user,
         transcript_id=transcript_id,
-        audio_bytes=audio_bytes,
         filename=audio.filename or "audio.bin",
+    )
+    try:
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+    except Exception as exc:
+        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
+        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion") from exc
+    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    refreshed_transcript = db.get(Transcript, transcript.id) or transcript
+    return TranscriptIngestionAccepted(
+        transcript=TranscriptDetail.model_validate(refreshed_transcript, from_attributes=True),
+        job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
     )
 
 
@@ -1063,94 +1163,44 @@ def home_create_user(
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/home/stt-config", response_class=HTMLResponse)
-def home_upsert_stt_config(
+@app.post("/home/stt-selection", response_class=HTMLResponse)
+def home_set_stt_selection(
     request: Request,
-    label: str = Form(...),
-    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
-    base_url: str = Form(""),
-    transcribe_path: str = Form(""),
-    bearer_token: str = Form(""),
+    stt_config_id: str = Form(...),
     provider_model: str = Form(""),
-    file_field_name: str = Form(""),
     language: str = Form(""),
-    response_text_path: str = Form(""),
-    extra_form_fields_json: str = Form(""),
-    is_active: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
-        upsert_stt_config_service(
+        set_team_stt_selection_service(
             db,
             context.user,
-            SttConfigUpsert(
-                label=label,
-                adapter_kind=SttAdapterKind(adapter_kind),
-                base_url=base_url,
-                transcribe_path=transcribe_path,
-                bearer_token=bearer_token or None,
-                model_name=provider_model or None,
-                file_field_name=file_field_name or "file",
-                language=language or None,
-                response_text_path=response_text_path or "text",
-                extra_form_fields_json=parse_extra_form_fields_json(extra_form_fields_json),
-                is_active=is_active == "true",
+            SttSelectionUpsert(
+                stt_config_id=UUID(stt_config_id),
+                model_name_override=provider_model or None,
+                language_override=language or None,
             ),
         )
-    except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/home/stt-config/clear", response_class=HTMLResponse)
-def home_clear_stt_config(request: Request, db: Session = Depends(get_db)):
+@app.post("/home/stt-selection/clear", response_class=HTMLResponse)
+def home_clear_stt_selection(request: Request, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
-        delete_stt_config_service(db, context.user)
+        clear_team_stt_selection_service(db, context.user)
     except AppError as exc:
         return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
-
-
-@app.post("/home/stt-config/inspect", response_class=HTMLResponse)
-def home_inspect_stt_config(
-    request: Request,
-    label: str = Form(""),
-    adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
-    base_url: str = Form(""),
-    openapi_path: str = Form(""),
-    bearer_token: str = Form(""),
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    try:
-        inspection = inspect_stt_contract_service(
-            db,
-            context.user,
-            SttInspectRequest(
-                adapter_kind=SttAdapterKind(adapter_kind),
-                base_url=base_url,
-                openapi_path=openapi_path or None,
-                bearer_token=bearer_token or None,
-            ),
-        )
-    except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return render_home(
-        request,
-        db,
-        current_user=context.user,
-        stt_inspection=inspection,
-        stt_form_override={**stt_form_defaults(None, inspection), "label": label, "adapter_kind": inspection.adapter_kind.value},
-        message="STT endpoint inspected. Review the inferred fields before saving.",
-    )
 
 
 @app.post("/home/users/{user_id}/suspend", response_class=HTMLResponse)
@@ -1232,13 +1282,13 @@ def home_reject_account_request(request: Request, request_id: UUID, review_notes
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, team_id: str | None = None, db: Session = Depends(get_db)):
+def admin_page(request: Request, team_id: str | None = None, stt_config_id: str | None = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(request, db, current_user=context.user, selected_team_id=team_id)
+    return render_admin(request, db, current_user=context.user, selected_team_id=team_id, selected_stt_config_id=stt_config_id)
 
 
 @app.post("/admin/teams", response_class=HTMLResponse)
@@ -1295,10 +1345,11 @@ def admin_create_user(
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/admin/stt-config", response_class=HTMLResponse)
+@app.post("/admin/stt-configs", response_class=HTMLResponse)
 def admin_upsert_stt_config(
     request: Request,
     team_id: str = Form(...),
+    config_id: str = Form(""),
     label: str = Form(...),
     adapter_kind: str = Form(SttAdapterKind.generic_rest.value),
     base_url: str = Form(""),
@@ -1322,6 +1373,7 @@ def admin_upsert_stt_config(
             db,
             context.user,
             SttConfigUpsert(
+                config_id=UUID(config_id) if config_id else None,
                 team_id=UUID(team_id),
                 label=label,
                 adapter_kind=SttAdapterKind(adapter_kind),
@@ -1343,23 +1395,23 @@ def admin_upsert_stt_config(
     return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/admin/stt-config/clear", response_class=HTMLResponse)
-def admin_clear_stt_config(request: Request, team_id: str = Form(...), db: Session = Depends(get_db)):
+@app.post("/admin/stt-configs/{config_id}/delete", response_class=HTMLResponse)
+def admin_delete_stt_config(request: Request, config_id: UUID, team_id: str = Form(...), db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        delete_stt_config_service(db, context.user, team_id=UUID(team_id))
+        delete_stt_config_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
     except (ValueError, AppError) as exc:
-        detail = exc.message if isinstance(exc, AppError) else "Invalid STT clear request"
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT delete request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
         return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
     return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/admin/stt-config/inspect", response_class=HTMLResponse)
+@app.post("/admin/stt-configs/inspect", response_class=HTMLResponse)
 def admin_inspect_stt_config(
     request: Request,
     team_id: str = Form(...),
@@ -1396,10 +1448,59 @@ def admin_inspect_stt_config(
         db,
         current_user=context.user,
         selected_team_id=team_id,
+        selected_stt_config_id=None,
         stt_inspection=inspection,
         stt_form_override={**stt_form_defaults(None, inspection), "label": label, "adapter_kind": inspection.adapter_kind.value},
         message="STT endpoint inspected. Review the inferred fields before saving.",
     )
+
+
+@app.post("/admin/stt-selection", response_class=HTMLResponse)
+def admin_set_stt_selection(
+    request: Request,
+    team_id: str = Form(...),
+    stt_config_id: str = Form(...),
+    provider_model: str = Form(""),
+    language: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_team_stt_selection_service(
+            db,
+            context.user,
+            SttSelectionUpsert(
+                team_id=UUID(team_id),
+                stt_config_id=UUID(stt_config_id),
+                model_name_override=provider_model or None,
+                language_override=language or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-selection/clear", response_class=HTMLResponse)
+def admin_clear_stt_selection(request: Request, team_id: str = Form(...), db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        clear_team_stt_selection_service(db, context.user, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users/{user_id}/suspend", response_class=HTMLResponse)

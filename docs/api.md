@@ -46,20 +46,23 @@ Canonical JSON API routes are versioned under `/api/v1`.
 ### Transcripts
 
 - `POST /api/v1/transcripts`
-- `POST /api/v1/transcripts/{transcript_id}/commit`
-- `GET /api/v1/users/{user_id}/transcripts`
-
-Planned next additions:
-
 - `POST /api/v1/transcripts/start`
+- `POST /api/v1/transcripts/{transcript_id}/commit`
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
+- `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- `GET /api/v1/users/{user_id}/transcripts`
 
 ### Team transcription configuration
 
-- `GET /api/v1/stt-config`
-- `POST /api/v1/stt-config/inspect`
-- `POST /api/v1/stt-config`
-- `DELETE /api/v1/stt-config`
+- `GET /api/v1/stt-configs`
+- `GET /api/v1/stt-configs/{config_id}`
+- `POST /api/v1/stt-configs/inspect`
+- `POST /api/v1/stt-configs`
+- `DELETE /api/v1/stt-configs/{config_id}`
+- `GET /api/v1/stt-selection`
+- `GET /api/v1/stt-selection/options`
+- `POST /api/v1/stt-selection`
+- `DELETE /api/v1/stt-selection`
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ## Error envelope
@@ -145,9 +148,10 @@ These routes require a full authenticated manager session:
 - `POST /api/v1/users/{user_id}/suspend`
 - `POST /api/v1/users/{user_id}/reactivate`
 - `DELETE /api/v1/users/{user_id}`
-- `GET /api/v1/stt-config`
-- `POST /api/v1/stt-config/inspect`
-- `POST /api/v1/stt-config`
+- `GET /api/v1/stt-selection`
+- `GET /api/v1/stt-selection/options`
+- `POST /api/v1/stt-selection`
+- `DELETE /api/v1/stt-selection`
 
 Managers are:
 
@@ -171,14 +175,13 @@ Current account-administration behavior:
 
 Current STT-configuration behavior:
 
-- leaders may read and update only their own team's STT config
-- leaders may clear only their own team's STT config
-- system admins may read and update any team's STT config, but must supply `team_id`
-- system admins may clear any team's STT config, but must supply `team_id`
-- leaders may inspect only their own team's STT endpoint candidate
-- system admins may inspect only for the selected team they are editing
-- normal users may not access these routes
-- onboarding-only and pending-MFA sessions may not access these routes
+- system admins provision STT endpoint rows and Vault-backed secrets per team
+- system admins may list, inspect, create, update, and delete provisioned STT configs, but must supply `team_id`
+- leaders may not provision, rotate, or delete STT credentials
+- leaders may read only their own team's selectable provisioned endpoints through the selection routes
+- leaders may set or clear only their own team's active STT selection
+- normal users may not access provisioning or selection routes
+- onboarding-only and pending-MFA sessions may not access provisioning or selection routes
 - `generic_rest` inspection fetches `base_url + openapi_path` and returns inferred fields without saving
 - `openai_cloud` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
 - if OpenAI model discovery fails, `openai_cloud` inspection falls back to a built-in transcription-model allowlist and still returns `200`
@@ -189,15 +192,8 @@ Current STT-configuration behavior:
 - currently supported adapter families are `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
 - the API never returns the bearer token
 - the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
-- one team has at most one STT config row in the current slice
-- clearing the STT config removes the current row and returns the team to a blank add flow
-
-Planned authority refinement:
-
-- system admins provision STT endpoints and credentials for teams
-- team leaders choose which provisioned service/model is active for their team
-- team leaders may clear the active team STT selection
-- team leaders do not gain raw credential visibility in that flow
+- one team may have multiple provisioned STT config rows
+- one team may have only one active STT selection row
 
 ### System-admin-only routes
 
@@ -231,7 +227,6 @@ Current transcript-start behavior:
 
 Current live chunk-ingestion behavior:
 
-- the backend resolves the active team transcription endpoint
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks` accepts multipart audio upload for owner-only live chunked transcripts
 - the route currently requires:
   - `audio`
@@ -240,21 +235,26 @@ Current live chunk-ingestion behavior:
   - `declared_duration_seconds`
 - chunk uploads are rejected unless the transcript `ingestion_mode` is `live_chunked`
 - declared chunk duration currently rejects values above the current 30-second maximum
-- the backend normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
-- the backend resolves the active team transcription endpoint
-- the backend forwards the normalized chunk to the external STT service
-- the backend appends returned text into `current_draft_text_encrypted`
-- the transcript status moves to `transcribing` because more live chunks may still arrive
+- the route queues a transcript-ingestion job and returns `202 Accepted`
+- the response includes both the transcript summary and the queued ingestion job
+- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
+- the backend worker resolves the active team STT selection and the selected provider credentials from Vault
+- the backend worker forwards the normalized chunk to the external STT service
+- live chunk application is sequence-aware:
+  - duplicate `chunk_sequence_no` values are rejected at queue time
+  - completed chunks are appended only in order using `next_live_chunk_sequence_no_applied`
+- the transcript status remains `transcribing` while more live chunks may still arrive
 - leaders/admins may configure team transcription metadata without gaining transcript readability
 
 Current whole-file ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `file_upload` and `microphone_batch` transcripts
 - file ingestion is rejected unless the transcript `ingestion_mode` is `file_upload` or `microphone_batch`
-- the backend normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
-- the backend resolves the active team transcription endpoint
-- the backend forwards the normalized audio file to the external STT service
-- the backend writes the returned transcript text into `current_draft_text_encrypted`
+- the route queues a transcript-ingestion job and returns `202 Accepted`
+- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
+- the backend worker resolves the active team STT selection and Vault-backed secret
+- the backend worker forwards the normalized audio file to the external STT service
+- the backend worker writes the returned transcript text into `current_draft_text_encrypted`
 - the transcript status moves to `ready` when the provider returns successfully
 
 System-admin or leader authority does not grant transcript-content access.

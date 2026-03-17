@@ -1,7 +1,21 @@
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Transcript, TranscriptIngestionMode, TranscriptStatus, User, transcript_expiry
+from app.models import (
+    Transcript,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
+    TranscriptIngestionMode,
+    TranscriptStatus,
+    User,
+    transcript_expiry,
+    utcnow,
+)
 from app.schemas.transcripts import TranscriptCreate, TranscriptStart
 from app.services.audio import normalize_audio_to_wav_16k_mono
 from app.services.stt import transcribe_with_team_stt
@@ -29,6 +43,7 @@ def _create_transcript_row(
         current_draft_text_encrypted=current_draft_text_encrypted,
         ingestion_mode=ingestion_mode,
         status=TranscriptStatus.recording,
+        next_live_chunk_sequence_no_applied=1,
         retention_days_applied=retention_days,
         retention_expires_at=transcript_expiry(retention_days),
     )
@@ -81,20 +96,25 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
 
 
-def ingest_audio_chunk(
-    db: Session,
-    owner: User,
-    *,
-    transcript_id,
-    audio_bytes: bytes,
-    filename: str,
-    declared_duration_seconds: float | None,
-) -> Transcript:
+def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
     transcript = db.get(Transcript, transcript_id)
     if not transcript:
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != owner.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    return transcript
+
+
+def queue_audio_chunk_ingestion(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    filename: str,
+    chunk_sequence_no: int,
+    declared_duration_seconds: float | None,
+) -> tuple[Transcript, TranscriptIngestionJob]:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
         raise AppError(
             409,
@@ -110,35 +130,45 @@ def ingest_audio_chunk(
             {"field": "declared_duration_seconds", "max_seconds": 30},
         )
 
-    normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=filename)
-    chunk_text = transcribe_with_team_stt(
-        db,
-        team_id=transcript.team_id,
-        audio_bytes=normalized_audio.data,
-        filename=normalized_audio.filename,
-        content_type=normalized_audio.content_type,
+    existing = db.scalar(
+        select(TranscriptIngestionJob).where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.chunk_sequence_no == chunk_sequence_no,
+        )
     )
-    transcript.current_draft_text_encrypted = _append_chunk_text(transcript.current_draft_text_encrypted, chunk_text)
+    if existing is not None:
+        raise AppError(
+            409,
+            "conflict",
+            "Chunk sequence number has already been submitted",
+            {"transcript_id": str(transcript.id), "chunk_sequence_no": chunk_sequence_no},
+        )
+
+    job = TranscriptIngestionJob(
+        id=uuid4(),
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=chunk_sequence_no,
+        source_filename=filename,
+        status=TranscriptIngestionJobStatus.queued,
+    )
     transcript.status = TranscriptStatus.transcribing
+    db.add(job)
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
-    return transcript
+    db.refresh(job)
+    return transcript, job
 
 
-def ingest_audio_file(
+def queue_audio_file_ingestion(
     db: Session,
     owner: User,
     *,
-    transcript_id,
-    audio_bytes: bytes,
+    transcript_id: UUID,
     filename: str,
-) -> Transcript:
-    transcript = db.get(Transcript, transcript_id)
-    if not transcript:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != owner.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+) -> tuple[Transcript, TranscriptIngestionJob]:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode not in {TranscriptIngestionMode.file_upload, TranscriptIngestionMode.microphone_batch}:
         raise AppError(
             409,
@@ -147,17 +177,144 @@ def ingest_audio_file(
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
 
-    normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=filename)
-    transcript_text = transcribe_with_team_stt(
-        db,
-        team_id=transcript.team_id,
-        audio_bytes=normalized_audio.data,
-        filename=normalized_audio.filename,
-        content_type=normalized_audio.content_type,
+    job = TranscriptIngestionJob(
+        id=uuid4(),
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        chunk_sequence_no=None,
+        source_filename=filename,
+        status=TranscriptIngestionJobStatus.queued,
     )
-    transcript.current_draft_text_encrypted = transcript_text
-    transcript.status = TranscriptStatus.ready
+    transcript.status = TranscriptStatus.transcribing
+    db.add(job)
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
-    return transcript
+    db.refresh(job)
+    return transcript, job
+
+
+def _mark_job_processing(db: Session, job: TranscriptIngestionJob) -> None:
+    job.status = TranscriptIngestionJobStatus.processing
+    job.started_at = utcnow()
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+
+def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
+    job.status = TranscriptIngestionJobStatus.failed
+    job.error_code = code
+    job.error_message = message[:255]
+    job.completed_at = utcnow()
+    transcript.status = TranscriptStatus.failed
+    db.add(job)
+    db.add(transcript)
+    db.commit()
+
+
+def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
+    expected_sequence = transcript.next_live_chunk_sequence_no_applied
+    while True:
+        job = db.scalar(
+            select(TranscriptIngestionJob).where(
+                TranscriptIngestionJob.transcript_id == transcript.id,
+                TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+                TranscriptIngestionJob.chunk_sequence_no == expected_sequence,
+                TranscriptIngestionJob.status == TranscriptIngestionJobStatus.completed,
+            )
+        )
+        if job is None:
+            break
+        transcript.current_draft_text_encrypted = _append_chunk_text(
+            transcript.current_draft_text_encrypted,
+            job.result_text_encrypted or "",
+        )
+        job.status = TranscriptIngestionJobStatus.applied
+        job.applied_at = utcnow()
+        expected_sequence += 1
+        db.add(job)
+        db.add(transcript)
+
+    transcript.next_live_chunk_sequence_no_applied = expected_sequence
+    transcript.status = TranscriptStatus.transcribing
+    db.add(transcript)
+    db.commit()
+
+
+def process_transcript_ingestion_job(
+    db: Session,
+    *,
+    job_id: UUID,
+    audio_bytes: bytes,
+) -> TranscriptIngestionJob:
+    job = db.get(TranscriptIngestionJob, job_id)
+    if job is None:
+        raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
+    transcript = db.get(Transcript, job.transcript_id)
+    if transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
+    if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied}:
+        return job
+
+    _mark_job_processing(db, job)
+
+    try:
+        normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=job.source_filename)
+        transcript_text = transcribe_with_team_stt(
+            db,
+            team_id=transcript.team_id,
+            audio_bytes=normalized_audio.data,
+            filename=normalized_audio.filename,
+            content_type=normalized_audio.content_type,
+        )
+        now = utcnow()
+        job.result_text_encrypted = transcript_text
+        job.completed_at = now
+
+        if job.job_kind is TranscriptIngestionJobKind.audio_file:
+            job.status = TranscriptIngestionJobStatus.applied
+            job.applied_at = now
+            transcript.current_draft_text_encrypted = transcript_text
+            transcript.status = TranscriptStatus.ready
+            db.add(job)
+            db.add(transcript)
+            db.commit()
+        else:
+            job.status = TranscriptIngestionJobStatus.completed
+            db.add(job)
+            db.commit()
+            db.refresh(transcript)
+            _apply_completed_live_chunks(db, transcript)
+    except AppError as exc:
+        _mark_job_failed(db, transcript, job, code=exc.code, message=exc.message)
+        raise
+    except Exception as exc:  # pragma: no cover
+        _mark_job_failed(db, transcript, job, code="ingestion_failed", message="Transcript ingestion job failed")
+        raise AppError(502, "ingestion_failed", "Transcript ingestion job failed") from exc
+
+    db.refresh(job)
+    return job
+
+
+def attach_task_id_to_ingestion_job(db: Session, *, job_id: UUID, task_id: str | None) -> TranscriptIngestionJob:
+    job = db.get(TranscriptIngestionJob, job_id)
+    if job is None:
+        raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
+    job.celery_task_id = task_id
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_ingestion_job_enqueue_failed(db: Session, *, job_id: UUID, message: str) -> TranscriptIngestionJob:
+    job = db.get(TranscriptIngestionJob, job_id)
+    if job is None:
+        raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
+    transcript = db.get(Transcript, job.transcript_id)
+    if transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
+    _mark_job_failed(db, transcript, job, code="ingestion_enqueue_failed", message=message)
+    db.refresh(job)
+    return job

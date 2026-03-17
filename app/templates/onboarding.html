@@ -74,6 +74,20 @@
       background: white;
     }
     .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    .qr {
+      display: grid;
+      gap: 10px;
+      justify-items: start;
+      margin: 12px 0;
+    }
+    .qr img {
+      width: 220px;
+      height: 220px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: white;
+      padding: 12px;
+    }
   </style>
 </head>
 <body>
@@ -105,6 +119,10 @@
         <button type="submit">Generate TOTP secret</button>
       </form>
       {% else %}
+      <div class="qr">
+        <div>Scan this QR code with your authenticator app.</div>
+        <img src="{{ totp_qr_svg_data_uri }}" alt="TOTP QR code">
+      </div>
       <p>Secret: <strong>{{ totp_secret }}</strong></p>
       <p>Provisioning URI: <small>{{ totp_uri }}</small></p>
       <form method="post" action="/onboarding/totp/verify">

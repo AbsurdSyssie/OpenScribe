@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models import SessionAuthLevel, UserOnboardingState
@@ -21,10 +23,16 @@ class PasswordChangeRequest(BaseModel):
 class TotpEnrollmentStartResponse(BaseModel):
     secret: str
     provisioning_uri: str
+    qr_code_svg_data_uri: str
 
 
 class TotpVerifyRequest(BaseModel):
     code: str = Field(min_length=6, max_length=8)
+
+
+class MfaChallengeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=8)
+    remember_device: bool = False
 
 
 class RecoveryCodesResponse(BaseModel):
@@ -40,3 +48,9 @@ class CurrentUserResponse(BaseModel):
     team_role: str | None
     auth_level: SessionAuthLevel
     onboarding_state: UserOnboardingState
+
+
+class TrustedDeviceStatusResponse(BaseModel):
+    trusted: bool
+    requires_mfa: bool
+    freshness_expires_at: datetime | None = None

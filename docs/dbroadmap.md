@@ -8,6 +8,11 @@
 - [x] Account requests replacing invite-first onboarding for MVP
 - [x] Opaque DB-backed sessions with onboarding/full auth levels
 - [x] TOTP enrollment and optional recovery-code generation
+- [x] Post-login TOTP challenge with bounded trusted-device freshness
+- [x] First brute-force protection with Redis-backed route rate limits
+- [x] Account suspension and deletion authority hardening
+- [x] Team STT configuration and Vault-backed secret references
+- [ ] Abuse controls and administrative unlock workflow
 - [ ] Transcript lifecycle and retention hardening
 
 ## Completed Milestone: Managed Onboarding and Session Hardening
@@ -49,6 +54,131 @@ Status: `Completed`
 - onboarding sessions may access only onboarding routes, `auth/me`, and logout
 - full access begins only after onboarding completes
 
+## Completed Milestone: MFA Challenge and Trusted-Device Freshness
+
+### Objective
+
+Require a second TOTP step on later logins for completed accounts, while allowing a bounded remembered-browser skip window that does not weaken revocation or transcript privacy.
+
+Status: `Completed`
+
+### Checkpoints
+
+- [x] Add `pending_mfa` session auth level
+- [x] Add trusted-device persistence table and migration
+- [x] Add browser and JSON MFA challenge endpoints
+- [x] Require TOTP after password login for completed MFA-enabled users
+- [x] Allow remembered-browser skip only within a 24-hour freshness window
+- [x] Revoke trusted devices on lock/disable
+- [x] API/UI/migration/docs coverage
+
+### Implemented decisions
+
+- trusted devices are opaque hashed tokens, not JWTs
+- trusted devices do not authenticate by themselves
+- trusted devices only skip TOTP after a correct password login
+- freshness is measured from the last successful MFA challenge, not from each later login
+- pending-MFA sessions may not access normal routes or transcript features
+
+## Completed Milestone: Initial Brute-Force Protection
+
+### Objective
+
+Add a first defensive layer against credential stuffing and repeated guessing attacks without changing the core auth model.
+
+Status: `Completed`
+
+### Checkpoints
+
+- [x] Add Redis-backed rate-limiting dependency and configuration
+- [x] Rate-limit login routes
+- [x] Rate-limit TOTP challenge routes
+- [x] Rate-limit public account-request submission
+- [x] Split app and test rate-limit stores
+- [x] API/UI/docs coverage
+
+### Implemented decisions
+
+- rate limiting uses `slowapi`
+- limiter storage is configured by `RATE_LIMIT_STORAGE_URL`
+- tests use `TEST_RATE_LIMIT_STORAGE_URL`
+- login HTML and JSON routes share one limiter bucket
+- MFA HTML and JSON routes share one limiter bucket
+- public request HTML and JSON routes share one limiter bucket
+
+## Planned Milestone: Abuse Controls and Administrative Unlock Workflow
+
+### Objective
+
+Extend the current route-level throttling into durable abuse controls without creating a broad new security-events subsystem or easy denial-of-service lockouts.
+
+Status: `Planned`
+
+### Planned checkpoints
+
+- [ ] Add DB-backed failed-auth tracking for password and MFA failures
+- [ ] Add temporary per-account cooldown or lock policy with explicit expiry semantics
+- [ ] Add leader/admin unlock flow with clear authorization boundaries
+- [ ] Add lock/unlock reason and actor recording
+- [ ] Add tests for lock, unlock, expiry, and transcript/privacy invariants
+- [ ] Add docs for lockout policy, unlock workflow, and non-goals
+
+### Planned decisions
+
+- start with per-account controls before broad IP bans
+- prefer temporary cooldowns over immediate permanent lockouts
+- treat full IP bans as deferred unless there is a demonstrated abuse need
+- require auditability for any manual unlock action
+- keep transcript/content authorization unchanged
+
+### Explicit non-goals
+
+- no permanent global IP block system in the first slice
+- no broad persistent security-events platform in the first slice
+- no lockout policy that lets leaders or admins gain transcript visibility
+
+## Completed Milestone: Account Suspension and Deletion Authority Hardening
+
+### Objective
+
+Make manager account-lifecycle authority explicit, team-scoped, and auditable before adding destructive user-management actions to the UI.
+
+Status: `Completed`
+
+### Planned checkpoints
+
+- [x] Add explicit `suspended` user status distinct from `locked` and `disabled`
+- [x] Define explicit meanings for reversible suspension versus destructive deletion
+- [x] Add manager authorization checks for suspend/reactivate/delete actions
+- [x] Allow system admins to suspend/reactivate/delete other accounts across teams
+- [x] Allow team leaders to suspend/reactivate/delete non-system-admin users in their own team only
+- [x] Block suspension of the last active system-admin account
+- [x] Revoke sessions and trusted devices immediately on suspension
+- [x] Add destructive delete path with equivalent scope checks
+- [x] Add metadata-only audit logging for account-lifecycle actions
+- [x] Add API/UI/docs coverage for team-scope and privacy invariants
+- [ ] Persist account-lifecycle actions into `audit_events`
+
+### Planned decisions
+
+- leader and system-admin account administration remains metadata-only and must not imply transcript readability
+- full user deletion remains immediate hard delete with existing cascade behavior
+- manager suspension is the reversible action; it does not delete content
+- `locked` remains the temporary security/auth-abuse state
+- `disabled` remains the stronger security/platform state
+- reactivation from either `suspended` or `disabled` will initially share a password-reset and MFA-trust-reset path
+- team leaders may never act on system-admin accounts
+- self-suspension through manager routes is blocked in the first implementation
+- self-delete through manager routes is blocked in the first implementation
+
+### Explicit non-goals
+
+- no soft-delete layer for users
+- no leader access to transcript content as part of delete confirmation or review
+- no cross-team leader account management
+- no bypass of the last-active-system-admin safety rule for suspension
+- no dedicated audit-events table in the first implementation; audit is logger-based metadata for now
+
 ## Current Data Model Highlights
 
 ### Users
@@ -69,6 +199,7 @@ Status: `Completed`
 
 - `account_requests`
 - `user_sessions`
+- `user_trusted_devices`
 - `user_mfa_methods`
 - `user_recovery_codes`
 
@@ -78,8 +209,23 @@ Status: `Completed`
 
 Bring transcript behavior up to the same architectural standard as auth and onboarding.
 
+The foundation should support three future ingestion modes on one backend model:
+
+- file upload
+- microphone batch transcription
+- live chunked transcription with VAD and max-length chunking
+
 ### Planned checkpoints
 
+- [x] team-managed transcription provider configuration
+- [x] Vault-backed team credential storage using DB secret references only
+- [x] leader and system-admin STT config UI
+- [x] transcript start endpoint that creates the root at recording start
+- [x] transcript start route records or implies the intended ingestion mode
+- [x] audio-chunk ingestion endpoint for client VAD chunks
+- [x] backend audio normalization to `16 kHz` mono PCM WAV before STT submission
+- [x] draft update flow through backend-owned STT service
+- [x] file-upload and microphone-batch ingestion route on the same backend contract
 - [ ] explicit transcript delete endpoint
 - [ ] cascade deletion tests for transcript root deletion
 - [ ] retention expiry behavior and tests
@@ -91,3 +237,49 @@ Bring transcript behavior up to the same architectural standard as auth and onbo
 - transcript-derived content stays owner-only
 - admin or leader authority does not imply content readability
 - deletion remains immediate, not soft-delete
+- provider secrets remain in Vault, not raw in the database
+
+### Planned implementation order
+
+1. document transcript capture and team STT configuration flow
+2. add leader/admin team transcription configuration UI and backend
+3. add transcript start flow with ingestion-mode-aware service boundaries
+4. add live chunk ingestion flow
+5. keep file-upload and microphone-batch routes planned against the same backend contract
+6. harden delete, cascade, and retention behavior around the new capture path
+
+## Completed Milestone: Team STT Configuration and Vault Secret Boundary
+
+### Objective
+
+Add the first STT configuration surface without expanding transcript visibility or storing raw provider credentials in Postgres, then refine it into the intended admin-provisioned and leader-selected authority split.
+
+Status: `Completed`
+
+### Checkpoints
+
+- [x] add `team_stt_configs` schema and migration
+- [x] add explicit STT adapter family classification
+- [x] limit the first auth mode to bearer token only
+- [x] store bearer tokens in Vault and persist only `vault_secret_ref` in Postgres
+- [x] add leader own-team STT config UI on `/home`
+- [x] add system-admin selected-team STT config UI on `/admin`
+- [ ] refine the STT UI/backend so system admins own endpoint/credential provisioning and leaders own active service/model selection
+- [x] add `GET /api/v1/stt-config`
+- [x] add `POST /api/v1/stt-config`
+- [x] block ordinary users, onboarding sessions, and pending-MFA sessions from STT config routes
+- [x] reject unsafe remote non-HTTPS endpoints while allowing local/dev HTTP targets
+- [x] add API, UI, migration, and docs coverage
+
+### Implemented decisions
+
+- one STT config row per team in the current slice
+- adapter family is explicit and currently includes `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
+- constrained REST metadata only, not arbitrary request scripting
+- OpenAPI inspection is generic-only; known OpenAI adapters use built-in request defaults
+- bearer token rotation is write-only
+- responses expose only `has_secret`, not the raw token or Vault reference
+- this slice is configuration-only and does not yet upload audio or call the STT provider
+- the intended steady-state authority split is:
+  - system admins provision STT endpoints and credentials
+  - leaders choose or clear the active service/model for their team

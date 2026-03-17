@@ -6,6 +6,8 @@ Entry points:
 - authentication and access control: [docs/auth.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/auth.md)
 - frontend direction and migration plan: [docs/frontend-roadmap.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-roadmap.md)
 - API contract and behavior: [docs/api.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/api.md)
+- team STT configuration and Vault fit: [docs/stt-config.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/stt-config.md)
+- transcript capture and team STT planning: [docs/transcript-capture.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/transcript-capture.md)
 - test strategy and non-DB coverage: [docs/testing.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/testing.md)
 - database behavior, DB safety, and DB-specific tests: [docs/dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
 
@@ -17,13 +19,15 @@ Documentation convention:
 
 Primary local URLs:
 
-- API docs: `http://127.0.0.1:8000/docs`
-- Account request page: `http://127.0.0.1:8000/request-access`
-- Login / bootstrap: `http://127.0.0.1:8000/login`
-- Onboarding: `http://127.0.0.1:8000/onboarding`
-- User home: `http://127.0.0.1:8000/home`
-- Admin UI: `http://127.0.0.1:8000/admin`
+- API docs: `http://127.0.0.1:8080/docs`
+- Account request page: `http://127.0.0.1:8080/request-access`
+- Login / bootstrap: `http://127.0.0.1:8080/login`
+- Onboarding: `http://127.0.0.1:8080/onboarding`
+- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
+- User home: `http://127.0.0.1:8080/home`
+- Admin UI: `http://127.0.0.1:8080/admin`
 
 Quick start:
 
 - run `./start-dev.sh` from the project root to start infra, apply migrations, and launch the dev server
+- by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly

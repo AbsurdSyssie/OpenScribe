@@ -19,13 +19,14 @@ Documentation convention:
 
 Primary local URLs:
 
-- API docs: `http://127.0.0.1:8080/docs`
-- Account request page: `http://127.0.0.1:8080/request-access`
-- Login / bootstrap: `http://127.0.0.1:8080/login`
-- Onboarding: `http://127.0.0.1:8080/onboarding`
-- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
-- User home: `http://127.0.0.1:8080/home`
-- Admin UI: `http://127.0.0.1:8080/admin`
+- API docs: `http://0.0.0.0:8080/docs` locally, or `http://<your-lan-ip>:8080/docs` from another machine
+- Account request page: `http://0.0.0.0:8080/request-access`
+- Login / bootstrap: `http://0.0.0.0:8080/login`
+- Onboarding: `http://0.0.0.0:8080/onboarding`
+- MFA challenge: `http://0.0.0.0:8080/mfa/challenge`
+- User home: `http://0.0.0.0:8080/home`
+- Transcription workspace: `http://0.0.0.0:8080/transcribe`
+- Admin UI: `http://0.0.0.0:8080/admin`
 
 Quick start:
 

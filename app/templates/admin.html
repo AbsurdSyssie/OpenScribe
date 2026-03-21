@@ -122,13 +122,13 @@
 
         {% if selectable_stt_configs %}
         <h3>Set active team selection</h3>
-        <form method="post" action="/admin/stt-selection">
+        <form method="post" action="/admin/stt-selection" data-stt-selection-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <label>
             Provisioned endpoint
-            <select name="stt_config_id" required>
+            <select name="stt_config_id" data-stt-config-select required>
               {% for config in selectable_stt_configs %}
-              <option value="{{ config.id }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>
+              <option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>
                 {{ config.label }} ({{ config.adapter_kind.value }})
               </option>
               {% endfor %}
@@ -136,7 +136,9 @@
           </label>
           <label>
             Model override
-            <input type="text" name="provider_model" value="{{ stt_selection.model_name_override if stt_selection else '' }}">
+            <select name="provider_model" data-stt-model-select data-selected-value="{{ stt_selection.model_name_override if stt_selection else '' }}">
+              <option value="">Use endpoint default</option>
+            </select>
           </label>
           <label>
             Language override
@@ -258,6 +260,7 @@
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ stt_form.config_id }}">
           <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
+          <input type="hidden" name="preserved_bearer_token" value="{{ stt_form.preserved_bearer_token or '' }}">
           <label>
             Label
             <input type="text" name="label" required maxlength="255" value="{{ stt_form.label }}">
@@ -283,8 +286,11 @@
           </label>
           <label>
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token{% endif %}</span>
-            <input type="password" name="bearer_token" {% if not stt_config %}required{% endif %}>
+            <input type="password" name="bearer_token" {% if not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
           </label>
+          {% if stt_form.preserved_bearer_token %}
+          <p><small>The credential from the inspect step will be reused on save unless you enter a replacement above.</small></p>
+          {% endif %}
           <label>
             Model
             {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
@@ -318,6 +324,179 @@
             Active
           </label>
           <button type="submit">{% if stt_form.config_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
+        </form>
+
+        <hr style="margin: 24px 0; border: 0; border-top: 1px solid rgba(212, 199, 171, 0.8);">
+
+        <h3>Team LLM selection</h3>
+        {% if llm_selection %}
+        <p><span class="pill">{{ llm_selection.config.label }}</span> <span class="pill">{{ llm_selection.config.adapter_kind.value }}</span> {{ llm_selection.config.base_url }}</p>
+        <p><small>Resolved team default model: {{ llm_selection.model_name_override or llm_selection.config.model_name or "not set" }}.</small></p>
+        <p><small>User-visible models: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none selected" }}.</small></p>
+        <form method="post" action="/admin/llm-selection/clear" onsubmit="return confirm('Clear the active LLM selection for this team?');">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <button type="submit">Clear active LLM selection</button>
+        </form>
+        {% else %}
+        <p><small>No active LLM selection is set for this team yet.</small></p>
+        {% endif %}
+
+        {% if selectable_llm_configs %}
+        <h3>Set active team LLM selection</h3>
+        <form method="post" action="/admin/llm-selection" data-llm-selection-form>
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <label>
+            Provisioned provider
+            <select name="llm_config_id" data-llm-config-select required>
+              {% for config in selectable_llm_configs %}
+              <option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>
+                {{ config.label }} ({{ config.adapter_kind.value }})
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <div data-llm-model-groups>
+            {% for config in selectable_llm_configs %}
+            <fieldset data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
+              <legend>Visible models for users</legend>
+              {% for model in config.available_models_json %}
+              {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
+              <label>
+                <input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}>
+                {{ model }}
+              </label>
+              {% endfor %}
+              <p><small>Select which models users in this team can see.</small></p>
+              <div>
+                <strong>Team default model</strong>
+                {% for model in config.available_models_json %}
+                {% set is_selected_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and (config.model_name == model) and loop.first) %}
+                <label>
+                  <input type="radio" name="provider_model" value="{{ model }}" {% if is_selected_default %}checked{% endif %}>
+                  {{ model }}
+                </label>
+                {% endfor %}
+              </div>
+            </fieldset>
+            {% endfor %}
+          </div>
+          <button type="submit">Save active LLM selection</button>
+        </form>
+        {% endif %}
+
+        <h3>Provisioned LLM providers</h3>
+        {% if llm_configs %}
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Default model</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for config in llm_configs %}
+            <tr>
+              <td>
+                <strong>{{ config.label }}</strong><br>
+                <small>{{ config.adapter_kind.value }} · {{ config.base_url }}</small><br>
+                <small>Secret configured: {{ "yes" if config.vault_secret_ref else "no" }}</small>
+              </td>
+              <td>{{ config.model_name or "not set" }}</td>
+              <td>
+                <form method="get" action="/admin">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="llm_config_id" value="{{ config.id }}">
+                  <button type="submit">Edit</button>
+                </form>
+                <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned LLM provider and its saved secret?');">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No LLM providers are provisioned for this team yet.</small></p>
+        {% endif %}
+
+        <h3>{% if llm_config %}Edit provisioned LLM provider{% else %}Add provisioned LLM provider{% endif %}</h3>
+        <form method="post" action="/admin/llm-configs/inspect" data-llm-inspect-form>
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <label>
+            Label
+            <input type="text" name="label" maxlength="255" value="{{ llm_form.label }}">
+          </label>
+          <label>
+            Adapter family
+            <select name="adapter_kind" data-llm-adapter-select>
+              <option value="openai_chat" {% if llm_form.adapter_kind == "openai_chat" %}selected{% endif %}>openai_chat</option>
+              <option value="ollama_chat" {% if llm_form.adapter_kind == "ollama_chat" %}selected{% endif %}>ollama_chat</option>
+            </select>
+          </label>
+          <label data-show-for="ollama_chat">
+            Base URL
+            <input type="url" name="base_url" value="{{ llm_form.base_url or 'http://localhost:11434' }}">
+          </label>
+          <input type="hidden" name="base_url" value="{{ llm_form.base_url or 'https://api.openai.com/v1' }}" data-openai-llm-base-url>
+          <p><small data-llm-adapter-note>The official OpenAI chat adapter uses `https://api.openai.com/v1`. Ollama uses `/api/tags` for model discovery and `/api/chat` for generation.</small></p>
+          <label>
+            <span data-llm-token-label>API key for inspection</span>
+            <input type="password" name="bearer_token">
+          </label>
+          <button type="submit">Inspect provider</button>
+        </form>
+        {% if llm_inspection %}
+        <p><small>Detected adapter: {{ llm_inspection.adapter_kind.value }}. Base URL: {{ llm_inspection.base_url }}.</small></p>
+        {% if llm_inspection.notes %}
+        <ul>
+          {% for note in llm_inspection.notes %}
+          <li><small>{{ note }}</small></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% endif %}
+        <p><small>The API key is written to Vault and is never shown again.</small></p>
+        <form method="post" action="/admin/llm-configs" data-llm-save-form>
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="config_id" value="{{ llm_form.config_id }}">
+          <input type="hidden" name="adapter_kind" value="{{ llm_form.adapter_kind }}">
+          <label data-show-for="ollama_chat">
+            Base URL
+            <input type="url" name="base_url" value="{{ llm_form.base_url }}">
+          </label>
+          <input type="hidden" name="base_url" value="{{ llm_form.base_url }}" data-openai-llm-base-url>
+          <input type="hidden" name="preserved_bearer_token" value="{{ llm_form.preserved_bearer_token or '' }}">
+          <label>
+            Label
+            <input type="text" name="label" required maxlength="255" value="{{ llm_form.label }}">
+          </label>
+          <label>
+            <span data-llm-token-label>API key</span>
+            <input type="password" name="bearer_token" {% if llm_form.adapter_kind == "openai_chat" and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
+          </label>
+          {% if llm_form.preserved_bearer_token %}
+          <p><small>The API key from the inspect step will be reused on save unless you enter a replacement above.</small></p>
+          {% endif %}
+          <label>
+            Model
+            {% if llm_form.available_model_options %}
+            <select name="provider_model">
+              {% for model in llm_form.available_model_options %}
+              <option value="{{ model.id }}" {% if llm_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input type="text" name="provider_model" value="{{ llm_form.model_name }}">
+            {% endif %}
+          </label>
+          <label>
+            <input type="checkbox" name="is_active" value="true" {% if llm_form.is_active %}checked{% endif %}>
+            Active
+          </label>
+          <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
         </form>
         {% endif %}
       </div>
@@ -572,7 +751,142 @@
         }
         applyAdapterState(form);
       });
+
+      function syncSttSelectionForm(form) {
+        const select = form.querySelector('[data-stt-config-select]');
+        const modelSelect = form.querySelector('[data-stt-model-select]');
+        if (!select || !modelSelect) return;
+        const selectedOption = select.options[select.selectedIndex];
+        const models = selectedOption ? JSON.parse(selectedOption.dataset.models || '[]') : [];
+        const selectedValue = modelSelect.dataset.selectedValue || '';
+        const defaultModel = selectedOption?.dataset.defaultModel || '';
+
+        modelSelect.innerHTML = '';
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = 'Use endpoint default';
+        modelSelect.appendChild(blank);
+
+        models.forEach((model) => {
+          const option = document.createElement('option');
+          option.value = model;
+          option.textContent = model;
+          modelSelect.appendChild(option);
+        });
+
+        const desiredValue = models.includes(selectedValue) ? selectedValue : (models.includes(defaultModel) ? defaultModel : '');
+        modelSelect.value = desiredValue;
+      }
+
+      document.querySelectorAll('[data-stt-selection-form]').forEach((form) => {
+        const select = form.querySelector('[data-stt-config-select]');
+        if (!select) return;
+        select.addEventListener('change', () => syncSttSelectionForm(form));
+        syncSttSelectionForm(form);
+      });
+
+      function applyLlmAdapterState(form) {
+        const adapterField = form.querySelector('[data-llm-adapter-select], input[name="adapter_kind"]');
+        if (!adapterField) return;
+        const adapter = adapterField.value;
+        form.querySelectorAll('[data-show-for]').forEach((el) => {
+          if (!el.closest('[data-llm-inspect-form], [data-llm-save-form]')) return;
+          el.hidden = el.getAttribute('data-show-for') !== adapter;
+        });
+        form.querySelectorAll('[data-show-for]').forEach((container) => {
+          if (!container.closest('[data-llm-inspect-form], [data-llm-save-form]')) return;
+          container.querySelectorAll('input, select, textarea').forEach((field) => {
+            field.disabled = container.hidden;
+          });
+        });
+        form.querySelectorAll('[data-openai-llm-base-url]').forEach((el) => {
+          el.disabled = adapter !== 'openai_chat';
+          if (adapter === 'openai_chat') {
+            el.value = el.value || 'https://api.openai.com/v1';
+          }
+        });
+        form.querySelectorAll('input[name="base_url"]').forEach((field) => {
+          if (field.hasAttribute('data-openai-llm-base-url')) return;
+          if (adapter === 'ollama_chat' && !field.value) {
+            field.value = 'http://localhost:11434';
+          }
+        });
+        form.querySelectorAll('[data-llm-token-label]').forEach((el) => {
+          el.textContent = adapter === 'ollama_chat'
+            ? 'API key / bearer token (optional)'
+            : (form.matches('[data-llm-inspect-form]') ? 'API key for inspection' : 'API key');
+        });
+        const tokenInput = form.querySelector('[data-llm-token-input]');
+        if (tokenInput) {
+          tokenInput.required = adapter === 'openai_chat' && !form.querySelector('input[name="config_id"]')?.value && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
+        }
+        const note = form.querySelector('[data-llm-adapter-note]');
+        if (note) {
+          note.textContent = adapter === 'ollama_chat'
+            ? 'Ollama uses /api/tags for model discovery and /api/chat for generation. Local Ollama usually runs at http://localhost:11434.'
+            : 'The official OpenAI chat adapter uses https://api.openai.com/v1.';
+        }
+      }
+
+      function syncLlmSelectionForm(form) {
+        const select = form.querySelector('[data-llm-config-select]');
+        if (!select) return;
+        const selectedOption = select.options[select.selectedIndex];
+        const selectedConfigId = selectedOption ? selectedOption.value : '';
+        const defaultModel = selectedOption?.dataset.defaultModel || '';
+
+        form.querySelectorAll('[data-llm-model-group]').forEach((group) => {
+          const active = group.getAttribute('data-llm-model-group') === selectedConfigId;
+          group.hidden = !active;
+          group.querySelectorAll('input').forEach((input) => {
+            input.disabled = !active;
+          });
+          if (!active) return;
+
+          const checkboxes = Array.from(group.querySelectorAll('input[type="checkbox"][name="allowed_model_names"]'));
+          const radios = Array.from(group.querySelectorAll('input[type="radio"][name="provider_model"]'));
+          if (!checkboxes.some((input) => input.checked)) {
+            checkboxes.forEach((input) => {
+              input.checked = true;
+            });
+          }
+          const allowedValues = new Set(checkboxes.filter((input) => input.checked).map((input) => input.value));
+          radios.forEach((radio) => {
+            radio.disabled = !allowedValues.has(radio.value);
+          });
+          const checkedRadio = radios.find((radio) => radio.checked && !radio.disabled);
+          if (!checkedRadio) {
+            const preferredRadio = radios.find((radio) => radio.value === defaultModel && !radio.disabled);
+            const fallbackRadio = radios.find((radio) => !radio.disabled);
+            if (preferredRadio) {
+              preferredRadio.checked = true;
+            } else if (fallbackRadio) {
+              fallbackRadio.checked = true;
+            }
+          }
+        });
+      }
+
+      document.querySelectorAll('[data-llm-inspect-form], [data-llm-save-form]').forEach((form) => {
+        const adapterField = form.querySelector('[data-llm-adapter-select], input[name="adapter_kind"]');
+        if (!adapterField) return;
+        if (adapterField.tagName === 'SELECT') {
+          adapterField.addEventListener('change', () => applyLlmAdapterState(form));
+        }
+        applyLlmAdapterState(form);
+      });
+
+      document.querySelectorAll('[data-llm-selection-form]').forEach((form) => {
+        const select = form.querySelector('[data-llm-config-select]');
+        if (!select) return;
+        select.addEventListener('change', () => syncLlmSelectionForm(form));
+        form.querySelectorAll('input[type="checkbox"][name="allowed_model_names"]').forEach((checkbox) => {
+          checkbox.addEventListener('change', () => syncLlmSelectionForm(form));
+        });
+        syncLlmSelectionForm(form);
+      });
     })();
   </script>
+  {% include "_csrf_script.html" %}
 </body>
 </html>

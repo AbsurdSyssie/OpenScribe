@@ -47,10 +47,29 @@ Canonical JSON API routes are versioned under `/api/v1`.
 
 - `POST /api/v1/transcripts`
 - `POST /api/v1/transcripts/start`
+- `PATCH /api/v1/transcripts/{transcript_id}`
+- `DELETE /api/v1/transcripts/{transcript_id}`
+- `GET /api/v1/transcripts/{transcript_id}`
 - `POST /api/v1/transcripts/{transcript_id}/commit`
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- `GET /api/v1/transcripts/{transcript_id}/generated-documents`
+- `POST /api/v1/transcripts/{transcript_id}/generate-output`
 - `GET /api/v1/users/{user_id}/transcripts`
+- whole-file upload rejects oversize payloads with:
+  - status `413`
+  - code `payload_too_large`
+  - message `Audio file exceeds the current maximum upload size`
+
+### Templates
+
+- `GET /api/v1/templates/available`
+- `GET /api/v1/templates/team`
+- `POST /api/v1/templates/team`
+- `DELETE /api/v1/templates/team/{template_id}`
+- `GET /api/v1/templates/personal`
+- `POST /api/v1/templates/personal`
+- `DELETE /api/v1/templates/personal/{template_id}`
 
 ### Team transcription configuration
 
@@ -63,6 +82,21 @@ Canonical JSON API routes are versioned under `/api/v1`.
 - `GET /api/v1/stt-selection/options`
 - `POST /api/v1/stt-selection`
 - `DELETE /api/v1/stt-selection`
+- these are metadata and secret-reference routes, not transcript-content routes
+
+### Team LLM configuration
+
+- `GET /api/v1/llm-configs`
+- `POST /api/v1/llm-configs/inspect`
+- `POST /api/v1/llm-configs`
+- `DELETE /api/v1/llm-configs/{config_id}`
+- `GET /api/v1/llm-selection`
+- `GET /api/v1/llm-selection/options`
+- `POST /api/v1/llm-selection`
+- `DELETE /api/v1/llm-selection`
+- `GET /api/v1/llm-preference`
+- `POST /api/v1/llm-preference`
+- `DELETE /api/v1/llm-preference`
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ## Error envelope
@@ -96,6 +130,16 @@ Rate-limited requests return the same envelope with:
 - invalid login credentials return the same `401 unauthorized` response shape
 - completed MFA-enabled users may receive `auth_level = pending_mfa` after password success
 - login is rate-limited at `5 per 5 minutes` per client IP
+- whole-file transcript uploads are rate-limited at:
+  - `1 per 5 seconds`
+  - `100 per day`
+- whole-file upload throttling is shared across:
+  - `POST /api/v1/transcripts/{transcript_id}/audio-file`
+  - `POST /transcribe/upload`
+- whole-file upload throttling keys to the authenticated user when a valid session resolves, with hashed-session/IP fallback only when user resolution is unavailable
+- whole-file uploads are also capped by:
+  - raw upload size: `25 MB`
+  - normalized whole-file duration: `30 minutes`
 
 ### Pending-MFA sessions
 
@@ -188,12 +232,90 @@ Current STT-configuration behavior:
 - `openai_cloud` inspection also returns labeled model-option metadata so the UI can show whether each choice was `fetched` live or supplied from the built-in `default` list
 - `openai_compatible_rest` inspection returns built-in known-contract defaults without OpenAPI fetch
 - inspection also returns documented field descriptions and required flags when the provider's OpenAPI schema exposes them
+- the admin HTML inspect flow preserves the just-entered token only for the current rendered page so the immediate save can reuse it without retyping
 - saved STT config now carries an explicit `adapter_kind`
 - currently supported adapter families are `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
 - the API never returns the bearer token
 - the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
 - one team may have multiple provisioned STT config rows
 - one team may have only one active STT selection row
+
+Current LLM-configuration behavior:
+
+- system admins provision LLM provider rows and Vault-backed secrets per team
+- system admins may list, inspect, create, update, and delete provisioned LLM configs, but must supply `team_id`
+- leaders may not provision, rotate, or delete LLM credentials
+- leaders may read only their own team's selectable provisioned LLM providers through the selection routes
+- leaders may set or clear only their own team's active LLM selection
+- the active team selection stores both:
+  - a team default model
+  - an allowed-model subset that controls which models normal users can see and choose
+- normal users may not access provisioning or team-selection routes
+- normal users may set or clear only their own preferred default model through `/api/v1/llm-preference`
+- if the user's preferred model is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
+- the implemented LLM adapter families are `openai_chat` and `ollama_chat`
+- `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
+- if OpenAI model discovery fails, `openai_chat` inspection falls back to a built-in chat-model list and still returns `200`
+- `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses `POST /api/chat`
+- local Ollama may run without an API key; remote Ollama endpoints must still use `https`
+- the admin HTML inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
+- remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
+- the API never returns the bearer token
+- the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
+- one team may have multiple provisioned LLM config rows
+- one team may have only one active LLM selection row
+
+Current template behavior:
+
+- team templates are normal configuration data, not transcript-derived content
+- leaders may create, update, list, and delete team templates for their own team
+- normal users may create, update, list, and delete only their own personal templates
+- system admins do not own or manage transcript-derived generation output through these routes
+- template updates create a new immutable `template_versions` row while updating the logical template root metadata
+- quick actions now follow the same team/personal scope model as templates:
+  - leaders may create, update, list, and delete team quick actions for their own team
+  - normal users may create, update, list, and delete only their own personal quick actions
+  - quick action updates create a new immutable `quick_action_versions` row while updating the logical quick action root metadata
+
+Current generation behavior:
+
+- note generation is owner-only and runs against the selected transcript root
+- follow-up generation is also owner-only and runs against the selected transcript root
+- quick action generation is owner-only and runs against the selected transcript root
+- generation snapshots the current transcript draft into a new `transcript_versions` row before calling the LLM
+- queued generated-document rows now also snapshot:
+  - resolved `llm_config_id`
+  - resolved `model_used`
+  - prompt text for template and quick-action runs
+  - provider execution metadata needed to keep the worker stable if team defaults later change
+- generation resolves the active team LLM provider plus the user's preferred/default model through the existing provider-selection path
+- generation currently supports both OpenAI chat-style providers and Ollama chat hosts
+- the implemented generators are:
+  - template-based freeform note output
+  - freeform follow-up output
+  - quick action freeform output written back into the follow-up lane
+- generation is now asynchronous:
+  - `POST /api/v1/transcripts/{transcript_id}/generate-output` returns `202`
+  - `POST /api/v1/transcripts/{transcript_id}/generate-followup` returns `202`
+  - `POST /api/v1/transcripts/{transcript_id}/run-quick-action` returns `202`
+  - the app creates a `generated_documents` row immediately with status `queued`
+  - a Celery worker later moves it through `processing` to `ready` or `failed`
+- follow-up generation stores the typed follow-up request on the queued generated-document row and uses the same worker, rate limits, and metadata-only usage logging as note generation
+- quick action generation stores the selected `quick_action_version_id` plus the quick action name on the queued generated-document row and uses the same worker, rate limits, and metadata-only usage logging as notes/follow-ups
+- generated output is persisted into `generated_documents` and remains private to the transcript owner
+- template or quick-action deletion no longer breaks queued/generated output:
+  - generated documents retain their prompt snapshot
+  - source version references may be cleared when the source asset is deleted
+  - already queued work still has enough context to run
+- generation routes are throttled per authenticated user:
+  - `1 per 5 seconds`
+  - `100 per day`
+- browser and JSON generation routes share the same authenticated limiter bucket
+- generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
+- generation metadata now carries team/user IDs, provider/model names, statuses, durations, token counts, and safe provider error metadata when available
+- generated-document rows now retain per-run token counts, durations, provider HTTP status, and safe provider error codes for later debugging
+- failed generations now keep a more specific safe reason where available, such as provider timeout, unreachable provider, rejected credentials, missing model, or provider-side rate limiting
+- transcript deletion cascades to generated documents through the transcript-root delete path
 
 ### System-admin-only routes
 
@@ -217,12 +339,21 @@ Current transcript-start behavior:
 
 - the current user becomes `owner_user_id`
 - `team_id` is derived from the current user
+- `title` lives on the transcript root and is the current browser-level session title
+- the transcript root remains the current session root for retention, versions, and derived-document lineage
+- creating a new transcript root is rejected when the owner's latest transcript is still blank:
+  - title-only does not count as content
+  - a non-empty draft, a transcript version, or an ingestion job does count
+- creating a new transcript root is also rejected while the owner's latest session is still `transcribing`
+- `PATCH /api/v1/transcripts/{transcript_id}` currently supports owner-only title updates
+- `PATCH /api/v1/transcripts/{transcript_id}` also supports owner-only `ingestion_mode` switching between `whole_file` and `live_chunked`
+- mode switching is allowed only while the session is still blank and idle
+- `DELETE /api/v1/transcripts/{transcript_id}` hard-deletes the owner transcript root immediately and cascades to transcript versions and ingestion jobs
 - system-admin accounts are blocked from owning transcript content
 - `ingestion_mode` is persisted on the transcript root and currently supports:
-  - `file_upload`
-  - `microphone_batch`
+  - `whole_file`
   - `live_chunked`
-- if the caller omits `ingestion_mode`, the route currently implies `live_chunked`
+- if the caller omits `ingestion_mode`, the route currently implies `whole_file`
 - team retention defaults are applied when no explicit retention override is supplied
 
 Current live chunk-ingestion behavior:
@@ -237,8 +368,14 @@ Current live chunk-ingestion behavior:
 - declared chunk duration currently rejects values above the current 30-second maximum
 - the route queues a transcript-ingestion job and returns `202 Accepted`
 - the response includes both the transcript summary and the queued ingestion job
+- queued chunk jobs now snapshot the resolved STT provider execution settings at enqueue time:
+  - selected STT config id
+  - adapter kind
+  - base URL and transcribe path
+  - resolved model and language
+  - file field name, response text path, and extra form fields
 - the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
-- the backend worker resolves the active team STT selection and the selected provider credentials from Vault
+- the backend worker reads the queued STT snapshot plus the selected provider credentials from Vault
 - the backend worker forwards the normalized chunk to the external STT service
 - live chunk application is sequence-aware:
   - duplicate `chunk_sequence_no` values are rejected at queue time
@@ -248,16 +385,42 @@ Current live chunk-ingestion behavior:
 
 Current whole-file ingestion behavior:
 
-- `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `file_upload` and `microphone_batch` transcripts
-- file ingestion is rejected unless the transcript `ingestion_mode` is `file_upload` or `microphone_batch`
+- `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
+- file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
+- file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`
 - the route queues a transcript-ingestion job and returns `202 Accepted`
+- queueing now fails early if no active team STT selection exists
+- queued file jobs snapshot the resolved STT provider execution settings at enqueue time, so later team-setting changes do not alter where an already-uploaded file is sent
 - the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
-- the backend worker resolves the active team STT selection and Vault-backed secret
+- the backend worker uses the queued STT snapshot plus the Vault-backed secret
 - the backend worker forwards the normalized audio file to the external STT service
-- the backend worker writes the returned transcript text into `current_draft_text_encrypted`
+- the backend worker appends the returned transcript text into `current_draft_text_encrypted`
 - the transcript status moves to `ready` when the provider returns successfully
+- the owner-facing `/transcribe` workspace now:
+  - creates blank sessions from the session rail
+  - blocks a second blank session until the latest session has draft content or descendant work, or is deleted
+  - also blocks a new session while the latest session is still transcribing
+  - requires an active selected session before upload
+  - uses a single whole-file session type in the browser and lets the user choose file upload or microphone batch inside the session
+  - queues file ingestion into the selected transcript root
+  - records microphone batches locally in the browser and submits the captured blob through the same `/transcribe/upload` file-ingestion path
+  - supports bulk-delete of selected transcript sessions from the session rail
+  - polls owner-only transcript detail while visible rows remain `transcribing`
+  - shows recent owner transcripts and current draft text on refresh or poll completion
+  - now shows explicit session progress copy in the header and active rail row for local recording, uploading, queued, transcribing, ready, and failed states
+- if no active team STT selection exists, the browser flow fails early with:
+  - `No STT configured, please ask your team leader {email}`
+  - or a generic team-leader message when no active leader email is available
 
 System-admin or leader authority does not grant transcript-content access.
+
+### Provider model enforcement
+
+- STT and LLM selection flows now enforce server-provided model lists server-side, not only in the UI
+- leader/team LLM allowed-model subsets must be chosen from the provider-discovered model list
+- user LLM preferences must be chosen from the leader-approved allowed-model subset
+- STT team selection rejects model overrides outside the provider-discovered model list
+- if a provider does not return a selectable model list, the selection APIs reject free-text overrides rather than silently accepting them
 
 ## Current uniqueness and onboarding rules
 

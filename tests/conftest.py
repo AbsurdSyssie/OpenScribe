@@ -14,16 +14,32 @@ from sqlalchemy.pool import NullPool
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    GeneratedDocument,
+    GeneratedDocumentGeneratorType,
+    GeneratedDocumentStatus,
+    LlmAdapterKind,
+    LlmAuthMode,
+    PromptTemplate,
+    PromptTemplateVersion,
+    QuickAction,
+    QuickActionVersion,
     SttAdapterKind,
     SttAuthMode,
     Team,
+    TeamLlmConfig,
+    TeamLlmSelection,
     TeamRole,
     TeamStatus,
     TeamSttConfig,
     TeamSttSelection,
+    Transcript,
+    TranscriptVersion,
     User,
+    UserLlmPreference,
     UserOnboardingState,
     UserStatus,
+    TemplateMode,
+    TemplateScope,
 )
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
@@ -39,7 +55,7 @@ from app.db import Base, get_db
 TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
 os.environ["RATE_LIMIT_STORAGE_URL"] = TEST_RATE_LIMIT_STORAGE_URL
 
-from app.main import app
+from app.main import CSRF_COOKIE_NAME, app
 
 
 TEST_DATABASE_URL = ensure_safe_test_database_url()
@@ -110,8 +126,48 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    original_session_factory = getattr(app.state, "db_session_factory", None)
+    app.state.db_session_factory = TestingSessionLocal
+    with TestClient(app) as test_client:
+        original_request = test_client.request
+
+        def request_with_csrf(method, url, *args, **kwargs):
+            method_upper = str(method).upper()
+            path = str(url)
+            if method_upper in {"POST", "PUT", "PATCH", "DELETE"} and not path.startswith("/api/"):
+                if CSRF_COOKIE_NAME not in test_client.cookies:
+                    original_request("GET", "/login")
+                csrf_token = test_client.cookies.get(CSRF_COOKIE_NAME, "")
+                headers = dict(kwargs.pop("headers", {}) or {})
+                headers.setdefault("X-CSRF-Token", csrf_token)
+                kwargs["headers"] = headers
+                data = kwargs.get("data")
+                if isinstance(data, dict):
+                    merged_data = dict(data)
+                    merged_data.setdefault("_csrf_token", csrf_token)
+                    kwargs["data"] = merged_data
+            return original_request(method, url, *args, **kwargs)
+
+        test_client.request = request_with_csrf  # type: ignore[method-assign]
+        yield test_client
+    app.state.db_session_factory = original_session_factory
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def raw_client(db_session: Session) -> Generator[TestClient, None, None]:
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    original_session_factory = getattr(app.state, "db_session_factory", None)
+    app.state.db_session_factory = TestingSessionLocal
     with TestClient(app) as test_client:
         yield test_client
+    app.state.db_session_factory = original_session_factory
     app.dependency_overrides.clear()
 
 
@@ -278,6 +334,211 @@ def make_stt_selection(db_session: Session, make_user: Callable[..., User]) -> C
     return factory
 
 
+@pytest.fixture
+def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., TeamLlmConfig]:
+    def factory(
+        *,
+        team: Team | None = None,
+        actor: User | None = None,
+        label: str = "Provisioned LLM",
+        adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat,
+        base_url: str = "https://api.openai.com/v1",
+        model_name: str | None = "gpt-4o-mini",
+        available_models_json: list[str] | None = None,
+        is_active: bool = True,
+        has_secret: bool = True,
+    ) -> TeamLlmConfig:
+        resolved_team = team or make_team()
+        resolved_actor = actor or make_user(email=f"llm-admin-{resolved_team.id}@example.com", password="password-1", is_system_admin=True)
+        config = TeamLlmConfig(
+            team_id=resolved_team.id,
+            label=label,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            auth_mode=LlmAuthMode.bearer if has_secret else LlmAuthMode.none,
+            model_name=model_name,
+            available_models_json=available_models_json or [],
+            vault_secret_ref=f"secret:openscribe/llm/team/{resolved_team.id}/config/{uuid4()}" if has_secret else "",
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+            updated_by_user_id=resolved_actor.id,
+        )
+        db_session.add(config)
+        db_session.commit()
+        db_session.refresh(config)
+        return config
+
+    return factory
+
+
+@pytest.fixture
+def make_llm_selection(db_session: Session, make_user: Callable[..., User]) -> Callable[..., TeamLlmSelection]:
+    def factory(
+        *,
+        config: TeamLlmConfig,
+        actor: User | None = None,
+        allowed_models_json: list[str] | None = None,
+        model_name_override: str | None = None,
+    ) -> TeamLlmSelection:
+        resolved_actor = actor or make_user(
+            email=f"leader-llm-{config.team_id}@example.com",
+            password="password-1",
+            team=db_session.get(Team, config.team_id),
+            team_role=TeamRole.leader,
+            is_system_admin=False,
+        )
+        selection = TeamLlmSelection(
+            team_id=config.team_id,
+            llm_config_id=config.id,
+            allowed_models_json=allowed_models_json or list(config.available_models_json or []),
+            model_name_override=model_name_override,
+            selected_by_user_id=resolved_actor.id,
+        )
+        db_session.add(selection)
+        db_session.commit()
+        db_session.refresh(selection)
+        return selection
+
+    return factory
+
+
+@pytest.fixture
+def make_template(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., PromptTemplate]:
+    def factory(
+        *,
+        scope: TemplateScope = TemplateScope.user,
+        team: Team | None = None,
+        owner: User | None = None,
+        actor: User | None = None,
+        name: str = "Template",
+        description: str | None = "Template description",
+        prompt_text: str = "Summarise the transcript as a note.",
+        is_active: bool = True,
+    ) -> PromptTemplate:
+        resolved_team = team or (owner.team if owner is not None else make_team())
+        resolved_owner = owner if scope is TemplateScope.user else None
+        if scope is TemplateScope.user and resolved_owner is None:
+            resolved_owner = make_user(email=f"template-owner-{uuid4()}@example.com", password="password-1", team=resolved_team, team_role=TeamRole.user)
+        resolved_actor = actor or resolved_owner or make_user(email=f"template-leader-{uuid4()}@example.com", password="password-1", team=resolved_team, team_role=TeamRole.leader)
+        template = PromptTemplate(
+            scope=scope,
+            owner_user_id=resolved_owner.id if resolved_owner is not None else None,
+            team_id=resolved_team.id if scope is TemplateScope.team else None,
+            name=name,
+            description=description,
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(template)
+        db_session.flush()
+        version = PromptTemplateVersion(
+            template_id=template.id,
+            version_no=1,
+            mode=TemplateMode.freeform,
+            prompt_text=prompt_text,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(template)
+        return template
+
+    return factory
+
+
+@pytest.fixture
+def make_quick_action(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., QuickAction]:
+    def factory(
+        *,
+        scope: TemplateScope = TemplateScope.user,
+        team: Team | None = None,
+        owner: User | None = None,
+        actor: User | None = None,
+        name: str = "Quick action",
+        description: str | None = "Quick action description",
+        prompt_text: str = "Write a short follow-up from the doctor's perspective.",
+        is_active: bool = True,
+    ) -> QuickAction:
+        resolved_team = team or (owner.team if owner is not None else make_team())
+        resolved_owner = owner if scope is TemplateScope.user else None
+        if scope is TemplateScope.user and resolved_owner is None:
+            resolved_owner = make_user(email=f"quick-action-owner-{uuid4()}@example.com", password="password-1", team=resolved_team, team_role=TeamRole.user)
+        resolved_actor = actor or resolved_owner or make_user(email=f"quick-action-leader-{uuid4()}@example.com", password="password-1", team=resolved_team, team_role=TeamRole.leader)
+        quick_action = QuickAction(
+            scope=scope,
+            owner_user_id=resolved_owner.id if resolved_owner is not None else None,
+            team_id=resolved_team.id if scope is TemplateScope.team else None,
+            name=name,
+            description=description,
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(quick_action)
+        db_session.flush()
+        version = QuickActionVersion(
+            quick_action_id=quick_action.id,
+            version_no=1,
+            mode=TemplateMode.freeform,
+            prompt_text=prompt_text,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(quick_action)
+        return quick_action
+
+    return factory
+
+
+@pytest.fixture
+def make_generated_document(db_session: Session) -> Callable[..., GeneratedDocument]:
+    def factory(
+        *,
+        owner: User,
+        transcript: Transcript,
+        transcript_version: TranscriptVersion,
+        template_version: PromptTemplateVersion | None = None,
+        title: str = "Generated output",
+        output_text: str = "Generated note text",
+        model_used: str = "gpt-4o-mini",
+    ) -> GeneratedDocument:
+        document = GeneratedDocument(
+            owner_user_id=owner.id,
+            team_id=transcript.team_id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            template_version_id=template_version.id if template_version is not None else None,
+            source_template_name="Template" if template_version is None else template_version.template.name,
+            status=GeneratedDocumentStatus.ready,
+            title=title,
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted=output_text,
+            edited_output_text_encrypted=output_text,
+            is_edited=False,
+            retention_expires_at=transcript.retention_expires_at,
+            model_used=model_used,
+        )
+        db_session.add(document)
+        db_session.commit()
+        db_session.refresh(document)
+        return document
+
+    return factory
+
+
+@pytest.fixture
+def make_user_llm_preference(db_session: Session) -> Callable[..., UserLlmPreference]:
+    def factory(*, user: User, preferred_model_name: str | None = None) -> UserLlmPreference:
+        preference = UserLlmPreference(user_id=user.id, preferred_model_name=preferred_model_name)
+        db_session.add(preference)
+        db_session.commit()
+        db_session.refresh(preference)
+        return preference
+
+    return factory
+
+
 @pytest.fixture(autouse=True)
 def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_write_team_stt_bearer_token(*, team_id, config_id, bearer_token):
@@ -289,9 +550,22 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_read_team_stt_bearer_token(*, team_id, config_id):
         return "test-stt-token"
 
+    def fake_write_team_llm_bearer_token(*, team_id, config_id, bearer_token):
+        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}"
+
+    def fake_delete_team_llm_bearer_token(*, team_id, config_id):
+        return None
+
+    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+        return "test-llm-token"
+
     monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
 
 
 @pytest.fixture(autouse=True)

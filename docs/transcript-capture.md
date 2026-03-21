@@ -82,6 +82,7 @@ Shared invariants:
 
 - transcript root is created before content ingestion starts
 - transcript root remains the retention and deletion root
+- transcript root is also the current browser/session root for the workspace
 - all transcript-derived content remains owner-only
 - backend normalizes audio before provider submission
 - backend resolves the active team STT selection and Vault-backed secret
@@ -98,8 +99,7 @@ Shared backend concepts:
 
 Recommended ingestion-mode values:
 
-- `file_upload`
-- `microphone_batch`
+- `whole_file`
 - `live_chunked`
 
 ### 1. System admin provisions team transcription endpoints and credentials
@@ -163,8 +163,8 @@ This step applies only to `live_chunked`.
 
 For the other planned modes:
 
-- `file_upload`: the client uploads one file without live chunking
-- `microphone_batch`: the client records locally and uploads one batch at the end
+- `whole_file` with file-upload source: the client uploads one file without live chunking
+- `whole_file` with microphone-batch source: the client records locally and uploads one batch at the end
 
 ### 5. User uploads a chunk
 
@@ -185,6 +185,111 @@ The worker path then:
 - applies completed live chunks in sequence order
 - updates `transcripts.current_draft_text_encrypted`
 - records operational metadata without storing raw audio or raw secrets in the database
+
+Development note:
+
+- the transcript-ingestion worker loads Python models and enum definitions at process start
+- after enum/schema-adjacent code changes, restart the Celery worker along with the FastAPI app
+- otherwise new jobs can fail under stale worker code and leave sessions appearing stuck in `queued` or `transcribing`
+
+Implemented now for manual browser testing:
+
+- `/transcribe` is the dedicated owner-facing transcription workspace
+- the workspace reuses the old `transcribev2` shell structure with a session rail, action header, and tabbed main pane
+- the workspace now creates explicit transcript-root sessions from the session rail rather than treating upload as the only session-creation path
+- session title currently maps directly to `transcripts.title`
+- the session rail now supports multi-select and bulk-delete for owner transcript roots
+- the upload form targets the currently selected transcript session and queues whole-file ingestion
+- the workspace presents file upload and microphone batch as options inside the active `whole_file` session instead of as separate session-creation paths
+- the browser workspace currently creates `whole_file` sessions by default and can switch a blank `live_chunked` session back to `whole_file`
+- the workspace blocks a second blank session until the latest session has actual content or descendant work, or is deleted
+- the workspace also blocks new-session creation while the latest session is still transcribing in the backend
+- whole-file upload routes are throttled to reduce authenticated abuse:
+  - `1 per 5 seconds`
+  - `100 per day`
+- the browser and JSON whole-file upload routes share the same authenticated limiter bucket
+- browser state-changing routes now require a CSRF token alongside the normal session cookie
+- the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
+- the upload flow is post/redirect/get, so page refresh does not re-upload the file
+- the workspace polls owner-only transcript detail while the active transcript remains `queued` or `transcribing`
+- the session header reports the resolved user LLM model, not just the team default, so the displayed model matches the model the generation path will actually use
+- the workspace now distinguishes local browser progress from backend queue status:
+  - `recording (local)` while MediaRecorder is still capturing
+  - `uploading` while a file or mic blob is being submitted
+  - backend `queued`/`transcribing`/`ready`/`failed` once the transcript row reflects worker state
+- missing active team STT selection is surfaced before queueing work rather than as a later failed worker job
+- the Output tab now supports the first template-driven note generation action for the active session
+- generation uses the current transcript draft plus a selected team/personal template and the resolved active LLM provider/model
+- the Follow-ups tab now supports freeform follow-up generation from the active session
+- the Follow-ups tab now also supports running a selected team/personal quick action from a dropdown in the active session
+- follow-up generation sends:
+  - a fixed system instruction that the model is acting as a medical secretary in British English
+  - the current transcript draft
+  - the user-entered follow-up request text
+- quick action generation sends:
+  - a fixed system instruction that the model is acting as a medical secretary in British English and writing from the doctor's perspective
+  - the current transcript draft
+  - the saved quick action instruction text from the selected quick action version
+- generation now queues work asynchronously instead of blocking the browser request:
+  - the browser route returns immediately after creating a queued `generated_documents` row
+  - a Celery worker performs the LLM call in the background
+  - the latest output later becomes `ready` or `failed` under the same transcript root
+- successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab
+- successful follow-up generation persists a second `generated_documents` type under the same transcript root and renders it back into the Follow-ups tab
+- successful quick action generation persists a third `generated_documents` type under the same transcript root and also renders it back into the Follow-ups tab/history
+- generation routes are rate-limited per authenticated user:
+  - `1 per 5 seconds`
+  - `100 per day`
+- metadata-only usage logging now records generation event type, IDs, provider/model names, durations, and token counts when the provider returns them
+- the same metadata is now persisted into `provider_usage_events` for later per-user and per-team usage analysis
+- generated-document rows now also retain per-run token counts, durations, and safe provider error metadata for owner-visible debugging without storing prompts or note text
+- failed generations should now surface a safer, more specific reason when available, such as timeout, unreachable provider, credential rejection, or missing model
+
+## Session-root decision
+
+For now, do not introduce a second `sessions` table.
+
+Reason:
+
+- `transcripts` already carries `title`
+- `transcripts` is already the retention and deletion root
+- committed versions already hang from the transcript root
+- generated documents are planned to derive from transcript versions, not from an unrelated parallel root
+
+Current decision:
+
+- a browser "session" is the transcript root plus its derived versions/documents
+- session title is stored in `transcripts.title`
+- if we later need ingestion-session metadata, that should remain a child concept such as `transcript_ingestion_sessions`, not a replacement for the transcript root
+- generated note output also hangs from this transcript root, rather than inventing a separate note-session root
+
+## Current race-condition notes
+
+Current behavior is intentionally simple:
+
+- deleting multiple selected transcript roots is immediate and relies on the existing transcript-root cascade
+- live chunk ordering is protected by `chunk_sequence_no` and ordered worker application
+- switching between `whole_file` and `live_chunked` is allowed only before the session has transcript content or descendant work
+
+Current session-creation guard:
+
+- a second blank transcript root is rejected while the latest transcript is still empty
+- a second transcript root is also rejected while the latest transcript is still transcribing
+- title alone does not count as content
+- a draft, a committed transcript version, or any queued/processing/completed ingestion job does count
+
+Near-term hardening direction:
+
+- disable browser submit buttons on form submit
+- keep transcript root creation and title updates owner-only
+- avoid introducing a second root table just to hide workflow races
+- keep note generation owner-only and transcript-root-attached for the same reason
+- add structured transcription-job logging later:
+  - queued
+  - started
+  - completed
+  - failed
+  - without logging transcript text, prompts, or audio payloads
 
 ### 6. User commits a version
 
@@ -246,6 +351,7 @@ Implemented now for `live_chunked`:
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `live_chunked`
 - queued ingestion job response
+- queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
 - backend worker audio normalization before provider submission
 - provider text append into `current_draft_text_encrypted` only when completed chunks can be applied in order
 
@@ -269,16 +375,19 @@ Planned file/batch upload request shape:
 - ingestion source metadata where useful
 - no transcript text in the request
 
-Implemented now for `file_upload` and `microphone_batch`:
+Implemented now for `whole_file`:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - multipart `audio`
 - owner-only enforcement
-- rejection when the transcript ingestion mode is neither `file_upload` nor `microphone_batch`
+- rejection when the transcript ingestion mode is not `whole_file`
 - queued ingestion job response
+- rejection at queue time when no active team STT selection exists
+- queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
 - backend worker audio normalization before provider submission
-- provider transcript text written into `current_draft_text_encrypted`
+- provider transcript text appended into `current_draft_text_encrypted`
 - transcript status set to `ready` after successful provider completion
+- the browser microphone-batch UX uses `MediaRecorder` locally, then posts the captured blob into the same file-ingestion route rather than introducing a separate STT processing path
 
 ### Backend audio normalization
 
@@ -311,7 +420,14 @@ Implemented now:
 
 - live chunk uploads normalize audio through `ffmpeg` before STT submission
 - whole-file uploads normalize audio through `ffmpeg` before STT submission
+- whole-file uploads are bounded by:
+  - raw upload size cap: `25 MB`
+  - normalized duration cap: `30 minutes`
 - normalization failures surface as provider-path errors without storing raw audio in Postgres
+- queued/generated LLM output now snapshots prompt/provider execution context as well:
+  - transcript draft is committed into a `transcript_versions` row before generation
+  - template and quick-action prompt text is copied onto the queued generated-document row
+  - queued work can still complete even if the source template or quick action is later deleted
 
 ## Data model direction
 

@@ -11,10 +11,13 @@ from app.errors import AppError
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    PromptTemplate,
+    QuickAction,
     Team,
     TeamRole,
     TeamSttConfig,
     TeamSttSelection,
+    TemplateScope,
     Transcript,
     User,
     UserOnboardingState,
@@ -269,6 +272,24 @@ def delete_user(db: Session, actor: User, user_id) -> None:
     for selection in stt_selections:
         selection.selected_by_user_id = actor.id
         db.add(selection)
+
+    team_templates_created = db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.created_by_user_id == user.id))
+    for template in team_templates_created:
+        template.created_by_user_id = actor.id
+        db.add(template)
+
+    personal_templates = db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.user, PromptTemplate.owner_user_id == user.id))
+    for template in personal_templates:
+        db.delete(template)
+
+    team_quick_actions_created = db.scalars(select(QuickAction).where(QuickAction.scope == TemplateScope.team, QuickAction.created_by_user_id == user.id))
+    for quick_action in team_quick_actions_created:
+        quick_action.created_by_user_id = actor.id
+        db.add(quick_action)
+
+    personal_quick_actions = db.scalars(select(QuickAction).where(QuickAction.scope == TemplateScope.user, QuickAction.owner_user_id == user.id))
+    for quick_action in personal_quick_actions:
+        db.delete(quick_action)
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
     for transcript in transcripts:

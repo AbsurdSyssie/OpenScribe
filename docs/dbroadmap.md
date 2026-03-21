@@ -12,8 +12,12 @@
 - [x] First brute-force protection with Redis-backed route rate limits
 - [x] Account suspension and deletion authority hardening
 - [x] Team STT configuration and Vault-backed secret references
+- [x] Team LLM configuration and team/user default resolution
+- [x] Team and personal templates plus first generated-note output flow
+- [x] Async generated-note queueing with Celery-backed worker processing
 - [ ] Abuse controls and administrative unlock workflow
 - [ ] Transcript lifecycle and retention hardening
+- [ ] Structured transcription job logging and observability hardening
 
 ## Completed Milestone: Managed Onboarding and Session Hardening
 
@@ -203,6 +207,36 @@ Status: `Completed`
 - `user_mfa_methods`
 - `user_recovery_codes`
 
+## Completed Milestone: Templates and First Generated Output
+
+### Objective
+
+Add the first reusable note-template management surface and one owner-only LLM generation path without weakening transcript privacy or provider boundaries.
+
+Status: `Completed`
+
+### Checkpoints
+
+- [x] Add template roots and immutable template versions
+- [x] Add owner-only generated-document roots under transcripts
+- [x] Add leader team-template CRUD on `/home`
+- [x] Add user personal-template CRUD on `/home`
+- [x] Add owner-only note generation from `/transcribe`
+- [x] Snapshot transcript draft into a committed transcript version before generation
+- [x] Persist generated output under the transcript root
+- [x] Preserve transcript-delete cascade into generated documents
+- [x] Add API/UI/migration/docs coverage
+
+### Implemented decisions
+
+- templates are normal configuration data, not transcript-derived content
+- team templates are leader-managed and available to team members as selectable inputs
+- personal templates are user-managed and available only to their owner
+- quick actions are now normal configuration data, parallel to templates, with the same team/personal scope split
+- implemented generation modes are freeform template output, freeform follow-ups, and quick actions
+- generation is asynchronous and uses the resolved active LLM provider/model for the owner user
+- generated output is stored in `generated_documents` and shown in the workspace Output tab
+
 ## Next Milestone: Transcript Lifecycle and Retention Hardening
 
 ### Objective
@@ -291,3 +325,48 @@ Status: `Completed`
   - system admins provision STT endpoints and credentials
   - leaders choose or clear the active service/model for their team
   - leaders do not rotate or delete credentials
+
+## Completed Milestone: Team LLM Configuration and Default Resolution
+
+### Objective
+
+Add the first LLM provider-management surface without widening transcript visibility or storing raw provider credentials in Postgres.
+
+Status: `Completed`
+
+### Checkpoints
+
+- [x] add `team_llm_configs`, `team_llm_selections`, and `user_llm_preferences`
+- [x] store LLM API keys in Vault and persist only `vault_secret_ref` in Postgres
+- [x] restrict LLM provisioning to system admins
+- [x] add leader own-team LLM selection UI on `/home`
+- [x] add user own-model preference UI on `/home`
+- [x] add system-admin selected-team LLM provisioning UI on `/admin`
+- [x] add `GET /api/v1/llm-configs`
+- [x] add `POST /api/v1/llm-configs/inspect`
+- [x] add `POST /api/v1/llm-configs`
+- [x] add `DELETE /api/v1/llm-configs/{config_id}`
+- [x] add `GET /api/v1/llm-selection`
+- [x] add `GET /api/v1/llm-selection/options`
+- [x] add `POST /api/v1/llm-selection`
+- [x] add `DELETE /api/v1/llm-selection`
+- [x] add `GET /api/v1/llm-preference`
+- [x] add `POST /api/v1/llm-preference`
+- [x] add `DELETE /api/v1/llm-preference`
+- [x] reject unsafe remote non-HTTPS endpoints while allowing local/dev HTTP targets
+- [x] add API, UI, migration, and docs coverage
+
+### Implemented decisions
+
+- the implemented adapter families are `openai_chat` and `ollama_chat`
+- model discovery uses the OpenAI SDK server-side rather than a generic OpenAPI executor
+- Ollama model discovery uses the configured host’s `/api/tags` endpoint and chat generation uses `/api/chat`
+- multiple provisioned LLM provider rows are allowed per team
+- one team may have one active LLM selection row
+- one user may have one preferred default model row
+- the active team LLM selection carries both a team default model and the allowed-model subset visible to normal users
+- if a saved user preference is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
+- the implemented steady-state authority split is:
+  - system admins provision LLM providers and credentials
+  - leaders choose or clear the active provider, choose the team default model, and filter which provider models are visible to users
+  - users choose their own preferred default model from the leader-approved subset

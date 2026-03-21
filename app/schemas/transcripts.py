@@ -11,19 +11,24 @@ class TranscriptCreate(BaseModel):
     team_id: UUID
     title: str | None = Field(default=None, max_length=255)
     current_draft_text_encrypted: str | None = None
-    ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.live_chunked
+    ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.whole_file
     retention_days_applied: int | None = Field(default=None, ge=1)
 
 
 class TranscriptStart(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     current_draft_text_encrypted: str | None = None
-    ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.live_chunked
+    ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.whole_file
     retention_days_applied: int | None = Field(default=None, ge=1)
 
 
 class TranscriptCommit(BaseModel):
     text_encrypted: str = Field(min_length=1)
+
+
+class TranscriptUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    ingestion_mode: TranscriptIngestionMode | None = None
 
 
 class TranscriptListItem(BaseModel):

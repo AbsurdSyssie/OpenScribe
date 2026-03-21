@@ -1,0 +1,44 @@
+<script>
+  (() => {
+    const COOKIE_NAME = "openscribe_csrf";
+
+    function readCookie(name) {
+      const prefix = `${name}=`;
+      for (const part of document.cookie.split(";")) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith(prefix)) {
+          return decodeURIComponent(trimmed.slice(prefix.length));
+        }
+      }
+      return "";
+    }
+
+    function applyCsrfToken() {
+      const token = readCookie(COOKIE_NAME);
+      if (!token) {
+        return;
+      }
+      document.querySelectorAll('form[method="post"], form[method="POST"]').forEach((form) => {
+        let input = form.querySelector('input[name="_csrf_token"]');
+        if (!input) {
+          input = document.createElement("input");
+          input.type = "hidden";
+          input.name = "_csrf_token";
+          form.appendChild(input);
+        }
+        input.value = token;
+      });
+      window.OpenScribeCSRF = {
+        getToken() {
+          return readCookie(COOKIE_NAME);
+        },
+      };
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", applyCsrfToken, { once: true });
+    } else {
+      applyCsrfToken();
+    }
+  })();
+</script>

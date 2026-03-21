@@ -69,6 +69,14 @@ async def http_error_handler(_: Request, exc: HTTPException) -> JSONResponse:
 
 async def rate_limit_error_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     details = {"limit": str(exc.detail)} if exc.detail else None
+    return_path = "/login"
+    return_label = "Return to login"
+    if request.url.path.startswith("/transcribe"):
+        return_path = "/transcribe"
+        return_label = "Return to transcription workspace"
+    elif request.url.path.startswith("/request-access"):
+        return_path = "/request-access"
+        return_label = "Return to request access"
     security_logger.warning(
         "rate_limit_exceeded",
         extra={
@@ -78,12 +86,13 @@ async def rate_limit_error_handler(request: Request, exc: RateLimitExceeded) -> 
             "client_ip": request.client.host if request.client else None,
             "user_agent": request.headers.get("user-agent"),
             "limit": str(exc.detail) if exc.detail else None,
+            "rate_limit_subject": getattr(request.state, "rate_limit_subject", None),
         },
     )
     is_api_path = request.url.path.startswith("/api/")
     if not is_api_path:
         return HTMLResponse(
-            """
+            f"""
             <!DOCTYPE html>
             <html lang="en">
             <head>
@@ -91,7 +100,7 @@ async def rate_limit_error_handler(request: Request, exc: RateLimitExceeded) -> 
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <title>Too Many Requests</title>
               <style>
-                body {
+                body {{
                   margin: 0;
                   min-height: 100vh;
                   display: grid;
@@ -100,28 +109,28 @@ async def rate_limit_error_handler(request: Request, exc: RateLimitExceeded) -> 
                   font-family: "Iowan Old Style", "Palatino Linotype", serif;
                   background: linear-gradient(180deg, #f8f3ea 0%, #f3efe6 100%);
                   color: #1b1d1f;
-                }
-                main {
+                }}
+                main {{
                   width: min(620px, 100%);
                   background: #fffaf0;
                   border: 1px solid #d4c7ab;
                   border-radius: 24px;
                   padding: 28px;
                   box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
-                }
-                a {
+                }}
+                a {{
                   display: inline-block;
                   margin-top: 12px;
                   color: #7f251b;
-                }
+                }}
               </style>
             </head>
             <body>
               <main>
                 <h1>Too many requests.</h1>
                 <p>Please wait a moment and try again.</p>
-                <p>This protection is temporary and is intended to slow repeated guessing attempts.</p>
-                <a href="/login">Return to login</a>
+                <p>This protection is temporary and is intended to slow repeated or automated requests.</p>
+                <a href="{return_path}">{return_label}</a>
               </main>
             </body>
             </html>

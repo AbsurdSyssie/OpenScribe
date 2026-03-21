@@ -251,6 +251,49 @@ Expected:
 - cross-team leader access fails with `403`
 - invalid remote `http://` endpoint fails with `422`
 
+### Team LLM configuration
+
+Behavior in plain language:
+
+- system admins provision one or more LLM config rows per team
+- each team may have at most one active LLM selection row
+- each user may have at most one preferred default-model row
+- the row stores provider metadata and a Vault secret reference, never the raw API key
+- inspection may fetch available OpenAI chat models through the SDK or available Ollama models through `/api/tags`, but does not persist a row by itself
+- leaders may choose or clear only their own team's active LLM selection
+- leaders may not create, update, or delete credential-bearing config rows
+- team LLM selection now persists:
+  - the active provider
+  - a team default model
+  - an allowed-model subset visible to team users
+- normal users may set or clear only their own preferred default model from that allowed-model subset
+- if a saved user preference is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
+- normal users, onboarding sessions, and pending-MFA sessions may not access LLM provisioning or team-selection routes
+- the API returns `has_secret` but does not reveal the API key or the raw Vault ref
+- remote non-local endpoints must use `https://`
+- local and RFC1918 development HTTP endpoints are accepted in this first slice
+
+Brief test shape:
+
+```python
+created = client.post("/api/v1/llm-configs", json={...})
+selection = client.post("/api/v1/llm-selection", json={...})
+preference = client.post("/api/v1/llm-preference", json={...})
+persisted = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config_id))
+```
+
+Expected:
+
+- system-admin provisioning succeeds
+- leader selection succeeds only for a provisioned own-team option
+- user preference succeeds only for the authenticated user and only for the leader-approved model subset
+- clearing the team selection removes only the `team_llm_selections` row
+- clearing the user preference removes only the `user_llm_preferences` row
+- `created.json()["has_secret"] is True`
+- `vault_secret_ref` is present only in the database row, not the response
+- cross-team leader access fails with `403`
+- invalid remote `http://` endpoint fails with `422`
+
 ### Transcript start and ingestion mode
 
 Behavior in plain language:
@@ -259,7 +302,7 @@ Behavior in plain language:
 - `team_id` is derived from the current user rather than trusted from the request
 - system-admin accounts may not own transcript content
 - the transcript root persists `ingestion_mode` so later capture flows share one contract
-- if omitted, the start flow currently implies `live_chunked`
+- if omitted, the start flow currently implies `whole_file`
 
 Brief test shape:
 
@@ -315,7 +358,7 @@ Expected:
 Behavior in plain language:
 
 - whole-file ingestion is owner-only
-- whole-file ingestion is allowed only when the transcript ingestion mode is `file_upload` or `microphone_batch`
+- whole-file ingestion is allowed only when the transcript ingestion mode is `whole_file`
 - the API route queues an ingestion job and returns `202`
 - worker processing normalizes uploaded audio before STT submission
 - the worker requires an active team STT selection before provider execution
@@ -394,6 +437,38 @@ Behavior in plain language:
 - version numbers increase monotonically
 - owner-only access rules remain intact after the auth rewrite
 
+### Templates and generated documents
+
+Behavior in plain language:
+
+- team templates are configuration roots scoped to one team and managed by team leaders
+- personal templates are configuration roots scoped to one user and managed by that owner
+- each template save creates a new immutable `template_versions` row
+- generated note output is transcript-derived content rooted under the transcript owner and transcript id
+- transcript delete cascades to generated documents
+
+Brief test shape:
+
+```python
+team_template = leader_creates_team_template(...)
+personal_template = owner_creates_personal_template(...)
+generated = owner_generates_note(...)
+deleted = client.delete(f"/api/v1/transcripts/{transcript_id}")
+```
+
+Expected:
+
+- leaders can manage only their own team templates
+- users can manage only their own personal templates
+- leaders can manage only their own team quick actions
+- users can manage only their own personal quick actions
+- note generation creates both a `transcript_versions` snapshot and a `generated_documents` row
+- quick action generation creates both a `transcript_versions` snapshot and a `generated_documents` row linked to a `quick_action_versions` snapshot
+- generated-document rows now also snapshot prompt/provider execution metadata needed to survive later config or source-asset changes
+- generation usage metadata is now also persisted into `provider_usage_events` with team/user IDs and token/duration fields when available
+- deleting a template or quick action no longer removes the prompt context needed by already-queued/generated output
+- deleting the transcript removes the generated document immediately
+
 ## Migration coverage
 
 Current migration tests verify:
@@ -401,6 +476,11 @@ Current migration tests verify:
 - `alembic upgrade head` builds the schema from scratch
 - head schema includes:
   - `account_requests`
+  - `generated_documents`
+  - `quick_actions`
+  - `quick_action_versions`
+  - `template_versions`
+  - `templates`
   - `user_sessions`
   - `user_trusted_devices`
   - `user_mfa_methods`

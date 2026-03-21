@@ -17,6 +17,17 @@ from .auth import (
     TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
+from .llm import (
+    LlmConfigDetail,
+    LlmConfigInspectResult,
+    LlmInspectRequest,
+    LlmConfigUpsert,
+    LlmModelOption,
+    LlmSelectionDetail,
+    LlmSelectionUpsert,
+    UserLlmPreferenceDetail,
+    UserLlmPreferenceUpsert,
+)
 from .stt import (
     SttConfigDetail,
     SttConfigUpsert,
@@ -28,6 +39,18 @@ from .stt import (
     SttSelectionUpsert,
 )
 from .teams import TeamCreate, TeamDetail, TeamListItem
+from .templates import (
+    GenerateFollowupRequest,
+    GenerateQuickActionRequest,
+    GenerateTemplateOutputRequest,
+    GeneratedDocumentDetail,
+    PromptTemplateDetail,
+    PromptTemplateUpsert,
+    PromptTemplateVersionDetail,
+    QuickActionDetail,
+    QuickActionUpsert,
+    QuickActionVersionDetail,
+)
 from .transcripts import (
     TranscriptCommit,
     TranscriptCreate,
@@ -36,6 +59,7 @@ from .transcripts import (
     TranscriptIngestionJobDetail,
     TranscriptListItem,
     TranscriptStart,
+    TranscriptUpdate,
 )
 from .users import UserCreate, UserDetail, UserListItem
 
@@ -56,6 +80,13 @@ __all__ = [
     "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "LlmConfigDetail",
+    "LlmConfigInspectResult",
+    "LlmInspectRequest",
+    "LlmConfigUpsert",
+    "LlmModelOption",
+    "LlmSelectionDetail",
+    "LlmSelectionUpsert",
     "SttConfigDetail",
     "SttConfigUpsert",
     "SttInspectFieldTip",
@@ -67,6 +98,16 @@ __all__ = [
     "TeamCreate",
     "TeamDetail",
     "TeamListItem",
+    "GenerateTemplateOutputRequest",
+    "GenerateFollowupRequest",
+    "GenerateQuickActionRequest",
+    "GeneratedDocumentDetail",
+    "PromptTemplateDetail",
+    "PromptTemplateUpsert",
+    "PromptTemplateVersionDetail",
+    "QuickActionDetail",
+    "QuickActionUpsert",
+    "QuickActionVersionDetail",
     "TranscriptCommit",
     "TranscriptCreate",
     "TranscriptDetail",
@@ -74,7 +115,10 @@ __all__ = [
     "TranscriptIngestionJobDetail",
     "TranscriptListItem",
     "TranscriptStart",
+    "TranscriptUpdate",
     "UserCreate",
     "UserDetail",
+    "UserLlmPreferenceDetail",
+    "UserLlmPreferenceUpsert",
     "UserListItem",
 ]

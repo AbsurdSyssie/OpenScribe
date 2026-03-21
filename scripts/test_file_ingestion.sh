@@ -54,7 +54,7 @@ echo "Starting file-upload transcript"
 START_RESPONSE="$(curl -sS -b "$COOKIE_JAR" \
   -H 'Content-Type: application/json' \
   -X POST "$BASE_URL/api/v1/transcripts/start" \
-  -d "$(printf '{"title":"%s","ingestion_mode":"file_upload"}' "$TITLE")")"
+  -d "$(printf '{"title":"%s","ingestion_mode":"whole_file"}' "$TITLE")")"
 
 TRANSCRIPT_ID="$(printf '%s' "$START_RESPONSE" | .venv/bin/python -c 'import json,sys; body=json.load(sys.stdin); print(body.get("id",""))')"
 if [[ -z "$TRANSCRIPT_ID" ]]; then

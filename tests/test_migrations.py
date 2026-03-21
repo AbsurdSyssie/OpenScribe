@@ -44,10 +44,19 @@ def test_alembic_upgrade_head_creates_expected_schema():
     assert current_tables() == {
         "alembic_version",
         "account_requests",
+        "generated_documents",
+        "provider_usage_events",
+        "quick_actions",
+        "quick_action_versions",
         "teams",
+        "team_llm_configs",
+        "team_llm_selections",
         "team_stt_configs",
         "team_stt_selections",
+        "template_versions",
+        "templates",
         "users",
+        "user_llm_preferences",
         "user_trusted_devices",
         "user_sessions",
         "user_mfa_methods",
@@ -133,6 +142,15 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     request_columns = {column["name"] for column in inspector.get_columns("account_requests")}
     stt_columns = {column["name"] for column in inspector.get_columns("team_stt_configs")}
     stt_selection_columns = {column["name"] for column in inspector.get_columns("team_stt_selections")}
+    llm_columns = {column["name"] for column in inspector.get_columns("team_llm_configs")}
+    llm_selection_columns = {column["name"] for column in inspector.get_columns("team_llm_selections")}
+    user_llm_preference_columns = {column["name"] for column in inspector.get_columns("user_llm_preferences")}
+    template_columns = {column["name"] for column in inspector.get_columns("templates")}
+    template_version_columns = {column["name"] for column in inspector.get_columns("template_versions")}
+    quick_action_columns = {column["name"] for column in inspector.get_columns("quick_actions")}
+    quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
+    generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
+    provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
 
@@ -142,8 +160,82 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns
     assert {"team_id", "adapter_kind", "base_url", "transcribe_path", "vault_secret_ref", "response_text_path", "available_models_json"} <= stt_columns
     assert {"team_id", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
+    assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
+    assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
+    assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
+    assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns
+    assert {"template_id", "version_no", "mode", "prompt_text"} <= template_version_columns
+    assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= quick_action_columns
+    assert {"quick_action_id", "version_no", "mode", "prompt_text"} <= quick_action_version_columns
+    assert {
+        "owner_user_id",
+        "team_id",
+        "transcript_id",
+        "transcript_version_id",
+        "template_version_id",
+        "quick_action_version_id",
+        "llm_config_id",
+        "source_template_name",
+        "source_quick_action_name",
+        "follow_up_prompt_text",
+        "prompt_snapshot_text",
+        "original_output_text_encrypted",
+        "llm_adapter_kind",
+        "llm_base_url",
+        "celery_task_id",
+        "input_token_count",
+        "output_token_count",
+        "total_token_count",
+        "estimated_cost_usd",
+        "duration_ms",
+        "provider_duration_ms",
+        "error_code",
+        "provider_error_code",
+        "provider_http_status",
+        "error_message",
+        "started_at",
+        "completed_at",
+    } <= generated_document_columns
+    assert {
+        "team_id",
+        "owner_user_id",
+        "generated_document_id",
+        "transcript_id",
+        "llm_config_id",
+        "feature_type",
+        "event_type",
+        "provider_adapter",
+        "model_name",
+        "status",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "estimated_cost_usd",
+        "duration_ms",
+        "provider_duration_ms",
+        "error_code",
+        "provider_error_code",
+        "provider_http_status",
+        "created_at",
+    } <= provider_usage_event_columns
     assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
-    assert {"transcript_id", "job_kind", "chunk_sequence_no", "status", "celery_task_id", "result_text_encrypted"} <= transcript_ingestion_job_columns
+    assert {
+        "transcript_id",
+        "job_kind",
+        "chunk_sequence_no",
+        "status",
+        "celery_task_id",
+        "result_text_encrypted",
+        "stt_config_id",
+        "stt_adapter_kind",
+        "stt_base_url",
+        "stt_transcribe_path",
+        "stt_model_name",
+        "stt_language",
+        "stt_file_field_name",
+        "stt_response_text_path",
+        "stt_extra_form_fields_json",
+    } <= transcript_ingestion_job_columns
 
 
 @pytest.mark.migration
@@ -234,6 +326,167 @@ def test_alembic_head_supports_new_stt_adapter_values():
 
 
 @pytest.mark.migration
+def test_alembic_head_supports_llm_adapter_values():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000120',
+                    'Admin User',
+                    'llm-admin@example.com',
+                    'hash',
+                    NULL,
+                    NULL,
+                    true,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000121',
+                    'Clinic South',
+                    'clinic south',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_llm_configs (
+                    id, team_id, label, adapter_kind, base_url, auth_mode, model_name, available_models_json,
+                    vault_secret_ref, is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000122',
+                    '00000000-0000-0000-0000-000000000121',
+                    'Local Ollama',
+                    'ollama_chat',
+                    'http://localhost:11434',
+                    'none',
+                    'llama3.2',
+                    '[]'::json,
+                    '',
+                    true,
+                    '00000000-0000-0000-0000-000000000120',
+                    '00000000-0000-0000-0000-000000000120',
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+
+        adapter_kind, auth_mode = connection.execute(text("SELECT adapter_kind::text, auth_mode::text FROM team_llm_configs")).one()
+
+    assert adapter_kind == "ollama_chat"
+    assert auth_mode == "none"
+
+
+@pytest.mark.migration
+def test_alembic_head_supports_simplified_transcript_ingestion_mode():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000030',
+                    'Clinic North',
+                    'clinic north',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000031',
+                    'Owner User',
+                    'owner@example.com',
+                    'hash',
+                    '00000000-0000-0000-0000-000000000030',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, title, current_draft_text_encrypted, ingestion_mode, status,
+                    next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000032',
+                    '00000000-0000-0000-0000-000000000031',
+                    '00000000-0000-0000-0000-000000000030',
+                    'Whole-file transcript',
+                    NULL,
+                    'whole_file',
+                    'recording',
+                    1,
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        ingestion_mode = connection.execute(text("SELECT ingestion_mode::text FROM transcripts")).scalar_one()
+
+    assert ingestion_mode == "whole_file"
+
+
+@pytest.mark.migration
 def test_alembic_head_supports_suspended_user_status():
     reset_public_schema()
     command.upgrade(alembic_config(), "head")
@@ -271,3 +524,25 @@ def test_alembic_head_supports_suspended_user_status():
         status = connection.execute(text("SELECT status::text FROM users WHERE email = 'suspended@example.com'")).scalar_one()
 
     assert status == "suspended"
+
+
+@pytest.mark.migration
+def test_alembic_head_supports_quick_action_generated_document_type():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        values = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+                WHERE pg_type.typname = 'generateddocumentgeneratortype'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+
+    assert "quick_action" in values

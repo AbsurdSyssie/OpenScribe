@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenScribe Transcription</title>
+  <style>
+    :root {
+      --bg: #f5f2ea;
+      --shell: #fffdf8;
+      --panel: rgba(255, 255, 255, 0.92);
+      --ink: #1b1d1f;
+      --muted: #64605c;
+      --line: #ddd6c7;
+      --warm: #f4d9a6;
+      --accent: #171717;
+      --accent-soft: #f2eee4;
+      --success: #d4f0df;
+      --success-ink: #20593c;
+      --error: #f9dfdf;
+      --error-ink: #872b2b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      background:
+        radial-gradient(circle at top left, rgba(251, 191, 36, 0.12), transparent 28%),
+        linear-gradient(180deg, #fffdf8, #f2efe7);
+    }
+    a { color: inherit; }
+    .shell {
+      margin: 24px;
+      overflow: hidden;
+      border: 1px solid #e7e0d0;
+      border-radius: 28px;
+      background: rgba(245, 245, 244, 0.94);
+      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+    }
+    .shell-head {
+      padding: 18px 24px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .shell-head h1 {
+      margin: 6px 0 0;
+      font-size: 1.75rem;
+    }
+    .shell-head p {
+      margin: 6px 0 0;
+      max-width: 68rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .workspace {
+      min-height: 880px;
+      display: flex;
+      background: transparent;
+    }
+    .sidebar {
+      width: 310px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.88);
+      padding: 16px 14px;
+      display: grid;
+      align-content: start;
+      gap: 18px;
+    }
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .eyebrow {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: #8d6b2e;
+      font-weight: 700;
+    }
+    .muted { color: var(--muted); }
+    .sidebar-card,
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: var(--panel);
+      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+    }
+    .sidebar-card {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .notes-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-radius: 18px;
+      background: #f3f1ed;
+      padding: 12px 14px;
+      gap: 12px;
+    }
+    .sidebar-list {
+      display: grid;
+      gap: 10px;
+    }
+    .notes-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .session-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+    .session-item.selected .session-link {
+      border-color: #c8b38a;
+      background: #f8f1e2;
+    }
+    .session-select {
+      margin-top: 14px;
+      width: 18px;
+      height: 18px;
+    }
+    .session-link {
+      display: block;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 12px 13px;
+      background: white;
+      transition: 140ms ease;
+    }
+    .session-link.active {
+      border-color: #a9d2b5;
+      background: #edf8f0;
+    }
+    .session-link:hover {
+      background: #faf7f1;
+      transform: translateY(-1px);
+    }
+    .session-title {
+      font-size: 0.98rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .session-meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .main {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      padding: 24px 28px 18px;
+      display: grid;
+      gap: 16px;
+    }
+    .session-card {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: start;
+      justify-content: space-between;
+      gap: 18px;
+      border: 1px solid #f0d9aa;
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 28px;
+      padding: 18px 18px 16px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+    }
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: start;
+      flex-wrap: wrap;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      background: var(--warm);
+      color: #5c430f;
+    }
+    .chip.neutral {
+      background: #ece7de;
+      color: #4e473d;
+    }
+    .chip.success {
+      background: var(--success);
+      color: var(--success-ink);
+    }
+    .chip.error {
+      background: var(--error);
+      color: var(--error-ink);
+    }
+    .top-actions,
+    .upload-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .split-action {
+      position: relative;
+      display: inline-flex;
+      align-items: stretch;
+      border-radius: 999px;
+      overflow: visible;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+    }
+    .split-action button {
+      border-radius: 0;
+    }
+    .split-action > button:first-of-type {
+      border-top-left-radius: 999px;
+      border-bottom-left-radius: 999px;
+    }
+    .split-action > button.split-toggle {
+      border-top-right-radius: 999px;
+      border-bottom-right-radius: 999px;
+    }
+    .split-action button + button {
+      border-left: 1px solid rgba(255, 255, 255, 0.18);
+    }
+    .split-toggle {
+      min-width: 44px;
+      padding-left: 12px;
+      padding-right: 12px;
+    }
+    .split-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 220px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.12);
+      display: grid;
+      gap: 6px;
+      z-index: 20;
+    }
+    .split-option {
+      justify-content: flex-start;
+      background: white;
+      color: #4c4740;
+      border: 1px solid var(--line);
+      text-align: left;
+    }
+    .split-option.active {
+      background: #f1cf94;
+      border-color: #f1cf94;
+      color: #4f3705;
+    }
+    .control-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding-top: 2px;
+    }
+    .control-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      height: 42px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: white;
+      padding: 0 14px;
+      color: #5e584f;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+    }
+    .bars {
+      display: inline-flex;
+      align-items: end;
+      gap: 3px;
+      height: 18px;
+    }
+    .bars span {
+      display: inline-block;
+      width: 4px;
+      border-radius: 999px;
+      background: #f4b740;
+    }
+    .button,
+    button,
+    .button-link {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 16px;
+      font: inherit;
+      font-size: 0.95rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: var(--accent);
+      color: white;
+    }
+    .button.secondary,
+    .button-link.secondary,
+    button.secondary {
+      background: white;
+      color: #4c4740;
+      border: 1px solid var(--line);
+    }
+    button[disabled] {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    .button.icon {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 999px;
+    }
+    .flash {
+      margin: 0 28px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+    }
+    .flash.success {
+      background: var(--success);
+      color: var(--success-ink);
+    }
+    .flash.error {
+      background: var(--error);
+      color: var(--error-ink);
+    }
+    .upload-panel {
+      margin: 18px 28px 0;
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+    form {
+      display: grid;
+      gap: 12px;
+    }
+    .upload-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font: inherit;
+      background: white;
+    }
+    .tabs {
+      border-bottom: 1px solid var(--line);
+      background: #f7f5ef;
+      padding: 12px 28px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .tab {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 9px 14px;
+      background: white;
+      color: #5f5952;
+    }
+    .tab.active {
+      background: #f1cf94;
+      border-color: #f1cf94;
+      color: #4f3705;
+    }
+    .tabs .tab-spacer {
+      margin-left: auto;
+    }
+    .content {
+      padding: 22px 28px 28px;
+    }
+    .content-grid {
+      display: grid;
+      gap: 18px;
+    }
+    .panel {
+      padding: 18px;
+    }
+    .panel-head {
+      margin-bottom: 12px;
+    }
+    .panel-head h2,
+    .panel-head h3 {
+      margin: 0 0 4px;
+      font-size: 1rem;
+    }
+    .panel-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.5;
+    }
+    .session-progress {
+      margin-top: 10px;
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .text-surface {
+      min-height: 430px;
+      white-space: pre-wrap;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px;
+      background: white;
+      line-height: 1.65;
+    }
+    .placeholder {
+      color: #92877a;
+    }
+    .mic-status {
+      min-height: 1.4rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .mic-status.error {
+      color: var(--error-ink);
+    }
+    .mic-status.success {
+      color: var(--success-ink);
+    }
+    [hidden] { display: none !important; }
+    @media (max-width: 980px) {
+      .shell { margin: 0; border-radius: 0; }
+      .workspace { display: block; }
+      .sidebar { width: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .upload-grid { grid-template-columns: 1fr; }
+      .flash, .upload-panel, .tabs, .content, .header { padding-left: 18px; padding-right: 18px; margin-left: 0; margin-right: 0; }
+      .shell-head { padding-left: 18px; padding-right: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <section class="shell">
+    <div class="shell-head">
+      <div class="eyebrow" style="color: #78716c;">UI reference port</div>
+      <h1>Scribe workspace</h1>
+      <p>Reference shell based on the current <code>transcribev2</code> workspace. This keeps the sidebar, session card, primary tabs, transcript/output panes, and follow-up area while wiring only the current OpenScribe transcription flow.</p>
+    </div>
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="brand">
+        <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:18px;background:#f7e3b7;font-size:1.2rem;">🪶</div>
+        <div>
+          <div class="eyebrow">Transcription workspace</div>
+          <div style="font-size: 1.05rem; font-weight: 700;">LocalScribe</div>
+          <div class="muted">Privacy first</div>
+        </div>
+      </div>
+
+      <div class="sidebar-card">
+        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center;">
+          <div>
+            <div class="eyebrow" style="color: var(--muted);">Signed in</div>
+            <div style="font-weight: 700;">{{ current_user.full_name or current_user.email }}</div>
+          </div>
+          <a class="button-link secondary" href="/home">Home</a>
+        </div>
+        <form method="post" action="/logout">
+          <button type="submit" class="secondary">Sign out</button>
+        </form>
+      </div>
+
+      <form id="new-session-form" method="post" action="/transcribe/sessions">
+        <input type="hidden" name="ingestion_mode" value="whole_file">
+      </form>
+      {% if active_transcript %}
+      <form id="switch-to-whole-file-form" method="post" action="/transcribe/sessions/{{ active_transcript.id }}/mode">
+        <input type="hidden" name="ingestion_mode" value="whole_file">
+      </form>
+      {% endif %}
+
+      <form class="sidebar-card" id="bulk-delete-sessions" method="post" action="/transcribe/sessions/delete" onsubmit="return confirm('Delete the selected transcript sessions permanently?');">
+        <div class="notes-head">
+          <div>
+            <div class="eyebrow" style="color: var(--muted);">Notes</div>
+            <div style="font-size: 0.95rem; font-weight: 700;">Most recent first</div>
+          </div>
+          <div class="notes-toolbar">
+            <button type="submit" class="secondary" form="new-session-form" data-local-busy-protected {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>New session</button>
+            <button type="submit" class="secondary" data-delete-selected disabled>Delete</button>
+          </div>
+        </div>
+        <div class="sidebar-list">
+          {% if recent_transcripts %}
+            {% for transcript in recent_transcripts %}
+            <div class="session-item">
+              <input
+                class="session-select"
+                type="checkbox"
+                name="transcript_ids"
+                value="{{ transcript.id }}"
+                data-session-select>
+              <a class="session-link{% if active_transcript_id == transcript.id|string %} active{% endif %}" href="/transcribe?transcript_id={{ transcript.id }}">
+                <div class="session-title">{{ transcript.title or "Untitled transcript" }}</div>
+                <div class="session-meta">{{ transcript.created_at }}</div>
+                <div class="session-meta">{{ transcript.ingestion_mode.value }} · <span data-sidebar-status="{{ transcript.id }}">{{ transcript.status.value }}</span></div>
+              </a>
+            </div>
+            {% endfor %}
+          {% else %}
+          <div class="session-meta">No transcripts yet.</div>
+          {% endif %}
+        </div>
+        {% if not can_create_new_session and new_session_block_message %}
+        <div class="session-meta">{{ new_session_block_message }}</div>
+        {% endif %}
+      </form>
+    </aside>
+
+    <div class="main">
+      <section class="header">
+        <div class="session-card">
+        <div class="header-top" style="width:100%;">
+          <div>
+            <div class="eyebrow">Session</div>
+            <div style="font-size: 1.6rem; font-weight: 700;">{{ active_transcript.title if active_transcript else "New transcription session" }}</div>
+            <div class="chips" style="margin-top: 12px;">
+              {% if active_transcript %}
+              <span class="chip neutral" data-active-status>{{ active_transcript.status.value }}</span>
+              <span class="chip neutral">{% if active_transcript.ingestion_mode.value == "whole_file" %}whole-file session{% else %}{{ active_transcript.ingestion_mode.value }}{% endif %}</span>
+              {% endif %}
+              {% if stt_selection %}
+              <span class="chip">{{ stt_selection.config.label }}</span>
+              <span class="chip">{{ stt_selection.model_name_override or stt_selection.config.model_name or "default model" }}</span>
+              {% else %}
+              <span class="chip error">No active STT selection</span>
+              {% endif %}
+              {% if llm_selection %}
+              <span class="chip neutral">{{ llm_selection.config.label }}</span>
+              <span class="chip neutral">{{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default LLM" }}</span>
+              {% else %}
+              <span class="chip error">No active LLM selection</span>
+              {% endif %}
+            </div>
+            <div class="session-progress" data-session-progress>
+              {% if active_transcript %}
+                {% if active_transcript.status.value == "queued" %}
+                Waiting in the worker queue.
+                {% elif active_transcript.status.value == "transcribing" %}
+                Background transcription is in progress.
+                {% elif active_transcript.status.value == "ready" %}
+                Session is ready for review.
+                {% elif active_transcript.status.value == "failed" %}
+                The last ingestion attempt failed.
+                {% else %}
+                Session is ready for input.
+                {% endif %}
+              {% else %}
+              Create or select a session to begin.
+              {% endif %}
+            </div>
+          </div>
+          <div class="top-actions">
+            <button type="button" class="secondary">Configure LLM</button>
+            <button type="submit" form="new-session-form" data-local-busy-protected {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>New session</button>
+          </div>
+        </div>
+        <div class="control-row">
+          <div class="control-pill">
+            <span class="bars" aria-hidden="true">
+              <span style="height:10px"></span>
+              <span style="height:16px"></span>
+              <span style="height:24px"></span>
+              <span style="height:18px"></span>
+              <span style="height:12px"></span>
+            </span>
+            <span style="font-size:0.8rem;font-weight:700;">Input</span>
+          </div>
+          <button type="button" class="secondary icon" title="Record" data-mic-start>Mic</button>
+          <button type="button" class="secondary icon" title="Upload">Up</button>
+          <button type="button" class="secondary icon" title="Stop" data-mic-stop disabled>Stop</button>
+          <button type="button" class="secondary icon" title="Quick action" disabled>QA</button>
+          <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-mic-timer>00:00</div>
+        </div>
+        {% if active_transcript %}
+        <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" style="max-width: 520px;">
+          <label>
+            Session title
+            <input type="text" name="title" maxlength="255" value="{{ active_transcript.title or '' }}" placeholder="Untitled session">
+          </label>
+          <div class="upload-row">
+            <button type="submit" class="secondary">Rename session</button>
+          </div>
+        </form>
+        {% endif %}
+        </div>
+      </section>
+
+      {% if message %}
+      <div class="flash {{ message_kind }}">{{ message }}</div>
+      {% endif %}
+
+      <section class="upload-panel panel">
+        <div class="panel-head">
+          <h2>Audio input</h2>
+          <p>
+            {% if stt_selection %}
+            Use the selected transcript session for whole-file audio input. Choose file upload or microphone batch from the action dropdown, then start from the main button.
+            {% elif team_leader_email %}
+            No STT is selected for your team yet. Ask {{ team_leader_email }} to choose an active STT endpoint first.
+            {% else %}
+            No STT is selected for your team yet. Ask a team leader or system admin to finish STT setup first.
+            {% endif %}
+          </p>
+        </div>
+        <form method="post" action="/transcribe/upload" enctype="multipart/form-data">
+          {% if active_transcript %}
+          <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+          {% endif %}
+          <input type="file" name="audio" accept="audio/*" data-audio-file-input hidden {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
+          <div class="upload-grid">
+            <label>
+              Title
+              <input type="text" name="title" maxlength="255" placeholder="Telephone review" value="{{ active_transcript.title if active_transcript and active_transcript.title else '' }}" {% if not active_transcript %}disabled{% endif %}>
+            </label>
+            <div style="display:grid;gap:8px;">
+              <div class="upload-row">
+                <div class="split-action">
+                  <button type="button" data-audio-action-trigger data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>Upload from file</button>
+                  <button type="button" class="split-toggle" data-audio-action-toggle data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>▼</button>
+                  <div class="split-menu" data-audio-action-menu hidden>
+                    <button type="button" class="split-option active" data-audio-action-option="file">Upload from file</button>
+                    <button type="button" class="split-option" data-audio-action-option="microphone">Record microphone batch</button>
+                  </div>
+                </div>
+                <button type="button" class="secondary" data-mic-stop-panel disabled>Stop and queue batch</button>
+              </div>
+              <div class="session-meta" data-audio-source-caption>Selected source: file upload</div>
+            </div>
+          </div>
+        </form>
+        {% if active_transcript and active_transcript.ingestion_mode.value == "live_chunked" %}
+        <div class="upload-row">
+          <button type="submit" class="secondary" form="switch-to-whole-file-form" data-local-busy-protected {% if not can_switch_to_whole_file %}disabled title="{{ switch_mode_block_message or 'Cannot switch input mode right now' }}"{% endif %}>Use this session for upload or microphone</button>
+        </div>
+        <p class="muted">The active session is `live_chunked`, so whole-file input is disabled until you switch this blank session back to `whole_file`.</p>
+        {% elif not active_transcript %}
+        <p class="muted">Create or select a session from the notes rail, then choose whether to upload a file or record from the microphone.</p>
+        {% endif %}
+        <div class="mic-status" data-mic-status>
+          {% if not active_transcript %}
+          Create or select a session to start whole-file transcription.
+          {% elif active_transcript.ingestion_mode.value != "whole_file" %}
+          The current session is `{{ active_transcript.ingestion_mode.value }}`. Switch this session to `whole_file` when it is still blank and idle.
+          {% elif not stt_selection %}
+          No active STT selection is available for your team, so whole-file transcription cannot queue yet.
+          {% else %}
+          Ready for file upload or microphone batch recording in this session.
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="tabs">
+        <button type="button" class="tab{% if active_tab == 'transcript' %} active{% endif %}" data-tab-trigger="transcript">Transcript</button>
+        <button type="button" class="tab{% if active_tab == 'output' %} active{% endif %}" data-tab-trigger="output">Output</button>
+        <button type="button" class="tab{% if active_tab == 'followups' %} active{% endif %}" data-tab-trigger="followups">Follow-ups</button>
+        <div class="tab-spacer"></div>
+        <button type="button" class="tab">Regenerate</button>
+      </section>
+
+      <section class="content">
+        <div class="content-grid">
+          <div class="panel" data-tab-panel="transcript"{% if active_tab != 'transcript' %} hidden{% endif %}>
+            <div class="panel-head">
+              <h2>Transcript</h2>
+              <p>Background ingestion writes into the current draft for the selected transcript session.</p>
+            </div>
+            <div class="text-surface" data-active-draft>
+              {% if active_transcript and active_transcript.current_draft_text_encrypted %}
+              {{ active_transcript.current_draft_text_encrypted }}
+              {% else %}
+              <span class="placeholder">No transcript text yet. Use the audio input control to upload a file or record a microphone batch.</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="panel" data-tab-panel="output"{% if active_tab != 'output' %} hidden{% endif %}>
+            <div class="panel-head">
+              <h2>Generated note output</h2>
+              <p>Choose a team or personal template, send the current transcript draft to the active LLM, and review the returned note here.</p>
+            </div>
+            <form method="post" action="/transcribe/generate-output">
+              {% if active_transcript %}
+              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+              {% endif %}
+              <label>
+                Template
+                <select name="template_id" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required>
+                  {% if not available_templates %}
+                  <option value="">No templates available</option>
+                  {% else %}
+                    {% for template in available_templates %}
+                    <option value="{{ template.id }}">{{ template.name }} ({{ template.scope.value }})</option>
+                    {% endfor %}
+                  {% endif %}
+                </select>
+              </label>
+              <div class="upload-row">
+                <button type="submit" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate note</button>
+              </div>
+            </form>
+            {% if not available_templates %}
+            <p class="muted">Create a personal template, or ask your team leader to add a team template, before generating note output.</p>
+            {% elif not llm_selection %}
+            <p class="muted">No active LLM selection is set for your team yet.</p>
+            {% elif not active_transcript or not active_transcript.current_draft_text_encrypted %}
+            <p class="muted">Transcript text is required before note generation can run.</p>
+            {% endif %}
+            <div
+              class="text-surface"
+              data-latest-generated-output
+              data-latest-generated-status="{{ latest_generated_document.status.value if latest_generated_document else '' }}"
+              data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
+            >
+              {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
+              {{ latest_generated_document.edited_output_text_encrypted }}
+              {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
+              <span class="placeholder">Note generation is queued in the worker.</span>
+              {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
+              <span class="placeholder">Note generation is in progress.</span>
+              {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
+              <span class="placeholder">The latest note generation failed{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
+              {% else %}
+              <span class="placeholder">No generated output yet.</span>
+              {% endif %}
+            </div>
+            {% if latest_generated_document %}
+            <p class="session-meta">
+              Latest output: {{ latest_generated_document.title }} · {{ latest_generated_document.model_used or "unknown model" }} · {{ latest_generated_document.status.value }} · {{ latest_generated_document.created_at }}
+            </p>
+            {% endif %}
+            {% if note_documents %}
+            <table>
+              <thead>
+                <tr>
+                  <th>Output</th>
+                  <th>Model</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for document in note_documents %}
+                <tr>
+                  <td>{{ document.title }}<br><small>{{ document.source_template_name }}</small></td>
+                  <td>{{ document.model_used or "unknown" }}</td>
+                  <td>{{ document.status.value }}</td>
+                  <td>{{ document.created_at }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+          </div>
+
+          <div class="panel" data-tab-panel="followups"{% if active_tab != 'followups' %} hidden{% endif %}>
+            <div class="panel-head">
+              <h2>Follow-ups</h2>
+              <p>Run a quick action or type a custom follow-up. Both use the active transcript draft and the same resolved LLM model as note generation.</p>
+            </div>
+            <form method="post" action="/transcribe/run-quick-action">
+              {% if active_transcript %}
+              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+              {% endif %}
+              <label>
+                Quick action
+                <select name="quick_action_id" {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required>
+                  {% if not available_quick_actions %}
+                  <option value="">No quick actions available</option>
+                  {% else %}
+                    {% for quick_action in available_quick_actions %}
+                    <option value="{{ quick_action.id }}">{{ quick_action.name }} ({{ quick_action.scope.value }})</option>
+                    {% endfor %}
+                  {% endif %}
+                </select>
+              </label>
+              <div class="upload-row">
+                <button type="submit" {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Run quick action</button>
+              </div>
+            </form>
+            {% if not available_quick_actions %}
+            <p class="muted">Create a personal quick action, or ask your team leader to add a team quick action, before running one here.</p>
+            {% endif %}
+            <form method="post" action="/transcribe/generate-followup">
+              {% if active_transcript %}
+              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+              {% endif %}
+              <label>
+                Follow-up request
+                <textarea name="prompt_text" rows="5" maxlength="4000" placeholder="Arrange repeat bloods in two weeks and advise the patient to book a review if the cough persists." {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required></textarea>
+              </label>
+              <div class="upload-row">
+                <button type="submit" {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate follow-up</button>
+              </div>
+            </form>
+            {% if not llm_selection %}
+            <p class="muted">No active LLM selection is set for your team yet.</p>
+            {% elif not active_transcript or not active_transcript.current_draft_text_encrypted %}
+            <p class="muted">Transcript text is required before follow-up generation can run.</p>
+            {% endif %}
+            <div
+              class="text-surface"
+              data-latest-followup-output
+              data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
+              data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}"
+            >
+              {% if latest_followup_document and latest_followup_document.status.value == "ready" and latest_followup_document.edited_output_text_encrypted %}
+              {{ latest_followup_document.edited_output_text_encrypted }}
+              {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
+              <span class="placeholder">Follow-up generation is queued in the worker.</span>
+              {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
+              <span class="placeholder">Follow-up generation is in progress.</span>
+              {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
+              <span class="placeholder">The latest follow-up generation failed{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
+              {% else %}
+              <span class="placeholder">No follow-up thread yet.</span>
+              {% endif %}
+            </div>
+            {% if latest_followup_document %}
+            <p class="session-meta">
+              Latest follow-up: {{ latest_followup_document.model_used or "unknown model" }} · {{ latest_followup_document.status.value }} · {{ latest_followup_document.created_at }}
+            </p>
+            {% endif %}
+            {% if followup_documents %}
+            <table>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Model</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for document in followup_documents %}
+                <tr>
+                  <td>
+                    {% if document.generator_type.value == "quick_action" %}
+                    {{ document.source_quick_action_name or document.title }}
+                    {% else %}
+                    {{ document.follow_up_prompt_text or document.title }}
+                    {% endif %}
+                  </td>
+                  <td>{{ document.model_used or "unknown" }}</td>
+                  <td>{{ document.status.value }}</td>
+                  <td>{{ document.created_at }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+  </section>
+  <script>
+    (() => {
+      const triggers = [...document.querySelectorAll('[data-tab-trigger]')];
+      const panels = [...document.querySelectorAll('[data-tab-panel]')];
+      const setTab = (target) => {
+        triggers.forEach((trigger) => {
+          trigger.classList.toggle('active', trigger.getAttribute('data-tab-trigger') === target);
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.getAttribute('data-tab-panel') !== target;
+        });
+      };
+      triggers.forEach((trigger) => {
+        trigger.addEventListener('click', () => setTab(trigger.getAttribute('data-tab-trigger')));
+      });
+      setTab({{ active_tab|tojson }});
+
+      const transcriptId = {{ active_transcript_id|tojson }};
+      const activeIngestionMode = {{ (active_transcript.ingestion_mode.value if active_transcript else none)|tojson }};
+      const hasSttSelection = {{ (stt_selection is not none)|tojson }};
+      const activeStatus = document.querySelector('[data-active-status]');
+      const activeDraft = document.querySelector('[data-active-draft]');
+      const activeProgress = document.querySelector('[data-session-progress]');
+      const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
+      const latestGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
+      const latestGeneratedId = latestGeneratedOutput?.dataset.latestGeneratedId || '';
+      const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
+      const latestFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
+      const latestFollowupId = latestFollowupOutput?.dataset.latestFollowupId || '';
+      const sidebarStatus = transcriptId ? document.querySelector(`[data-sidebar-status="${transcriptId}"]`) : null;
+      const uploadForm = document.querySelector('form[action="/transcribe/upload"]');
+      const deleteButton = document.querySelector('[data-delete-selected]');
+      const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
+      const syncDeleteState = () => {
+        if (!deleteButton) return;
+        deleteButton.disabled = !selectionBoxes.some((checkbox) => checkbox.checked);
+        selectionBoxes.forEach((checkbox) => {
+          checkbox.closest('.session-item')?.classList.toggle('selected', checkbox.checked);
+        });
+      };
+      selectionBoxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', syncDeleteState);
+      });
+      syncDeleteState();
+
+      const setVisibleStatus = (label) => {
+        if (activeStatus) activeStatus.textContent = label;
+        if (sidebarStatus) sidebarStatus.textContent = label;
+      };
+
+      const setSessionProgress = (message) => {
+        if (!activeProgress) return;
+        activeProgress.textContent = message;
+      };
+
+      const reflectBackendStatus = (statusLabel) => {
+        setVisibleStatus(statusLabel);
+        if (statusLabel === 'queued') {
+          setSessionProgress('Waiting in the worker queue.');
+        } else if (statusLabel === 'transcribing') {
+          setSessionProgress('Background transcription is in progress.');
+        } else if (statusLabel === 'ready') {
+          setSessionProgress('Session is ready for review.');
+        } else if (statusLabel === 'failed') {
+          setSessionProgress('The last ingestion attempt failed.');
+        } else if (statusLabel === 'recording') {
+          setSessionProgress('Session is ready for input.');
+        }
+      };
+
+      const micStartButtons = [...document.querySelectorAll('[data-mic-start], [data-mic-start-panel]')];
+      const micStopButtons = [...document.querySelectorAll('[data-mic-stop], [data-mic-stop-panel]')];
+      const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
+      const micStatus = document.querySelector('[data-mic-status]');
+      const micTimer = document.querySelector('[data-mic-timer]');
+      const titleInput = document.querySelector('form[action="/transcribe/upload"] input[name="title"]');
+      const fileInput = document.querySelector('[data-audio-file-input]');
+      const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
+      const audioActionToggle = document.querySelector('[data-audio-action-toggle]');
+      const audioActionMenu = document.querySelector('[data-audio-action-menu]');
+      const audioActionOptions = [...document.querySelectorAll('[data-audio-action-option]')];
+      const audioSourceCaption = document.querySelector('[data-audio-source-caption]');
+      const canUseWholeFileInput = Boolean(transcriptId && hasSttSelection && activeIngestionMode === 'whole_file');
+      let selectedAudioSource = 'file';
+      let mediaRecorder = null;
+      let mediaStream = null;
+      let mediaChunks = [];
+      let startedAt = null;
+      let timerId = null;
+      const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
+
+      const setMicStatus = (message, kind = '') => {
+        if (!micStatus) return;
+        micStatus.textContent = message;
+        micStatus.classList.remove('error', 'success');
+        if (kind) micStatus.classList.add(kind);
+      };
+
+      const syncAudioSourceUi = () => {
+        if (audioActionTrigger) {
+          audioActionTrigger.textContent = selectedAudioSource === 'file' ? 'Upload from file' : 'Record microphone batch';
+        }
+        if (audioSourceCaption) {
+          audioSourceCaption.textContent = selectedAudioSource === 'file'
+            ? 'Selected source: file upload'
+            : 'Selected source: microphone batch';
+        }
+        audioActionOptions.forEach((button) => {
+          button.classList.toggle('active', button.dataset.audioActionOption === selectedAudioSource);
+        });
+      };
+
+      const setMicButtons = (isRecording) => {
+        micStopButtons.forEach((button) => {
+          button.disabled = !isRecording;
+        });
+        localBusyProtected.forEach((button) => {
+          const initiallyDisabled = protectedInitialDisabled.get(button) ?? false;
+          button.disabled = isRecording || initiallyDisabled;
+        });
+        if (audioActionTrigger) {
+          audioActionTrigger.disabled = isRecording || !canUseWholeFileInput;
+        }
+        if (audioActionToggle) {
+          audioActionToggle.disabled = isRecording || !canUseWholeFileInput;
+        }
+        if (fileInput) {
+          fileInput.disabled = isRecording || !canUseWholeFileInput;
+        }
+      };
+
+      const renderTimer = () => {
+        if (!micTimer) return;
+        if (!startedAt) {
+          micTimer.textContent = '00:00';
+          return;
+        }
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
+        const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+        micTimer.textContent = `${minutes}:${seconds}`;
+      };
+
+      const stopStreamTracks = () => {
+        if (!mediaStream) return;
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      };
+
+      const resetRecordingState = () => {
+        if (timerId) {
+          window.clearInterval(timerId);
+          timerId = null;
+        }
+        startedAt = null;
+        renderTimer();
+        mediaRecorder = null;
+        mediaChunks = [];
+        stopStreamTracks();
+        setMicButtons(false);
+      };
+
+      const chooseMimeType = () => {
+        if (!window.MediaRecorder) return '';
+        const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+        return candidates.find((candidate) => window.MediaRecorder.isTypeSupported(candidate)) || '';
+      };
+
+      const uploadMicrophoneBatch = async (blob) => {
+        const formData = new FormData();
+        formData.append('transcript_id', transcriptId);
+        formData.append('title', titleInput?.value || '');
+        formData.append('audio', blob, blob.type.includes('mp4') ? 'microphone-batch.mp4' : 'microphone-batch.webm');
+        setMicStatus('Uploading microphone batch for transcription...');
+        setVisibleStatus('uploading');
+        setSessionProgress('Uploading microphone batch to queue transcription...');
+        try {
+          const response = await fetch('/transcribe/upload', {
+            method: 'POST',
+            headers: {
+              'X-CSRF-Token': window.OpenScribeCSRF?.getToken?.() || '',
+            },
+            body: formData,
+            credentials: 'include',
+            redirect: 'follow',
+          });
+          if (response.redirected && response.url) {
+            window.location.assign(response.url);
+            return;
+          }
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || 'Microphone batch upload failed');
+          }
+          window.location.reload();
+        } catch (error) {
+          setMicStatus('Could not queue microphone batch transcription.', 'error');
+        }
+      };
+
+      const beginMicrophoneBatch = async () => {
+        if (!canUseWholeFileInput) {
+          setMicStatus('Create or select a session with whole-file input and STT available before recording.', 'error');
+          return;
+        }
+        if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+          setMicStatus('This browser does not support microphone batch recording.', 'error');
+          return;
+        }
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mimeType = chooseMimeType();
+          mediaChunks = [];
+          mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+          mediaRecorder.addEventListener('dataavailable', (event) => {
+            if (event.data && event.data.size > 0) {
+              mediaChunks.push(event.data);
+            }
+          });
+          mediaRecorder.addEventListener('stop', async () => {
+            const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || mimeType || 'audio/webm' });
+            resetRecordingState();
+            if (blob.size === 0) {
+              setMicStatus('No microphone audio was captured.', 'error');
+              return;
+            }
+            setMicStatus('Microphone capture complete.', 'success');
+            await uploadMicrophoneBatch(blob);
+          });
+          mediaRecorder.start();
+          startedAt = Date.now();
+          renderTimer();
+          timerId = window.setInterval(renderTimer, 1000);
+          setMicButtons(true);
+          setMicStatus('Recording microphone batch locally...');
+          setVisibleStatus('recording (local)');
+          setSessionProgress('Recording locally. Nothing has been queued yet.');
+        } catch (_) {
+          resetRecordingState();
+          setMicStatus('Microphone access was denied or unavailable.', 'error');
+        }
+      };
+
+      const endMicrophoneBatch = () => {
+        if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+        setMicStatus('Stopping microphone capture...');
+        setVisibleStatus('uploading');
+        setSessionProgress('Preparing the microphone batch for upload...');
+        mediaRecorder.stop();
+      };
+
+      micStopButtons.forEach((button) => button.addEventListener('click', endMicrophoneBatch));
+      setMicButtons(false);
+      renderTimer();
+      syncAudioSourceUi();
+      if (audioActionToggle && audioActionMenu) {
+        audioActionToggle.addEventListener('click', () => {
+          audioActionMenu.hidden = !audioActionMenu.hidden;
+        });
+        document.addEventListener('click', (event) => {
+          if (!audioActionMenu.hidden && !audioActionMenu.contains(event.target) && !audioActionToggle.contains(event.target)) {
+            audioActionMenu.hidden = true;
+          }
+        });
+      }
+      audioActionOptions.forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedAudioSource = button.dataset.audioActionOption || 'file';
+          syncAudioSourceUi();
+          if (audioActionMenu) {
+            audioActionMenu.hidden = true;
+          }
+        });
+      });
+      if (audioActionTrigger) {
+        audioActionTrigger.addEventListener('click', () => {
+          if (!canUseWholeFileInput) {
+            return;
+          }
+          if (selectedAudioSource === 'microphone') {
+            beginMicrophoneBatch();
+            return;
+          }
+          fileInput?.click();
+        });
+      }
+      if (fileInput && uploadForm) {
+        fileInput.addEventListener('change', () => {
+          if (!fileInput.files || fileInput.files.length === 0) {
+            return;
+          }
+          setVisibleStatus('uploading');
+          setSessionProgress('Uploading audio file to queue transcription...');
+          uploadForm.requestSubmit();
+        });
+      }
+      if (uploadForm) {
+        uploadForm.addEventListener('submit', () => {
+          setVisibleStatus('uploading');
+          setSessionProgress('Uploading audio file to queue transcription...');
+        });
+      }
+      if (activeStatus) {
+        reflectBackendStatus(activeStatus.textContent.trim());
+      } else {
+        setSessionProgress('Create or select a session to begin.');
+      }
+
+      const renderDraft = (text) => {
+        if (!activeDraft) return;
+        if (text && text.length > 0) {
+          activeDraft.textContent = text;
+          return;
+        }
+        activeDraft.innerHTML = '<span class="placeholder">No transcript text yet. Use the audio input control to upload a file or record a microphone batch.</span>';
+      };
+
+      const renderGeneratedOutput = (document) => {
+        if (!latestGeneratedOutput) return;
+        if (!document) {
+          latestGeneratedOutput.innerHTML = '<span class="placeholder">No generated output yet.</span>';
+          return;
+        }
+        if (document.status === 'ready' && document.edited_output_text_encrypted) {
+          latestGeneratedOutput.textContent = document.edited_output_text_encrypted;
+          return;
+        }
+        if (document.status === 'queued') {
+          latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is queued in the worker.</span>';
+          return;
+        }
+        if (document.status === 'processing') {
+          latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is in progress.</span>';
+          return;
+        }
+        if (document.status === 'failed') {
+          const suffix = document.error_message ? `: ${document.error_message}` : '';
+          latestGeneratedOutput.innerHTML = `<span class="placeholder">The latest note generation failed${suffix}.</span>`;
+        }
+      };
+
+      const renderFollowupOutput = (document) => {
+        if (!latestFollowupOutput) return;
+        if (!document) {
+          latestFollowupOutput.innerHTML = '<span class="placeholder">No follow-up thread yet.</span>';
+          return;
+        }
+        if (document.status === 'ready' && document.edited_output_text_encrypted) {
+          latestFollowupOutput.textContent = document.edited_output_text_encrypted;
+          return;
+        }
+        if (document.status === 'queued') {
+          latestFollowupOutput.innerHTML = '<span class="placeholder">Follow-up generation is queued in the worker.</span>';
+          return;
+        }
+        if (document.status === 'processing') {
+          latestFollowupOutput.innerHTML = '<span class="placeholder">Follow-up generation is in progress.</span>';
+          return;
+        }
+        if (document.status === 'failed') {
+          const suffix = document.error_message ? `: ${document.error_message}` : '';
+          latestFollowupOutput.innerHTML = `<span class="placeholder">The latest follow-up generation failed${suffix}.</span>`;
+        }
+      };
+
+      async function pollTranscript() {
+        if (!transcriptId || !activeStatus) return;
+        const current = activeStatus.textContent.trim();
+        if (current !== 'queued' && current !== 'transcribing') return;
+        try {
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}`, { credentials: 'include' });
+          if (!response.ok) return;
+          const transcript = await response.json();
+          reflectBackendStatus(transcript.status);
+          renderDraft(transcript.current_draft_text_encrypted || '');
+          if (transcript.status === 'queued' || transcript.status === 'transcribing') {
+            window.setTimeout(pollTranscript, 2500);
+          }
+        } catch (_) {
+          window.setTimeout(pollTranscript, 2500);
+        }
+      }
+
+      async function pollGeneratedDocuments() {
+        if (!transcriptId) return;
+        const shouldPollNote = latestGeneratedOutput && latestGeneratedId && (latestGeneratedStatus === 'queued' || latestGeneratedStatus === 'processing');
+        const shouldPollFollowup = latestFollowupOutput && latestFollowupId && (latestFollowupStatus === 'queued' || latestFollowupStatus === 'processing');
+        if (!shouldPollNote && !shouldPollFollowup) return;
+        try {
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/generated-documents`, { credentials: 'include' });
+          if (!response.ok) return;
+          const documents = await response.json();
+          if (!Array.isArray(documents)) return;
+          const latestNote = documents.find((document) => document.id === latestGeneratedId);
+          const latestFollowup = documents.find((document) => document.id === latestFollowupId);
+          const notePending = latestNote && (latestNote.status === 'queued' || latestNote.status === 'processing');
+          const followupPending = latestFollowup && (latestFollowup.status === 'queued' || latestFollowup.status === 'processing');
+          if (notePending || followupPending) {
+            window.setTimeout(pollGeneratedDocuments, 2500);
+            return;
+          }
+          if (latestNote) {
+            renderGeneratedOutput(latestNote);
+          }
+          if (latestFollowup) {
+            renderFollowupOutput(latestFollowup);
+          }
+          window.location.reload();
+        } catch (_) {
+          window.setTimeout(pollGeneratedDocuments, 2500);
+        }
+      }
+
+      window.setTimeout(pollTranscript, 1200);
+      window.setTimeout(pollGeneratedDocuments, 1400);
+    })();
+  </script>
+  {% include "_csrf_script.html" %}
+</body>
+</html>

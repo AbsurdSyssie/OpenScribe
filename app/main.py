@@ -1,9 +1,13 @@
 import json
 import os
+import secrets
 from dataclasses import dataclass
+from ipaddress import ip_address
+from typing import Annotated
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -13,9 +17,30 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .db import get_db
+from .db import SessionLocal, get_db
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
-from .models import SessionAuthLevel, SttAdapterKind, TeamRole, TeamStatus, Transcript, TranscriptStatus, TranscriptVersion, User, UserSession, UserStatus, transcript_expiry
+from .models import (
+    GeneratedDocument,
+    GeneratedDocumentGeneratorType,
+    LlmAdapterKind,
+    PromptTemplate,
+    QuickAction,
+    SessionAuthLevel,
+    SessionStatus,
+    SttAdapterKind,
+    TeamRole,
+    TeamStatus,
+    TemplateScope,
+    Transcript,
+    TranscriptIngestionMode,
+    TranscriptStatus,
+    TranscriptVersion,
+    User,
+    UserSession,
+    UserStatus,
+    transcript_expiry,
+    utcnow,
+)
 from .schemas import (
     AccountRequestApprove,
     AccountRequestCreate,
@@ -24,10 +49,23 @@ from .schemas import (
     AccountRequestReject,
     CurrentUserResponse,
     ErrorResponse,
+    GenerateFollowupRequest,
+    GenerateQuickActionRequest,
+    GenerateTemplateOutputRequest,
+    LlmConfigDetail,
+    LlmConfigInspectResult,
+    LlmInspectRequest,
+    LlmConfigUpsert,
+    LlmSelectionDetail,
+    LlmSelectionUpsert,
     LoginRequest,
     LoginResponse,
     MfaChallengeRequest,
     PasswordChangeRequest,
+    PromptTemplateDetail,
+    PromptTemplateUpsert,
+    QuickActionDetail,
+    QuickActionUpsert,
     RecoveryCodesResponse,
     SttConfigDetail,
     SttInspectRequest,
@@ -47,12 +85,54 @@ from .schemas import (
     TranscriptIngestionJobDetail,
     TranscriptListItem,
     TranscriptStart,
+    TranscriptUpdate,
     TrustedDeviceStatusResponse,
     UserCreate,
     UserDetail,
+    UserLlmPreferenceDetail,
+    UserLlmPreferenceUpsert,
     UserListItem,
+    GeneratedDocumentDetail,
+)
+from .services.templates import (
+    attach_generated_document_task_id as attach_generated_document_task_id_service,
+    delete_personal_quick_action as delete_personal_quick_action_service,
+    delete_personal_template as delete_personal_template_service,
+    delete_team_quick_action as delete_team_quick_action_service,
+    delete_team_template as delete_team_template_service,
+    list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
+    list_available_templates_for_user as list_available_templates_for_user_service,
+    list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
+    list_personal_quick_actions as list_personal_quick_actions_service,
+    list_personal_templates as list_personal_templates_service,
+    list_team_quick_actions as list_team_quick_actions_service,
+    list_team_templates as list_team_templates_service,
+    mark_generated_document_enqueue_failed as mark_generated_document_enqueue_failed_service,
+    queue_quick_action_generation as queue_quick_action_generation_service,
+    queue_document_generation_from_template as queue_document_generation_from_template_service,
+    queue_followup_generation as queue_followup_generation_service,
+    upsert_personal_quick_action as upsert_personal_quick_action_service,
+    upsert_personal_template as upsert_personal_template_service,
+    upsert_team_quick_action as upsert_team_quick_action_service,
+    upsert_team_template as upsert_team_template_service,
+)
+from .services.llm import (
+    active_team_llm_selection as active_team_llm_selection_service,
+    clear_team_llm_selection as clear_team_llm_selection_service,
+    clear_user_llm_preference as clear_user_llm_preference_service,
+    delete_llm_config as delete_llm_config_service,
+    get_team_llm_selection as get_team_llm_selection_service,
+    get_user_llm_preference as get_user_llm_preference_service,
+    inspect_llm_contract as inspect_llm_contract_service,
+    list_llm_configs as list_llm_configs_service,
+    list_selectable_llm_configs as list_selectable_llm_configs_service,
+    resolve_user_llm as resolve_user_llm_service,
+    set_team_llm_selection as set_team_llm_selection_service,
+    set_user_llm_preference as set_user_llm_preference_service,
+    upsert_llm_config as upsert_llm_config_service,
 )
 from .services.stt import (
+    active_team_stt_selection as active_team_stt_selection_service,
     delete_stt_config as delete_stt_config_service,
     get_stt_config as get_stt_config_service,
     inspect_stt_contract as inspect_stt_contract_service,
@@ -95,6 +175,7 @@ from .services.auth import (
     resolve_trusted_device,
     revoke_session_by_token,
     rotate_session,
+    session_token_hash,
     skip_recovery_codes,
     start_totp_enrollment,
     touch_trusted_device_seen,
@@ -106,13 +187,19 @@ from .services.auth import (
 )
 from .services.transcripts import (
     attach_task_id_to_ingestion_job,
+    can_create_new_session as can_create_new_session_service,
+    can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
     create_transcript_from_payload,
+    delete_transcripts as delete_transcripts_service,
     mark_ingestion_job_enqueue_failed,
     queue_audio_chunk_ingestion,
     queue_audio_file_ingestion,
     start_transcript as start_transcript_service,
+    update_transcript as update_transcript_service,
+    update_transcript_title as update_transcript_title_service,
 )
-from .tasks import enqueue_transcript_ingestion_job
+from .tasks import enqueue_generated_document_job, enqueue_transcript_ingestion_job
+from .services.audio import enforce_whole_file_upload_size
 
 
 @dataclass(slots=True)
@@ -125,20 +212,152 @@ class AuthenticatedContext:
 app = FastAPI(title="OpenScribe MVP")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 api = APIRouter(prefix="/api/v1")
+CSRF_COOKIE_NAME = "openscribe_csrf"
+LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
+
+
+def _local_only_dev_emails() -> set[str]:
+    return {
+        os.getenv("DEV_TEST_LEADER_EMAIL", "dev.leader@example.com").strip().lower(),
+        os.getenv("DEV_TEST_USER_EMAIL", "dev.user@example.com").strip().lower(),
+    }
+
+
+def _is_local_address(value: str | None) -> bool:
+    if not value:
+        return False
+    candidate = value.strip().strip("[]").split(":", 1)[0].lower()
+    if candidate in LOCALHOST_NAMES:
+        return True
+    try:
+        return ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_is_localhost_only(request: Request) -> bool:
+    host_header = request.headers.get("host")
+    origin_header = request.headers.get("origin")
+    client_host = request.client.host if request.client else None
+    request_host = request.url.hostname
+
+    origin_host = None
+    if origin_header:
+        try:
+            origin_host = origin_header.split("://", 1)[1].split("/", 1)[0]
+        except IndexError:
+            origin_host = origin_header
+
+    candidates = [host_header, origin_host, client_host, request_host]
+    meaningful_candidates = [candidate for candidate in candidates if candidate]
+    if not meaningful_candidates:
+        return False
+    return all(_is_local_address(candidate) for candidate in meaningful_candidates)
+
+
+def _enforce_localhost_only_dev_account(request: Request, user: User) -> None:
+    if user.email.lower() not in _local_only_dev_emails():
+        return
+    if _request_is_localhost_only(request):
+        return
+    raise AppError(403, "forbidden", "Dev test accounts are available only from localhost")
+
+
+def whole_file_upload_rate_limit_key(request: Request) -> str:
+    raw_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if raw_token:
+        hashed_token = session_token_hash(raw_token)
+        session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
+        try:
+            with session_factory() as rate_limit_db:
+                user_id = rate_limit_db.scalar(
+                    select(UserSession.user_id)
+                    .join(User, User.id == UserSession.user_id)
+                    .where(
+                        UserSession.session_token_hash == hashed_token,
+                        UserSession.status == SessionStatus.active,
+                        UserSession.expires_at > utcnow(),
+                        User.status == UserStatus.active,
+                    )
+                )
+        except Exception:
+            user_id = None
+        if user_id is not None:
+            subject = f"user:{user_id}"
+        else:
+            subject = f"session:{hashed_token[:16]}"
+    else:
+        subject = f"ip:{get_remote_address(request)}"
+    request.state.rate_limit_subject = subject
+    return subject
+
+
+async def require_browser_csrf(
+    request: Request,
+    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> None:
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    submitted_token = csrf_header
+    if submitted_token is None:
+        form = await request.form()
+        submitted_token = form.get("_csrf_token")
+    if not cookie_token or not submitted_token or submitted_token != cookie_token:
+        raise AppError(403, "forbidden", "CSRF verification failed")
+
+
+BrowserCsrf = Annotated[None, Depends(require_browser_csrf)]
+
+
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=os.getenv("RATE_LIMIT_STORAGE_URL", "redis://localhost:6379/0"),
     headers_enabled=False,
 )
 app.state.limiter = limiter
+app.state.db_session_factory = SessionLocal
 LOGIN_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="login")
 MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
 ACCOUNT_REQUEST_RATE_LIMIT = limiter.shared_limit("3/hour", scope="account_request")
+WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT = limiter.shared_limit(
+    "1/5 seconds",
+    scope="whole_file_upload_burst",
+    key_func=whole_file_upload_rate_limit_key,
+)
+WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT = limiter.shared_limit(
+    "100/day",
+    scope="whole_file_upload_daily",
+    key_func=whole_file_upload_rate_limit_key,
+)
+LLM_GENERATION_BURST_RATE_LIMIT = limiter.shared_limit(
+    "1/5 seconds",
+    scope="llm_generation_burst",
+    key_func=whole_file_upload_rate_limit_key,
+)
+LLM_GENERATION_DAILY_RATE_LIMIT = limiter.shared_limit(
+    "100/day",
+    scope="llm_generation_daily",
+    key_func=whole_file_upload_rate_limit_key,
+)
 
 app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)
 app.add_exception_handler(RateLimitExceeded, rate_limit_error_handler)
+
+
+@app.middleware("http")
+async def ensure_csrf_cookie(request: Request, call_next):
+    response = await call_next(request)
+    if request.method in {"GET", "HEAD"} and not request.cookies.get(CSRF_COOKIE_NAME):
+        response.set_cookie(
+            key=CSRF_COOKIE_NAME,
+            value=secrets.token_urlsafe(32),
+            httponly=False,
+            secure=False,
+            samesite="lax",
+            path="/",
+        )
+    return response
 
 
 def _set_session_cookie(response: JSONResponse | RedirectResponse, token: str) -> None:
@@ -204,6 +423,9 @@ def _current_context_optional(request: Request, db: Session) -> AuthenticatedCon
     if resolved is None:
         return None
     user, session = resolved
+    if user.email.lower() in _local_only_dev_emails() and not _request_is_localhost_only(request):
+        revoke_session_by_token(db, token, reason="dev_account_non_local")
+        return None
     return AuthenticatedContext(user=user, session=session, token=token)
 
 
@@ -236,6 +458,14 @@ def require_stt_selector(context: AuthenticatedContext = Depends(require_full_co
     if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
         return context
     raise AppError(403, "forbidden", "STT selection access required")
+
+
+def require_llm_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+    if context.user.is_system_admin:
+        return context
+    if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
+        return context
+    raise AppError(403, "forbidden", "LLM selection access required")
 
 
 def require_user_manager(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
@@ -296,8 +526,11 @@ def render_admin(
     current_user: User,
     selected_team_id: str | None = None,
     selected_stt_config_id: str | None = None,
+    selected_llm_config_id: str | None = None,
     stt_inspection: SttInspectResult | None = None,
     stt_form_override: dict[str, object] | None = None,
+    llm_inspection: LlmConfigInspectResult | None = None,
+    llm_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
@@ -306,6 +539,9 @@ def render_admin(
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
     stt_selection = get_team_stt_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+    edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
+    llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     context = {
         "request": request,
         "current_user": current_user,
@@ -313,12 +549,19 @@ def render_admin(
         "users": list_users_service(db),
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
+        "selected_llm_config_id": selected_llm_config_id,
         "stt_configs": stt_configs,
         "stt_config": edit_stt_config,
         "stt_selection": stt_selection,
         "stt_inspection": stt_inspection,
         "stt_form": stt_form_override or stt_form_defaults(edit_stt_config, None),
         "selectable_stt_configs": list_selectable_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
+        "llm_configs": llm_configs,
+        "llm_config": edit_llm_config,
+        "llm_selection": llm_selection,
+        "llm_inspection": llm_inspection,
+        "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),
+        "selectable_llm_configs": list_selectable_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
         "account_requests": list_manageable_account_requests_service(db, current_user),
         "team_statuses": list(TeamStatus),
         "team_roles": list(TeamRole),
@@ -334,13 +577,56 @@ def render_home(
     db: Session,
     *,
     current_user: User,
+    selected_team_template_id: str | None = None,
+    selected_personal_template_id: str | None = None,
+    selected_team_quick_action_id: str | None = None,
+    selected_personal_quick_action_id: str | None = None,
     message: str | None = None,
     message_kind: str = "success",
+    queued_transcript_id: str | None = None,
     status_code: int = 200,
 ):
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
     stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
     selectable_stt_configs = list_selectable_stt_configs_service(db, current_user) if is_manager else []
+    llm_selection = None
+    if current_user.team_id is not None:
+        try:
+            llm_selection = active_team_llm_selection_service(db, team_id=current_user.team_id)
+        except AppError:
+            llm_selection = get_team_llm_selection_service(db, current_user) if is_manager else None
+    selectable_llm_configs = list_selectable_llm_configs_service(db, current_user) if is_manager else []
+    user_llm_preference = None
+    resolved_user_llm_model = None
+    if not current_user.is_system_admin and current_user.team_id is not None:
+        try:
+            _, _, resolved_user_llm_model, user_llm_preference = resolve_user_llm_service(db, current_user)
+        except AppError:
+            user_llm_preference = get_user_llm_preference_service(db, current_user)
+    team_leader_email = None
+    if current_user.team_id is not None:
+        team_leader_email = db.scalar(
+            select(User.email)
+            .where(
+                User.team_id == current_user.team_id,
+                User.team_role == TeamRole.leader,
+                User.is_system_admin.is_(False),
+                User.status == UserStatus.active,
+            )
+            .order_by(User.created_at.asc())
+        )
+    team_templates = list_team_templates_service(db, current_user) if is_manager else []
+    personal_templates = list_personal_templates_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
+    team_quick_actions = list_team_quick_actions_service(db, current_user) if is_manager else []
+    personal_quick_actions = list_personal_quick_actions_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
+    selected_team_template = next((template for template in team_templates if str(template.id) == selected_team_template_id), None)
+    selected_personal_template = next((template for template in personal_templates if str(template.id) == selected_personal_template_id), None)
+    selected_team_quick_action = next((quick_action for quick_action in team_quick_actions if str(quick_action.id) == selected_team_quick_action_id), None)
+    selected_personal_quick_action = next((quick_action for quick_action in personal_quick_actions if str(quick_action.id) == selected_personal_quick_action_id), None)
+    team_template_latest_version = _latest_template_version(selected_team_template) if selected_team_template is not None else None
+    personal_template_latest_version = _latest_template_version(selected_personal_template) if selected_personal_template is not None else None
+    team_quick_action_latest_version = _latest_quick_action_version(selected_team_quick_action) if selected_team_quick_action is not None else None
+    personal_quick_action_latest_version = _latest_quick_action_version(selected_personal_quick_action) if selected_personal_quick_action is not None else None
     context = {
         "request": request,
         "current_user": current_user,
@@ -349,10 +635,173 @@ def render_home(
         "account_requests": list_manageable_account_requests_service(db, current_user) if is_manager else [],
         "stt_selection": stt_selection,
         "selectable_stt_configs": selectable_stt_configs,
+        "llm_selection": llm_selection,
+        "selectable_llm_configs": selectable_llm_configs,
+        "user_llm_preference": user_llm_preference,
+        "resolved_user_llm_model": resolved_user_llm_model,
+        "team_leader_email": team_leader_email,
+        "team_templates": team_templates,
+        "personal_templates": personal_templates,
+        "team_quick_actions": team_quick_actions,
+        "personal_quick_actions": personal_quick_actions,
+        "selected_team_template_id": selected_team_template_id,
+        "selected_personal_template_id": selected_personal_template_id,
+        "selected_team_quick_action_id": selected_team_quick_action_id,
+        "selected_personal_quick_action_id": selected_personal_quick_action_id,
+        "team_template": selected_team_template,
+        "personal_template": selected_personal_template,
+        "team_quick_action": selected_team_quick_action,
+        "personal_quick_action": selected_personal_quick_action,
+        "team_template_latest_version": team_template_latest_version,
+        "personal_template_latest_version": personal_template_latest_version,
+        "team_quick_action_latest_version": team_quick_action_latest_version,
+        "personal_quick_action_latest_version": personal_quick_action_latest_version,
         "message": message,
         "message_kind": message_kind,
+        "queued_transcript_id": queued_transcript_id,
     }
     return templates.TemplateResponse(request, "home.html", context, status_code=status_code)
+
+
+def render_transcribe(
+    request: Request,
+    db: Session,
+    *,
+    current_user: User,
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    active_tab: str = "transcript",
+    message: str | None = None,
+    message_kind: str = "success",
+    status_code: int = 200,
+):
+    recent_transcripts = list(
+        db.scalars(
+            select(Transcript)
+            .where(Transcript.owner_user_id == current_user.id)
+            .order_by(Transcript.created_at.desc())
+            .limit(12)
+        )
+    )
+    active_transcript = None
+    requested_transcript_id = queued_transcript_id or transcript_id
+    if requested_transcript_id:
+        try:
+            selected_id = UUID(requested_transcript_id)
+        except ValueError:
+            selected_id = None
+        if selected_id is not None:
+            candidate = db.get(Transcript, selected_id)
+            if candidate is not None and candidate.owner_user_id == current_user.id:
+                active_transcript = candidate
+    if active_transcript is None and recent_transcripts:
+        active_transcript = recent_transcripts[0]
+
+    stt_selection = None
+    llm_selection = None
+    user_llm_preference = None
+    resolved_user_llm_model = None
+    if current_user.team_id is not None:
+        try:
+            stt_selection = active_team_stt_selection_service(db, team_id=current_user.team_id)
+        except AppError:
+            stt_selection = None
+        try:
+            llm_selection = active_team_llm_selection_service(db, team_id=current_user.team_id)
+        except AppError:
+            llm_selection = None
+    if not current_user.is_system_admin and current_user.team_id is not None:
+        try:
+            _, _, resolved_user_llm_model, user_llm_preference = resolve_user_llm_service(db, current_user)
+        except AppError:
+            user_llm_preference = get_user_llm_preference_service(db, current_user)
+    can_create_new_session, new_session_block_message = can_create_new_session_service(db, current_user)
+    can_switch_to_whole_file = False
+    switch_mode_block_message = None
+    if active_transcript is not None:
+        _, can_switch_to_whole_file, whole_file_message = can_switch_transcript_ingestion_mode_service(
+            db,
+            current_user,
+            transcript_id=active_transcript.id,
+            target_mode=TranscriptIngestionMode.whole_file,
+        )
+        if not can_switch_to_whole_file and whole_file_message:
+            switch_mode_block_message = whole_file_message
+    available_templates = list_available_templates_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
+    available_quick_actions = list_available_quick_actions_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
+    generated_documents = (
+        list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
+        if active_transcript is not None and not current_user.is_system_admin
+        else []
+    )
+    note_documents = [document for document in generated_documents if document.generator_type is GeneratedDocumentGeneratorType.template]
+    followup_documents = [
+        document
+        for document in generated_documents
+        if document.generator_type in {GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
+    ]
+    latest_generated_document = note_documents[0] if note_documents else None
+    latest_followup_document = followup_documents[0] if followup_documents else None
+
+    context = {
+        "request": request,
+        "current_user": current_user,
+        "recent_transcripts": recent_transcripts,
+        "active_transcript": active_transcript,
+        "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
+        "stt_selection": stt_selection,
+        "llm_selection": llm_selection,
+        "user_llm_preference": user_llm_preference,
+        "resolved_user_llm_model": resolved_user_llm_model,
+        "message": message,
+        "message_kind": message_kind,
+        "queued_transcript_id": queued_transcript_id,
+        "can_create_new_session": can_create_new_session,
+        "new_session_block_message": new_session_block_message,
+        "can_switch_to_whole_file": can_switch_to_whole_file,
+        "switch_mode_block_message": switch_mode_block_message,
+        "available_templates": available_templates,
+        "available_quick_actions": available_quick_actions,
+        "generated_documents": generated_documents,
+        "note_documents": note_documents,
+        "followup_documents": followup_documents,
+        "latest_generated_document": latest_generated_document,
+        "latest_followup_document": latest_followup_document,
+        "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
+        "team_leader_email": db.scalar(
+            select(User.email)
+            .where(
+                User.team_id == current_user.team_id,
+                User.team_role == TeamRole.leader,
+                User.is_system_admin.is_(False),
+                User.status == UserStatus.active,
+            )
+            .order_by(User.created_at.asc())
+        )
+        if current_user.team_id is not None
+        else None,
+    }
+    return templates.TemplateResponse(request, "transcribe.html", context, status_code=status_code)
+
+
+def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
+    if team_leader_email:
+        return f"No STT configured, please ask your team leader {team_leader_email}"
+    return "No STT configured, please ask your team leader."
+
+
+def _home_redirect(*, message: str, message_kind: str, queued_transcript_id: UUID | None = None) -> RedirectResponse:
+    params: dict[str, str] = {"message": message, "message_kind": message_kind}
+    if queued_transcript_id is not None:
+        params["queued_transcript_id"] = str(queued_transcript_id)
+    return RedirectResponse(url=f"/home?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _transcribe_redirect(*, message: str, message_kind: str, queued_transcript_id: UUID | None = None) -> RedirectResponse:
+    params: dict[str, str] = {"message": message, "message_kind": message_kind}
+    if queued_transcript_id is not None:
+        params["queued_transcript_id"] = str(queued_transcript_id)
+    return RedirectResponse(url=f"/transcribe?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def stt_config_response(config) -> SttConfigDetail:
@@ -381,7 +830,10 @@ def stt_config_response(config) -> SttConfigDetail:
 
 def stt_selection_response(selection) -> SttSelectionDetail:
     config = selection.config
+    available_models_json = list(config.available_models_json or [])
     resolved_model_name = selection.model_name_override or config.model_name
+    if available_models_json and resolved_model_name not in available_models_json:
+        resolved_model_name = available_models_json[0]
     resolved_language = selection.language_override or config.language
     return SttSelectionDetail(
         id=selection.id,
@@ -396,10 +848,124 @@ def stt_selection_response(selection) -> SttSelectionDetail:
         language_override=selection.language_override,
         resolved_model_name=resolved_model_name,
         resolved_language=resolved_language,
-        available_models_json=list(config.available_models_json or []),
+        available_models_json=available_models_json,
         created_at=selection.created_at,
         updated_at=selection.updated_at,
     )
+
+
+def llm_config_response(config) -> LlmConfigDetail:
+    return LlmConfigDetail(
+        id=config.id,
+        team_id=config.team_id,
+        label=config.label,
+        adapter_kind=config.adapter_kind,
+        base_url=config.base_url,
+        auth_mode=config.auth_mode,
+        model_name=config.model_name,
+        available_models_json=list(config.available_models_json or []),
+        is_active=config.is_active,
+        has_secret=bool(config.vault_secret_ref),
+        created_by_user_id=config.created_by_user_id,
+        updated_by_user_id=config.updated_by_user_id,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+def llm_selection_response(selection) -> LlmSelectionDetail:
+    config = selection.config
+    resolved_model_name = selection.model_name_override or config.model_name
+    allowed_models_json = list(selection.allowed_models_json or config.available_models_json or [])
+    if resolved_model_name and allowed_models_json and resolved_model_name not in allowed_models_json:
+        resolved_model_name = allowed_models_json[0]
+    return LlmSelectionDetail(
+        id=selection.id,
+        team_id=selection.team_id,
+        llm_config_id=selection.llm_config_id,
+        selected_by_user_id=selection.selected_by_user_id,
+        selected_config_label=config.label,
+        selected_config_adapter_kind=config.adapter_kind,
+        selected_config_base_url=config.base_url,
+        provider_available_models_json=list(config.available_models_json or []),
+        allowed_models_json=allowed_models_json,
+        model_name_override=selection.model_name_override,
+        resolved_model_name=resolved_model_name,
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
+def user_llm_preference_response(preference, *, resolved_model_name: str | None, allowed_models: list[str]) -> UserLlmPreferenceDetail:
+    return UserLlmPreferenceDetail(
+        id=preference.id,
+        user_id=preference.user_id,
+        preferred_model_name=preference.preferred_model_name,
+        resolved_model_name=resolved_model_name,
+        allowed_models_json=allowed_models,
+        created_at=preference.created_at,
+        updated_at=preference.updated_at,
+    )
+
+
+def _latest_template_version(template: PromptTemplate):
+    return max(template.versions, key=lambda version: version.version_no)
+
+
+def _latest_quick_action_version(quick_action: QuickAction):
+    return max(quick_action.versions, key=lambda version: version.version_no)
+
+
+def template_response(template: PromptTemplate) -> PromptTemplateDetail:
+    latest_version = _latest_template_version(template)
+    return PromptTemplateDetail(
+        id=template.id,
+        scope=template.scope,
+        owner_user_id=template.owner_user_id,
+        team_id=template.team_id,
+        name=template.name,
+        description=template.description,
+        is_active=template.is_active,
+        created_by_user_id=template.created_by_user_id,
+        created_at=template.created_at,
+        updated_at=template.updated_at,
+        latest_version={
+            "id": latest_version.id,
+            "version_no": latest_version.version_no,
+            "mode": latest_version.mode,
+            "prompt_text": latest_version.prompt_text,
+            "created_by_user_id": latest_version.created_by_user_id,
+            "created_at": latest_version.created_at,
+        },
+    )
+
+
+def quick_action_response(quick_action: QuickAction) -> QuickActionDetail:
+    latest_version = _latest_quick_action_version(quick_action)
+    return QuickActionDetail(
+        id=quick_action.id,
+        scope=quick_action.scope,
+        owner_user_id=quick_action.owner_user_id,
+        team_id=quick_action.team_id,
+        name=quick_action.name,
+        description=quick_action.description,
+        is_active=quick_action.is_active,
+        created_by_user_id=quick_action.created_by_user_id,
+        created_at=quick_action.created_at,
+        updated_at=quick_action.updated_at,
+        latest_version={
+            "id": latest_version.id,
+            "version_no": latest_version.version_no,
+            "mode": latest_version.mode,
+            "prompt_text": latest_version.prompt_text,
+            "created_by_user_id": latest_version.created_by_user_id,
+            "created_at": latest_version.created_at,
+        },
+    )
+
+
+def generated_document_response(document: GeneratedDocument) -> GeneratedDocumentDetail:
+    return GeneratedDocumentDetail.model_validate(document, from_attributes=True)
 
 
 def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, object]:
@@ -419,6 +985,7 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "response_text_path": inspection.response_text_path,
             "extra_form_fields_json": json.dumps(inspection.extra_form_fields_json) if inspection.extra_form_fields_json else "",
             "is_active": True,
+            "preserved_bearer_token": "",
         }
     if config is not None:
         return {
@@ -439,6 +1006,7 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "response_text_path": config.response_text_path,
             "extra_form_fields_json": json.dumps(config.extra_form_fields_json) if config.extra_form_fields_json else "",
             "is_active": config.is_active,
+            "preserved_bearer_token": "",
         }
     return {
         "config_id": "",
@@ -455,6 +1023,48 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         "response_text_path": "text",
         "extra_form_fields_json": "",
         "is_active": True,
+        "preserved_bearer_token": "",
+    }
+
+
+def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict[str, object]:
+    if inspection is not None:
+        return {
+            "config_id": "",
+            "label": "",
+            "adapter_kind": inspection.adapter_kind.value,
+            "base_url": inspection.base_url,
+            "model_name": inspection.model_name or "",
+            "available_models": inspection.available_models,
+            "available_model_options": [option.model_dump(mode="json") for option in inspection.available_model_options],
+            "is_active": True,
+            "preserved_bearer_token": "",
+        }
+    if config is not None:
+        return {
+            "config_id": str(config.id),
+            "label": config.label,
+            "adapter_kind": config.adapter_kind.value,
+            "base_url": config.base_url,
+            "model_name": config.model_name or "",
+            "available_models": list(config.available_models_json or []),
+            "available_model_options": [
+                {"id": model, "source": "saved", "label": f"{model} (saved)"}
+                for model in (config.available_models_json or [])
+            ],
+            "is_active": config.is_active,
+            "preserved_bearer_token": "",
+        }
+    return {
+        "config_id": "",
+        "label": "",
+        "adapter_kind": LlmAdapterKind.openai_chat.value,
+        "base_url": "https://api.openai.com/v1",
+        "model_name": "",
+        "available_models": [],
+        "available_model_options": [],
+        "is_active": True,
+        "preserved_bearer_token": "",
     }
 
 
@@ -526,6 +1136,7 @@ error_responses = {
     404: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
     429: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
 }
 
@@ -534,6 +1145,7 @@ error_responses = {
 @LOGIN_RATE_LIMIT
 def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
+    _enforce_localhost_only_dev_account(request, user)
     trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
     auth_level = login_auth_level(user, trusted_device)
     if trusted_device and auth_level is SessionAuthLevel.full:
@@ -763,6 +1375,140 @@ def clear_stt_selection(team_id: UUID | None = None, context: AuthenticatedConte
     clear_team_stt_selection_service(db, context.user, team_id=team_id)
 
 
+@api.get("/llm-configs", response_model=list[LlmConfigDetail], responses=error_responses)
+def list_llm_configs(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return [llm_config_response(config) for config in list_llm_configs_service(db, context.user, team_id=team_id)]
+
+
+@api.post("/llm-configs/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
+def inspect_llm_config(payload: LlmInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return inspect_llm_contract_service(db, context.user, payload)
+
+
+@api.post("/llm-configs", response_model=LlmConfigDetail, responses=error_responses)
+def upsert_llm_config(payload: LlmConfigUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return llm_config_response(upsert_llm_config_service(db, context.user, payload))
+
+
+@api.delete("/llm-configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_llm_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    delete_llm_config_service(db, context.user, config_id=config_id, team_id=team_id)
+
+
+@api.get("/llm-selection", response_model=LlmSelectionDetail | None, responses=error_responses)
+def get_llm_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
+    selection = get_team_llm_selection_service(db, context.user, team_id=team_id)
+    return llm_selection_response(selection) if selection else None
+
+
+@api.get("/llm-selection/options", response_model=list[LlmConfigDetail], responses=error_responses)
+def list_llm_selection_options(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
+    return [llm_config_response(config) for config in list_selectable_llm_configs_service(db, context.user, team_id=team_id)]
+
+
+@api.post("/llm-selection", response_model=LlmSelectionDetail, responses=error_responses)
+def set_llm_selection(payload: LlmSelectionUpsert, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
+    return llm_selection_response(set_team_llm_selection_service(db, context.user, payload))
+
+
+@api.delete("/llm-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_llm_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
+    clear_team_llm_selection_service(db, context.user, team_id=team_id)
+
+
+@api.get("/llm-preference", response_model=UserLlmPreferenceDetail | None, responses=error_responses)
+def get_llm_preference(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    preference = get_user_llm_preference_service(db, context.user)
+    if preference is None:
+        return None
+    selection, config, resolved_model_name, _ = resolve_user_llm_service(db, context.user)
+    allowed_models = list(selection.allowed_models_json or config.available_models_json or [])
+    return user_llm_preference_response(preference, resolved_model_name=resolved_model_name, allowed_models=allowed_models)
+
+
+@api.post("/llm-preference", response_model=UserLlmPreferenceDetail, responses=error_responses)
+def set_llm_preference(payload: UserLlmPreferenceUpsert, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    preference = set_user_llm_preference_service(db, context.user, payload)
+    selection, config, resolved_model_name, _ = resolve_user_llm_service(db, context.user)
+    allowed_models = list(selection.allowed_models_json or config.available_models_json or [])
+    return user_llm_preference_response(preference, resolved_model_name=resolved_model_name, allowed_models=allowed_models)
+
+
+@api.delete("/llm-preference", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_llm_preference(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    clear_user_llm_preference_service(db, context.user)
+
+
+@api.get("/templates/available", response_model=list[PromptTemplateDetail], responses=error_responses)
+def list_available_templates(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [template_response(template) for template in list_available_templates_for_user_service(db, context.user)]
+
+
+@api.get("/templates/team", response_model=list[PromptTemplateDetail], responses=error_responses)
+def list_team_templates(context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return [template_response(template) for template in list_team_templates_service(db, context.user)]
+
+
+@api.post("/templates/team", response_model=PromptTemplateDetail, responses=error_responses)
+def upsert_team_template(payload: PromptTemplateUpsert, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return template_response(upsert_team_template_service(db, context.user, payload))
+
+
+@api.delete("/templates/team/{template_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_team_template(template_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    delete_team_template_service(db, context.user, template_id=template_id)
+
+
+@api.get("/templates/personal", response_model=list[PromptTemplateDetail], responses=error_responses)
+def list_personal_templates(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [template_response(template) for template in list_personal_templates_service(db, context.user)]
+
+
+@api.post("/templates/personal", response_model=PromptTemplateDetail, responses=error_responses)
+def upsert_personal_template(payload: PromptTemplateUpsert, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return template_response(upsert_personal_template_service(db, context.user, payload))
+
+
+@api.delete("/templates/personal/{template_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_personal_template(template_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    delete_personal_template_service(db, context.user, template_id=template_id)
+
+
+@api.get("/quick-actions/available", response_model=list[QuickActionDetail], responses=error_responses)
+def list_available_quick_actions(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [quick_action_response(quick_action) for quick_action in list_available_quick_actions_for_user_service(db, context.user)]
+
+
+@api.get("/quick-actions/team", response_model=list[QuickActionDetail], responses=error_responses)
+def list_team_quick_actions(context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return [quick_action_response(quick_action) for quick_action in list_team_quick_actions_service(db, context.user)]
+
+
+@api.post("/quick-actions/team", response_model=QuickActionDetail, responses=error_responses)
+def upsert_team_quick_action(payload: QuickActionUpsert, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    return quick_action_response(upsert_team_quick_action_service(db, context.user, payload))
+
+
+@api.delete("/quick-actions/team/{quick_action_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_team_quick_action(quick_action_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    delete_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+
+
+@api.get("/quick-actions/personal", response_model=list[QuickActionDetail], responses=error_responses)
+def list_personal_quick_actions(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [quick_action_response(quick_action) for quick_action in list_personal_quick_actions_service(db, context.user)]
+
+
+@api.post("/quick-actions/personal", response_model=QuickActionDetail, responses=error_responses)
+def upsert_personal_quick_action(payload: QuickActionUpsert, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return quick_action_response(upsert_personal_quick_action_service(db, context.user, payload))
+
+
+@api.delete("/quick-actions/personal/{quick_action_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_personal_quick_action(quick_action_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    delete_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+
+
 @api.post("/users/{user_id}/suspend", response_model=UserDetail, responses=error_responses)
 def suspend_user(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
     return suspend_user_service(db, context.user, user_id)
@@ -811,6 +1557,32 @@ def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: A
     return transcript
 
 
+@api.patch("/transcripts/{transcript_id}", response_model=TranscriptDetail, responses=error_responses)
+def update_transcript(
+    transcript_id: UUID,
+    payload: TranscriptUpdate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = update_transcript_service(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        title=payload.title,
+        ingestion_mode=payload.ingestion_mode,
+    )
+    return TranscriptDetail.model_validate(transcript, from_attributes=True)
+
+
+@api.delete("/transcripts/{transcript_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_transcript(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    delete_transcripts_service(db, context.user, transcript_ids=[transcript_id])
+
+
 @api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 def upload_transcript_audio_chunk(
     transcript_id: UUID,
@@ -843,13 +1615,17 @@ def upload_transcript_audio_chunk(
 
 
 @api.post("/transcripts/{transcript_id}/audio-file", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
 def upload_transcript_audio_file(
+    request: Request,
     transcript_id: UUID,
     audio: UploadFile = File(...),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
     audio_bytes = audio.file.read()
+    enforce_whole_file_upload_size(audio_bytes=audio_bytes)
     transcript, job = queue_audio_file_ingestion(
         db,
         context.user,
@@ -867,6 +1643,93 @@ def upload_transcript_audio_file(
         transcript=TranscriptDetail.model_validate(refreshed_transcript, from_attributes=True),
         job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
     )
+
+
+@api.get("/transcripts/{transcript_id}", response_model=TranscriptDetail, responses=error_responses)
+def get_transcript_detail(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    transcript = db.get(Transcript, transcript_id)
+    if not transcript:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
+    if transcript.owner_user_id != context.user.id:
+        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    return TranscriptDetail.model_validate(transcript, from_attributes=True)
+
+
+@api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
+def list_generated_documents_for_transcript(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [generated_document_response(document) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
+
+
+@api.post("/transcripts/{transcript_id}/generate-output", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def generate_transcript_output(
+    request: Request,
+    transcript_id: UUID,
+    payload: GenerateTemplateOutputRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    document = None
+    try:
+        document = queue_document_generation_from_template_service(db, context.user, transcript_id=transcript_id, template_id=payload.template_id)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError:
+        raise
+    except Exception as exc:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
+        raise AppError(502, "generation_enqueue_failed", "Could not enqueue note generation") from exc
+    return generated_document_response(document)
+
+
+@api.post("/transcripts/{transcript_id}/generate-followup", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def generate_transcript_followup(
+    request: Request,
+    transcript_id: UUID,
+    payload: GenerateFollowupRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    document = None
+    try:
+        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=payload.prompt_text)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError:
+        raise
+    except Exception as exc:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
+        raise AppError(502, "generation_enqueue_failed", "Could not enqueue follow-up generation") from exc
+    return generated_document_response(document)
+
+
+@api.post("/transcripts/{transcript_id}/run-quick-action", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def run_transcript_quick_action(
+    request: Request,
+    transcript_id: UUID,
+    payload: GenerateQuickActionRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    document = None
+    try:
+        document = queue_quick_action_generation_service(db, context.user, transcript_id=transcript_id, quick_action_id=payload.quick_action_id)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError:
+        raise
+    except Exception as exc:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
+        raise AppError(502, "generation_enqueue_failed", "Could not enqueue quick action generation") from exc
+    return generated_document_response(document)
 
 
 @api.get("/users/{user_id}/transcripts", response_model=list[TranscriptListItem], responses=error_responses)
@@ -887,9 +1750,10 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/login", response_class=HTMLResponse)
 @LOGIN_RATE_LIMIT
-def login_submit(request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+def login_submit(request: Request, email: str = Form(...), password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     try:
         user = authenticate_user(db, email, password)
+        _enforce_localhost_only_dev_account(request, user)
     except AppError as exc:
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
     trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
@@ -904,7 +1768,7 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
 
 
 @app.post("/logout", response_class=HTMLResponse)
-def logout_submit(request: Request, db: Session = Depends(get_db)):
+def logout_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         revoke_session_by_token(db, token, reason="logout")
@@ -926,6 +1790,7 @@ def request_access_submit(
     requested_email: str = Form(...),
     requested_team_name: str = Form(...),
     request_details: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     try:
@@ -944,7 +1809,7 @@ def request_access_submit(
 
 
 @app.post("/bootstrap/system-admin", response_class=HTMLResponse)
-def bootstrap_system_admin(request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+def bootstrap_system_admin(request: Request, email: str = Form(...), password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     if not _bootstrap_allowed(db):
         return render_auth_page(
             request,
@@ -993,6 +1858,7 @@ def mfa_challenge_submit(
     request: Request,
     code: str = Form(...),
     remember_device: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context = _current_context_optional(request, db)
@@ -1019,7 +1885,7 @@ def mfa_challenge_submit(
 
 
 @app.post("/onboarding/password", response_class=HTMLResponse)
-def onboarding_password_submit(request: Request, new_password: str = Form(...), db: Session = Depends(get_db)):
+def onboarding_password_submit(request: Request, new_password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=False)
     if response is not None:
         return response
@@ -1031,7 +1897,7 @@ def onboarding_password_submit(request: Request, new_password: str = Form(...), 
 
 
 @app.post("/onboarding/totp/start", response_class=HTMLResponse)
-def onboarding_totp_start_submit(request: Request, db: Session = Depends(get_db)):
+def onboarding_totp_start_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=False)
     if response is not None:
         return response
@@ -1052,7 +1918,7 @@ def onboarding_totp_start_submit(request: Request, db: Session = Depends(get_db)
 
 
 @app.post("/onboarding/totp/verify", response_class=HTMLResponse)
-def onboarding_totp_verify_submit(request: Request, code: str = Form(...), db: Session = Depends(get_db)):
+def onboarding_totp_verify_submit(request: Request, code: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=False)
     if response is not None:
         return response
@@ -1074,7 +1940,7 @@ def onboarding_totp_verify_submit(request: Request, code: str = Form(...), db: S
 
 
 @app.post("/onboarding/recovery-codes", response_class=HTMLResponse)
-def onboarding_recovery_codes_submit(request: Request, db: Session = Depends(get_db)):
+def onboarding_recovery_codes_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=False)
     if response is not None:
         return response
@@ -1103,7 +1969,7 @@ def onboarding_recovery_codes_submit(request: Request, db: Session = Depends(get
 
 
 @app.post("/onboarding/skip-recovery-codes", response_class=HTMLResponse)
-def onboarding_skip_recovery_codes_submit(request: Request, db: Session = Depends(get_db)):
+def onboarding_skip_recovery_codes_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=False)
     if response is not None:
         return response
@@ -1118,13 +1984,63 @@ def onboarding_skip_recovery_codes_submit(request: Request, db: Session = Depend
 
 
 @app.get("/home", response_class=HTMLResponse)
-def home_page(request: Request, db: Session = Depends(get_db)):
+def home_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    queued_transcript_id: str | None = None,
+    team_template_id: str | None = None,
+    personal_template_id: str | None = None,
+    team_quick_action_id: str | None = None,
+    personal_quick_action_id: str | None = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-    return render_home(request, db, current_user=context.user)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_template_id=team_template_id,
+        selected_personal_template_id=personal_template_id,
+        selected_team_quick_action_id=team_quick_action_id,
+        selected_personal_quick_action_id=personal_quick_action_id,
+        message=message,
+        message_kind=safe_message_kind,
+        queued_transcript_id=queued_transcript_id,
+    )
+
+
+@app.get("/transcribe", response_class=HTMLResponse)
+def transcribe_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    tab: str = "transcript",
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_transcribe(
+        request,
+        db,
+        current_user=context.user,
+        transcript_id=transcript_id,
+        queued_transcript_id=queued_transcript_id,
+        active_tab=tab,
+        message=message,
+        message_kind=safe_message_kind,
+    )
 
 
 @app.post("/home/users", response_class=HTMLResponse)
@@ -1136,6 +2052,7 @@ def home_create_user(
     team_role: str = Form(...),
     status_value: UserStatus = Form(..., alias="status"),
     mfa_required: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1163,12 +2080,325 @@ def home_create_user(
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/home/llm-selection", response_class=HTMLResponse)
+def home_set_llm_selection(
+    request: Request,
+    llm_config_id: str = Form(...),
+    allowed_model_names: list[str] = Form(default=[]),
+    provider_model: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        set_team_llm_selection_service(
+            db,
+            context.user,
+            LlmSelectionUpsert(
+                llm_config_id=UUID(llm_config_id),
+                allowed_models_json=allowed_model_names,
+                model_name_override=provider_model or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/llm-selection/clear", response_class=HTMLResponse)
+def home_clear_llm_selection(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        clear_team_llm_selection_service(db, context.user)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/llm-preference", response_class=HTMLResponse)
+def home_set_llm_preference(
+    request: Request,
+    preferred_model_name: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        set_user_llm_preference_service(
+            db,
+            context.user,
+            UserLlmPreferenceUpsert(preferred_model_name=preferred_model_name or None),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM preference"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/llm-preference/clear", response_class=HTMLResponse)
+def home_clear_llm_preference(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        clear_user_llm_preference_service(db, context.user)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/team-templates", response_class=HTMLResponse)
+def home_upsert_team_template(
+    request: Request,
+    template_id: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        template = upsert_team_template_service(
+            db,
+            context.user,
+            PromptTemplateUpsert(
+                template_id=UUID(template_id) if template_id else None,
+                scope=TemplateScope.team,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid team template"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_template_id=template_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+        )
+    return RedirectResponse(url=f"/home?team_template_id={template.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/team-templates/{template_id}/delete", response_class=HTMLResponse)
+def home_delete_team_template(
+    request: Request,
+    template_id: UUID,
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_team_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/personal-templates", response_class=HTMLResponse)
+def home_upsert_personal_template(
+    request: Request,
+    template_id: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        template = upsert_personal_template_service(
+            db,
+            context.user,
+            PromptTemplateUpsert(
+                template_id=UUID(template_id) if template_id else None,
+                scope=TemplateScope.user,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid personal template"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_personal_template_id=template_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+        )
+    return RedirectResponse(url=f"/home?personal_template_id={template.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/personal-templates/{template_id}/delete", response_class=HTMLResponse)
+def home_delete_personal_template(
+    request: Request,
+    template_id: UUID,
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_personal_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/team-quick-actions", response_class=HTMLResponse)
+def home_upsert_team_quick_action(
+    request: Request,
+    quick_action_id: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        quick_action = upsert_team_quick_action_service(
+            db,
+            context.user,
+            QuickActionUpsert(
+                quick_action_id=UUID(quick_action_id) if quick_action_id else None,
+                scope=TemplateScope.team,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid team quick action"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_quick_action_id=quick_action_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+        )
+    return RedirectResponse(url=f"/home?team_quick_action_id={quick_action.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/team-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
+def home_delete_team_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/personal-quick-actions", response_class=HTMLResponse)
+def home_upsert_personal_quick_action(
+    request: Request,
+    quick_action_id: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        quick_action = upsert_personal_quick_action_service(
+            db,
+            context.user,
+            QuickActionUpsert(
+                quick_action_id=UUID(quick_action_id) if quick_action_id else None,
+                scope=TemplateScope.user,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid personal quick action"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_personal_quick_action_id=quick_action_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+        )
+    return RedirectResponse(url=f"/home?personal_quick_action_id={quick_action.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/home/personal-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
+def home_delete_personal_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        delete_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/home/stt-selection", response_class=HTMLResponse)
 def home_set_stt_selection(
     request: Request,
     stt_config_id: str = Form(...),
     provider_model: str = Form(""),
     language: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1192,7 +2422,7 @@ def home_set_stt_selection(
 
 
 @app.post("/home/stt-selection/clear", response_class=HTMLResponse)
-def home_clear_stt_selection(request: Request, db: Session = Depends(get_db)):
+def home_clear_stt_selection(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1203,8 +2433,412 @@ def home_clear_stt_selection(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/home/transcripts/upload", response_class=HTMLResponse)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def home_upload_transcript_file(
+    request: Request,
+    title: str = Form(""),
+    audio: UploadFile = File(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.team_id is None:
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            message="Current user does not belong to a team",
+            message_kind="error",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        active_team_stt_selection_service(db, team_id=context.user.team_id)
+    except AppError as exc:
+        if exc.code == "business_rule_violation":
+            leader_email = db.scalar(
+                select(User.email)
+                .where(
+                    User.team_id == context.user.team_id,
+                    User.team_role == TeamRole.leader,
+                    User.is_system_admin.is_(False),
+                    User.status == UserStatus.active,
+                )
+                .order_by(User.created_at.asc())
+            )
+            return _transcribe_redirect(
+                message=_missing_stt_selection_message(team_leader_email=leader_email),
+                message_kind="error",
+            )
+        return _transcribe_redirect(message=exc.message, message_kind="error")
+    audio_bytes = audio.file.read()
+    job = None
+    try:
+        enforce_whole_file_upload_size(audio_bytes=audio_bytes)
+        transcript = start_transcript_service(
+            db,
+            context.user,
+            TranscriptStart(
+                title=title or audio.filename or "Uploaded audio",
+                ingestion_mode=TranscriptIngestionMode.whole_file,
+            ),
+        )
+        _, job = queue_audio_file_ingestion(
+            db,
+            context.user,
+            transcript_id=transcript.id,
+            filename=audio.filename or "audio.bin",
+        )
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return _transcribe_redirect(message=exc.message, message_kind="error")
+    except Exception as exc:
+        if job is not None:
+            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
+        return _transcribe_redirect(
+            message="Could not enqueue file ingestion",
+            message_kind="error",
+        )
+
+    return _transcribe_redirect(
+        message="Audio file queued for transcription.",
+        message_kind="success",
+        queued_transcript_id=transcript.id,
+    )
+
+
+@app.post("/transcribe/upload", response_class=HTMLResponse)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def transcribe_upload_transcript_file(
+    request: Request,
+    transcript_id: str | None = Form(default=None),
+    title: str = Form(""),
+    audio: UploadFile = File(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.team_id is None:
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            message="Current user does not belong to a team",
+            message_kind="error",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        active_team_stt_selection_service(db, team_id=context.user.team_id)
+    except AppError as exc:
+        if exc.code == "business_rule_violation":
+            leader_email = db.scalar(
+                select(User.email)
+                .where(
+                    User.team_id == context.user.team_id,
+                    User.team_role == TeamRole.leader,
+                    User.is_system_admin.is_(False),
+                    User.status == UserStatus.active,
+                )
+                .order_by(User.created_at.asc())
+            )
+            return _transcribe_redirect(
+                message=_missing_stt_selection_message(team_leader_email=leader_email),
+                message_kind="error",
+                queued_transcript_id=UUID(transcript_id) if transcript_id else None,
+            )
+        return _transcribe_redirect(message=exc.message, message_kind="error")
+    audio_bytes = audio.file.read()
+    job = None
+    try:
+        enforce_whole_file_upload_size(audio_bytes=audio_bytes)
+        if not transcript_id:
+            raise AppError(409, "business_rule_violation", "Create or choose a transcript session before uploading audio")
+        transcript = db.get(Transcript, UUID(transcript_id))
+        if transcript is None or transcript.owner_user_id != context.user.id:
+            raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": transcript_id})
+        if title.strip():
+            transcript = update_transcript_title_service(
+                db,
+                context.user,
+                transcript_id=transcript.id,
+                title=title,
+            )
+        _, job = queue_audio_file_ingestion(
+            db,
+            context.user,
+            transcript_id=transcript.id,
+            filename=audio.filename or "audio.bin",
+        )
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return _transcribe_redirect(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=UUID(transcript_id) if transcript_id else None,
+        )
+    except Exception:
+        if job is not None:
+            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
+        return _transcribe_redirect(
+            message="Could not enqueue file ingestion",
+            message_kind="error",
+            queued_transcript_id=UUID(transcript_id) if transcript_id else None,
+        )
+    return _transcribe_redirect(
+        message="Audio file queued for transcription.",
+        message_kind="success",
+        queued_transcript_id=transcript.id,
+    )
+
+
+@app.post("/transcribe/generate-output", response_class=HTMLResponse)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def transcribe_generate_output(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    template_id: UUID = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    document = None
+    try:
+        document = queue_document_generation_from_template_service(db, context.user, transcript_id=transcript_id, template_id=template_id)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return _transcribe_redirect(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    except Exception:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
+        return _transcribe_redirect(
+            message="Could not enqueue note generation",
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    return RedirectResponse(
+        url=f"/transcribe?transcript_id={transcript_id}&tab=output&message=Queued+note+generation.&message_kind=success",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/transcribe/generate-followup", response_class=HTMLResponse)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def transcribe_generate_followup(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    prompt_text: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    document = None
+    try:
+        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=prompt_text)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return RedirectResponse(
+            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except Exception:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
+        return RedirectResponse(
+            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Could not enqueue follow-up generation.', 'message_kind': 'error'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued follow-up generation.', 'message_kind': 'success'})}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/transcribe/run-quick-action", response_class=HTMLResponse)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def transcribe_run_quick_action(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    quick_action_id: UUID = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    document = None
+    try:
+        document = queue_quick_action_generation_service(db, context.user, transcript_id=transcript_id, quick_action_id=quick_action_id)
+        task_result = enqueue_generated_document_job(document_id=document.id)
+        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return RedirectResponse(
+            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    except Exception:
+        if document is not None:
+            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
+        return RedirectResponse(
+            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Could not enqueue quick action generation.', 'message_kind': 'error'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued quick action generation.', 'message_kind': 'success'})}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/transcribe/sessions", response_class=HTMLResponse)
+def transcribe_create_session(
+    request: Request,
+    title: str = Form(""),
+    ingestion_mode: TranscriptIngestionMode = Form(default=TranscriptIngestionMode.whole_file),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        transcript = start_transcript_service(
+            db,
+            context.user,
+            TranscriptStart(
+                title=title or "Untitled session",
+                ingestion_mode=ingestion_mode,
+            ),
+        )
+    except AppError as exc:
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+        )
+    return RedirectResponse(url=f"/transcribe?transcript_id={transcript.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/transcribe/sessions/delete", response_class=HTMLResponse)
+def transcribe_delete_sessions(
+    request: Request,
+    transcript_ids: list[str] = Form(default=[]),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+
+    try:
+        delete_transcripts_service(
+            db,
+            context.user,
+            transcript_ids=[UUID(transcript_id) for transcript_id in transcript_ids],
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid transcript selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+        )
+    return RedirectResponse(url="/transcribe", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/transcribe/sessions/{transcript_id}/title", response_class=HTMLResponse)
+def transcribe_update_session_title(
+    request: Request,
+    transcript_id: UUID,
+    title: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        update_transcript_title_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            title=title,
+        )
+    except AppError as exc:
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            transcript_id=str(transcript_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+        )
+    return RedirectResponse(url=f"/transcribe?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/transcribe/sessions/{transcript_id}/mode", response_class=HTMLResponse)
+def transcribe_update_session_mode(
+    request: Request,
+    transcript_id: UUID,
+    ingestion_mode: TranscriptIngestionMode = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        update_transcript_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            title=None,
+            ingestion_mode=ingestion_mode,
+        )
+    except AppError as exc:
+        return render_transcribe(
+            request,
+            db,
+            current_user=context.user,
+            transcript_id=str(transcript_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+        )
+    return RedirectResponse(url=f"/transcribe?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/home/users/{user_id}/suspend", response_class=HTMLResponse)
-def home_suspend_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def home_suspend_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1216,7 +2850,7 @@ def home_suspend_user(request: Request, user_id: UUID, db: Session = Depends(get
 
 
 @app.post("/home/users/{user_id}/reactivate", response_class=HTMLResponse)
-def home_reactivate_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def home_reactivate_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1228,7 +2862,7 @@ def home_reactivate_user(request: Request, user_id: UUID, db: Session = Depends(
 
 
 @app.post("/home/users/{user_id}/delete", response_class=HTMLResponse)
-def home_delete_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def home_delete_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1246,6 +2880,7 @@ def home_approve_account_request(
     temporary_password: str = Form(...),
     team_role: str = Form(...),
     review_notes: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1270,7 +2905,7 @@ def home_approve_account_request(
 
 
 @app.post("/home/account-requests/{request_id}/reject", response_class=HTMLResponse)
-def home_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), db: Session = Depends(get_db)):
+def home_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1282,17 +2917,17 @@ def home_reject_account_request(request: Request, request_id: UUID, review_notes
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, team_id: str | None = None, stt_config_id: str | None = None, db: Session = Depends(get_db)):
+def admin_page(request: Request, team_id: str | None = None, stt_config_id: str | None = None, llm_config_id: str | None = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(request, db, current_user=context.user, selected_team_id=team_id, selected_stt_config_id=stt_config_id)
+    return render_admin(request, db, current_user=context.user, selected_team_id=team_id, selected_stt_config_id=stt_config_id, selected_llm_config_id=llm_config_id)
 
 
 @app.post("/admin/teams", response_class=HTMLResponse)
-def admin_create_team(request: Request, name: str = Form(...), status_value: TeamStatus = Form(..., alias="status"), default_retention_days: int = Form(...), db: Session = Depends(get_db)):
+def admin_create_team(request: Request, name: str = Form(...), status_value: TeamStatus = Form(..., alias="status"), default_retention_days: int = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1316,6 +2951,7 @@ def admin_create_user(
     is_system_admin: str | None = Form(default=None),
     status_value: UserStatus = Form(..., alias="status"),
     mfa_required: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1355,12 +2991,14 @@ def admin_upsert_stt_config(
     base_url: str = Form(""),
     transcribe_path: str = Form(""),
     bearer_token: str = Form(""),
+    preserved_bearer_token: str = Form(""),
     provider_model: str = Form(""),
     file_field_name: str = Form(""),
     language: str = Form(""),
     response_text_path: str = Form(""),
     extra_form_fields_json: str = Form(""),
     is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1368,6 +3006,7 @@ def admin_upsert_stt_config(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    resolved_bearer_token = bearer_token or preserved_bearer_token or None
     try:
         upsert_stt_config_service(
             db,
@@ -1379,7 +3018,7 @@ def admin_upsert_stt_config(
                 adapter_kind=SttAdapterKind(adapter_kind),
                 base_url=base_url,
                 transcribe_path=transcribe_path,
-                bearer_token=bearer_token or None,
+                bearer_token=resolved_bearer_token,
                 model_name=provider_model or None,
                 file_field_name=file_field_name or "file",
                 language=language or None,
@@ -1396,7 +3035,7 @@ def admin_upsert_stt_config(
 
 
 @app.post("/admin/stt-configs/{config_id}/delete", response_class=HTMLResponse)
-def admin_delete_stt_config(request: Request, config_id: UUID, team_id: str = Form(...), db: Session = Depends(get_db)):
+def admin_delete_stt_config(request: Request, config_id: UUID, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1420,6 +3059,7 @@ def admin_inspect_stt_config(
     base_url: str = Form(""),
     openapi_path: str = Form(""),
     bearer_token: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1450,7 +3090,12 @@ def admin_inspect_stt_config(
         selected_team_id=team_id,
         selected_stt_config_id=None,
         stt_inspection=inspection,
-        stt_form_override={**stt_form_defaults(None, inspection), "label": label, "adapter_kind": inspection.adapter_kind.value},
+        stt_form_override={
+            **stt_form_defaults(None, inspection),
+            "label": label,
+            "adapter_kind": inspection.adapter_kind.value,
+            "preserved_bearer_token": bearer_token,
+        },
         message="STT endpoint inspected. Review the inferred fields before saving.",
     )
 
@@ -1462,6 +3107,7 @@ def admin_set_stt_selection(
     stt_config_id: str = Form(...),
     provider_model: str = Form(""),
     language: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1488,7 +3134,7 @@ def admin_set_stt_selection(
 
 
 @app.post("/admin/stt-selection/clear", response_class=HTMLResponse)
-def admin_clear_stt_selection(request: Request, team_id: str = Form(...), db: Session = Depends(get_db)):
+def admin_clear_stt_selection(request: Request, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1503,8 +3149,164 @@ def admin_clear_stt_selection(request: Request, team_id: str = Form(...), db: Se
     return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/admin/llm-configs/inspect", response_class=HTMLResponse)
+def admin_inspect_llm_config(
+    request: Request,
+    team_id: str = Form(...),
+    label: str = Form(""),
+    adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
+    base_url: str = Form(""),
+    bearer_token: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        inspection = inspect_llm_contract_service(
+            db,
+            context.user,
+            LlmInspectRequest(
+                team_id=UUID(team_id),
+                adapter_kind=LlmAdapterKind(adapter_kind),
+                base_url=base_url,
+                bearer_token=bearer_token or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM inspection request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_llm_config_id=None,
+        llm_inspection=inspection,
+        llm_form_override={
+            **llm_form_defaults(None, inspection),
+            "label": label,
+            "adapter_kind": inspection.adapter_kind.value,
+            "preserved_bearer_token": bearer_token,
+        },
+        message="LLM provider inspected. Review the inferred fields before saving.",
+    )
+
+
+@app.post("/admin/llm-configs", response_class=HTMLResponse)
+def admin_upsert_llm_config(
+    request: Request,
+    team_id: str = Form(...),
+    config_id: str = Form(""),
+    label: str = Form(...),
+    adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
+    base_url: str = Form(""),
+    bearer_token: str = Form(""),
+    preserved_bearer_token: str = Form(""),
+    provider_model: str = Form(""),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    resolved_bearer_token = bearer_token or preserved_bearer_token or None
+    try:
+        upsert_llm_config_service(
+            db,
+            context.user,
+            LlmConfigUpsert(
+                config_id=UUID(config_id) if config_id else None,
+                team_id=UUID(team_id),
+                label=label,
+                adapter_kind=LlmAdapterKind(adapter_kind),
+                base_url=base_url,
+                bearer_token=resolved_bearer_token,
+                model_name=provider_model or None,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM configuration"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/llm-configs/{config_id}/delete", response_class=HTMLResponse)
+def admin_delete_llm_config(request: Request, config_id: UUID, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_llm_config_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM delete request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/llm-selection", response_class=HTMLResponse)
+def admin_set_llm_selection(
+    request: Request,
+    team_id: str = Form(...),
+    llm_config_id: str = Form(...),
+    allowed_model_names: list[str] = Form(default=[]),
+    provider_model: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_team_llm_selection_service(
+            db,
+            context.user,
+            LlmSelectionUpsert(
+                team_id=UUID(team_id),
+                llm_config_id=UUID(llm_config_id),
+                allowed_models_json=allowed_model_names,
+                model_name_override=provider_model or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/llm-selection/clear", response_class=HTMLResponse)
+def admin_clear_llm_selection(request: Request, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        clear_team_llm_selection_service(db, context.user, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/admin/users/{user_id}/suspend", response_class=HTMLResponse)
-def admin_suspend_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def admin_suspend_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1518,7 +3320,7 @@ def admin_suspend_user(request: Request, user_id: UUID, db: Session = Depends(ge
 
 
 @app.post("/admin/users/{user_id}/reactivate", response_class=HTMLResponse)
-def admin_reactivate_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def admin_reactivate_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1532,7 +3334,7 @@ def admin_reactivate_user(request: Request, user_id: UUID, db: Session = Depends
 
 
 @app.post("/admin/users/{user_id}/delete", response_class=HTMLResponse)
-def admin_delete_user(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+def admin_delete_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -1553,6 +3355,7 @@ def admin_approve_account_request(
     temporary_password: str = Form(...),
     team_role: str = Form(...),
     review_notes: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -1580,7 +3383,7 @@ def admin_approve_account_request(
 
 
 @app.post("/admin/account-requests/{request_id}/reject", response_class=HTMLResponse)
-def admin_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), db: Session = Depends(get_db)):
+def admin_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response

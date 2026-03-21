@@ -135,9 +135,22 @@ For users whose onboarding is already complete:
 - login routes are rate-limited at `5 per 5 minutes` per client IP
 - TOTP challenge routes are rate-limited at `10 per 10 minutes` per client IP
 - public account-request submission is rate-limited at `3 per hour` per client IP
+- whole-file transcription upload routes are rate-limited at:
+  - `1 per 5 seconds`
+  - `100 per day`
+- whole-file upload throttling keys to the authenticated user when a valid session can be resolved, with safe fallback to hashed session token or client IP
 - the browser and JSON variants of each route share the same limiter bucket
 - browser rate-limit responses render a generic wait-and-retry page
 - rate-limit hits are recorded in the server logs through `openscribe.security`
+
+## Browser CSRF protection
+
+- browser state-changing routes now require a CSRF token in addition to the normal session cookie
+- the app issues a separate `openscribe_csrf` cookie for browser flows
+- browser forms submit the CSRF token as `_csrf_token`
+- browser JavaScript requests submit the token as `X-CSRF-Token`
+- JSON API routes remain session-authenticated but are not using this browser CSRF check
+- CSRF protection reduces cross-site request forgery risk; it does not prevent an already-authenticated user from scripting their own browser
 
 ### Account requests
 

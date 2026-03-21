@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import SttAdapterKind, Team, TeamRole, TeamSttConfig, TeamSttSelection, User
+from app.models import SttAdapterKind, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User
 from app.schemas import (
     SttConfigUpsert,
     SttInspectFieldTip,
@@ -70,8 +70,24 @@ def get_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID |
     return config
 
 
+def _stt_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
+    return db.scalar(
+        select(TranscriptIngestionJob.id).where(
+            TranscriptIngestionJob.stt_config_id == config_id,
+            TranscriptIngestionJob.status.in_([TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]),
+        ).limit(1)
+    ) is not None
+
+
 def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> None:
     config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
+    if _stt_config_has_in_flight_jobs(db, config_id=config.id):
+        raise AppError(
+            409,
+            "conflict",
+            "Cannot delete this STT config while transcription jobs are queued or processing",
+            {"config_id": str(config.id)},
+        )
     selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id))
     if selection is not None:
         db.delete(selection)
@@ -108,20 +124,37 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
     if config is None:
         raise AppError(404, "not_found", "Selectable STT config not found", {"resource": "stt_config", "config_id": str(payload.stt_config_id)})
 
+    provider_models = list(config.available_models_json or [])
+    override = payload.model_name_override.strip() if payload.model_name_override else None
+    if override:
+        if not provider_models:
+            raise AppError(
+                422,
+                "business_rule_violation",
+                "Selected STT provider does not currently expose selectable models",
+                {"field": "model_name_override"},
+            )
+        if override not in provider_models:
+            raise AppError(
+                422,
+                "business_rule_violation",
+                "Selected STT model is not available for this provider",
+                {"field": "model_name_override"},
+            )
     selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
     if selection is None:
         selection = TeamSttSelection(
             id=uuid4(),
             team_id=team.id,
             stt_config_id=config.id,
-            model_name_override=payload.model_name_override.strip() if payload.model_name_override else None,
+            model_name_override=override,
             language_override=payload.language_override.strip() if payload.language_override else None,
             selected_by_user_id=actor.id,
         )
         db.add(selection)
     else:
         selection.stt_config_id = config.id
-        selection.model_name_override = payload.model_name_override.strip() if payload.model_name_override else None
+        selection.model_name_override = override
         selection.language_override = payload.language_override.strip() if payload.language_override else None
         selection.selected_by_user_id = actor.id
         db.add(selection)
@@ -158,7 +191,11 @@ def active_team_stt_selection(db: Session, *, team_id: UUID) -> TeamSttSelection
 def resolve_selected_team_stt(db: Session, *, team_id: UUID) -> tuple[TeamSttSelection, TeamSttConfig, str | None, str | None]:
     selection = active_team_stt_selection(db, team_id=team_id)
     config = selection.config
+    provider_models = list(config.available_models_json or [])
     resolved_model_name = selection.model_name_override or config.model_name
+    if provider_models:
+        if resolved_model_name not in provider_models:
+            resolved_model_name = provider_models[0]
     resolved_language = selection.language_override or config.language
     return selection, config, resolved_model_name, resolved_language
 
@@ -208,8 +245,12 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
 
 
 def _transcribe_via_http(
-    config: TeamSttConfig,
     *,
+    base_url: str,
+    transcribe_path: str,
+    file_field_name: str,
+    response_text_path: str,
+    extra_form_fields_json: dict[str, str] | None,
     bearer_token: str,
     model_name: str | None,
     language: str | None,
@@ -217,8 +258,8 @@ def _transcribe_via_http(
     filename: str,
     content_type: str,
 ) -> str:
-    url = f"{config.base_url.rstrip('/')}{config.transcribe_path}"
-    form_fields = dict(config.extra_form_fields_json or {})
+    url = f"{base_url.rstrip('/')}{transcribe_path}"
+    form_fields = dict(extra_form_fields_json or {})
     if model_name:
         form_fields["model"] = model_name
     if language:
@@ -228,7 +269,7 @@ def _transcribe_via_http(
             url,
             headers={"Authorization": f"Bearer {bearer_token}"},
             data=form_fields,
-            files={config.file_field_name: (filename, audio_bytes, content_type)},
+            files={file_field_name: (filename, audio_bytes, content_type)},
             timeout=60.0,
         )
     except httpx.HTTPError as exc:
@@ -239,19 +280,20 @@ def _transcribe_via_http(
         payload = response.json()
     except ValueError as exc:
         raise AppError(502, "stt_response_invalid", "STT provider response was not valid JSON") from exc
-    return _extract_response_text(payload, config.response_text_path)
+    return _extract_response_text(payload, response_text_path)
 
 
 def _transcribe_via_openai_cloud(
-    config: TeamSttConfig,
     *,
+    base_url: str,
+    extra_form_fields_json: dict[str, str] | None,
     bearer_token: str,
     model_name: str | None,
     language: str | None,
     audio_bytes: bytes,
     filename: str,
 ) -> str:
-    client = OpenAI(api_key=bearer_token, base_url=config.base_url)
+    client = OpenAI(api_key=bearer_token, base_url=base_url)
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     kwargs: dict[str, Any] = {
@@ -260,7 +302,7 @@ def _transcribe_via_openai_cloud(
     }
     if language:
         kwargs["language"] = language
-    if response_format := (config.extra_form_fields_json or {}).get("response_format"):
+    if response_format := (extra_form_fields_json or {}).get("response_format"):
         kwargs["response_format"] = response_format
     try:
         response = client.audio.transcriptions.create(**kwargs)
@@ -289,7 +331,8 @@ def transcribe_with_team_stt(
     bearer_token = read_team_stt_bearer_token(team_id=team_id, config_id=config.id)
     if config.adapter_kind is SttAdapterKind.openai_cloud:
         return _transcribe_via_openai_cloud(
-            config,
+            base_url=config.base_url,
+            extra_form_fields_json=config.extra_form_fields_json,
             bearer_token=bearer_token,
             model_name=resolved_model_name,
             language=resolved_language,
@@ -297,10 +340,68 @@ def transcribe_with_team_stt(
             filename=filename,
         )
     return _transcribe_via_http(
-        config,
+        base_url=config.base_url,
+        transcribe_path=config.transcribe_path,
+        file_field_name=config.file_field_name,
+        response_text_path=config.response_text_path,
+        extra_form_fields_json=config.extra_form_fields_json,
         bearer_token=bearer_token,
         model_name=resolved_model_name,
         language=resolved_language,
+        audio_bytes=audio_bytes,
+        filename=filename,
+        content_type=content_type,
+    )
+
+
+def transcribe_with_stt_snapshot(
+    db: Session,
+    *,
+    team_id: UUID,
+    stt_config_id: UUID | None,
+    adapter_kind: str | None,
+    base_url: str | None,
+    transcribe_path: str | None,
+    file_field_name: str | None,
+    response_text_path: str | None,
+    extra_form_fields_json: dict[str, str] | None,
+    model_name: str | None,
+    language: str | None,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
+    if not stt_config_id or not adapter_kind or not base_url:
+        return transcribe_with_team_stt(
+            db,
+            team_id=team_id,
+            audio_bytes=audio_bytes,
+            filename=filename,
+            content_type=content_type,
+        )
+    bearer_token = read_team_stt_bearer_token(team_id=team_id, config_id=stt_config_id)
+    resolved_adapter = SttAdapterKind(adapter_kind)
+    if resolved_adapter is SttAdapterKind.openai_cloud:
+        return _transcribe_via_openai_cloud(
+            base_url=base_url,
+            extra_form_fields_json=extra_form_fields_json,
+            bearer_token=bearer_token,
+            model_name=model_name,
+            language=language,
+            audio_bytes=audio_bytes,
+            filename=filename,
+        )
+    if not transcribe_path or not file_field_name or not response_text_path:
+        raise AppError(422, "business_rule_violation", "Queued STT snapshot is incomplete")
+    return _transcribe_via_http(
+        base_url=base_url,
+        transcribe_path=transcribe_path,
+        file_field_name=file_field_name,
+        response_text_path=response_text_path,
+        extra_form_fields_json=extra_form_fields_json,
+        bearer_token=bearer_token,
+        model_name=model_name,
+        language=language,
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -314,6 +415,13 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == payload.config_id, TeamSttConfig.team_id == team.id))
         if config is None:
             raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(payload.config_id)})
+        if _stt_config_has_in_flight_jobs(db, config_id=config.id):
+            raise AppError(
+                409,
+                "conflict",
+                "Cannot edit this STT config while transcription jobs are queued or processing",
+                {"config_id": str(config.id)},
+            )
     creating = config is None
 
     available_models_json: list[str] = []

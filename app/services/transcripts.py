@@ -12,13 +12,14 @@ from app.models import (
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptStatus,
+    TranscriptVersion,
     User,
     transcript_expiry,
     utcnow,
 )
 from app.schemas.transcripts import TranscriptCreate, TranscriptStart
-from app.services.audio import normalize_audio_to_wav_16k_mono
-from app.services.stt import transcribe_with_team_stt
+from app.services.audio import enforce_whole_file_duration_limit, normalize_audio_to_wav_16k_mono
+from app.services.stt import resolve_selected_team_stt, transcribe_with_stt_snapshot
 
 
 def _create_transcript_row(
@@ -54,6 +55,9 @@ def _create_transcript_row(
 
 
 def start_transcript(db: Session, owner: User, payload: TranscriptStart) -> Transcript:
+    allowed, message = can_create_new_session(db, owner)
+    if not allowed:
+        raise AppError(409, "business_rule_violation", message or "Cannot create a new transcript session")
     return _create_transcript_row(
         db,
         owner=owner,
@@ -77,6 +81,9 @@ def create_transcript_from_payload(db: Session, actor: User, payload: Transcript
             "Owner user does not belong to the provided team",
             {"owner_user_id": str(payload.owner_user_id), "team_id": str(payload.team_id)},
         )
+    allowed, message = can_create_new_session(db, owner)
+    if not allowed:
+        raise AppError(409, "business_rule_violation", message or "Cannot create a new transcript session")
     return _create_transcript_row(
         db,
         owner=owner,
@@ -96,6 +103,53 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
 
 
+def _latest_owner_transcript(db: Session, owner: User) -> Transcript | None:
+    return db.scalar(
+        select(Transcript)
+        .where(Transcript.owner_user_id == owner.id)
+        .order_by(Transcript.created_at.desc())
+        .limit(1)
+    )
+
+
+def _transcript_has_meaningful_content(db: Session, transcript: Transcript) -> bool:
+    if transcript.current_draft_text_encrypted and transcript.current_draft_text_encrypted.strip():
+        return True
+    if db.scalar(select(TranscriptVersion.id).where(TranscriptVersion.transcript_id == transcript.id).limit(1)) is not None:
+        return True
+    if db.scalar(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id).limit(1)) is not None:
+        return True
+    return False
+
+
+def can_create_new_session(db: Session, owner: User) -> tuple[bool, str | None]:
+    latest = _latest_owner_transcript(db, owner)
+    if latest is None:
+        return True, None
+    if latest.status is TranscriptStatus.transcribing:
+        return False, "Wait for the current session transcription to finish before creating a new one"
+    if _transcript_has_meaningful_content(db, latest):
+        return True, None
+    return False, "Finish or delete the current empty session before creating a new one"
+
+
+def can_switch_transcript_ingestion_mode(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    target_mode: TranscriptIngestionMode,
+) -> tuple[Transcript, bool, str | None]:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    if transcript.ingestion_mode is target_mode:
+        return transcript, True, None
+    if transcript.status is TranscriptStatus.transcribing:
+        return transcript, False, "Wait for the current session transcription to finish before switching input mode"
+    if _transcript_has_meaningful_content(db, transcript):
+        return transcript, False, "Switch input mode before recording, uploading, or adding transcript content"
+    return transcript, True, None
+
+
 def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
     transcript = db.get(Transcript, transcript_id)
     if not transcript:
@@ -103,6 +157,74 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
     if transcript.owner_user_id != owner.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
     return transcript
+
+
+def update_transcript_title(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    title: str | None,
+) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    normalized_title = (title or "").strip() or None
+    transcript.title = normalized_title
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    return transcript
+
+
+def update_transcript(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    title: str | None,
+    ingestion_mode: TranscriptIngestionMode | None,
+) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    if title is not None:
+        transcript.title = (title or "").strip() or None
+    if ingestion_mode is not None and ingestion_mode is not transcript.ingestion_mode:
+        _, allowed, message = can_switch_transcript_ingestion_mode(
+            db,
+            owner,
+            transcript_id=transcript_id,
+            target_mode=ingestion_mode,
+        )
+        if not allowed:
+            raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
+        transcript.ingestion_mode = ingestion_mode
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    return transcript
+
+
+def delete_transcripts(
+    db: Session,
+    owner: User,
+    *,
+    transcript_ids: list[UUID],
+) -> int:
+    unique_ids: list[UUID] = []
+    for transcript_id in transcript_ids:
+        if transcript_id not in unique_ids:
+            unique_ids.append(transcript_id)
+
+    if not unique_ids:
+        raise AppError(422, "business_rule_violation", "Select at least one transcript to delete")
+
+    transcripts = [
+        _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+        for transcript_id in unique_ids
+    ]
+    deleted_count = len(transcripts)
+    for transcript in transcripts:
+        db.delete(transcript)
+    db.commit()
+    return deleted_count
 
 
 def queue_audio_chunk_ingestion(
@@ -144,12 +266,22 @@ def queue_audio_chunk_ingestion(
             {"transcript_id": str(transcript.id), "chunk_sequence_no": chunk_sequence_no},
         )
 
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     job = TranscriptIngestionJob(
         id=uuid4(),
         transcript_id=transcript.id,
         job_kind=TranscriptIngestionJobKind.live_chunk,
         chunk_sequence_no=chunk_sequence_no,
         source_filename=filename,
+        stt_config_id=config.id,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name=resolved_model_name,
+        stt_language=resolved_language,
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_extra_form_fields_json=dict(config.extra_form_fields_json or {}),
         status=TranscriptIngestionJobStatus.queued,
     )
     transcript.status = TranscriptStatus.transcribing
@@ -169,13 +301,30 @@ def queue_audio_file_ingestion(
     filename: str,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
-    if transcript.ingestion_mode not in {TranscriptIngestionMode.file_upload, TranscriptIngestionMode.microphone_batch}:
+    if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
         raise AppError(
             409,
             "business_rule_violation",
             "Transcript ingestion mode does not accept file ingestion",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
+    existing_in_progress = db.scalar(
+        select(TranscriptIngestionJob).where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.audio_file,
+            TranscriptIngestionJob.status.in_(
+                [TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]
+            ),
+        )
+    )
+    if existing_in_progress is not None:
+        raise AppError(
+            409,
+            "conflict",
+            "A file transcription job is already in progress for this session",
+            {"transcript_id": str(transcript.id)},
+        )
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
 
     job = TranscriptIngestionJob(
         id=uuid4(),
@@ -183,6 +332,15 @@ def queue_audio_file_ingestion(
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename=filename,
+        stt_config_id=config.id,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name=resolved_model_name,
+        stt_language=resolved_language,
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_extra_form_fields_json=dict(config.extra_form_fields_json or {}),
         status=TranscriptIngestionJobStatus.queued,
     )
     transcript.status = TranscriptStatus.transcribing
@@ -261,9 +419,20 @@ def process_transcript_ingestion_job(
 
     try:
         normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=job.source_filename)
-        transcript_text = transcribe_with_team_stt(
+        if job.job_kind is TranscriptIngestionJobKind.audio_file:
+            enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
+        transcript_text = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,
+            stt_config_id=job.stt_config_id,
+            adapter_kind=job.stt_adapter_kind,
+            base_url=job.stt_base_url,
+            transcribe_path=job.stt_transcribe_path,
+            file_field_name=job.stt_file_field_name,
+            response_text_path=job.stt_response_text_path,
+            extra_form_fields_json=job.stt_extra_form_fields_json,
+            model_name=job.stt_model_name,
+            language=job.stt_language,
             audio_bytes=normalized_audio.data,
             filename=normalized_audio.filename,
             content_type=normalized_audio.content_type,
@@ -275,7 +444,10 @@ def process_transcript_ingestion_job(
         if job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
-            transcript.current_draft_text_encrypted = transcript_text
+            transcript.current_draft_text_encrypted = _append_chunk_text(
+                transcript.current_draft_text_encrypted,
+                transcript_text,
+            )
             transcript.status = TranscriptStatus.ready
             db.add(job)
             db.add(transcript)

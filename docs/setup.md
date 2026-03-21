@@ -43,6 +43,12 @@ This starts Docker services, loads `.env`, applies migrations, and runs the Fast
 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 
+Important:
+
+- if you change transcript/job enums, Celery task code, or other worker-loaded Python models, restart `./start-dev.sh`
+- otherwise the FastAPI app may be running newer code while the worker is still running stale imports
+- in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
+
 By default, `./start-dev.sh` also seeds a reusable dev team and two dev accounts into the app database:
 
 - team: `Dev Test Team`
@@ -55,6 +61,7 @@ These seeded accounts are:
 - onboarding-complete
 - `mfa_required = false`
 - `mfa_enabled = false`
+- restricted to localhost requests only; non-local login attempts are rejected and any reused non-local session is revoked immediately
 
 You can disable this behavior by setting:
 
@@ -92,13 +99,13 @@ DEV_START_CELERY=false
 
 ## Local URLs
 
-- API docs: `http://127.0.0.1:8080/docs`
-- Account request page: `http://127.0.0.1:8080/request-access`
-- Login / bootstrap: `http://127.0.0.1:8080/login`
-- Onboarding: `http://127.0.0.1:8080/onboarding`
-- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
-- User home: `http://127.0.0.1:8080/home`
-- Admin UI: `http://127.0.0.1:8080/admin`
+- API docs: `http://0.0.0.0:8080/docs` locally, or `http://<your-lan-ip>:8080/docs` from another machine
+- Account request page: `http://0.0.0.0:8080/request-access`
+- Login / bootstrap: `http://0.0.0.0:8080/login`
+- Onboarding: `http://0.0.0.0:8080/onboarding`
+- MFA challenge: `http://0.0.0.0:8080/mfa/challenge`
+- User home: `http://0.0.0.0:8080/home`
+- Admin UI: `http://0.0.0.0:8080/admin`
 
 ## Current manager STT configuration UI
 
@@ -107,6 +114,25 @@ DEV_START_CELERY=false
 - system admins also manage the active team STT selection from `/admin?team_id=<team_uuid>`
 - the UI accepts metadata and a replacement bearer token only in the admin provisioning flow
 - the UI does not reveal the stored token or the raw Vault reference
+- the admin inspect flow preserves the just-entered token only for the current rendered page so the immediate save can reuse it without retyping
+
+## Current manager LLM configuration UI
+
+- leaders manage only their own team's active LLM selection from `/home`
+- normal team users may set their own preferred default LLM model from `/home`
+- system admins provision and manage a selected team's LLM provider rows from `/admin?team_id=<team_uuid>`
+- system admins also manage the active team LLM selection from `/admin?team_id=<team_uuid>`
+- the implemented adapter families are `openai_chat` and `ollama_chat`
+- leader/admin team selection now uses provider-backed model controls instead of free-text:
+  - leaders/admins choose a provider
+  - choose which provider models are visible to team users
+  - choose one team default model from that visible subset
+- normal users choose their own default model from a populated dropdown of the leader-approved subset
+- the UI accepts metadata and a replacement API key only in the admin provisioning flow
+- the UI does not reveal the stored token or the raw Vault reference
+- remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
+- the admin inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
+- local Ollama defaults to `http://localhost:11434`; model discovery uses `/api/tags`
 
 ## First access
 
@@ -166,7 +192,25 @@ The app uses an opaque session cookie. Clear it before retrying:
 
 - sign out through `/logout`, or
 - open `/login` in a private/incognito window, or
-- clear cookies for `127.0.0.1:8080`
+- clear cookies for `0.0.0.0:8080` or your LAN IP if needed
+
+Browser flows also use a separate CSRF cookie:
+
+- cookie name: `openscribe_csrf`
+- browser forms submit it as `_csrf_token`
+- browser JavaScript requests submit it as `X-CSRF-Token`
+
+### Whole-file ingestion caps
+
+Whole-file uploads are bounded by both size and duration:
+
+- raw upload size default: `25 MB`
+- normalized whole-file duration default: `30 minutes`
+
+These are configurable with:
+
+- `WHOLE_FILE_MAX_UPLOAD_BYTES`
+- `WHOLE_FILE_MAX_DURATION_SECONDS`
 
 ### Database reset
 

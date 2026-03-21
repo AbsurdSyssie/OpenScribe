@@ -1,0 +1,184 @@
+from datetime import datetime
+import ipaddress
+from uuid import UUID
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.models import LlmAdapterKind, LlmAuthMode
+
+
+def _validate_llm_base_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("LLM base URL must use http or https")
+    if not parsed.netloc:
+        raise ValueError("LLM base URL must include a host")
+    host = (parsed.hostname or "").lower()
+    is_localish = host == "localhost"
+    if not is_localish:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            is_localish = ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+    if parsed.scheme != "https" and not is_localish:
+        raise ValueError("Remote LLM endpoints must use https")
+    return value.rstrip("/")
+
+
+class LlmModelOption(BaseModel):
+    id: str
+    source: str
+    label: str
+
+    model_config = {"protected_namespaces": ()}
+
+
+class LlmConfigUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    config_id: UUID | None = None
+    team_id: UUID | None = None
+    label: str = Field(min_length=1, max_length=255)
+    adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat
+    base_url: str = Field(default="", max_length=2048)
+    auth_mode: LlmAuthMode = LlmAuthMode.bearer
+    bearer_token: str | None = Field(default=None, min_length=1)
+    model_name: str | None = Field(default=None, max_length=255)
+    is_active: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_adapter_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
+        if isinstance(adapter_kind, str):
+            adapter_kind = LlmAdapterKind(adapter_kind)
+        if adapter_kind is LlmAdapterKind.openai_chat:
+            normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
+        elif adapter_kind is LlmAdapterKind.ollama_chat:
+            normalized["base_url"] = (normalized.get("base_url") or "http://localhost:11434").strip()
+        return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("LLM base URL is required")
+        return _validate_llm_base_url(value)
+
+    @model_validator(mode="after")
+    def validate_model_name(self):
+        if self.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.ollama_chat} and not self.model_name:
+            raise ValueError("Model name is required for LLM adapters")
+        return self
+
+
+class LlmConfigDetail(BaseModel):
+    id: UUID
+    team_id: UUID
+    label: str
+    adapter_kind: LlmAdapterKind
+    base_url: str
+    auth_mode: LlmAuthMode
+    model_name: str | None
+    available_models_json: list[str]
+    is_active: bool
+    has_secret: bool
+    created_by_user_id: UUID
+    updated_by_user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class LlmSelectionUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID | None = None
+    llm_config_id: UUID
+    allowed_models_json: list[str] = Field(default_factory=list)
+    model_name_override: str | None = Field(default=None, max_length=255)
+
+
+class LlmSelectionDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    id: UUID
+    team_id: UUID
+    llm_config_id: UUID
+    selected_by_user_id: UUID
+    selected_config_label: str
+    selected_config_adapter_kind: LlmAdapterKind
+    selected_config_base_url: str
+    provider_available_models_json: list[str]
+    allowed_models_json: list[str]
+    model_name_override: str | None
+    resolved_model_name: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserLlmPreferenceUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    preferred_model_name: str | None = Field(default=None, max_length=255)
+
+
+class UserLlmPreferenceDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    id: UUID
+    user_id: UUID
+    preferred_model_name: str | None
+    resolved_model_name: str | None
+    allowed_models_json: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class LlmInspectRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID | None = None
+    adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat
+    base_url: str = Field(default="", max_length=2048)
+    bearer_token: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_adapter_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
+        if isinstance(adapter_kind, str):
+            adapter_kind = LlmAdapterKind(adapter_kind)
+        if adapter_kind is LlmAdapterKind.openai_chat:
+            normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
+        elif adapter_kind is LlmAdapterKind.ollama_chat:
+            normalized["base_url"] = (normalized.get("base_url") or "http://localhost:11434").strip()
+        return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("LLM base URL is required")
+        return _validate_llm_base_url(value)
+
+
+class LlmConfigInspectResult(BaseModel):
+    base_url: str
+    adapter_kind: LlmAdapterKind
+    model_name: str | None
+    available_models: list[str] = Field(default_factory=list)
+    available_model_options: list[LlmModelOption] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    model_config = {"protected_namespaces": ()}

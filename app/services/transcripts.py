@@ -28,6 +28,7 @@ def _create_transcript_row(
     owner: User,
     title: str | None,
     current_draft_text_encrypted: str | None,
+    structured_context_json: dict | None,
     ingestion_mode: TranscriptIngestionMode,
     retention_days_applied: int | None,
 ) -> Transcript:
@@ -42,6 +43,7 @@ def _create_transcript_row(
         team_id=owner.team_id,
         title=title,
         current_draft_text_encrypted=current_draft_text_encrypted,
+        structured_context_json=structured_context_json,
         ingestion_mode=ingestion_mode,
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
@@ -63,6 +65,7 @@ def start_transcript(db: Session, owner: User, payload: TranscriptStart) -> Tran
         owner=owner,
         title=payload.title,
         current_draft_text_encrypted=payload.current_draft_text_encrypted,
+        structured_context_json=payload.structured_context_json,
         ingestion_mode=payload.ingestion_mode,
         retention_days_applied=payload.retention_days_applied,
     )
@@ -89,6 +92,7 @@ def create_transcript_from_payload(db: Session, actor: User, payload: Transcript
         owner=owner,
         title=payload.title,
         current_draft_text_encrypted=payload.current_draft_text_encrypted,
+        structured_context_json=payload.structured_context_json,
         ingestion_mode=payload.ingestion_mode,
         retention_days_applied=payload.retention_days_applied,
     )
@@ -101,6 +105,15 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     if not normalized_chunk:
         return existing_text
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
+
+
+def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> TranscriptIngestionJob | None:
+    return db.scalar(
+        select(TranscriptIngestionJob)
+        .where(TranscriptIngestionJob.transcript_id == transcript_id)
+        .order_by(TranscriptIngestionJob.created_at.desc(), TranscriptIngestionJob.id.desc())
+        .limit(1)
+    )
 
 
 def _latest_owner_transcript(db: Session, owner: User) -> Transcript | None:
@@ -182,6 +195,7 @@ def update_transcript(
     transcript_id: UUID,
     title: str | None,
     ingestion_mode: TranscriptIngestionMode | None,
+    structured_context_json: dict | None,
 ) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if title is not None:
@@ -196,6 +210,8 @@ def update_transcript(
         if not allowed:
             raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
         transcript.ingestion_mode = ingestion_mode
+    if structured_context_json is not None:
+        transcript.structured_context_json = structured_context_json
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
@@ -460,7 +476,8 @@ def process_transcript_ingestion_job(
             _apply_completed_live_chunks(db, transcript)
     except AppError as exc:
         _mark_job_failed(db, transcript, job, code=exc.code, message=exc.message)
-        raise
+        db.refresh(job)
+        return job
     except Exception as exc:  # pragma: no cover
         _mark_job_failed(db, transcript, job, code="ingestion_failed", message="Transcript ingestion job failed")
         raise AppError(502, "ingestion_failed", "Transcript ingestion job failed") from exc

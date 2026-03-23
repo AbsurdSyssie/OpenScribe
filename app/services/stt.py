@@ -244,6 +244,32 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
     return text
 
 
+def _translate_http_stt_error(exc: httpx.HTTPError) -> AppError:
+    if isinstance(exc, httpx.TimeoutException):
+        return AppError(
+            504,
+            "stt_timeout",
+            "STT provider timed out",
+            {"provider_error_code": "timeout"},
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return AppError(
+            502,
+            "stt_unavailable",
+            "Could not reach the STT provider",
+            {"provider_error_code": "connection_error"},
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code if exc.response is not None else None
+        return AppError(
+            502,
+            "stt_request_failed",
+            "STT provider request failed",
+            {"status_code": status_code},
+        )
+    return AppError(502, "stt_unavailable", "STT provider is unavailable")
+
+
 def _transcribe_via_http(
     *,
     base_url: str,
@@ -272,10 +298,9 @@ def _transcribe_via_http(
             files={file_field_name: (filename, audio_bytes, content_type)},
             timeout=60.0,
         )
+        response.raise_for_status()
     except httpx.HTTPError as exc:
-        raise AppError(502, "stt_unavailable", "STT provider is unavailable") from exc
-    if response.status_code >= 400:
-        raise AppError(502, "stt_request_failed", "STT provider request failed", {"status_code": response.status_code})
+        raise _translate_http_stt_error(exc) from exc
     try:
         payload = response.json()
     except ValueError as exc:

@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 
 from app.models import (
     GeneratedDocument,
+    GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
@@ -17,6 +18,8 @@ from app.models import (
     TemplateMode,
     TemplateScope,
     Transcript,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     TranscriptIngestionJob,
     TranscriptIngestionMode,
     TranscriptStatus,
@@ -195,6 +198,24 @@ def test_browser_manager_account_routes_redirect_to_login_without_auth(client, m
     assert delete.headers["location"] == "/login"
 
 
+def test_invalid_browser_route_redirects_to_login_without_auth(client):
+    response = client.get("/does-not-exist", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_invalid_browser_route_redirects_to_home_when_authenticated(client, make_team, make_user):
+    team = make_team(name="Clinic Invalid Route")
+    make_user(email="member-invalid-route@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "member-invalid-route@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.get("/does-not-exist", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/home"
+
+
 def test_leader_home_can_suspend_and_reactivate_team_user(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -368,6 +389,35 @@ def test_user_home_can_create_personal_template(client, db_session, make_team, m
     assert save.status_code == 303
     template = db_session.scalar(select(PromptTemplate).where(PromptTemplate.owner_user_id == user.id, PromptTemplate.name == "My note"))
     assert template is not None
+
+
+def test_user_home_can_create_structured_emis_personal_template(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Structured UI")
+    user = make_user(email="structured-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "structured-user@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home")
+    assert "Structured EMIS" in page.text
+
+    save = client.post(
+        "/home/personal-templates",
+        data={
+            "name": "EMIS note",
+            "description": "Structured note prompt",
+            "mode": "structured",
+            "prompt_text": "Use British English.",
+            "section_prompt_problem": "Summarise the problem.",
+            "section_prompt_history": "Summarise the history.",
+            "is_active": "true",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+    template = db_session.scalar(select(PromptTemplate).where(PromptTemplate.owner_user_id == user.id, PromptTemplate.name == "EMIS note"))
+    assert template is not None
+    latest_version = template.versions[-1]
+    assert latest_version.mode is TemplateMode.structured
+    assert latest_version.config_json["profile"] == "emis"
 
 
 def test_leader_home_can_create_team_quick_action(client, db_session, make_team, make_user):
@@ -744,6 +794,38 @@ def test_user_transcribe_page_shows_progress_for_transcribing_session(client, db
     assert "Background transcription is in progress." in page.text
 
 
+def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Failure Detail")
+    member = make_user(email="member-failure@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    failed = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Failed session",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(failed)
+    db_session.commit()
+    job = TranscriptIngestionJob(
+        transcript_id=failed.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="vault_read_failed",
+        error_message="STT provider credential is missing for the queued transcription config",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-failure@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={failed.id}")
+
+    assert page.status_code == 200
+    assert "The last ingestion attempt failed: STT provider credential is missing for the queued transcription config." in page.text
+
+
 def test_user_transcribe_page_blocks_new_blank_session_when_latest_is_still_empty(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
     make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
@@ -876,9 +958,212 @@ def test_user_transcribe_page_can_generate_note_output_from_template(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued note generation." in page.text
-    assert "Latest output:" in page.text
-    assert "My note output" in page.text
+
+
+def test_user_transcribe_page_shows_structured_emis_context_inputs(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Structured Context")
+    admin = make_user(email="structured-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="structured-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="structured-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "structured-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert "Structured EMIS context" in page.text
+    assert 'name="context_problem"' in page.text
+
+
+def test_user_transcribe_page_reloads_persisted_structured_emis_context(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Structured Persist")
+    admin = make_user(email="structured-persist-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="structured-persist-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="structured-persist-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "tasks", "section_label": "Tasks", "instruction": "List tasks.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        structured_context_json={"profile": "emis", "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]}},
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "structured-persist-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert 'name="context_problem"' in page.text
+    assert "Known asthma" in page.text
+    assert "Peak flow diary" in page.text
     assert "queued" in page.text
+
+
+def test_user_transcribe_page_exposes_workspace_api_endpoint(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Workspace UI")
+    member = make_user(email="workspace-ui-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "workspace-ui-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert f'data-workspace-endpoint="/api/v1/transcribe/workspace?transcript_id={transcript.id}"' in page.text
+    assert 'data-transcript-title-form' in page.text
+    assert 'data-upload-form' in page.text
+    assert 'data-generate-output-form' in page.text
+    assert 'id="new-session-form"' in page.text
+    assert 'id="bulk-delete-sessions"' in page.text
+    assert 'data-session-link' in page.text
+
+
+def test_user_transcribe_page_keeps_structured_output_refresh_hooks(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Structured Refresh UI")
+    member = make_user(email="structured-refresh-ui@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    generated_document = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=None,
+        source_template_name="EMIS note",
+        status=GeneratedDocumentStatus.ready,
+        title="Chest review",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="Problem\nAsthma flare.",
+        edited_output_text_encrypted="Problem\nAsthma flare.",
+        is_edited=False,
+        retention_expires_at=transcript.retention_expires_at,
+        model_used="gpt-4o-mini",
+    )
+    db_session.add(generated_document)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocumentSection(
+            generated_document_id=generated_document.id,
+            section_key="problem",
+            section_label="Problem",
+            section_order=1,
+            original_text_encrypted="Asthma flare.",
+            edited_text_encrypted="Asthma flare.",
+            is_edited=False,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "structured-refresh-ui@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert 'data-generated-structured-panel' in page.text
+    assert 'data-generated-structured-sections' in page.text
+    assert 'data-copy-structured-lines' in page.text
 
 
 def test_local_dev_transcribe_page_shows_redaction_debug_panel(

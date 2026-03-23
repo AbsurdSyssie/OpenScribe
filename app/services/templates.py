@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from uuid import UUID, uuid4
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     GeneratedDocument,
+    GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
@@ -30,7 +32,13 @@ from app.models import (
     User,
     utcnow,
 )
-from app.schemas.templates import PromptTemplateUpsert, QuickActionUpsert
+from app.schemas.templates import (
+    EMIS_SECTION_KEYS,
+    EMIS_SECTION_LABELS,
+    PromptTemplateUpsert,
+    QuickActionUpsert,
+    StructuredTemplateConfig,
+)
 from app.services.llm import resolve_user_llm
 from app.services.redaction import (
     combined_phi_index,
@@ -192,6 +200,76 @@ def _serialize_prompt_text(raw_prompt_text: str) -> str:
     return prompt_text
 
 
+def _serialize_template_config(payload: PromptTemplateUpsert) -> dict | None:
+    if payload.mode is TemplateMode.freeform:
+        return None
+    if payload.mode is not TemplateMode.structured:
+        raise AppError(422, "business_rule_violation", "Unsupported template mode", {"field": "mode"})
+    if payload.config_json is None:
+        raise AppError(422, "business_rule_violation", "Structured template config is required", {"field": "config_json"})
+    if payload.config_json.profile != "emis":
+        raise AppError(422, "business_rule_violation", "Only the EMIS structured profile is supported", {"field": "config_json.profile"})
+
+    selected_sections: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for index, section in enumerate(payload.config_json.sections, start=1):
+        section_key = section.section_key.strip()
+        if section_key not in EMIS_SECTION_KEYS:
+            raise AppError(422, "business_rule_violation", "Structured template uses an unsupported EMIS section", {"field": "config_json.sections", "section_key": section_key})
+        if section_key in seen_keys:
+            raise AppError(422, "business_rule_violation", "Structured template cannot include the same section twice", {"field": "config_json.sections", "section_key": section_key})
+        instruction = section.instruction.strip()
+        if not instruction:
+            raise AppError(422, "business_rule_violation", "Structured template section instructions are required", {"field": "config_json.sections", "section_key": section_key})
+        seen_keys.add(section_key)
+        selected_sections.append(
+            {
+                "section_key": section_key,
+                "section_label": EMIS_SECTION_LABELS[section_key],
+                "instruction": instruction,
+                "section_order": index,
+            }
+        )
+    if not selected_sections:
+        raise AppError(422, "business_rule_violation", "Structured EMIS templates require at least one section", {"field": "config_json.sections"})
+    return {"profile": "emis", "sections": selected_sections}
+
+
+def _template_version_config(version: PromptTemplateVersion) -> StructuredTemplateConfig | None:
+    if not version.config_json:
+        return None
+    return StructuredTemplateConfig.model_validate(version.config_json)
+
+
+def _serialize_structured_context(
+    *,
+    raw_context: dict[str, object] | None,
+    template_config: StructuredTemplateConfig | None,
+    ignore_unsupported_sections: bool = False,
+) -> dict | None:
+    if not raw_context:
+        return None
+    if template_config is None:
+        raise AppError(422, "business_rule_violation", "Structured context is only supported for structured templates", {"field": "structured_context"})
+    allowed_section_keys = {section.section_key for section in template_config.sections}
+    clean: dict[str, list[str]] = {}
+    for section_key, value in raw_context.items():
+        normalized_key = section_key.strip()
+        if normalized_key not in allowed_section_keys:
+            if ignore_unsupported_sections:
+                continue
+            raise AppError(422, "business_rule_violation", "Structured context uses an unsupported section", {"field": "structured_context", "section_key": normalized_key})
+        if isinstance(value, list):
+            normalized_value = [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
+        elif isinstance(value, str) and value.strip():
+            normalized_value = [value.strip()]
+        else:
+            normalized_value = []
+        if normalized_value:
+            clean[normalized_key] = normalized_value
+    return clean or None
+
+
 def list_team_templates(db: Session, actor: User) -> list[PromptTemplate]:
     _require_team_leader(actor)
     return list(
@@ -275,6 +353,7 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
     if payload.scope is not TemplateScope.team:
         raise AppError(422, "business_rule_violation", "Team template payload must use team scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    config_json = _serialize_template_config(payload)
     template = _resolve_team_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
     if template is None:
         template = PromptTemplate(
@@ -299,8 +378,9 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
         id=uuid4(),
         template_id=template.id,
         version_no=_next_template_version_no(db, template_id=template.id),
-        mode=TemplateMode.freeform,
+        mode=payload.mode,
         prompt_text=prompt_text,
+        config_json=config_json,
         created_by_user_id=actor.id,
     )
     db.add(version)
@@ -314,6 +394,7 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
     if payload.scope is not TemplateScope.user:
         raise AppError(422, "business_rule_violation", "Personal template payload must use user scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    config_json = _serialize_template_config(payload)
     template = _resolve_personal_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
     if template is None:
         template = PromptTemplate(
@@ -338,8 +419,9 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
         id=uuid4(),
         template_id=template.id,
         version_no=_next_template_version_no(db, template_id=template.id),
-        mode=TemplateMode.freeform,
+        mode=payload.mode,
         prompt_text=prompt_text,
+        config_json=config_json,
         created_by_user_id=actor.id,
     )
     db.add(version)
@@ -831,13 +913,16 @@ def _generate_freeform_output_ollama(
 ) -> tuple[str, dict[str, int | None]]:
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     started = time.perf_counter()
+    generated_parts: list[str] = []
+    final_payload: dict[str, object] | None = None
     try:
-        response = httpx.post(
+        with httpx.stream(
+            "POST",
             f"{base_url.rstrip('/')}/api/chat",
             headers=headers,
             json={
                 "model": model,
-                "stream": False,
+                "stream": True,
                 "messages": [
                     {
                         "role": "system",
@@ -849,10 +934,27 @@ def _generate_freeform_output_ollama(
                     },
                 ],
             },
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=60.0),
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
+                payload = json.loads(raw_line)
+                if not isinstance(payload, dict):
+                    raise AppError(
+                        502,
+                        "llm_provider_bad_response",
+                        "The LLM provider returned an unreadable response",
+                        {"provider_error_code": "invalid_json"},
+                    )
+                message = payload.get("message", {})
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, str) and content:
+                    generated_parts.append(content)
+                if payload.get("done") is True:
+                    final_payload = payload
+                    break
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         if isinstance(exc, ValueError):
             raise AppError(
@@ -863,9 +965,8 @@ def _generate_freeform_output_ollama(
             ) from exc
         raise _translate_ollama_generation_error(exc) from exc
 
-    message = payload.get("message", {})
-    content = message.get("content") if isinstance(message, dict) else None
-    generated_text = content.strip() if isinstance(content, str) else ""
+    payload = final_payload or {}
+    generated_text = "".join(generated_parts).strip()
     if not generated_text:
         raise AppError(502, "llm_generation_failed", "LLM generation returned no note text")
     prompt_tokens = payload.get("prompt_eval_count")
@@ -892,7 +993,11 @@ def _build_template_generation_messages(
 ) -> tuple[str, str]:
     return (
         "You generate concise note output from a transcript using the provided template instructions. "
-        "Return only the finished note text. "
+        "Return only a valid JSON object with exactly two string fields: "
+        "\"title\" and \"content\". "
+        "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
+        "The \"content\" field must contain the full note text. "
+        "Do not include markdown fences, commentary, or any text outside the JSON object. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
@@ -901,6 +1006,222 @@ def _build_template_generation_messages(
             f"Transcript:\n{transcript_text}"
         ),
     )
+
+
+def _build_structured_template_generation_messages(
+    *,
+    template_name: str,
+    global_instruction: str,
+    transcript_text: str,
+    template_config: StructuredTemplateConfig,
+) -> tuple[str, str]:
+    section_lines = [
+        f'- "{section.section_key}": {section.instruction}'
+        for section in sorted(template_config.sections, key=lambda item: item.section_order)
+    ]
+    return (
+        "You generate a structured GP note from a transcript using the provided EMIS section instructions. "
+        "Return only a valid JSON object with exactly two top-level fields: "
+        "\"title\" and \"content\". "
+        "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
+        "The \"content\" field must be an object. "
+        "Only use these allowed section keys, and do not invent any others: "
+        f"{', '.join(section.section_key for section in sorted(template_config.sections, key=lambda item: item.section_order))}. "
+        "Each included section value must be a string. Omit sections that have no relevant content. "
+        "Do not include markdown fences, commentary, or any text outside the JSON object. "
+        "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
+        "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
+        (
+            f"Template name: {template_name}\n\n"
+            f"Global instructions:\n{global_instruction}\n\n"
+            "EMIS sections to fill:\n"
+            f"{chr(10).join(section_lines)}\n\n"
+            f"Transcript:\n{transcript_text}"
+        ),
+    )
+
+
+def _parse_generated_note_json(payload_text: str) -> tuple[str, str]:
+    payload = None
+    for candidate in _generated_note_json_candidates(payload_text):
+        try:
+            payload = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    if payload is None:
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned invalid JSON for the note output",
+            {"provider_error_code": "invalid_json"},
+        )
+
+    if not isinstance(payload, dict):
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned an invalid note JSON object",
+            {"provider_error_code": "invalid_json_shape"},
+        )
+
+    title = payload.get("title")
+    content = payload.get("content")
+    if not isinstance(title, str) or not title.strip():
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned a note JSON object without a valid title",
+            {"provider_error_code": "missing_title"},
+        )
+    if not isinstance(content, str) or not content.strip():
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned a note JSON object without valid content",
+            {"provider_error_code": "missing_content"},
+        )
+
+    return title.strip(), content.strip()
+
+
+def _parse_generated_structured_note_json(
+    payload_text: str,
+    *,
+    template_config: StructuredTemplateConfig,
+) -> tuple[str, list[dict[str, str | int]]]:
+    payload = None
+    for candidate in _generated_note_json_candidates(payload_text):
+        try:
+            payload = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    if payload is None:
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned invalid JSON for the structured note output",
+            {"provider_error_code": "invalid_json"},
+        )
+    if not isinstance(payload, dict):
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned an invalid structured note JSON object",
+            {"provider_error_code": "invalid_json_shape"},
+        )
+    title = payload.get("title")
+    content = payload.get("content")
+    if not isinstance(title, str) or not title.strip():
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned a structured note JSON object without a valid title",
+            {"provider_error_code": "missing_title"},
+        )
+    if not isinstance(content, dict):
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned a structured note JSON object without a valid content object",
+            {"provider_error_code": "invalid_json_shape"},
+        )
+    allowed_section_keys = {section.section_key for section in template_config.sections}
+    unknown_keys = [key for key in content.keys() if key not in allowed_section_keys]
+    if unknown_keys:
+        raise AppError(
+            502,
+            "llm_generation_invalid_json",
+            "LLM generation returned unsupported structured note sections",
+            {"provider_error_code": "invalid_section_key"},
+        )
+    parsed_sections: list[dict[str, str | int]] = []
+    for section in sorted(template_config.sections, key=lambda item: item.section_order):
+        raw_value = content.get(section.section_key)
+        if raw_value is None:
+            continue
+        if not isinstance(raw_value, str):
+            raise AppError(
+                502,
+                "llm_generation_invalid_json",
+                "LLM generation returned a structured note section with a non-string value",
+                {"provider_error_code": "invalid_section_value", "section_key": section.section_key},
+            )
+        normalized = raw_value.strip()
+        if not normalized:
+            continue
+        parsed_sections.append(
+            {
+                "section_key": section.section_key,
+                "section_label": section.section_label,
+                "section_order": section.section_order,
+                "text": normalized,
+            }
+        )
+    return title.strip(), parsed_sections
+
+
+def _generated_note_json_candidates(payload_text: str) -> list[str]:
+    candidates: list[str] = []
+    normalized = payload_text.strip()
+    if normalized:
+        candidates.append(normalized)
+        unfenced = _strip_markdown_code_fence(normalized)
+        if unfenced and unfenced not in candidates:
+            candidates.append(unfenced)
+        extracted = _extract_first_balanced_json_object(unfenced or normalized)
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+    return candidates
+
+
+def _strip_markdown_code_fence(payload_text: str) -> str:
+    stripped = payload_text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_first_balanced_json_object(payload_text: str) -> str | None:
+    start = payload_text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(payload_text)):
+        char = payload_text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return payload_text[start : index + 1]
+    return None
+
+
+def _transcript_title_can_be_auto_filled(title: str | None) -> bool:
+    normalized = (title or "").strip()
+    return normalized in {"", "Untitled session"}
 
 
 def _build_followup_generation_messages(*, transcript_text: str, follow_up_prompt_text: str) -> tuple[str, str]:
@@ -926,12 +1247,23 @@ def _build_quick_action_generation_messages(*, transcript_text: str, quick_actio
     )
 
 
+def _render_structured_sections_text(sections: list[dict[str, str | int]]) -> str:
+    rendered_parts: list[str] = []
+    for section in sections:
+        section_label = str(section["section_label"]).strip()
+        section_text = str(section["text"]).strip()
+        if section_text:
+            rendered_parts.append(f"{section_label}\n{section_text}")
+    return "\n\n".join(rendered_parts).strip()
+
+
 def queue_document_generation_from_template(
     db: Session,
     actor: User,
     *,
     transcript_id: UUID,
     template_id: UUID,
+    structured_context: dict[str, str] | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -942,6 +1274,28 @@ def queue_document_generation_from_template(
 
     template = _resolve_available_template_for_user(db, actor, template_id=template_id)
     latest_version = _latest_template_version(db, template_id=template.id)
+    template_config = _template_version_config(latest_version)
+    raw_structured_context = structured_context
+    if raw_structured_context is None and isinstance(transcript.structured_context_json, dict):
+        transcript_profile = transcript.structured_context_json.get("profile")
+        transcript_sections = transcript.structured_context_json.get("sections")
+        if transcript_profile == "emis" and isinstance(transcript_sections, dict):
+            raw_structured_context = {
+                str(section_key): value
+                for section_key, value in transcript_sections.items()
+                if isinstance(section_key, str)
+            }
+    serialized_structured_context = _serialize_structured_context(
+        raw_context=raw_structured_context,
+        template_config=template_config,
+        ignore_unsupported_sections=structured_context is None,
+    )
+    if template_config is not None:
+        transcript.structured_context_json = {
+            "profile": template_config.profile,
+            "sections": dict(serialized_structured_context or {}),
+        }
+        db.add(transcript)
     transcript_version = _snapshot_transcript_version(db, transcript=transcript)
 
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
@@ -960,9 +1314,10 @@ def queue_document_generation_from_template(
         llm_config_id=config.id,
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
+        structured_context_json=serialized_structured_context,
         status=GeneratedDocumentStatus.queued,
         title=f"{template.name} output",
-        document_mode=TemplateMode.freeform,
+        document_mode=latest_version.mode,
         original_output_text_encrypted="",
         edited_output_text_encrypted="",
         is_edited=False,
@@ -1135,11 +1490,47 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
         prompt_redaction = redact_transient_text(prompt_text, start_index=next_placeholder_index(redaction_run))
         extra_phi_index = list(prompt_redaction["phi_index"])
-        system_message, user_message = _build_template_generation_messages(
-            template_name=document.source_template_name,
-            prompt_text=prompt_redaction["redacted_text"],
-            transcript_text=transcript_text,
-        )
+        template_config = None
+        if document.template_version_id:
+            template_version = db.get(PromptTemplateVersion, document.template_version_id)
+            if template_version is not None:
+                template_config = _template_version_config(template_version)
+        structured_context_json = document.structured_context_json if isinstance(document.structured_context_json, dict) else {}
+        if document.document_mode is TemplateMode.structured:
+            if template_config is None:
+                raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
+            context_lines: list[str] = []
+            placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
+            for section in sorted(template_config.sections, key=lambda item: item.section_order):
+                raw_prefill_value = structured_context_json.get(section.section_key, [])
+                if isinstance(raw_prefill_value, list):
+                    prefill_lines = [str(item).strip() for item in raw_prefill_value if isinstance(item, str) and item.strip()]
+                elif isinstance(raw_prefill_value, str) and raw_prefill_value.strip():
+                    prefill_lines = [raw_prefill_value.strip()]
+                else:
+                    prefill_lines = []
+                if prefill_lines:
+                    prefill_text = "\n".join(prefill_lines)
+                    prefill_redaction = redact_transient_text(prefill_text, start_index=placeholder_index)
+                    extra_phi_index.extend(list(prefill_redaction["phi_index"]))
+                    placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
+                    context_lines.append(f'- "{section.section_key}": {prefill_redaction["redacted_text"]}')
+            context_block = "\n".join(context_lines).strip()
+            prompt_with_context = prompt_redaction["redacted_text"]
+            if context_block:
+                prompt_with_context = f"{prompt_with_context}\n\nExisting section context to preserve or refine:\n{context_block}"
+            system_message, user_message = _build_structured_template_generation_messages(
+                template_name=document.source_template_name,
+                global_instruction=prompt_with_context,
+                transcript_text=transcript_text,
+                template_config=template_config,
+            )
+        else:
+            system_message, user_message = _build_template_generation_messages(
+                template_name=document.source_template_name,
+                prompt_text=prompt_redaction["redacted_text"],
+                transcript_text=transcript_text,
+            )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
         follow_up_prompt_text = (document.follow_up_prompt_text or "").strip()
         if not follow_up_prompt_text:
@@ -1227,15 +1618,47 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
         return document
 
+    phi_index = combined_phi_index(redaction_run, extra_phi_index=list(extra_phi_index))
+
     try:
-        restored_text = reidentify_text(
-            generated_text,
-            phi_index=combined_phi_index(redaction_run, extra_phi_index=list(extra_phi_index)),
-        )
+        if document.generator_type is GeneratedDocumentGeneratorType.template:
+            restored_title = None
+            structured_sections: list[dict[str, str | int]] = []
+            if document.document_mode is TemplateMode.structured:
+                template_version = db.get(PromptTemplateVersion, document.template_version_id) if document.template_version_id else None
+                template_config = _template_version_config(template_version) if template_version is not None else None
+                if template_config is None:
+                    raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
+                redacted_title, redacted_sections = _parse_generated_structured_note_json(generated_text, template_config=template_config)
+                restored_title = reidentify_text(redacted_title, phi_index=phi_index)
+                for section in redacted_sections:
+                    restored_section_text = reidentify_text(str(section["text"]), phi_index=phi_index)
+                    structured_sections.append(
+                        {
+                            "section_key": str(section["section_key"]),
+                            "section_label": str(section["section_label"]),
+                            "section_order": int(section["section_order"]),
+                            "text": restored_section_text,
+                        }
+                    )
+                restored_text = _render_structured_sections_text(structured_sections)
+            else:
+                redacted_title, redacted_content = _parse_generated_note_json(generated_text)
+                restored_title = reidentify_text(redacted_title, phi_index=phi_index)
+                restored_text = reidentify_text(redacted_content, phi_index=phi_index)
+        else:
+            restored_text = reidentify_text(
+                generated_text,
+                phi_index=phi_index,
+            )
+            restored_title = None
+            structured_sections = []
     except AppError as exc:
         document.status = GeneratedDocumentStatus.failed
         document.error_code = exc.code
         document.error_message = exc.message[:255]
+        document.provider_error_code = (exc.details or {}).get("provider_error_code")
+        document.failed_provider_output_redacted_encrypted = generated_text
         document.completed_at = utcnow()
         db.add(document)
         db.commit()
@@ -1244,6 +1667,29 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         return document
     document.original_output_text_encrypted = restored_text
     document.edited_output_text_encrypted = restored_text
+    document.failed_provider_output_redacted_encrypted = None
+    if document.generator_type is GeneratedDocumentGeneratorType.template:
+        for existing_section in list(document.sections):
+            db.delete(existing_section)
+        for section in structured_sections:
+            db.add(
+                GeneratedDocumentSection(
+                    id=uuid4(),
+                    generated_document_id=document.id,
+                    section_key=str(section["section_key"]),
+                    section_label=str(section["section_label"]),
+                    section_order=int(section["section_order"]),
+                    original_text_encrypted=str(section["text"]),
+                    edited_text_encrypted=str(section["text"]),
+                    is_edited=False,
+                )
+            )
+    if restored_title is not None:
+        document.title = restored_title[:255]
+        transcript = db.get(Transcript, document.transcript_id)
+        if transcript is not None and _transcript_title_can_be_auto_filled(transcript.title):
+            transcript.title = restored_title[:255]
+            db.add(transcript)
     document.status = GeneratedDocumentStatus.ready
     document.completed_at = utcnow()
     document.error_code = None

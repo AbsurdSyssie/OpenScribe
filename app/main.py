@@ -30,6 +30,7 @@ from .models import (
     SttAdapterKind,
     TeamRole,
     TeamStatus,
+    TemplateMode,
     TemplateScope,
     Transcript,
     TranscriptIngestionMode,
@@ -48,6 +49,8 @@ from .schemas import (
     AccountRequestListItem,
     AccountRequestReject,
     CurrentUserResponse,
+    EMIS_SECTION_KEYS,
+    EMIS_SECTION_LABELS,
     ErrorResponse,
     GenerateFollowupRequest,
     GenerateQuickActionRequest,
@@ -94,6 +97,7 @@ from .schemas import (
     UserListItem,
     GeneratedDocumentDetail,
     GeneratedDocumentRedactionDebugDetail,
+    TranscribeWorkspaceDetail,
 )
 from .services.templates import (
     attach_generated_document_task_id as attach_generated_document_task_id_service,
@@ -192,6 +196,7 @@ from .services.transcripts import (
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
     create_transcript_from_payload,
     delete_transcripts as delete_transcripts_service,
+    latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     mark_ingestion_job_enqueue_failed,
     queue_audio_chunk_ingestion,
     queue_audio_file_ingestion,
@@ -344,6 +349,21 @@ app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)
 app.add_exception_handler(RateLimitExceeded, rate_limit_error_handler)
+
+
+async def browser_not_found_handler(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/api/"):
+        return await http_error_handler(request, exc)
+    if request.method not in {"GET", "HEAD"}:
+        return await http_error_handler(request, exc)
+    session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
+    with session_factory() as db:
+        context = _current_context_optional(request, db)
+    redirect_to = "/home" if context is not None else "/login"
+    return RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
+
+
+app.add_exception_handler(404, browser_not_found_handler)
 
 
 @app.middleware("http")
@@ -596,6 +616,22 @@ def render_home(
     queued_transcript_id: str | None = None,
     status_code: int = 200,
 ):
+    def _structured_section_prompt_map(version) -> dict[str, str]:
+        if version is None or not version.config_json or not isinstance(version.config_json, dict):
+            return {}
+        sections = version.config_json.get("sections")
+        if not isinstance(sections, list):
+            return {}
+        prompts: dict[str, str] = {}
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            key = section.get("section_key")
+            instruction = section.get("instruction")
+            if isinstance(key, str) and isinstance(instruction, str):
+                prompts[key] = instruction
+        return prompts
+
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
     stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
     selectable_stt_configs = list_selectable_stt_configs_service(db, current_user) if is_manager else []
@@ -664,8 +700,11 @@ def render_home(
         "personal_quick_action": selected_personal_quick_action,
         "team_template_latest_version": team_template_latest_version,
         "personal_template_latest_version": personal_template_latest_version,
+        "team_template_section_prompts": _structured_section_prompt_map(team_template_latest_version),
+        "personal_template_section_prompts": _structured_section_prompt_map(personal_template_latest_version),
         "team_quick_action_latest_version": team_quick_action_latest_version,
         "personal_quick_action_latest_version": personal_quick_action_latest_version,
+        "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
         "message": message,
         "message_kind": message_kind,
         "queued_transcript_id": queued_transcript_id,
@@ -673,18 +712,48 @@ def render_home(
     return templates.TemplateResponse(request, "home.html", context, status_code=status_code)
 
 
-def render_transcribe(
-    request: Request,
+def _active_structured_context_map(transcript: Transcript | None) -> dict[str, list[str]]:
+    if transcript is None or not isinstance(transcript.structured_context_json, dict):
+        return {}
+    if transcript.structured_context_json.get("profile") != "emis":
+        return {}
+    sections = transcript.structured_context_json.get("sections")
+    if not isinstance(sections, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for section_key, value in sections.items():
+        if not isinstance(section_key, str):
+            continue
+        if isinstance(value, list):
+            lines = [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
+        elif isinstance(value, str) and value.strip():
+            lines = [value.strip()]
+        else:
+            lines = []
+        if lines:
+            normalized[section_key] = lines
+    return normalized
+
+
+def _document_section_lines(document: GeneratedDocument | None) -> dict[str, list[str]]:
+    if document is None:
+        return {}
+    line_map: dict[str, list[str]] = {}
+    for section in getattr(document, "sections", []):
+        raw_text = section.edited_text_encrypted or ""
+        lines = [line for line in raw_text.splitlines() if line.strip()]
+        line_map[str(section.id)] = lines or ([raw_text.strip()] if raw_text.strip() else [])
+    return line_map
+
+
+def _resolve_transcribe_workspace(
     db: Session,
     *,
     current_user: User,
     transcript_id: str | None = None,
     queued_transcript_id: str | None = None,
-    active_tab: str = "transcript",
-    message: str | None = None,
-    message_kind: str = "success",
-    status_code: int = 200,
-):
+    request: Request | None = None,
+) -> dict[str, object]:
     recent_transcripts = list(
         db.scalars(
             select(Transcript)
@@ -706,6 +775,11 @@ def render_transcribe(
                 active_transcript = candidate
     if active_transcript is None and recent_transcripts:
         active_transcript = recent_transcripts[0]
+    active_transcript_latest_job = (
+        latest_ingestion_job_for_transcript_service(db, transcript_id=active_transcript.id)
+        if active_transcript is not None
+        else None
+    )
 
     stt_selection = None
     llm_selection = None
@@ -752,20 +826,22 @@ def render_transcribe(
     ]
     latest_generated_document = note_documents[0] if note_documents else None
     latest_followup_document = followup_documents[0] if followup_documents else None
-    show_redaction_debug = current_user.email.lower() in _local_only_dev_emails() and _request_is_localhost_only(request)
+    show_redaction_debug = bool(
+        request is not None
+        and current_user.email.lower() in _local_only_dev_emails()
+        and _request_is_localhost_only(request)
+    )
+    active_structured_context = _active_structured_context_map(active_transcript)
 
-    context = {
-        "request": request,
-        "current_user": current_user,
+    return {
         "recent_transcripts": recent_transcripts,
         "active_transcript": active_transcript,
+        "active_transcript_latest_job": active_transcript_latest_job,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
         "stt_selection": stt_selection,
         "llm_selection": llm_selection,
         "user_llm_preference": user_llm_preference,
         "resolved_user_llm_model": resolved_user_llm_model,
-        "message": message,
-        "message_kind": message_kind,
         "queued_transcript_id": queued_transcript_id,
         "can_create_new_session": can_create_new_session,
         "new_session_block_message": new_session_block_message,
@@ -777,9 +853,11 @@ def render_transcribe(
         "note_documents": note_documents,
         "followup_documents": followup_documents,
         "latest_generated_document": latest_generated_document,
+        "latest_generated_document_section_lines": _document_section_lines(latest_generated_document),
         "latest_followup_document": latest_followup_document,
+        "active_structured_context": active_structured_context,
         "show_redaction_debug": show_redaction_debug,
-        "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
+        "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
         "team_leader_email": db.scalar(
             select(User.email)
             .where(
@@ -792,6 +870,40 @@ def render_transcribe(
         )
         if current_user.team_id is not None
         else None,
+    }
+
+
+def render_transcribe(
+    request: Request,
+    db: Session,
+    *,
+    current_user: User,
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    active_tab: str = "transcript",
+    message: str | None = None,
+    message_kind: str = "success",
+    status_code: int = 200,
+):
+    workspace = _resolve_transcribe_workspace(
+        db,
+        current_user=current_user,
+        transcript_id=transcript_id,
+        queued_transcript_id=queued_transcript_id,
+        request=request,
+    )
+    workspace_endpoint = "/api/v1/transcribe/workspace"
+    active_transcript = workspace.get("active_transcript")
+    if isinstance(active_transcript, Transcript):
+        workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
+    context = {
+        "request": request,
+        "current_user": current_user,
+        **workspace,
+        "workspace_endpoint": workspace_endpoint,
+        "message": message,
+        "message_kind": message_kind,
+        "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
     }
     return templates.TemplateResponse(request, "transcribe.html", context, status_code=status_code)
 
@@ -816,6 +928,45 @@ def _transcribe_redirect(*, message: str, message_kind: str, queued_transcript_i
     return RedirectResponse(url=f"/transcribe?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
+def _structured_template_config_from_form(*, section_values: dict[str, str]) -> dict | None:
+    sections: list[dict[str, object]] = []
+    for index, section_key in enumerate(EMIS_SECTION_KEYS, start=1):
+        instruction = (section_values.get(section_key) or "").strip()
+        if instruction:
+            sections.append(
+                {
+                    "section_key": section_key,
+                    "section_label": EMIS_SECTION_LABELS[section_key],
+                    "instruction": instruction,
+                    "section_order": index,
+                }
+            )
+    if not sections:
+        return None
+    return {"profile": "emis", "sections": sections}
+
+
+def _structured_context_from_form(*, section_values: dict[str, str]) -> dict[str, list[str]] | None:
+    clean: dict[str, list[str]] = {}
+    for section_key, raw_value in section_values.items():
+        value = (raw_value or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = [value]
+        if isinstance(parsed, list):
+            lines = [str(item).strip() for item in parsed if isinstance(item, str) and item.strip()]
+        elif isinstance(parsed, str) and parsed.strip():
+            lines = [parsed.strip()]
+        else:
+            lines = []
+        if lines:
+            clean[section_key] = lines
+    return clean or None
+
+
 def stt_config_response(config) -> SttConfigDetail:
     return SttConfigDetail(
         id=config.id,
@@ -837,6 +988,40 @@ def stt_config_response(config) -> SttConfigDetail:
         updated_by_user_id=config.updated_by_user_id,
         created_at=config.created_at,
         updated_at=config.updated_at,
+    )
+
+
+def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
+    latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
+    payload = TranscriptDetail.model_validate(transcript, from_attributes=True).model_dump()
+    if latest_job is not None:
+        payload["latest_ingestion_job_status"] = latest_job.status
+        payload["latest_ingestion_error_code"] = latest_job.error_code
+        payload["latest_ingestion_error_message"] = latest_job.error_message
+    return TranscriptDetail.model_validate(payload)
+
+
+def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> TranscribeWorkspaceDetail:
+    active_transcript = workspace.get("active_transcript")
+    recent_transcripts = workspace.get("recent_transcripts") or []
+    generated_documents = workspace.get("generated_documents") or []
+    available_templates = workspace.get("available_templates") or []
+    available_quick_actions = workspace.get("available_quick_actions") or []
+    return TranscribeWorkspaceDetail(
+        recent_transcripts=[TranscriptListItem.model_validate(transcript, from_attributes=True) for transcript in recent_transcripts],
+        active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
+        generated_documents=[generated_document_response(document) for document in generated_documents],
+        available_templates=[template_response(template) for template in available_templates],
+        available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
+        active_structured_context=dict(workspace.get("active_structured_context") or {}),
+        stt_selected=bool(workspace.get("stt_selection")),
+        llm_selected=bool(workspace.get("llm_selection")),
+        resolved_user_llm_model=workspace.get("resolved_user_llm_model"),
+        can_create_new_session=bool(workspace.get("can_create_new_session")),
+        new_session_block_message=workspace.get("new_session_block_message"),
+        can_switch_to_whole_file=bool(workspace.get("can_switch_to_whole_file")),
+        switch_mode_block_message=workspace.get("switch_mode_block_message"),
+        team_leader_email=workspace.get("team_leader_email"),
     )
 
 
@@ -946,6 +1131,7 @@ def template_response(template: PromptTemplate) -> PromptTemplateDetail:
             "version_no": latest_version.version_no,
             "mode": latest_version.mode,
             "prompt_text": latest_version.prompt_text,
+            "config_json": latest_version.config_json,
             "created_by_user_id": latest_version.created_by_user_id,
             "created_at": latest_version.created_at,
         },
@@ -995,6 +1181,7 @@ def generated_document_redaction_debug_response(document: GeneratedDocument) -> 
         entity_count=redaction_run.entity_count,
         mapping_hash=redaction_run.mapping_hash,
         redacted_text=redaction_run.redacted_text_encrypted or "",
+        failed_provider_output_redacted_text=document.failed_provider_output_redacted_encrypted,
         entities=[
             {
                 "entity_order": entity.entity_order,
@@ -1565,12 +1752,14 @@ def delete_user(user_id: UUID, context: AuthenticatedContext = Depends(require_u
 
 @api.post("/transcripts", response_model=TranscriptDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
 def create_transcript(payload: TranscriptCreate, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    return create_transcript_from_payload(db, context.user, payload)
+    transcript = create_transcript_from_payload(db, context.user, payload)
+    return transcript_detail_response(db, transcript)
 
 
 @api.post("/transcripts/start", response_model=TranscriptDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
 def start_transcript(payload: TranscriptStart, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    return start_transcript_service(db, context.user, payload)
+    transcript = start_transcript_service(db, context.user, payload)
+    return transcript_detail_response(db, transcript)
 
 
 @api.post("/transcripts/{transcript_id}/commit", response_model=TranscriptDetail, responses=error_responses)
@@ -1593,7 +1782,7 @@ def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: A
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
-    return transcript
+    return transcript_detail_response(db, transcript)
 
 
 @api.patch("/transcripts/{transcript_id}", response_model=TranscriptDetail, responses=error_responses)
@@ -1609,8 +1798,9 @@ def update_transcript(
         transcript_id=transcript_id,
         title=payload.title,
         ingestion_mode=payload.ingestion_mode,
+        structured_context_json=payload.structured_context_json,
     )
-    return TranscriptDetail.model_validate(transcript, from_attributes=True)
+    return transcript_detail_response(db, transcript)
 
 
 @api.delete("/transcripts/{transcript_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
@@ -1648,7 +1838,7 @@ def upload_transcript_audio_chunk(
     job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
-        transcript=TranscriptDetail.model_validate(refreshed_transcript, from_attributes=True),
+        transcript=transcript_detail_response(db, refreshed_transcript),
         job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
     )
 
@@ -1679,7 +1869,7 @@ def upload_transcript_audio_file(
     job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
-        transcript=TranscriptDetail.model_validate(refreshed_transcript, from_attributes=True),
+        transcript=transcript_detail_response(db, refreshed_transcript),
         job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
     )
 
@@ -1691,7 +1881,23 @@ def get_transcript_detail(transcript_id: UUID, context: AuthenticatedContext = D
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != context.user.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
-    return TranscriptDetail.model_validate(transcript, from_attributes=True)
+    return transcript_detail_response(db, transcript)
+
+
+@api.get("/transcribe/workspace", response_model=TranscribeWorkspaceDetail, responses=error_responses)
+def get_transcribe_workspace(
+    transcript_id: UUID | None = None,
+    queued_transcript_id: UUID | None = None,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    workspace = _resolve_transcribe_workspace(
+        db,
+        current_user=context.user,
+        transcript_id=str(transcript_id) if transcript_id is not None else None,
+        queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
+    )
+    return transcribe_workspace_response(db, workspace)
 
 
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
@@ -1725,7 +1931,13 @@ def generate_transcript_output(
 ):
     document = None
     try:
-        document = queue_document_generation_from_template_service(db, context.user, transcript_id=transcript_id, template_id=payload.template_id)
+        document = queue_document_generation_from_template_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            template_id=payload.template_id,
+            structured_context=payload.structured_context,
+        )
         task_result = enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError:
@@ -2216,6 +2428,15 @@ def home_upsert_team_template(
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
+    mode: str = Form("freeform"),
+    section_prompt_problem: str = Form(""),
+    section_prompt_history: str = Form(""),
+    section_prompt_family_history: str = Form(""),
+    section_prompt_social_history: str = Form(""),
+    section_prompt_examination: str = Form(""),
+    section_prompt_comment: str = Form(""),
+    section_prompt_tasks: str = Form(""),
+    section_prompt_investigations: str = Form(""),
     is_active: str | None = Form(default=None),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
@@ -2233,6 +2454,19 @@ def home_upsert_team_template(
                 name=name,
                 description=description or None,
                 prompt_text=prompt_text,
+                mode=TemplateMode(mode),
+                config_json=_structured_template_config_from_form(
+                    section_values={
+                        "problem": section_prompt_problem,
+                        "history": section_prompt_history,
+                        "family_history": section_prompt_family_history,
+                        "social_history": section_prompt_social_history,
+                        "examination": section_prompt_examination,
+                        "comment": section_prompt_comment,
+                        "tasks": section_prompt_tasks,
+                        "investigations": section_prompt_investigations,
+                    }
+                ),
                 is_active=is_active == "true",
             ),
         )
@@ -2275,6 +2509,15 @@ def home_upsert_personal_template(
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
+    mode: str = Form("freeform"),
+    section_prompt_problem: str = Form(""),
+    section_prompt_history: str = Form(""),
+    section_prompt_family_history: str = Form(""),
+    section_prompt_social_history: str = Form(""),
+    section_prompt_examination: str = Form(""),
+    section_prompt_comment: str = Form(""),
+    section_prompt_tasks: str = Form(""),
+    section_prompt_investigations: str = Form(""),
     is_active: str | None = Form(default=None),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
@@ -2292,6 +2535,19 @@ def home_upsert_personal_template(
                 name=name,
                 description=description or None,
                 prompt_text=prompt_text,
+                mode=TemplateMode(mode),
+                config_json=_structured_template_config_from_form(
+                    section_values={
+                        "problem": section_prompt_problem,
+                        "history": section_prompt_history,
+                        "family_history": section_prompt_family_history,
+                        "social_history": section_prompt_social_history,
+                        "examination": section_prompt_examination,
+                        "comment": section_prompt_comment,
+                        "tasks": section_prompt_tasks,
+                        "investigations": section_prompt_investigations,
+                    }
+                ),
                 is_active=is_active == "true",
             ),
         )
@@ -2661,6 +2917,14 @@ def transcribe_generate_output(
     request: Request,
     transcript_id: UUID = Form(...),
     template_id: UUID = Form(...),
+    context_problem: str = Form(""),
+    context_history: str = Form(""),
+    context_family_history: str = Form(""),
+    context_social_history: str = Form(""),
+    context_examination: str = Form(""),
+    context_comment: str = Form(""),
+    context_tasks: str = Form(""),
+    context_investigations: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2669,7 +2933,24 @@ def transcribe_generate_output(
         return response
     document = None
     try:
-        document = queue_document_generation_from_template_service(db, context.user, transcript_id=transcript_id, template_id=template_id)
+        document = queue_document_generation_from_template_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            template_id=template_id,
+            structured_context=_structured_context_from_form(
+                section_values={
+                    "problem": context_problem,
+                    "history": context_history,
+                    "family_history": context_family_history,
+                    "social_history": context_social_history,
+                    "examination": context_examination,
+                    "comment": context_comment,
+                    "tasks": context_tasks,
+                    "investigations": context_investigations,
+                }
+            ),
+        )
         task_result = enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:

@@ -48,14 +48,24 @@ def read_team_stt_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
     except httpx.HTTPError as exc:
         raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
     if response.status_code == 404:
-        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "STT provider credential is missing for the queued transcription config",
+            {"team_id": str(team_id), "config_id": str(config_id)},
+        )
     if response.status_code >= 400:
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     payload = response.json()
     bearer_token = (((payload.get("data") or {}).get("data") or {}).get("bearer_token"))
     if not bearer_token:
-        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "STT provider credential is missing for the queued transcription config",
+            {"team_id": str(team_id), "config_id": str(config_id)},
+        )
     return str(bearer_token)
 
 

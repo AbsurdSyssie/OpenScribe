@@ -44,6 +44,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
     assert current_tables() == {
         "alembic_version",
         "account_requests",
+        "generated_document_sections",
         "generated_documents",
         "provider_usage_events",
         "quick_actions",
@@ -152,6 +153,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     quick_action_columns = {column["name"] for column in inspector.get_columns("quick_actions")}
     quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
     generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
+    generated_document_section_columns = {column["name"] for column in inspector.get_columns("generated_document_sections")}
     provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
     redaction_run_columns = {column["name"] for column in inspector.get_columns("redaction_runs")}
     redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
@@ -168,7 +170,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns
-    assert {"template_id", "version_no", "mode", "prompt_text"} <= template_version_columns
+    assert {"template_id", "version_no", "mode", "prompt_text", "config_json"} <= template_version_columns
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= quick_action_columns
     assert {"quick_action_id", "version_no", "mode", "prompt_text"} <= quick_action_version_columns
     assert {
@@ -184,6 +186,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "source_quick_action_name",
         "follow_up_prompt_text",
         "prompt_snapshot_text",
+        "structured_context_json",
         "original_output_text_encrypted",
         "llm_adapter_kind",
         "llm_base_url",
@@ -198,9 +201,19 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "provider_error_code",
         "provider_http_status",
         "error_message",
+        "failed_provider_output_redacted_encrypted",
         "started_at",
         "completed_at",
     } <= generated_document_columns
+    assert {
+        "generated_document_id",
+        "section_key",
+        "section_label",
+        "section_order",
+        "original_text_encrypted",
+        "edited_text_encrypted",
+        "is_edited",
+    } <= generated_document_section_columns
     assert {
         "team_id",
         "owner_user_id",
@@ -249,7 +262,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "occurrence_count",
         "created_at",
     } <= redaction_entity_columns
-    assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
+    assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "structured_context_json", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
     assert {
         "transcript_id",
         "job_kind",

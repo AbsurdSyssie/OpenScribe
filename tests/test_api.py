@@ -7,10 +7,12 @@ import httpx
 import pyotp
 from sqlalchemy import select
 
+from app.errors import AppError
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
     GeneratedDocument,
+    GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
@@ -49,6 +51,8 @@ from app.services.audio import NormalizedAudio
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.stt import transcribe_with_team_stt
 from app.services.templates import (
+    _generate_freeform_output_ollama,
+    _parse_generated_note_json,
     process_generated_document,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation,
@@ -104,6 +108,33 @@ class FakeHttpxResponse:
 
     def json(self):
         return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "http://testserver.local/stt")
+            response = httpx.Response(self.status_code, request=request, json=self._payload)
+            raise httpx.HTTPStatusError("stt request failed", request=request, response=response)
+
+
+class FakeHttpxStreamResponse:
+    def __init__(self, lines: list[str], status_code: int = 200):
+        self._lines = lines
+        self.status_code = status_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "http://testserver.local/api/chat")
+            response = httpx.Response(self.status_code, request=request, json={"error": "upstream failure"})
+            raise httpx.HTTPStatusError("ollama request failed", request=request, response=response)
 
 
 STT_OPENAPI_DOCUMENT = {
@@ -213,6 +244,12 @@ def test_dev_seed_account_session_is_revoked_on_non_local_request(client, make_u
 
     local_me = client.get("/api/v1/auth/me")
     assert_error(local_me, status_code=401, code="unauthorized", message="Authentication required")
+
+
+def test_invalid_api_route_still_returns_json_not_found(client):
+    response = client.get("/api/v1/does-not-exist")
+
+    assert_error(response, status_code=404, code="business_rule_violation", message="Not Found")
 
 
 def test_public_account_request_submission_is_rate_limited(client):
@@ -987,7 +1024,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Generated note body", {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
+        lambda **kwargs: ('{"title":"Visit summary","content":"Generated note body"}', {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
     )
 
     login(client, email="leader@example.com", password="password-2")
@@ -1054,6 +1091,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.title == "Visit summary"
     assert processed.edited_output_text_encrypted == "Generated note body"
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
@@ -1104,7 +1142,7 @@ def test_template_generation_supports_ollama_adapter(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_ollama",
-        lambda **kwargs: ("Ollama note body", {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Ollama summary","content":"Ollama note body"}', {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
     )
 
     login(client, email="owner-ollama@example.com", password="password-2")
@@ -1123,8 +1161,337 @@ def test_template_generation_supports_ollama_adapter(
     assert persisted_document is not None
     assert persisted_document.celery_task_id == "generated-task-2"
     processed = process_generated_document(db_session, document_id=persisted_document.id)
+    assert processed.title == "Ollama summary"
     assert processed.edited_output_text_encrypted == "Ollama note body"
     assert persisted_document.model_used == "llama3.2"
+
+
+def test_structured_emis_template_generation_persists_sections(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    team = make_team(name="Clinic Structured")
+    admin = make_user(email="admin-structured@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-structured@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+                {"section_key": "tasks", "section_label": "Tasks", "instruction": "List the tasks.", "section_order": 3},
+            ],
+        },
+    )
+
+    class FakeTaskResult:
+        id = "generated-task-structured"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: (
+            '{"title":"Chest review","content":{"problem":"Asthma flare.","history":"Cough improving.","tasks":"Repeat peak flow diary."}}',
+            {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30, "duration_ms": 25},
+        ),
+    )
+
+    login(client, email="owner-structured@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Structured visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript draft."},
+    )
+    transcript_id = started.json()["id"]
+
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript_id}/generate-output",
+        json={"template_id": str(template.id), "structured_context": {"problem": "Known asthma", "tasks": "Need safety netting"}},
+    )
+    assert generated.status_code == 202
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert persisted_document is not None
+    processed = process_generated_document(db_session, document_id=persisted_document.id)
+    assert processed.document_mode is TemplateMode.structured
+    assert processed.title == "Chest review"
+    assert "Problem\nAsthma flare." in processed.edited_output_text_encrypted
+    sections = list(
+        db_session.scalars(
+            select(GeneratedDocumentSection)
+            .where(GeneratedDocumentSection.generated_document_id == processed.id)
+            .order_by(GeneratedDocumentSection.section_order.asc())
+        )
+    )
+    assert [section.section_key for section in sections] == ["problem", "history", "tasks"]
+    assert sections[0].edited_text_encrypted == "Asthma flare."
+    detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
+    assert detail.status_code == 200
+    assert detail.json()[0]["document_mode"] == "structured"
+    assert len(detail.json()[0]["sections"]) == 3
+    persisted_transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert persisted_transcript.structured_context_json == {
+        "profile": "emis",
+        "sections": {
+            "problem": ["Known asthma"],
+            "tasks": ["Need safety netting"],
+        },
+    }
+
+
+def test_structured_emis_generation_reuses_transcript_persisted_context_when_request_omits_it(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    team = make_team(name="Clinic Structured Reuse")
+    admin = make_user(email="admin-structured-reuse@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-structured-reuse@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Structured visit",
+        current_draft_text_encrypted="Transcript draft.",
+        structured_context_json={"profile": "emis", "sections": {"problem": ["Known asthma"]}},
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    class FakeTaskResult:
+        id = "generated-task-structured-reuse"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+
+    login(client, email="owner-structured-reuse@example.com", password="password-2")
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript.id}/generate-output",
+        json={"template_id": str(template.id)},
+    )
+    assert generated.status_code == 202
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
+    assert persisted_document is not None
+    assert persisted_document.structured_context_json == {"problem": ["Known asthma"]}
+
+
+def test_structured_emis_generation_filters_transcript_context_sections_removed_by_template(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    team = make_team(name="Clinic Structured Filter")
+    admin = make_user(email="admin-structured-filter@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-structured-filter@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="Reduced EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Structured visit",
+        current_draft_text_encrypted="Transcript draft.",
+        structured_context_json={
+            "profile": "emis",
+            "sections": {
+                "problem": ["Known asthma"],
+                "tasks": ["Peak flow diary"],
+            },
+        },
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    class FakeTaskResult:
+        id = "generated-task-structured-filter"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+
+    login(client, email="owner-structured-filter@example.com", password="password-2")
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript.id}/generate-output",
+        json={"template_id": str(template.id)},
+    )
+    assert generated.status_code == 202
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
+    assert persisted_document is not None
+    assert persisted_document.structured_context_json == {"problem": ["Known asthma"]}
+    persisted_transcript = db_session.get(Transcript, transcript.id)
+    assert persisted_transcript is not None
+    assert persisted_transcript.structured_context_json == {
+        "profile": "emis",
+        "sections": {"problem": ["Known asthma"]},
+    }
+
+
+def test_template_api_returns_structured_config_json(
+    client,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Template API")
+    owner = make_user(email="template-api-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+            ],
+        },
+    )
+
+    login(client, email="template-api-owner@example.com", password="password-1")
+    response = client.get("/api/v1/templates/personal")
+    assert response.status_code == 200
+    returned_template = next(item for item in response.json() if item["id"] == str(template.id))
+    assert returned_template["latest_version"]["mode"] == "structured"
+    assert returned_template["latest_version"]["config_json"] == {
+        "profile": "emis",
+        "sections": [
+            {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+            {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+        ],
+    }
+
+
+def test_generate_freeform_output_ollama_streams_chunks_and_collects_usage(monkeypatch):
+    def fake_stream(method, url, **kwargs):
+        assert method == "POST"
+        assert url == "http://localhost:11434/api/chat"
+        assert kwargs["json"]["stream"] is True
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read == 300.0
+        return FakeHttpxStreamResponse(
+            [
+                '{"message":{"content":"{\\"title\\":\\"Visit"},"done":false}',
+                '{"message":{"content":" summary\\",\\"content\\":\\"Body text\\"}"},"done":false}',
+                '{"done":true,"prompt_eval_count":17,"eval_count":23,"total_duration":9000000}',
+            ]
+        )
+
+    monkeypatch.setattr("app.services.templates.httpx.stream", fake_stream)
+
+    generated_text, usage = _generate_freeform_output_ollama(
+        base_url="http://localhost:11434",
+        bearer_token=None,
+        model="llama3.2",
+        system_message="System",
+        user_message="User",
+    )
+
+    assert generated_text == '{"title":"Visit summary","content":"Body text"}'
+    assert usage["prompt_tokens"] == 17
+    assert usage["completion_tokens"] == 23
+    assert usage["total_tokens"] == 40
+    assert usage["provider_duration_ms"] == 9
+
+
+def test_generate_freeform_output_ollama_surfaces_stream_timeouts(monkeypatch):
+    def fake_stream(*args, **kwargs):
+        raise httpx.ReadTimeout("timed out", request=httpx.Request("POST", "http://localhost:11434/api/chat"))
+
+    monkeypatch.setattr("app.services.templates.httpx.stream", fake_stream)
+
+    try:
+        _generate_freeform_output_ollama(
+            base_url="http://localhost:11434",
+            bearer_token=None,
+            model="llama3.2",
+            system_message="System",
+            user_message="User",
+        )
+        assert False, "expected AppError"
+    except AppError as exc:
+        assert exc.code == "llm_provider_timeout"
+        assert exc.message == "The LLM provider timed out"
+
+
+def test_parse_generated_note_json_coerces_markdown_fenced_payload():
+    title, content = _parse_generated_note_json(
+        '```json\n{"title":"Visit summary","content":"Body text"}\n```'
+    )
+
+    assert title == "Visit summary"
+    assert content == "Body text"
+
+
+def test_parse_generated_note_json_coerces_surrounding_prose():
+    title, content = _parse_generated_note_json(
+        'Here is the note:\n{"title":"Visit summary","content":"Body text"}\nThanks.'
+    )
+
+    assert title == "Visit summary"
+    assert content == "Body text"
 
 
 def test_followup_generation_queues_and_processes_with_owner_scope(
@@ -1252,7 +1619,10 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         assert "[PHI-1] reports headaches." in kwargs["user_message"]
         assert "John Smith reports headaches." not in kwargs["user_message"]
         assert "Write a note for [PHI-2]." in kwargs["user_message"]
-        return "[PHI-1] should rest and [PHI-2] should book review.", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}
+        return (
+            '{"title":"[PHI-1] review","content":"[PHI-1] should rest and [PHI-2] should book review."}',
+            {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+        )
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
 
@@ -1260,7 +1630,94 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
 
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.redaction_run_id == run.id
+    assert processed.title == "John Smith review"
     assert processed.edited_output_text_encrypted == "John Smith should rest and John Smith should book review."
+
+
+def test_process_generated_document_uses_first_note_title_to_fill_default_session_title(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Session Title")
+    admin = make_user(email="admin-session-title@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-session-title@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Session title note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Untitled session",
+        current_draft_text_encrypted="Patient reports ankle pain.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ('{"title":"Ankle review","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+    )
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.title == "Ankle review"
+    db_session.refresh(transcript)
+    assert transcript.title == "Ankle review"
+
+
+def test_process_generated_document_does_not_overwrite_custom_session_title(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Preserve Session Title")
+    admin = make_user(email="admin-preserve-title@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-preserve-title@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Session title note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Telephone review",
+        current_draft_text_encrypted="Patient reports improved symptoms.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ('{"title":"Improvement review","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+    )
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.title == "Improvement review"
+    db_session.refresh(transcript)
+    assert transcript.title == "Telephone review"
 
 
 def test_process_generated_document_fails_on_invalid_placeholder_output(
@@ -1309,7 +1766,7 @@ def test_process_generated_document_fails_on_invalid_placeholder_output(
     monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("[PHI-999] should rest.", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Broken review","content":"[PHI-999] should rest."}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -1317,6 +1774,48 @@ def test_process_generated_document_fails_on_invalid_placeholder_output(
     assert processed.status is GeneratedDocumentStatus.failed
     assert processed.error_code == "redaction_placeholder_invalid"
     assert processed.error_message == "Generated output contained an unknown PHI placeholder"
+
+
+def test_process_generated_document_fails_on_invalid_note_json(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Invalid JSON")
+    admin = make_user(email="admin-invalid-json@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-invalid-json@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Invalid JSON note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Invalid JSON session",
+        current_draft_text_encrypted="Patient reports dizziness.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ("not-json", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+    )
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.failed
+    assert processed.error_code == "llm_generation_invalid_json"
+    assert processed.provider_error_code == "invalid_json"
 
 
 def test_local_dev_account_can_read_generated_document_redaction_debug(
@@ -1380,6 +1879,7 @@ def test_local_dev_account_can_read_generated_document_redaction_debug(
     assert body["generated_document_id"] == str(document.id)
     assert body["redaction_run_id"] == str(run.id)
     assert body["redacted_text"] == "[PHI-1] attended the clinic."
+    assert body["failed_provider_output_redacted_text"] is None
     assert body["entity_count"] == 1
     assert body["entities"] == [
         {
@@ -1453,6 +1953,68 @@ def test_non_dev_account_cannot_read_generated_document_redaction_debug(
         code="forbidden",
         message="Redaction debug is available only to localhost dev test accounts",
     )
+
+
+def test_local_dev_account_redaction_debug_includes_failed_provider_output(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Failed Redaction Debug")
+    owner = make_user(email="dev.user@example.com", password="password-1", team=team, team_role=TeamRole.user, mfa_required=False, mfa_enabled=False)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Debug session",
+        current_draft_text_encrypted="John Smith attended the clinic.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="John Smith attended the clinic.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] attended the clinic.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+    document = GeneratedDocument(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        redaction_run_id=run.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.failed,
+        title="Clinic note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        failed_provider_output_redacted_encrypted='{"title":"Broken"',
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    login(client, email="dev.user@example.com", password="password-1")
+    response = client.get(f"/api/v1/generated-documents/{document.id}/redaction-debug")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["failed_provider_output_redacted_text"] == '{"title":"Broken"'
 
 
 def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generation(
@@ -1587,7 +2149,7 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Generated note body", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Snapshot note","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     from app.services.templates import delete_personal_template as delete_personal_template_service
@@ -1600,6 +2162,7 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
 
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.title == "Snapshot note"
     assert processed.edited_output_text_encrypted == "Generated note body"
 
 
@@ -1772,13 +2335,14 @@ def test_process_generated_document_logs_usage_metadata(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Generated note body", {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
+        lambda **kwargs: ('{"title":"Usage note","content":"Generated note body"}', {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
     )
 
     caplog.set_level("INFO", logger="openscribe.usage")
     processed = process_generated_document(db_session, document_id=document.id)
 
     assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.title == "Usage note"
     assert processed.input_token_count == 123
     assert processed.output_token_count == 45
     assert processed.total_token_count == 168
@@ -2529,6 +3093,115 @@ def test_transcript_detail_route_is_owner_only(client, make_team, make_user):
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
+def test_transcript_detail_includes_latest_ingestion_failure(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-detail-error@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="vault_read_failed",
+        error_message="STT provider credential is missing for the queued transcription config",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    login(client, email="owner-detail-error@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["latest_ingestion_job_status"] == "failed"
+    assert detail.json()["latest_ingestion_error_code"] == "vault_read_failed"
+    assert detail.json()["latest_ingestion_error_message"] == "STT provider credential is missing for the queued transcription config"
+
+
+def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Workspace Team")
+    owner = make_user(email="owner-workspace@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-workspace@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="My note", prompt_text="Write a note.")
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="Send SMS", prompt_text="Draft an SMS.")
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        structured_context_json={"profile": "emis", "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]}},
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    generated = GeneratedDocument(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=template.versions[-1].id,
+        source_template_name=template.name,
+        status=GeneratedDocumentStatus.ready,
+        title="Visit summary",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="Body text",
+        edited_output_text_encrypted="Body text",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(generated)
+    db_session.commit()
+
+    login(client, email="owner-workspace@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_transcript"]["id"] == str(transcript.id)
+    assert payload["active_transcript"]["current_draft_text_encrypted"] == "Patient is improving."
+    assert payload["active_structured_context"] == {
+        "problem": ["Known asthma"],
+        "tasks": ["Peak flow diary"],
+    }
+    assert [item["id"] for item in payload["recent_transcripts"]] == [str(transcript.id)]
+    assert [item["name"] for item in payload["available_templates"]] == ["My note"]
+    assert [item["name"] for item in payload["available_quick_actions"]] == ["Send SMS"]
+    assert [item["id"] for item in payload["generated_documents"]] == [str(generated.id)]
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-workspace@example.com", password="password-2")
+    forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert forbidden.status_code == 200
+    assert forbidden.json()["active_transcript"] is None
+
+
 def test_transcript_title_update_is_owner_only(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -2848,24 +3521,12 @@ def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, 
         files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
         data={"chunk_sequence_no": "1"},
     )
-    job_id = UUID(queued.json()["job"]["id"])
-
-    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
-        return NormalizedAudio(filename="chunk.wav", content_type="audio/wav", data=b"normalized-audio")
-
-    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
-
-    try:
-        process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-audio")
-    except Exception as exc:
-        assert isinstance(exc, Exception)
-    else:
-        raise AssertionError("Expected live chunk processing to fail without an active STT selection")
-
-    failed_job = db_session.get(TranscriptIngestionJob, job_id)
-    assert failed_job is not None
-    assert failed_job.status is TranscriptIngestionJobStatus.failed
-    assert failed_job.error_code == "business_rule_violation"
+    assert_error(
+        queued,
+        status_code=422,
+        code="business_rule_violation",
+        message="No active STT selection for team",
+    )
 
 
 def test_audio_file_upload_queues_job_for_whole_file_mode(client, db_session, make_team, make_user):
@@ -3338,17 +3999,69 @@ def test_processing_audio_file_job_fails_when_normalized_duration_exceeds_limit(
     )
     job_id = UUID(uploaded.json()["job"]["id"])
 
-    try:
-        process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
-    except Exception as exc:
-        assert isinstance(exc, Exception)
-    else:
-        raise AssertionError("Expected file ingestion processing to fail when duration exceeds the limit")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
 
     failed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert failed_job is not None
+    assert processed.id == failed_job.id
     assert failed_job.status is TranscriptIngestionJobStatus.failed
     assert failed_job.error_code == "business_rule_violation"
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript is not None
+    assert transcript.status is TranscriptStatus.failed
+
+
+def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missing(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-secret-missing@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-secret-missing@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    login(client, email="owner-secret-missing@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Imported visit", "ingestion_mode": "whole_file"},
+    )
+    transcript_id = started.json()["id"]
+
+    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
+        return NormalizedAudio(
+            filename="recording.wav",
+            content_type="audio/wav",
+            data=make_test_wav_bytes(duration_seconds=1.0),
+        )
+
+    def fake_transcribe_with_stt_snapshot(db, **kwargs):
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "STT provider credential is missing for the queued transcription config",
+            {"team_id": str(team.id), "config_id": str(config.id)},
+        )
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+    job_id = UUID(uploaded.json()["job"]["id"])
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+
+    assert processed.status is TranscriptIngestionJobStatus.failed
+    assert processed.error_code == "vault_read_failed"
+    assert processed.error_message == "STT provider credential is missing for the queued transcription config"
     transcript = db_session.get(Transcript, UUID(transcript_id))
     assert transcript is not None
     assert transcript.status is TranscriptStatus.failed
@@ -3466,3 +4179,97 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     assert captured["data"]["language"] == "en"
     assert captured["data"]["response_format"] == "verbose_json"
     assert captured["files"]["file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
+
+
+def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-connect@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Compatible STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/v1/audio/transcriptions",
+        auth_mode=SttAuthMode.bearer,
+        model_name="whisper-1",
+        file_field_name="file",
+        language="en",
+        response_text_path="result.text",
+        extra_form_fields_json=None,
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+
+    def fake_httpx_post(*args, **kwargs):
+        raise httpx.ConnectError("boom", request=httpx.Request("POST", "http://127.0.0.1:9000/v1/audio/transcriptions"))
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+
+    try:
+        transcribe_with_team_stt(
+            db_session,
+            team_id=team.id,
+            audio_bytes=b"normalized-audio",
+            filename="chunk.wav",
+            content_type="audio/wav",
+        )
+    except AppError as exc:
+        assert exc.code == "stt_unavailable"
+        assert exc.message == "Could not reach the STT provider"
+        assert exc.details == {"provider_error_code": "connection_error"}
+    else:
+        raise AssertionError("Expected generic REST STT connect failure to raise an AppError")
+
+
+def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cleanly(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-http-status@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Compatible STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/v1/audio/transcriptions",
+        auth_mode=SttAuthMode.bearer,
+        model_name="whisper-1",
+        file_field_name="file",
+        language="en",
+        response_text_path="result.text",
+        extra_form_fields_json=None,
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "bad request"}, status_code=503))
+
+    try:
+        transcribe_with_team_stt(
+            db_session,
+            team_id=team.id,
+            audio_bytes=b"normalized-audio",
+            filename="chunk.wav",
+            content_type="audio/wav",
+        )
+    except AppError as exc:
+        assert exc.code == "stt_request_failed"
+        assert exc.message == "STT provider request failed"
+        assert exc.details == {"status_code": 503}
+    else:
+        raise AssertionError("Expected generic REST STT HTTP status failure to raise an AppError")

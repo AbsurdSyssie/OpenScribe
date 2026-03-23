@@ -146,9 +146,24 @@
             <input type="text" name="description" value="{{ personal_template.description if personal_template else '' }}">
           </label>
           <label>
-            Prompt instructions
+            Template mode
+            <select name="mode">
+              <option value="freeform" {% if not personal_template_latest_version or personal_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Freeform</option>
+              <option value="structured" {% if personal_template_latest_version and personal_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Structured EMIS</option>
+            </select>
+          </label>
+          <label>
+            Global instructions
             <textarea name="prompt_text" rows="8" required>{{ personal_template_latest_version.prompt_text if personal_template_latest_version else '' }}</textarea>
           </label>
+          <div class="subgrid">
+            {% for section in emis_sections %}
+            <label>
+              {{ section.label }} instructions
+              <textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Tell the LLM how to fill the {{ section.label|lower }} section.">{{ personal_template_section_prompts.get(section.key, '') }}</textarea>
+            </label>
+            {% endfor %}
+          </div>
           <label>
             <input type="checkbox" name="is_active" value="true" {% if not personal_template or personal_template.is_active %}checked{% endif %}>
             Active
@@ -171,6 +186,7 @@
               <td>
                 <strong>{{ template.name }}</strong><br>
                 <small>{{ template.description or "" }}</small><br>
+                <small>{{ latest_version.mode.value }}</small><br>
                 <small>{{ "active" if template.is_active else "inactive" }}</small>
               </td>
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
@@ -264,9 +280,24 @@
             <input type="text" name="description" value="{{ team_template.description if team_template else '' }}">
           </label>
           <label>
-            Prompt instructions
+            Template mode
+            <select name="mode">
+              <option value="freeform" {% if not team_template_latest_version or team_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Freeform</option>
+              <option value="structured" {% if team_template_latest_version and team_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Structured EMIS</option>
+            </select>
+          </label>
+          <label>
+            Global instructions
             <textarea name="prompt_text" rows="8" required>{{ team_template_latest_version.prompt_text if team_template_latest_version else '' }}</textarea>
           </label>
+          <div class="subgrid">
+            {% for section in emis_sections %}
+            <label>
+              {{ section.label }} instructions
+              <textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Tell the LLM how to fill the {{ section.label|lower }} section.">{{ team_template_section_prompts.get(section.key, '') }}</textarea>
+            </label>
+            {% endfor %}
+          </div>
           <label>
             <input type="checkbox" name="is_active" value="true" {% if not team_template or team_template.is_active %}checked{% endif %}>
             Active
@@ -289,6 +320,7 @@
               <td>
                 <strong>{{ template.name }}</strong><br>
                 <small>{{ template.description or "" }}</small><br>
+                <small>{{ latest_version.mode.value }}</small><br>
                 <small>{{ "active" if template.is_active else "inactive" }}</small>
               </td>
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>

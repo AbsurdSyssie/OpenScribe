@@ -416,6 +416,8 @@ def make_template(db_session: Session, make_team: Callable[..., Team], make_user
         name: str = "Template",
         description: str | None = "Template description",
         prompt_text: str = "Summarise the transcript as a note.",
+        mode: TemplateMode = TemplateMode.freeform,
+        config_json: dict | None = None,
         is_active: bool = True,
     ) -> PromptTemplate:
         resolved_team = team or (owner.team if owner is not None else make_team())
@@ -437,8 +439,9 @@ def make_template(db_session: Session, make_team: Callable[..., Team], make_user
         version = PromptTemplateVersion(
             template_id=template.id,
             version_no=1,
-            mode=TemplateMode.freeform,
+            mode=mode,
             prompt_text=prompt_text,
+            config_json=config_json,
             created_by_user_id=resolved_actor.id,
         )
         db_session.add(version)

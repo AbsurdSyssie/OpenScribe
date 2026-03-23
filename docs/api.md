@@ -2,6 +2,13 @@
 
 Canonical JSON API routes are versioned under `/api/v1`.
 
+Browser navigation behavior:
+
+- invalid non-API browser routes now redirect by session state:
+  - unauthenticated users -> `/login`
+  - authenticated users -> `/home`
+- invalid `/api/*` routes still return JSON `404` responses and are not redirected
+
 ## Implemented endpoint groups
 
 ### Auth
@@ -257,7 +264,7 @@ Current LLM-configuration behavior:
 - the implemented LLM adapter families are `openai_chat` and `ollama_chat`
 - `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
 - if OpenAI model discovery fails, `openai_chat` inspection falls back to a built-in chat-model list and still returns `200`
-- `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses `POST /api/chat`
+- `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses streaming `POST /api/chat`
 - local Ollama may run without an API key; remote Ollama endpoints must still use `https`
 - the admin HTML inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
 - remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
@@ -305,9 +312,43 @@ Current generation behavior:
   - it returns the redacted transcript payload and placeholder inventory for the linked `redaction_run`
   - it does not return the original PHI values
 - the implemented generators are:
-  - template-based freeform note output
+  - template-based note output that now requires the LLM to return JSON with:
+    - `title`: a short user-facing consultation summary
+    - `content`: the full note body for `freeform` templates, or an object keyed by selected EMIS section names for `structured` templates
   - freeform follow-up output
   - quick action freeform output written back into the follow-up lane
+- template mode now supports:
+  - `freeform`
+  - `structured`
+- the first structured profile is EMIS with allowed section keys:
+  - `problem`
+  - `history`
+  - `family_history`
+  - `social_history`
+  - `examination`
+  - `comment`
+  - `tasks`
+  - `investigations`
+- structured template versions store per-section instructions in `template_versions.config_json`
+- structured generation may also include optional owner-provided `structured_context` keyed by selected EMIS sections so existing section text can be sent into the LLM as context
+- the current transcript session now also stores EMIS working context in `transcripts.structured_context_json`
+- `/transcribe` reloads EMIS context fields from that transcript-backed state
+- when a structured note is queued, the current EMIS context is:
+  - saved back onto the transcript root
+  - snapshotted onto `generated_documents.structured_context_json`
+- for structured notes, backend validation:
+  - rejects user-submitted section keys outside the configured EMIS subset
+  - filters transcript-persisted EMIS sections that are not present in the selected template
+  - drops empty sections
+  - preserves configured section order
+  - renders full note text into `generated_documents`
+  - persists section parts into `generated_document_sections`
+- for template-generated notes, the returned JSON `title` is persisted into `generated_documents.title`
+- if a template-generated note returns invalid JSON or omits `title`/`content`, generation fails with `llm_generation_invalid_json`
+- template-note JSON parsing applies only mild coercion before failure:
+  - strips markdown code fences
+  - extracts the first balanced JSON object if the model wraps it in surrounding prose
+- if note JSON still fails, the raw redacted provider output is retained on the generated document for localhost dev-account debugging only
 - generation is now asynchronous:
   - `POST /api/v1/transcripts/{transcript_id}/generate-output` returns `202`
   - `POST /api/v1/transcripts/{transcript_id}/generate-followup` returns `202`
@@ -410,6 +451,24 @@ Current whole-file ingestion behavior:
 - the backend worker forwards the normalized audio file to the external STT service
 - the backend worker appends the returned transcript text into `current_draft_text_encrypted`
 - the transcript status moves to `ready` when the provider returns successfully
+- if the queued STT config no longer has a readable Vault credential, the job is marked `failed` with a specific `vault_read_failed` message for the missing queued credential
+- generic REST STT failures now keep safer detail at the job level:
+  - connect failure -> `stt_unavailable`
+  - timeout -> `stt_timeout`
+  - upstream non-2xx -> `stt_request_failed` with `status_code`
+  - unreadable JSON or missing transcript text path -> `stt_response_invalid`
+- `GET /api/v1/transcripts/{transcript_id}` now includes the latest ingestion failure metadata when present:
+  - `latest_ingestion_job_status`
+  - `latest_ingestion_error_code`
+  - `latest_ingestion_error_message`
+- `GET /api/v1/transcribe/workspace` now exposes the owner-facing read model for the `/transcribe` page:
+  - `recent_transcripts`
+  - `active_transcript`
+  - `generated_documents`
+  - `available_templates`
+  - `available_quick_actions`
+  - `active_structured_context`
+  - current session-level capability flags like `can_create_new_session` and `can_switch_to_whole_file`
 - the owner-facing `/transcribe` workspace now:
   - creates blank sessions from the session rail
   - blocks a second blank session until the latest session has draft content or descendant work, or is deleted
@@ -419,8 +478,17 @@ Current whole-file ingestion behavior:
   - queues file ingestion into the selected transcript root
   - records microphone batches locally in the browser and submits the captured blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
-  - polls owner-only transcript detail while visible rows remain `transcribing`
+  - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
+  - polls the same owner-only workspace read model while visible rows remain pending
+  - creates new sessions through `POST /api/v1/transcripts/start`
+  - deletes selected sessions through owner-scoped `DELETE /api/v1/transcripts/{transcript_id}` calls
+  - switches a blank session back to `whole_file` through `PATCH /api/v1/transcripts/{transcript_id}`
+  - switches the active session in place by refetching `GET /api/v1/transcribe/workspace?transcript_id=...` instead of full-page navigation
+  - patches transcript session title and EMIS working context through `PATCH /api/v1/transcripts/{transcript_id}`
+  - queues whole-file upload directly through `POST /api/v1/transcripts/{transcript_id}/audio-file`
+  - queues note/follow-up/quick-action generation directly through the corresponding `/api/v1/transcripts/{transcript_id}/...` JSON routes
   - shows recent owner transcripts and current draft text on refresh or poll completion
+  - preserves structured EMIS note section rendering and copy-selected-lines behavior during workspace refreshes by rebuilding the section view from generated-document section data
   - now shows explicit session progress copy in the header and active rail row for local recording, uploading, queued, transcribing, ready, and failed states
 - if no active team STT selection exists, the browser flow fails early with:
   - `No STT configured, please ask your team leader {email}`

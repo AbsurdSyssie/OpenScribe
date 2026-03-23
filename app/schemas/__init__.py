@@ -40,11 +40,14 @@ from .stt import (
 )
 from .teams import TeamCreate, TeamDetail, TeamListItem
 from .templates import (
+    EMIS_SECTION_KEYS,
+    EMIS_SECTION_LABELS,
     GenerateFollowupRequest,
     GenerateQuickActionRequest,
     GenerateTemplateOutputRequest,
     GeneratedDocumentDetail,
     GeneratedDocumentRedactionDebugDetail,
+    GeneratedDocumentSectionDetail,
     PromptTemplateDetail,
     PromptTemplateUpsert,
     PromptTemplateVersionDetail,
@@ -63,6 +66,7 @@ from .transcripts import (
     TranscriptUpdate,
 )
 from .users import UserCreate, UserDetail, UserListItem
+from .workspace import TranscribeWorkspaceDetail
 
 __all__ = [
     "AccountRequestApprove",
@@ -102,8 +106,11 @@ __all__ = [
     "GenerateTemplateOutputRequest",
     "GenerateFollowupRequest",
     "GenerateQuickActionRequest",
+    "EMIS_SECTION_KEYS",
+    "EMIS_SECTION_LABELS",
     "GeneratedDocumentDetail",
     "GeneratedDocumentRedactionDebugDetail",
+    "GeneratedDocumentSectionDetail",
     "PromptTemplateDetail",
     "PromptTemplateUpsert",
     "PromptTemplateVersionDetail",
@@ -123,4 +130,5 @@ __all__ = [
     "UserLlmPreferenceDetail",
     "UserLlmPreferenceUpsert",
     "UserListItem",
+    "TranscribeWorkspaceDetail",
 ]

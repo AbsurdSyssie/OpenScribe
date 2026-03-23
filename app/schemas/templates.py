@@ -6,12 +6,49 @@ from pydantic import BaseModel, Field
 from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, TemplateMode, TemplateScope
 
 
+EMIS_SECTION_KEYS = (
+    "problem",
+    "history",
+    "family_history",
+    "social_history",
+    "examination",
+    "comment",
+    "tasks",
+    "investigations",
+)
+
+EMIS_SECTION_LABELS = {
+    "problem": "Problem",
+    "history": "History",
+    "family_history": "Family history",
+    "social_history": "Social history",
+    "examination": "Examination",
+    "comment": "Comment",
+    "tasks": "Tasks",
+    "investigations": "Investigations",
+}
+
+
+class StructuredTemplateSectionConfig(BaseModel):
+    section_key: str
+    section_label: str
+    instruction: str
+    section_order: int
+
+
+class StructuredTemplateConfig(BaseModel):
+    profile: str = "emis"
+    sections: list[StructuredTemplateSectionConfig]
+
+
 class PromptTemplateUpsert(BaseModel):
     template_id: UUID | None = None
     scope: TemplateScope
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     prompt_text: str = Field(min_length=1)
+    mode: TemplateMode = TemplateMode.freeform
+    config_json: StructuredTemplateConfig | None = None
     is_active: bool = True
 
 
@@ -20,6 +57,7 @@ class PromptTemplateVersionDetail(BaseModel):
     version_no: int
     mode: TemplateMode
     prompt_text: str
+    config_json: StructuredTemplateConfig | None = None
     created_by_user_id: UUID
     created_at: datetime
 
@@ -105,6 +143,19 @@ class GeneratedDocumentDetail(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    sections: list["GeneratedDocumentSectionDetail"] = []
+
+    model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class GeneratedDocumentSectionDetail(BaseModel):
+    id: UUID
+    section_key: str
+    section_label: str
+    section_order: int
+    original_text_encrypted: str
+    edited_text_encrypted: str
+    is_edited: bool
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
 
@@ -126,11 +177,13 @@ class GeneratedDocumentRedactionDebugDetail(BaseModel):
     entity_count: int
     mapping_hash: str | None = None
     redacted_text: str
+    failed_provider_output_redacted_text: str | None = None
     entities: list[RedactionDebugEntityDetail]
 
 
 class GenerateTemplateOutputRequest(BaseModel):
     template_id: UUID
+    structured_context: dict[str, list[str] | str] | None = None
 
 
 class GenerateFollowupRequest(BaseModel):
@@ -139,3 +192,6 @@ class GenerateFollowupRequest(BaseModel):
 
 class GenerateQuickActionRequest(BaseModel):
     quick_action_id: UUID
+
+
+GeneratedDocumentDetail.model_rebuild()

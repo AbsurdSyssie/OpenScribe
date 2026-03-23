@@ -100,13 +100,23 @@ What it does:
 - whole-file ingestion moving the transcript to `ready` after successful provider completion
 - STT provider execution using the team config, Vault secret, and configured response text path
 - queued STT jobs snapshotting the resolved provider/model so later team STT selection changes do not retarget already-uploaded audio
+- handled STT worker failures now marking the job/transcript failed without re-raising expected AppError paths into noisy Celery tracebacks
+- missing queued STT Vault credentials surfacing a specific `vault_read_failed` failure message on the ingestion job
+- generic REST STT transport failures surfacing distinct connect/timeout/upstream-status error codes instead of flattening them all to `stt_unavailable`
+- transcript detail and the `/transcribe` workspace surfacing the latest owner-visible ingestion failure message instead of only a generic failed-state banner
 - STT config edits/deletes being blocked while queued or processing ingestion jobs still reference that config
 - leader team-template create/update/delete scope
 - user personal-template create/update/delete scope
 - owner-only generated-document listing per transcript
 - owner-only template-based note generation creating a transcript-version snapshot and generated-document row
 - owner-only template generation using either OpenAI chat or Ollama chat provider adapters
+- Ollama chat generation streaming partial `/api/chat` chunks and collecting final usage metrics from the terminal `done: true` chunk
 - owner-only template generation now queues a generated-document job instead of blocking inline
+- template note generation now requires valid JSON `title`/`content` output and fails cleanly on invalid JSON
+- template note JSON parsing tolerating markdown fences and surrounding prose without weakening the required `title`/`content` object contract
+- structured EMIS template generation validating selected section keys, rendering full note text, and persisting `generated_document_sections`
+- transcript-backed EMIS working context persisting between structured generations and hydrating the `/transcribe` EMIS fields on reload
+- the first successful note title auto-filling the transcript session title only when the session is still blank or `Untitled session`
 - owner-only follow-up generation now queues a generated-document job using the same async worker path
 - generated-document prompt snapshots surviving later template or quick-action deletion
 - generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version
@@ -139,6 +149,11 @@ What it does:
 - owner transcription workspace file-upload form
 - owner transcription workspace missing-STT error that names the team leader email when available
 - owner transcription workspace sidebar session list and tabbed transcript shell
+- owner transcription workspace exposing and hydrating from `GET /api/v1/transcribe/workspace`
+- owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
+- owner transcription workspace exposing API-driven new-session and selected-session delete hooks
+- owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
+- owner transcription workspace preserving structured EMIS output hooks during workspace refresh and poll-driven rerender
 - owner transcription workspace post/redirect/get upload flow so refresh does not resubmit the form
 - owner transcription workspace session header showing the resolved user LLM model instead of the raw team default when a user preference is active
 - leader home page team-template management form
@@ -149,6 +164,10 @@ What it does:
 - owner transcription workspace follow-ups tab queueing a follow-up request into the same async generated-document pipeline
 - owner transcription workspace follow-ups tab quick-action dropdown queueing a quick action into the same async generated-document pipeline
 - localhost-only seeded dev-account access to generated-document redaction debug for manual verification that the outbound LLM path used the redacted transcript payload
+- localhost-only seeded dev-account redaction debug exposing the raw redacted failed provider output for malformed note JSON diagnosis
+- home and transcribe UI showing structured EMIS template authoring, transcript-backed EMIS context reload, and line-array context inputs
+- structured EMIS generation filtering transcript-persisted sections that are removed by the selected template
+- template API responses preserving `latest_version.config_json` for structured template round-tripping
 - OpenAI Cloud STT inspection loading a server-side filtered model list into the browser form
 - Ollama LLM inspection and save flow without a required API key for local hosts
 - STT inspect pages rendering inferred values into the save form, not just the API inspection result
@@ -165,6 +184,8 @@ What it does:
 - seeded dev-account login is allowed from localhost but rejected for non-local browser requests
 - seeded localhost dev accounts can inspect a dev-only redaction debug panel in `/transcribe` for the latest note/follow-up without exposing original PHI values
 - seeded dev-account API sessions are revoked if reused from a non-local request
+- invalid browser route navigation redirecting unauthenticated users to `/login` and authenticated users to `/home`
+- invalid `/api/*` routes still returning JSON `404` instead of redirecting
 
 ### Auth unit tests
 

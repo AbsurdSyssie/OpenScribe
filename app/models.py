@@ -109,6 +109,7 @@ class TemplateScope(str, enum.Enum):
 
 class TemplateMode(str, enum.Enum):
     freeform = "freeform"
+    structured = "structured"
 
 
 class RedactionRunStatus(str, enum.Enum):
@@ -462,6 +463,7 @@ class PromptTemplateVersion(Base):
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     mode: Mapped[TemplateMode] = mapped_column(Enum(TemplateMode), default=TemplateMode.freeform, nullable=False)
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -520,6 +522,7 @@ class Transcript(Base):
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ingestion_mode: Mapped[TranscriptIngestionMode] = mapped_column(
         Enum(TranscriptIngestionMode),
         default=TranscriptIngestionMode.whole_file,
@@ -680,6 +683,7 @@ class GeneratedDocument(Base):
     source_quick_action_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     follow_up_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[GeneratedDocumentStatus] = mapped_column(
         Enum(GeneratedDocumentStatus),
         default=GeneratedDocumentStatus.queued,
@@ -689,6 +693,7 @@ class GeneratedDocument(Base):
     document_mode: Mapped[TemplateMode] = mapped_column(Enum(TemplateMode), default=TemplateMode.freeform, nullable=False)
     original_output_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     edited_output_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    failed_provider_output_redacted_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_edited: Mapped[bool] = mapped_column(default=False, nullable=False)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -718,6 +723,35 @@ class GeneratedDocument(Base):
     template_version: Mapped[PromptTemplateVersion | None] = relationship(foreign_keys=[template_version_id])
     quick_action_version: Mapped[QuickActionVersion | None] = relationship(foreign_keys=[quick_action_version_id])
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="generated_document")
+    sections: Mapped[list["GeneratedDocumentSection"]] = relationship(
+        back_populates="generated_document",
+        cascade="all, delete-orphan",
+        order_by="GeneratedDocumentSection.section_order.asc()",
+    )
+
+
+class GeneratedDocumentSection(Base):
+    __tablename__ = "generated_document_sections"
+    __table_args__ = (
+        UniqueConstraint("generated_document_id", "section_key", name="uq_generated_document_sections_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    generated_document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("generated_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    section_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    section_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    section_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    is_edited: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    generated_document: Mapped[GeneratedDocument] = relationship(back_populates="sections")
 
 
 class ProviderUsageEvent(Base):

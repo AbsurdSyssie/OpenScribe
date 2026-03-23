@@ -212,15 +212,30 @@ Implemented now for manual browser testing:
 - browser state-changing routes now require a CSRF token alongside the normal session cookie
 - the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
 - the upload flow is post/redirect/get, so page refresh does not re-upload the file
-- the workspace polls owner-only transcript detail while the active transcript remains `queued` or `transcribing`
+- the workspace now has a dedicated owner-only read model at `GET /api/v1/transcribe/workspace`
+- the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
+- the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
+- new-session creation now submits through `POST /api/v1/transcripts/start` from the browser shell
+- selected-session deletion now submits through owner-scoped transcript `DELETE` API calls from the browser shell
+- blank-session mode switching now patches `ingestion_mode` through the transcript JSON API
+- session-rail transcript selection now refreshes the active workspace in place from the workspace API and updates the URL with the selected `transcript_id`
+- session title changes now patch the transcript directly through the transcript JSON API instead of relying on a redirect round-trip
+- EMIS working context now autosaves back onto the transcript session through the transcript JSON API
+- whole-file upload and note/follow-up/quick-action queue actions now submit directly to the owner-only JSON APIs from the browser shell
 - the session header reports the resolved user LLM model, not just the team default, so the displayed model matches the model the generation path will actually use
 - the workspace now distinguishes local browser progress from backend queue status:
   - `recording (local)` while MediaRecorder is still capturing
   - `uploading` while a file or mic blob is being submitted
   - backend `queued`/`transcribing`/`ready`/`failed` once the transcript row reflects worker state
+- when the active transcript is `failed`, the workspace now shows the latest owner-visible ingestion error message instead of only a generic failed-state banner
 - missing active team STT selection is surfaced before queueing work rather than as a later failed worker job
 - the Output tab now supports the first template-driven note generation action for the active session
 - generation uses the current transcript draft plus a selected team/personal template and the resolved active LLM provider/model
+- template note generation now requires the model to return only a JSON object with:
+  - `title`
+  - `content`
+- the returned note `title` is persisted into the generated document title shown to the user
+- when the session title is still blank or the default `Untitled session`, the first successful note title also fills the transcript session title
 - the Follow-ups tab now supports freeform follow-up generation from the active session
 - the Follow-ups tab now also supports running a selected team/personal quick action from a dropdown in the active session
 - follow-up generation sends:
@@ -235,6 +250,20 @@ Implemented now for manual browser testing:
   - the browser route returns immediately after creating a queued `generated_documents` row
   - a Celery worker performs the LLM call in the background
   - the latest output later becomes `ready` or `failed` under the same transcript root
+  - Ollama-backed generation now consumes streamed `/api/chat` chunks so long-running local generations can keep progressing before the final `done: true` usage chunk arrives
+- template-generated notes now support two note modes:
+  - `freeform`
+  - `structured` EMIS
+- structured EMIS templates let the user define per-section prompts for the allowed EMIS sections
+- the Output tab now includes optional structured EMIS context fields so the user can pre-fill section content before generation
+- that structured EMIS context now persists on the transcript session and reloads on the next `/transcribe` visit
+- transcript-backed EMIS working context is now stored as per-section line arrays, not just one string per section
+- when a selected EMIS template omits some sections, transcript-persisted context for those omitted sections is ignored instead of blocking generation
+- when a structured EMIS note returns successfully:
+  - the backend validates the returned section keys
+  - renders the full note text onto the generated document
+  - persists individual section rows for section-by-section display
+  - the workspace shows line-selectable EMIS section output with a copy-selected-lines action, including after workspace API refreshes and polling
 - before the worker sends transcript-derived text to an external LLM:
   - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row
   - it sends the redacted transcript text, not the raw transcript text
@@ -244,6 +273,7 @@ Implemented now for manual browser testing:
 - localhost-only seeded dev accounts now get a dev redaction debug panel in `/transcribe` for the latest note/follow-up
   - this fetches the linked `redaction_run`
   - shows the redacted transcript payload and placeholder inventory that reached the outbound LLM path
+  - if a note fails JSON parsing, the same dev-only debug payload now includes the raw redacted provider output for diagnosis
   - does not expose the original PHI values
 - follow-up and quick-action free-text instructions are also redacted transiently before the provider call so outbound user-entered text follows the same PHI rule
 - successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab

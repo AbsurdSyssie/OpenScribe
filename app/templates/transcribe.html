@@ -495,7 +495,7 @@
   </style>
 </head>
 <body>
-  <section class="shell">
+  <section class="shell" data-workspace-endpoint="{{ workspace_endpoint }}">
     <div class="shell-head">
       <div class="eyebrow" style="color: #78716c;">UI reference port</div>
       <h1>Scribe workspace</h1>
@@ -555,7 +555,7 @@
                 name="transcript_ids"
                 value="{{ transcript.id }}"
                 data-session-select>
-              <a class="session-link{% if active_transcript_id == transcript.id|string %} active{% endif %}" href="/transcribe?transcript_id={{ transcript.id }}">
+              <a class="session-link{% if active_transcript_id == transcript.id|string %} active{% endif %}" href="/transcribe?transcript_id={{ transcript.id }}" data-session-link data-transcript-id="{{ transcript.id }}">
                 <div class="session-title">{{ transcript.title or "Untitled transcript" }}</div>
                 <div class="session-meta">{{ transcript.created_at }}</div>
                 <div class="session-meta">{{ transcript.ingestion_mode.value }} · <span data-sidebar-status="{{ transcript.id }}">{{ transcript.status.value }}</span></div>
@@ -578,11 +578,11 @@
         <div class="header-top" style="width:100%;">
           <div>
             <div class="eyebrow">Session</div>
-            <div style="font-size: 1.6rem; font-weight: 700;">{{ active_transcript.title if active_transcript else "New transcription session" }}</div>
+            <div style="font-size: 1.6rem; font-weight: 700;" data-session-title-display>{{ active_transcript.title if active_transcript else "New transcription session" }}</div>
             <div class="chips" style="margin-top: 12px;">
               {% if active_transcript %}
               <span class="chip neutral" data-active-status>{{ active_transcript.status.value }}</span>
-              <span class="chip neutral">{% if active_transcript.ingestion_mode.value == "whole_file" %}whole-file session{% else %}{{ active_transcript.ingestion_mode.value }}{% endif %}</span>
+              <span class="chip neutral" data-active-ingestion-mode>{% if active_transcript.ingestion_mode.value == "whole_file" %}whole-file session{% else %}{{ active_transcript.ingestion_mode.value }}{% endif %}</span>
               {% endif %}
               {% if stt_selection %}
               <span class="chip">{{ stt_selection.config.label }}</span>
@@ -606,7 +606,7 @@
                 {% elif active_transcript.status.value == "ready" %}
                 Session is ready for review.
                 {% elif active_transcript.status.value == "failed" %}
-                The last ingestion attempt failed.
+                The last ingestion attempt failed{% if active_transcript_latest_job and active_transcript_latest_job.error_message %}: {{ active_transcript_latest_job.error_message }}{% endif %}.
                 {% else %}
                 Session is ready for input.
                 {% endif %}
@@ -638,22 +638,20 @@
           <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-mic-timer>00:00</div>
         </div>
         {% if active_transcript %}
-        <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" style="max-width: 520px;">
+        <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" style="max-width: 520px;" data-transcript-title-form>
           <label>
             Session title
-            <input type="text" name="title" maxlength="255" value="{{ active_transcript.title or '' }}" placeholder="Untitled session">
+            <input type="text" name="title" maxlength="255" value="{{ active_transcript.title or '' }}" placeholder="Untitled session" data-transcript-title-input>
           </label>
           <div class="upload-row">
-            <button type="submit" class="secondary">Rename session</button>
+            <button type="submit" class="secondary" data-transcript-title-submit>Rename session</button>
           </div>
         </form>
         {% endif %}
         </div>
       </section>
 
-      {% if message %}
-      <div class="flash {{ message_kind }}">{{ message }}</div>
-      {% endif %}
+      <div class="flash {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
 
       <section class="upload-panel panel">
         <div class="panel-head">
@@ -668,7 +666,7 @@
             {% endif %}
           </p>
         </div>
-        <form method="post" action="/transcribe/upload" enctype="multipart/form-data">
+        <form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form>
           {% if active_transcript %}
           <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
           {% endif %}
@@ -744,7 +742,7 @@
               <h2>Generated note output</h2>
               <p>Choose a team or personal template, send the current transcript draft to the active LLM, and review the returned note here.</p>
             </div>
-            <form method="post" action="/transcribe/generate-output">
+            <form method="post" action="/transcribe/generate-output" data-generate-output-form>
               {% if active_transcript %}
               <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
               {% endif %}
@@ -755,11 +753,32 @@
                   <option value="">No templates available</option>
                   {% else %}
                     {% for template in available_templates %}
-                    <option value="{{ template.id }}">{{ template.name }} ({{ template.scope.value }})</option>
+                    {% set latest_version = template.versions|sort(attribute='version_no')|last %}
+                    <option value="{{ template.id }}" data-template-mode="{{ latest_version.mode.value }}">{{ template.name }} ({{ template.scope.value }} · {{ latest_version.mode.value }})</option>
                     {% endfor %}
                   {% endif %}
                 </select>
               </label>
+              <div class="subgrid">
+                <div class="session-meta" style="grid-column: 1 / -1;">Structured EMIS context. Fill any areas you already know before generation; they will be sent to the LLM as section context.</div>
+                {% for section in emis_sections %}
+                <label>
+                  {{ section.label }}
+                  <div
+                    class="emis-editor"
+                    data-emis-editor
+                    data-emis-section-label="{{ section.label }}"
+                    data-disabled="{% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}true{% else %}false{% endif %}"
+                    data-initial-lines='{{ active_structured_context.get(section.key, [])|tojson }}'
+                  >
+                    <input type="hidden" name="context_{{ section.key }}" data-emis-editor-hidden>
+                    <div class="emis-editor-rows" data-emis-editor-rows></div>
+                    <button type="button" data-emis-editor-add-line {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Add line</button>
+                  </div>
+                </label>
+                {% endfor %}
+              </div>
+              <div class="session-meta" data-emis-save-status>Saved to this session automatically.</div>
               <div class="upload-row">
                 <button type="submit" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate note</button>
               </div>
@@ -788,6 +807,31 @@
               {% else %}
               <span class="placeholder">No generated output yet.</span>
               {% endif %}
+            </div>
+            <div class="panel" data-generated-structured-panel {% if not latest_generated_document or latest_generated_document.document_mode.value != "structured" or not latest_generated_document.sections %}hidden{% endif %} style="margin-top: 1rem;">
+              <div class="panel-head">
+                <h3>EMIS sections</h3>
+                <p>Select individual lines for clipboard copy. Lines are grouped by EMIS section.</p>
+              </div>
+              <div class="upload-row">
+                <button type="button" data-copy-structured-lines>Copy selected lines</button>
+              </div>
+              <div class="session-meta" data-structured-copy-status>Select the lines you want to copy.</div>
+              <div data-generated-structured-sections>
+                {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}
+                  {% for section in latest_generated_document.sections %}
+                  <div class="section-block">
+                    <h4>{{ section.section_label }}</h4>
+                    {% for line in latest_generated_document_section_lines.get(section.id|string, []) %}
+                    <label class="check-row">
+                      <input type="checkbox" data-structured-line-checkbox data-section-label="{{ section.section_label }}" value="{{ line }}" checked>
+                      <span>{{ line }}</span>
+                    </label>
+                    {% endfor %}
+                  </div>
+                  {% endfor %}
+                {% endif %}
+              </div>
             </div>
             {% if latest_generated_document %}
             <p class="session-meta">
@@ -831,7 +875,7 @@
               <h2>Follow-ups</h2>
               <p>Run a quick action or type a custom follow-up. Both use the active transcript draft and the same resolved LLM model as note generation.</p>
             </div>
-            <form method="post" action="/transcribe/run-quick-action">
+            <form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form>
               {% if active_transcript %}
               <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
               {% endif %}
@@ -854,7 +898,7 @@
             {% if not available_quick_actions %}
             <p class="muted">Create a personal quick action, or ask your team leader to add a team quick action, before running one here.</p>
             {% endif %}
-            <form method="post" action="/transcribe/generate-followup">
+            <form method="post" action="/transcribe/generate-followup" data-generate-followup-form>
               {% if active_transcript %}
               <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
               {% endif %}
@@ -953,21 +997,35 @@
       });
       setTab({{ active_tab|tojson }});
 
-      const transcriptId = {{ active_transcript_id|tojson }};
-      const activeIngestionMode = {{ (active_transcript.ingestion_mode.value if active_transcript else none)|tojson }};
+      let transcriptId = {{ active_transcript_id|tojson }};
+      const initialWorkspaceEndpoint = document.querySelector('[data-workspace-endpoint]')?.dataset.workspaceEndpoint || '';
+      let activeIngestionMode = {{ (active_transcript.ingestion_mode.value if active_transcript else none)|tojson }};
       const hasSttSelection = {{ (stt_selection is not none)|tojson }};
       const activeStatus = document.querySelector('[data-active-status]');
+      const activeIngestionModeChip = document.querySelector('[data-active-ingestion-mode]');
+      const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
       const activeDraft = document.querySelector('[data-active-draft]');
       const activeProgress = document.querySelector('[data-session-progress]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
-      const latestGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
-      const latestGeneratedId = latestGeneratedOutput?.dataset.latestGeneratedId || '';
+      const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
+      const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
-      const latestFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
-      const latestFollowupId = latestFollowupOutput?.dataset.latestFollowupId || '';
+      const initialTranscriptErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
       const redactionDebugPanels = [...document.querySelectorAll('[data-redaction-debug-panel]')];
-      const sidebarStatus = transcriptId ? document.querySelector(`[data-sidebar-status="${transcriptId}"]`) : null;
+      const flashBanner = document.querySelector('[data-flash]');
+      const copyStructuredLinesButton = document.querySelector('[data-copy-structured-lines]');
+      const structuredCopyStatus = document.querySelector('[data-structured-copy-status]');
+      const emisEditors = [...document.querySelectorAll('[data-emis-editor]')];
+      const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
       const uploadForm = document.querySelector('form[action="/transcribe/upload"]');
+      const newSessionForm = document.querySelector('#new-session-form');
+      const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
+      const switchToWholeFileForm = document.querySelector('#switch-to-whole-file-form');
+      const titleForm = document.querySelector('[data-transcript-title-form]');
+      const generateOutputForm = document.querySelector('[data-generate-output-form]');
+      const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
+      const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
+      const emisSaveStatus = document.querySelector('[data-emis-save-status]');
       const deleteButton = document.querySelector('[data-delete-selected]');
       const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
       const syncDeleteState = () => {
@@ -982,9 +1040,80 @@
       });
       syncDeleteState();
 
+      if (newSessionForm) {
+        newSessionForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            const response = await fetch('/api/v1/transcripts/start', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: 'Untitled session', ingestion_mode: 'whole_file' }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not create a new session.'));
+            }
+            const transcript = await response.json();
+            window.location.assign(`/transcribe?transcript_id=${transcript.id}`);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not create a new session.', 'error');
+          }
+        });
+      }
+
+      if (bulkDeleteForm) {
+        bulkDeleteForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const selectedIds = selectionBoxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+          if (selectedIds.length === 0) {
+            return;
+          }
+          try {
+            await Promise.all(
+              selectedIds.map(async (selectedId) => {
+                const response = await fetch(`/api/v1/transcripts/${selectedId}`, {
+                  method: 'DELETE',
+                  credentials: 'include',
+                });
+                if (!response.ok) {
+                  throw new Error(await parseErrorMessage(response, 'Could not delete the selected sessions.'));
+                }
+              })
+            );
+            showFlash(`Deleted ${selectedIds.length} session${selectedIds.length === 1 ? '' : 's'}.`, 'success');
+            window.location.assign('/transcribe');
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not delete the selected sessions.', 'error');
+          }
+        });
+      }
+
+      if (switchToWholeFileForm && transcriptId) {
+        switchToWholeFileForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ingestion_mode: 'whole_file' }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not switch this session back to upload mode.'));
+            }
+            window.location.assign(`/transcribe?transcript_id=${transcriptId}`);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not switch this session back to upload mode.', 'error');
+          }
+        });
+      }
+
       const setVisibleStatus = (label) => {
         if (activeStatus) activeStatus.textContent = label;
-        if (sidebarStatus) sidebarStatus.textContent = label;
+        if (transcriptId) {
+          const currentSidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
+          if (currentSidebarStatus) currentSidebarStatus.textContent = label;
+        }
       };
 
       const setSessionProgress = (message) => {
@@ -992,7 +1121,7 @@
         activeProgress.textContent = message;
       };
 
-      const reflectBackendStatus = (statusLabel) => {
+      const reflectBackendStatus = (statusLabel, errorMessage = null) => {
         setVisibleStatus(statusLabel);
         if (statusLabel === 'queued') {
           setSessionProgress('Waiting in the worker queue.');
@@ -1001,7 +1130,8 @@
         } else if (statusLabel === 'ready') {
           setSessionProgress('Session is ready for review.');
         } else if (statusLabel === 'failed') {
-          setSessionProgress('The last ingestion attempt failed.');
+          const suffix = errorMessage ? `: ${errorMessage}` : '';
+          setSessionProgress(`The last ingestion attempt failed${suffix}.`);
         } else if (statusLabel === 'recording') {
           setSessionProgress('Session is ready for input.');
         }
@@ -1012,6 +1142,7 @@
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
+      const renameTitleInput = document.querySelector('form[action*="/transcribe/sessions/"][action$="/title"] input[name="title"]');
       const titleInput = document.querySelector('form[action="/transcribe/upload"] input[name="title"]');
       const fileInput = document.querySelector('[data-audio-file-input]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
@@ -1019,14 +1150,34 @@
       const audioActionMenu = document.querySelector('[data-audio-action-menu]');
       const audioActionOptions = [...document.querySelectorAll('[data-audio-action-option]')];
       const audioSourceCaption = document.querySelector('[data-audio-source-caption]');
-      const canUseWholeFileInput = Boolean(transcriptId && hasSttSelection && activeIngestionMode === 'whole_file');
+      const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && activeIngestionMode === 'whole_file');
       let selectedAudioSource = 'file';
       let mediaRecorder = null;
       let mediaStream = null;
       let mediaChunks = [];
       let startedAt = null;
       let timerId = null;
+      let currentTranscriptTitle = (renameTitleInput?.value || titleInput?.value || '').trim();
+      let emisSaveTimer = null;
+      let lastSavedStructuredContext = null;
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
+
+      const showFlash = (message, kind = 'success') => {
+        if (!flashBanner) return;
+        flashBanner.hidden = !message;
+        flashBanner.textContent = message || '';
+        flashBanner.classList.remove('success', 'error');
+        flashBanner.classList.add(kind === 'error' ? 'error' : 'success');
+      };
+
+      const parseErrorMessage = async (response, fallback) => {
+        try {
+          const payload = await response.json();
+          return payload?.error?.message || fallback;
+        } catch (_) {
+          return fallback;
+        }
+      };
 
       const setMicStatus = (message, kind = '') => {
         if (!micStatus) return;
@@ -1058,13 +1209,13 @@
           button.disabled = isRecording || initiallyDisabled;
         });
         if (audioActionTrigger) {
-          audioActionTrigger.disabled = isRecording || !canUseWholeFileInput;
+          audioActionTrigger.disabled = isRecording || !canUseWholeFileInput();
         }
         if (audioActionToggle) {
-          audioActionToggle.disabled = isRecording || !canUseWholeFileInput;
+          audioActionToggle.disabled = isRecording || !canUseWholeFileInput();
         }
         if (fileInput) {
-          fileInput.disabled = isRecording || !canUseWholeFileInput;
+          fileInput.disabled = isRecording || !canUseWholeFileInput();
         }
       };
 
@@ -1106,39 +1257,33 @@
       };
 
       const uploadMicrophoneBatch = async (blob) => {
-        const formData = new FormData();
-        formData.append('transcript_id', transcriptId);
-        formData.append('title', titleInput?.value || '');
-        formData.append('audio', blob, blob.type.includes('mp4') ? 'microphone-batch.mp4' : 'microphone-batch.webm');
         setMicStatus('Uploading microphone batch for transcription...');
         setVisibleStatus('uploading');
         setSessionProgress('Uploading microphone batch to queue transcription...');
         try {
-          const response = await fetch('/transcribe/upload', {
+          await syncTranscriptTitleIfNeeded();
+          const formData = new FormData();
+          formData.append('audio', blob, blob.type.includes('mp4') ? 'microphone-batch.mp4' : 'microphone-batch.webm');
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
             method: 'POST',
-            headers: {
-              'X-CSRF-Token': window.OpenScribeCSRF?.getToken?.() || '',
-            },
             body: formData,
             credentials: 'include',
-            redirect: 'follow',
           });
-          if (response.redirected && response.url) {
-            window.location.assign(response.url);
-            return;
-          }
           if (!response.ok) {
-            const text = await response.text();
-            throw new Error(text || 'Microphone batch upload failed');
+            throw new Error(await parseErrorMessage(response, 'Could not queue microphone batch transcription.'));
           }
-          window.location.reload();
+          showFlash('Audio file queued for transcription.', 'success');
+          await fetchWorkspace();
+          window.setTimeout(pollWorkspace, 1200);
         } catch (error) {
-          setMicStatus('Could not queue microphone batch transcription.', 'error');
+          const message = error instanceof Error ? error.message : 'Could not queue microphone batch transcription.';
+          setMicStatus(message, 'error');
+          showFlash(message, 'error');
         }
       };
 
       const beginMicrophoneBatch = async () => {
-        if (!canUseWholeFileInput) {
+        if (!canUseWholeFileInput()) {
           setMicStatus('Create or select a session with whole-file input and STT available before recording.', 'error');
           return;
         }
@@ -1213,7 +1358,7 @@
       });
       if (audioActionTrigger) {
         audioActionTrigger.addEventListener('click', () => {
-          if (!canUseWholeFileInput) {
+          if (!canUseWholeFileInput()) {
             return;
           }
           if (selectedAudioSource === 'microphone') {
@@ -1233,14 +1378,8 @@
           uploadForm.requestSubmit();
         });
       }
-      if (uploadForm) {
-        uploadForm.addEventListener('submit', () => {
-          setVisibleStatus('uploading');
-          setSessionProgress('Uploading audio file to queue transcription...');
-        });
-      }
       if (activeStatus) {
-        reflectBackendStatus(activeStatus.textContent.trim());
+        reflectBackendStatus(activeStatus.textContent.trim(), initialTranscriptErrorMessage);
       } else {
         setSessionProgress('Create or select a session to begin.');
       }
@@ -1254,26 +1393,246 @@
         activeDraft.innerHTML = '<span class="placeholder">No transcript text yet. Use the audio input control to upload a file or record a microphone batch.</span>';
       };
 
-      const renderGeneratedOutput = (document) => {
+      const syncEmisEditor = (editor) => {
+        const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
+        const lineInputs = [...editor.querySelectorAll('[data-emis-line-input]')];
+        if (!hiddenInput) return;
+        const values = lineInputs
+          .map((input) => input.value)
+          .filter((value) => value && value.trim().length > 0);
+        hiddenInput.value = JSON.stringify(values);
+      };
+
+      const collectStructuredContext = () => {
+        const context = {};
+        emisEditors.forEach((editor) => {
+          const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
+          const sectionKey = hiddenInput?.name?.replace(/^context_/, '') || '';
+          if (!hiddenInput || !sectionKey) return;
+          try {
+            const parsed = JSON.parse(hiddenInput.value || '[]');
+            if (Array.isArray(parsed)) {
+              const lines = parsed.filter((line) => typeof line === 'string' && line.trim().length > 0);
+              if (lines.length > 0) {
+                context[sectionKey] = lines;
+              }
+            }
+          } catch (_) {
+            if (hiddenInput.value.trim()) {
+              context[sectionKey] = [hiddenInput.value.trim()];
+            }
+          }
+        });
+        return context;
+      };
+
+      const saveStructuredContext = async ({ silent = false } = {}) => {
+        if (!transcriptId) return null;
+        const structuredContext = collectStructuredContext();
+        const serializedContext = JSON.stringify(structuredContext);
+        if (lastSavedStructuredContext === serializedContext) {
+          if (emisSaveStatus && !silent) {
+            emisSaveStatus.textContent = 'Saved to this session automatically.';
+          }
+          return structuredContext;
+        }
+        if (emisSaveStatus && !silent) {
+          emisSaveStatus.textContent = 'Saving session context...';
+        }
+        const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ structured_context_json: { profile: 'emis', sections: structuredContext } }),
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not save EMIS session context.'));
+        }
+        lastSavedStructuredContext = serializedContext;
+        if (emisSaveStatus && !silent) {
+          emisSaveStatus.textContent = 'Saved to this session automatically.';
+        }
+        return structuredContext;
+      };
+
+      const syncTranscriptTitleIfNeeded = async () => {
+        if (!transcriptId || !renameTitleInput) return;
+        const nextTitle = renameTitleInput.value.trim();
+        if (nextTitle === currentTranscriptTitle) return;
+        const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: nextTitle || null }),
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not update the session title.'));
+        }
+        currentTranscriptTitle = nextTitle;
+        if (titleInput) {
+          titleInput.value = nextTitle;
+        }
+      };
+
+      const setEmisEditorLines = (editor, lines) => {
+        const rows = editor.querySelector('[data-emis-editor-rows]');
+        if (!rows) return;
+        rows.innerHTML = '';
+        const nextLines = Array.isArray(lines) ? lines.filter((line) => typeof line === 'string' && line.trim().length > 0) : [];
+        if (nextLines.length > 0) {
+          nextLines.forEach((line) => addEmisLine(editor, line));
+        } else {
+          addEmisLine(editor, '');
+        }
+        syncEmisEditor(editor);
+      };
+
+      const attachEmisLineHandlers = (editor, lineInput) => {
+        lineInput.addEventListener('input', () => syncEmisEditor(editor));
+        lineInput.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            addEmisLine(editor, '', lineInput.closest('[data-emis-line-row]'));
+          }
+        });
+      };
+
+      const addEmisLine = (editor, value = '', afterRow = null) => {
+        const rows = editor.querySelector('[data-emis-editor-rows]');
+        const disabled = editor.dataset.disabled === 'true';
+        if (!rows) return null;
+        const row = document.createElement('div');
+        row.className = 'check-row';
+        row.setAttribute('data-emis-line-row', '');
+        const textarea = document.createElement('textarea');
+        textarea.rows = 2;
+        textarea.placeholder = `Add ${editor.dataset.emisSectionLabel || 'section'} line`;
+        textarea.disabled = disabled;
+        textarea.value = value;
+        textarea.setAttribute('data-emis-line-input', '');
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.textContent = 'Remove';
+        removeButton.disabled = disabled;
+        removeButton.addEventListener('click', () => {
+          row.remove();
+          if (!rows.querySelector('[data-emis-line-row]')) {
+            addEmisLine(editor, '');
+          }
+          syncEmisEditor(editor);
+        });
+        row.appendChild(textarea);
+        row.appendChild(removeButton);
+        if (afterRow && afterRow.parentNode === rows) {
+          afterRow.insertAdjacentElement('afterend', row);
+        } else {
+          rows.appendChild(row);
+        }
+        attachEmisLineHandlers(editor, textarea);
+        syncEmisEditor(editor);
+        if (!disabled) {
+          textarea.focus();
+        }
+        return row;
+      };
+
+      emisEditors.forEach((editor) => {
+        const initialLines = JSON.parse(editor.dataset.initialLines || '[]');
+        if (Array.isArray(initialLines) && initialLines.length > 0) {
+          initialLines.forEach((line) => addEmisLine(editor, String(line)));
+        } else {
+          addEmisLine(editor, '');
+        }
+        const addButton = editor.querySelector('[data-emis-editor-add-line]');
+        if (addButton) {
+          addButton.addEventListener('click', () => addEmisLine(editor, ''));
+        }
+        const form = editor.closest('form');
+        if (form) {
+          form.addEventListener('submit', () => syncEmisEditor(editor));
+        }
+        editor.addEventListener('input', () => {
+          if (emisSaveTimer) {
+            window.clearTimeout(emisSaveTimer);
+          }
+          emisSaveTimer = window.setTimeout(async () => {
+            try {
+              await saveStructuredContext({ silent: false });
+            } catch (error) {
+              if (emisSaveStatus) {
+                emisSaveStatus.textContent = error.message || 'Could not save EMIS session context.';
+              }
+            }
+          }, 500);
+        });
+      });
+
+      const renderGeneratedOutput = (generatedDocument) => {
         if (!latestGeneratedOutput) return;
-        if (!document) {
+        if (generatedStructuredPanel) {
+          generatedStructuredPanel.hidden = true;
+        }
+        if (generatedStructuredSections) {
+          generatedStructuredSections.innerHTML = '';
+        }
+        if (structuredCopyStatus) {
+          structuredCopyStatus.textContent = 'Select the lines you want to copy.';
+        }
+        if (!generatedDocument) {
           latestGeneratedOutput.innerHTML = '<span class="placeholder">No generated output yet.</span>';
           return;
         }
-        if (document.status === 'ready' && document.edited_output_text_encrypted) {
-          latestGeneratedOutput.textContent = document.edited_output_text_encrypted;
+        if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text_encrypted) {
+          latestGeneratedOutput.textContent = generatedDocument.edited_output_text_encrypted;
+          if (
+            generatedStructuredPanel &&
+            generatedStructuredSections &&
+            generatedDocument.document_mode === 'structured' &&
+            Array.isArray(generatedDocument.sections) &&
+            generatedDocument.sections.length > 0
+          ) {
+            generatedDocument.sections.forEach((section) => {
+              const sectionBlock = window.document.createElement('div');
+              sectionBlock.className = 'section-block';
+              const heading = window.document.createElement('h4');
+              heading.textContent = section.section_label || section.section_key || 'Section';
+              sectionBlock.appendChild(heading);
+              const lineText = String(section.edited_text_encrypted || section.original_text_encrypted || '');
+              const lines = lineText
+                .split('\n')
+                .map((line) => line.trim())
+                .filter((line) => line.length > 0);
+              lines.forEach((line) => {
+                const label = window.document.createElement('label');
+                label.className = 'check-row';
+                const checkbox = window.document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = true;
+                checkbox.value = line;
+                checkbox.setAttribute('data-structured-line-checkbox', '');
+                checkbox.dataset.sectionLabel = heading.textContent;
+                const span = window.document.createElement('span');
+                span.textContent = line;
+                label.appendChild(checkbox);
+                label.appendChild(span);
+                sectionBlock.appendChild(label);
+              });
+              generatedStructuredSections.appendChild(sectionBlock);
+            });
+            generatedStructuredPanel.hidden = false;
+          }
           return;
         }
-        if (document.status === 'queued') {
+        if (generatedDocument.status === 'queued') {
           latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is queued in the worker.</span>';
           return;
         }
-        if (document.status === 'processing') {
+        if (generatedDocument.status === 'processing') {
           latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is in progress.</span>';
           return;
         }
-        if (document.status === 'failed') {
-          const suffix = document.error_message ? `: ${document.error_message}` : '';
+        if (generatedDocument.status === 'failed') {
+          const suffix = generatedDocument.error_message ? `: ${generatedDocument.error_message}` : '';
           latestGeneratedOutput.innerHTML = `<span class="placeholder">The latest note generation failed${suffix}.</span>`;
         }
       };
@@ -1302,6 +1661,79 @@
         }
       };
 
+      const applyWorkspacePayload = (workspace) => {
+        if (!workspace || typeof workspace !== 'object') return;
+        const transcript = workspace.active_transcript || null;
+        transcriptId = transcript?.id || null;
+        activeIngestionMode = transcript?.ingestion_mode || null;
+        const generatedDocuments = Array.isArray(workspace.generated_documents) ? workspace.generated_documents : [];
+        const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
+        const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
+        const latestNote = noteDocuments[0] || null;
+        const latestFollowup = followupDocuments[0] || null;
+        const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
+        sessionLinks.forEach((link) => {
+          link.classList.toggle('active', link.dataset.transcriptId === transcriptId);
+        });
+        sidebarTranscripts.forEach((item) => {
+          const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
+          if (node) node.textContent = item.status;
+          const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
+          if (titleNode) titleNode.textContent = item.title || 'Untitled transcript';
+        });
+        if (transcript) {
+          reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
+          renderDraft(transcript.current_draft_text_encrypted || '');
+          if (sessionTitleDisplay) {
+            sessionTitleDisplay.textContent = transcript.title || 'Untitled session';
+          }
+          if (activeIngestionModeChip) {
+            activeIngestionModeChip.textContent = transcript.ingestion_mode === 'whole_file' ? 'whole-file session' : transcript.ingestion_mode;
+          }
+          currentTranscriptTitle = (transcript.title || '').trim();
+          if (renameTitleInput) {
+            renameTitleInput.value = transcript.title || '';
+          }
+          if (titleInput) {
+            titleInput.value = transcript.title || '';
+          }
+          document.querySelectorAll('input[name="transcript_id"]').forEach((input) => {
+            input.value = transcript.id;
+          });
+          if (switchToWholeFileForm) {
+            switchToWholeFileForm.action = `/transcribe/sessions/${transcript.id}/mode`;
+          }
+        } else {
+          if (sessionTitleDisplay) {
+            sessionTitleDisplay.textContent = 'New transcription session';
+          }
+          if (activeIngestionModeChip) {
+            activeIngestionModeChip.textContent = '';
+          }
+        }
+        if (latestGeneratedOutput) {
+          latestGeneratedOutput.dataset.latestGeneratedStatus = latestNote?.status || '';
+          latestGeneratedOutput.dataset.latestGeneratedId = latestNote?.id || '';
+          renderGeneratedOutput(latestNote);
+        }
+        if (latestFollowupOutput) {
+          latestFollowupOutput.dataset.latestFollowupStatus = latestFollowup?.status || '';
+          latestFollowupOutput.dataset.latestFollowupId = latestFollowup?.id || '';
+          renderFollowupOutput(latestFollowup);
+        }
+        const structuredContext = workspace.active_structured_context || {};
+        lastSavedStructuredContext = JSON.stringify(structuredContext);
+        if (emisSaveStatus) {
+          emisSaveStatus.textContent = 'Saved to this session automatically.';
+        }
+        emisEditors.forEach((editor) => {
+          const sectionKey = editor.closest('label')?.querySelector('[data-emis-editor-hidden]')?.name?.replace(/^context_/, '') || '';
+          if (!sectionKey) return;
+          setEmisEditorLines(editor, structuredContext[sectionKey] || []);
+        });
+        setMicButtons(false);
+      };
+
       const loadRedactionDebug = async (panel) => {
         if (!panel || panel.dataset.loaded === 'true' || panel.dataset.loading === 'true') return;
         const generatedDocumentId = panel.dataset.generatedDocumentId;
@@ -1322,7 +1754,10 @@
             `${entity.placeholder} · ${entity.entity_type} · occurrences ${entity.occurrence_count}`
           ));
           meta.textContent = `Redaction applied via ${payload.api_provider}${payload.api_model_or_version ? ` (${payload.api_model_or_version})` : ''} · ${payload.entity_count} entities`;
-          text.textContent = `${payload.redacted_text}\n\nPlaceholders:\n${placeholderLines.join('\n') || 'None'}`;
+          const failedOutputBlock = payload.failed_provider_output_redacted_text
+            ? `\n\nFailed raw provider output (redacted):\n${payload.failed_provider_output_redacted_text}`
+            : '';
+          text.textContent = `${payload.redacted_text}\n\nPlaceholders:\n${placeholderLines.join('\n') || 'None'}${failedOutputBlock}`;
           panel.dataset.loaded = 'true';
         } catch (_) {
           meta.textContent = 'Could not load redaction debug.';
@@ -1340,56 +1775,225 @@
         });
       });
 
-      async function pollTranscript() {
-        if (!transcriptId || !activeStatus) return;
-        const current = activeStatus.textContent.trim();
-        if (current !== 'queued' && current !== 'transcribing') return;
-        try {
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}`, { credentials: 'include' });
-          if (!response.ok) return;
-          const transcript = await response.json();
-          reflectBackendStatus(transcript.status);
-          renderDraft(transcript.current_draft_text_encrypted || '');
-          if (transcript.status === 'queued' || transcript.status === 'transcribing') {
-            window.setTimeout(pollTranscript, 2500);
-          }
-        } catch (_) {
-          window.setTimeout(pollTranscript, 2500);
-        }
-      }
-
-      async function pollGeneratedDocuments() {
-        if (!transcriptId) return;
-        const shouldPollNote = latestGeneratedOutput && latestGeneratedId && (latestGeneratedStatus === 'queued' || latestGeneratedStatus === 'processing');
-        const shouldPollFollowup = latestFollowupOutput && latestFollowupId && (latestFollowupStatus === 'queued' || latestFollowupStatus === 'processing');
-        if (!shouldPollNote && !shouldPollFollowup) return;
-        try {
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/generated-documents`, { credentials: 'include' });
-          if (!response.ok) return;
-          const documents = await response.json();
-          if (!Array.isArray(documents)) return;
-          const latestNote = documents.find((document) => document.id === latestGeneratedId);
-          const latestFollowup = documents.find((document) => document.id === latestFollowupId);
-          const notePending = latestNote && (latestNote.status === 'queued' || latestNote.status === 'processing');
-          const followupPending = latestFollowup && (latestFollowup.status === 'queued' || latestFollowup.status === 'processing');
-          if (notePending || followupPending) {
-            window.setTimeout(pollGeneratedDocuments, 2500);
+      if (copyStructuredLinesButton && structuredCopyStatus) {
+        copyStructuredLinesButton.addEventListener('click', async () => {
+          const checked = [...document.querySelectorAll('[data-structured-line-checkbox]:checked')];
+          if (checked.length === 0) {
+            structuredCopyStatus.textContent = 'Select at least one line to copy.';
             return;
           }
-          if (latestNote) {
-            renderGeneratedOutput(latestNote);
+          const textToCopy = checked.map((checkbox) => {
+            const label = checkbox.dataset.sectionLabel || '';
+            return label ? `${label}: ${checkbox.value}` : checkbox.value;
+          }).join('\n');
+          try {
+            await navigator.clipboard.writeText(textToCopy);
+            structuredCopyStatus.textContent = `Copied ${checked.length} selected line${checked.length === 1 ? '' : 's'} to the clipboard.`;
+          } catch (_) {
+            structuredCopyStatus.textContent = 'Could not copy the selected lines.';
           }
-          if (latestFollowup) {
-            renderFollowupOutput(latestFollowup);
+        });
+      }
+
+      if (titleForm) {
+        titleForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            await syncTranscriptTitleIfNeeded();
+            showFlash('Session title updated.', 'success');
+            await fetchWorkspace();
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not update the session title.', 'error');
           }
-          window.location.reload();
+        });
+      }
+
+      if (uploadForm) {
+        uploadForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!transcriptId || !fileInput?.files || fileInput.files.length === 0) {
+            return;
+          }
+          setVisibleStatus('uploading');
+          setSessionProgress('Uploading audio file to queue transcription...');
+          try {
+            await syncTranscriptTitleIfNeeded();
+            const formData = new FormData();
+            formData.append('audio', fileInput.files[0], fileInput.files[0].name);
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+              method: 'POST',
+              body: formData,
+              credentials: 'include',
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not queue file transcription.'));
+            }
+            showFlash('Audio file queued for transcription.', 'success');
+            fileInput.value = '';
+            await fetchWorkspace();
+            window.setTimeout(pollWorkspace, 1200);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Could not queue file transcription.';
+            showFlash(message, 'error');
+            reflectBackendStatus('failed', message);
+          }
+        });
+      }
+
+      if (generateOutputForm) {
+        generateOutputForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!transcriptId) return;
+          const templateId = generateOutputForm.querySelector('select[name="template_id"]')?.value || '';
+          if (!templateId) return;
+          try {
+            await saveStructuredContext({ silent: true });
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                template_id: templateId,
+                structured_context: collectStructuredContext(),
+              }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
+            }
+            setTab('output');
+            showFlash('Queued note generation.', 'success');
+            await fetchWorkspace();
+            window.setTimeout(pollWorkspace, 1200);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not enqueue note generation.', 'error');
+          }
+        });
+      }
+
+      if (generateFollowupForm) {
+        generateFollowupForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!transcriptId) return;
+          const promptText = generateFollowupForm.querySelector('textarea[name="prompt_text"]')?.value?.trim() || '';
+          if (!promptText) return;
+          try {
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}/generate-followup`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt_text: promptText }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not enqueue follow-up generation.'));
+            }
+            setTab('followups');
+            showFlash('Queued follow-up generation.', 'success');
+            await fetchWorkspace();
+            window.setTimeout(pollWorkspace, 1200);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not enqueue follow-up generation.', 'error');
+          }
+        });
+      }
+
+      if (runQuickActionForm) {
+        runQuickActionForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!transcriptId) return;
+          const quickActionId = runQuickActionForm.querySelector('select[name="quick_action_id"]')?.value || '';
+          if (!quickActionId) return;
+          try {
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ quick_action_id: quickActionId }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not enqueue quick action generation.'));
+            }
+            setTab('followups');
+            showFlash('Queued quick action generation.', 'success');
+            await fetchWorkspace();
+            window.setTimeout(pollWorkspace, 1200);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not enqueue quick action generation.', 'error');
+          }
+        });
+      }
+
+      const workspaceEndpointForTranscript = (nextTranscriptId) => {
+        if (nextTranscriptId) {
+          return `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`;
+        }
+        return initialWorkspaceEndpoint || '/api/v1/transcribe/workspace';
+      };
+
+      async function fetchWorkspace(targetTranscriptId = transcriptId) {
+        const endpoint = workspaceEndpointForTranscript(targetTranscriptId);
+        if (!endpoint) return null;
+        try {
+          const response = await fetch(endpoint, { credentials: 'include' });
+          if (!response.ok) return null;
+          const workspace = await response.json();
+          applyWorkspacePayload(workspace);
+          return workspace;
         } catch (_) {
-          window.setTimeout(pollGeneratedDocuments, 2500);
+          return null;
         }
       }
 
-      window.setTimeout(pollTranscript, 1200);
-      window.setTimeout(pollGeneratedDocuments, 1400);
+      sessionLinks.forEach((link) => {
+        link.addEventListener('click', async (event) => {
+          event.preventDefault();
+          const nextTranscriptId = link.dataset.transcriptId;
+          if (!nextTranscriptId || nextTranscriptId === transcriptId) {
+            return;
+          }
+          const workspace = await fetchWorkspace(nextTranscriptId);
+          if (!workspace) {
+            window.location.assign(link.href);
+            return;
+          }
+          const url = new URL(window.location.href);
+          url.searchParams.set('transcript_id', nextTranscriptId);
+          window.history.pushState({}, '', url.toString());
+          showFlash('', 'success');
+        });
+      });
+
+      async function pollWorkspace() {
+        if (!transcriptId || !activeStatus) return;
+        const current = activeStatus.textContent.trim();
+        const generatedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
+        const followupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
+        const shouldPoll = (
+          current === 'queued'
+          || current === 'transcribing'
+          || generatedStatus === 'queued'
+          || generatedStatus === 'processing'
+          || followupStatus === 'queued'
+          || followupStatus === 'processing'
+        );
+        if (!shouldPoll) return;
+        const workspace = await fetchWorkspace();
+        const transcript = workspace?.active_transcript || null;
+        const refreshedGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
+        const refreshedFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
+        const stillPending = Boolean(
+          (transcript && (transcript.status === 'queued' || transcript.status === 'transcribing'))
+          || refreshedGeneratedStatus === 'queued'
+          || refreshedGeneratedStatus === 'processing'
+          || refreshedFollowupStatus === 'queued'
+          || refreshedFollowupStatus === 'processing'
+        );
+        if (stillPending) {
+          window.setTimeout(pollWorkspace, 2500);
+        }
+      }
+
+      window.setTimeout(fetchWorkspace, 250);
+      window.setTimeout(pollWorkspace, 1200);
     })();
   </script>
   {% include "_csrf_script.html" %}

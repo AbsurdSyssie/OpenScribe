@@ -93,6 +93,7 @@ from .schemas import (
     UserLlmPreferenceUpsert,
     UserListItem,
     GeneratedDocumentDetail,
+    GeneratedDocumentRedactionDebugDetail,
 )
 from .services.templates import (
     attach_generated_document_task_id as attach_generated_document_task_id_service,
@@ -446,6 +447,15 @@ def require_full_context(context: AuthenticatedContext = Depends(require_authent
     return context
 
 
+def require_local_dev_debug_context(
+    request: Request,
+    context: AuthenticatedContext = Depends(require_full_context),
+) -> AuthenticatedContext:
+    if context.user.email.lower() not in _local_only_dev_emails() or not _request_is_localhost_only(request):
+        raise AppError(403, "forbidden", "Redaction debug is available only to localhost dev test accounts")
+    return context
+
+
 def require_system_admin(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
     if not context.user.is_system_admin:
         raise AppError(403, "forbidden", "System admin access required")
@@ -742,6 +752,7 @@ def render_transcribe(
     ]
     latest_generated_document = note_documents[0] if note_documents else None
     latest_followup_document = followup_documents[0] if followup_documents else None
+    show_redaction_debug = current_user.email.lower() in _local_only_dev_emails() and _request_is_localhost_only(request)
 
     context = {
         "request": request,
@@ -767,6 +778,7 @@ def render_transcribe(
         "followup_documents": followup_documents,
         "latest_generated_document": latest_generated_document,
         "latest_followup_document": latest_followup_document,
+        "show_redaction_debug": show_redaction_debug,
         "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
         "team_leader_email": db.scalar(
             select(User.email)
@@ -966,6 +978,33 @@ def quick_action_response(quick_action: QuickAction) -> QuickActionDetail:
 
 def generated_document_response(document: GeneratedDocument) -> GeneratedDocumentDetail:
     return GeneratedDocumentDetail.model_validate(document, from_attributes=True)
+
+
+def generated_document_redaction_debug_response(document: GeneratedDocument) -> GeneratedDocumentRedactionDebugDetail:
+    if document.redaction_run is None:
+        raise AppError(404, "not_found", "No redaction run is linked to this generated document")
+    redaction_run = document.redaction_run
+    entities = sorted(redaction_run.entities, key=lambda entity: entity.entity_order)
+    return GeneratedDocumentRedactionDebugDetail(
+        generated_document_id=document.id,
+        redaction_run_id=redaction_run.id,
+        transcript_version_id=redaction_run.transcript_version_id,
+        status=redaction_run.status.value,
+        api_provider=redaction_run.api_provider,
+        api_model_or_version=redaction_run.api_model_or_version,
+        entity_count=redaction_run.entity_count,
+        mapping_hash=redaction_run.mapping_hash,
+        redacted_text=redaction_run.redacted_text_encrypted or "",
+        entities=[
+            {
+                "entity_order": entity.entity_order,
+                "entity_type": entity.entity_type,
+                "placeholder": entity.placeholder,
+                "occurrence_count": entity.occurrence_count,
+            }
+            for entity in entities
+        ],
+    )
 
 
 def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, object]:
@@ -1658,6 +1697,20 @@ def get_transcript_detail(transcript_id: UUID, context: AuthenticatedContext = D
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
 def list_generated_documents_for_transcript(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [generated_document_response(document) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
+
+
+@api.get("/generated-documents/{generated_document_id}/redaction-debug", response_model=GeneratedDocumentRedactionDebugDetail, responses=error_responses)
+def get_generated_document_redaction_debug(
+    generated_document_id: UUID,
+    context: AuthenticatedContext = Depends(require_local_dev_debug_context),
+    db: Session = Depends(get_db),
+):
+    document = db.get(GeneratedDocument, generated_document_id)
+    if document is None:
+        raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
+    if document.owner_user_id != context.user.id:
+        raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    return generated_document_redaction_debug_response(document)
 
 
 @api.post("/transcripts/{transcript_id}/generate-output", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)

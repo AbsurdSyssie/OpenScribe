@@ -21,6 +21,13 @@ set -a
 source .env
 set +a
 
+if [[ "${DEV_RESTART_EXISTING_PROCESSES:-true}" == "true" ]]; then
+  echo "Stopping existing OpenScribe dev server and Celery worker processes..."
+  pkill -f 'fastapi dev app/main.py' 2>/dev/null || true
+  pkill -f 'celery -A app.celery_app:celery_app worker' 2>/dev/null || true
+  sleep 1
+fi
+
 echo "Waiting for Postgres to accept connections..."
 .venv/bin/python - <<'PY'
 import os

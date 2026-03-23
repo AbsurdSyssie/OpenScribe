@@ -21,6 +21,7 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    RedactionRun,
     SttAdapterKind,
     SttAuthMode,
     TeamLlmConfig,
@@ -34,6 +35,7 @@ from app.models import (
     Transcript,
     TranscriptIngestionMode,
     TranscriptVersion,
+    TemplateMode,
     User,
     UserLlmPreference,
     UserRecoveryCode,
@@ -44,6 +46,7 @@ from app.models import (
 )
 from app.schemas.templates import GenerateFollowupRequest
 from app.services.audio import NormalizedAudio
+from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.stt import transcribe_with_team_stt
 from app.services.templates import (
     process_generated_document,
@@ -1185,6 +1188,271 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
         json={"prompt_text": "Do something else"},
     )
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
+def test_process_generated_document_redacts_transcript_and_reidentifies_output(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Redaction")
+    admin = make_user(email="admin-redaction@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Redaction note", prompt_text="Write a note for John Smith.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Redaction session",
+        current_draft_text_encrypted="John Smith reports headaches.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    assert transcript_version is not None
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] reports headaches.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+
+    monkeypatch.setattr(
+        "app.services.templates.ensure_redaction_run_for_transcript_version",
+        lambda db, *, transcript_version: run,
+    )
+
+    def fake_redact_transient_text(text: str, *, start_index: int):
+        return {
+            "redacted_text": "Write a note for [PHI-2].",
+            "phi_mapping": {"phi-2": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": 2, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-2]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
+
+    def fake_generate(**kwargs):
+        assert "[PHI-1] reports headaches." in kwargs["user_message"]
+        assert "John Smith reports headaches." not in kwargs["user_message"]
+        assert "Write a note for [PHI-2]." in kwargs["user_message"]
+        return "[PHI-1] should rest and [PHI-2] should book review.", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.redaction_run_id == run.id
+    assert processed.edited_output_text_encrypted == "John Smith should rest and John Smith should book review."
+
+
+def test_process_generated_document_fails_on_invalid_placeholder_output(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Placeholder")
+    admin = make_user(email="admin-placeholder@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-placeholder@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Placeholder note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Placeholder session",
+        current_draft_text_encrypted="John Smith reports headaches.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    assert transcript_version is not None
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] reports headaches.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+    monkeypatch.setattr(
+        "app.services.templates.ensure_redaction_run_for_transcript_version",
+        lambda db, *, transcript_version: run,
+    )
+    monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ("[PHI-999] should rest.", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+    )
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.failed
+    assert processed.error_code == "redaction_placeholder_invalid"
+    assert processed.error_message == "Generated output contained an unknown PHI placeholder"
+
+
+def test_local_dev_account_can_read_generated_document_redaction_debug(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Dev Redaction")
+    owner = make_user(email="dev.user@example.com", password="password-1", team=team, team_role=TeamRole.user, mfa_required=False, mfa_enabled=False)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Debug session",
+        current_draft_text_encrypted="John Smith attended the clinic.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="John Smith attended the clinic.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] attended the clinic.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+    document = GeneratedDocument(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        redaction_run_id=run.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="done",
+        edited_output_text_encrypted="done",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    login(client, email="dev.user@example.com", password="password-1")
+    response = client.get(f"/api/v1/generated-documents/{document.id}/redaction-debug")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated_document_id"] == str(document.id)
+    assert body["redaction_run_id"] == str(run.id)
+    assert body["redacted_text"] == "[PHI-1] attended the clinic."
+    assert body["entity_count"] == 1
+    assert body["entities"] == [
+        {
+            "entity_order": 1,
+            "entity_type": "PERSON",
+            "placeholder": "[PHI-1]",
+            "occurrence_count": 1,
+        }
+    ]
+
+
+def test_non_dev_account_cannot_read_generated_document_redaction_debug(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Non Dev Redaction")
+    owner = make_user(email="owner-debug@example.com", password="password-1", team=team, team_role=TeamRole.user, mfa_required=False, mfa_enabled=False)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Debug session",
+        current_draft_text_encrypted="Jane Smith attended the clinic.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Jane Smith attended the clinic.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] attended the clinic.",
+        entities=[(1, "PERSON", "Jane Smith")],
+    )
+    document = GeneratedDocument(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        redaction_run_id=run.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="done",
+        edited_output_text_encrypted="done",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    login(client, email="owner-debug@example.com", password="password-1")
+    response = client.get(f"/api/v1/generated-documents/{document.id}/redaction-debug")
+
+    assert_error(
+        response,
+        status_code=403,
+        code="forbidden",
+        message="Redaction debug is available only to localhost dev test accounts",
+    )
 
 
 def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generation(

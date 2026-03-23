@@ -3,6 +3,9 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from app.models import (
+    GeneratedDocument,
+    GeneratedDocumentGeneratorType,
+    GeneratedDocumentStatus,
     LlmAdapterKind,
     PromptTemplate,
     QuickAction,
@@ -11,11 +14,13 @@ from app.models import (
     TeamRole,
     TeamSttConfig,
     TeamSttSelection,
+    TemplateMode,
     TemplateScope,
     Transcript,
     TranscriptIngestionJob,
     TranscriptIngestionMode,
     TranscriptStatus,
+    TranscriptVersion,
     UserLlmPreference,
     UserStatus,
 )
@@ -874,6 +879,68 @@ def test_user_transcribe_page_can_generate_note_output_from_template(
     assert "Latest output:" in page.text
     assert "My note output" in page.text
     assert "queued" in page.text
+
+
+def test_local_dev_transcribe_page_shows_redaction_debug_panel(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Debug UI")
+    member = make_user(email="dev.user@example.com", password="password-3", team=team, team_role=TeamRole.user, mfa_required=False, mfa_enabled=False)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="John Smith attended the clinic.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=member,
+        redacted_text="[PHI-1] attended the clinic.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+    document = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        redaction_run_id=run.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="done",
+        edited_output_text_encrypted="done",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    client.post("/login", data={"email": "dev.user@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert "Dev redaction debug" in page.text
+    assert "Localhost dev only." in page.text
+    assert str(document.id) in page.text
 
 
 def test_user_transcribe_page_can_queue_followup_generation(

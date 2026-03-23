@@ -235,6 +235,7 @@ Status: `Completed`
 - quick actions are now normal configuration data, parallel to templates, with the same team/personal scope split
 - implemented generation modes are freeform template output, freeform follow-ups, and quick actions
 - generation is asynchronous and uses the resolved active LLM provider/model for the owner user
+- outbound LLM generation now uses lazy transcript-version pseudonymisation via `redaction_runs` and `redaction_entities`
 - generated output is stored in `generated_documents` and shown in the workspace Output tab
 
 ## Next Milestone: Transcript Lifecycle and Retention Hardening

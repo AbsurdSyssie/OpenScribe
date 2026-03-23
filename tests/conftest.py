@@ -23,6 +23,9 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    RedactionEntity,
+    RedactionRun,
+    RedactionRunStatus,
     SttAdapterKind,
     SttAuthMode,
     Team,
@@ -528,6 +531,50 @@ def make_generated_document(db_session: Session) -> Callable[..., GeneratedDocum
 
 
 @pytest.fixture
+def make_redaction_run(db_session: Session) -> Callable[..., RedactionRun]:
+    def factory(
+        *,
+        transcript: Transcript,
+        transcript_version: TranscriptVersion,
+        owner: User,
+        redacted_text: str = "[PHI-1] attended the clinic.",
+        entities: list[tuple[int, str, str]] | None = None,
+        status: RedactionRunStatus = RedactionRunStatus.succeeded,
+    ) -> RedactionRun:
+        run = RedactionRun(
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            owner_user_id=owner.id,
+            team_id=transcript.team_id,
+            status=status,
+            redacted_text_encrypted=redacted_text,
+            mapping_hash="hash",
+            entity_count=len(entities or [(1, "PERSON", "John Smith")]),
+            api_provider="native_presidio",
+            api_model_or_version="en_core_web_sm",
+        )
+        db_session.add(run)
+        db_session.flush()
+        for order, entity_type, original_value in entities or [(1, "PERSON", "John Smith")]:
+            db_session.add(
+                RedactionEntity(
+                    redaction_run_id=run.id,
+                    entity_order=order,
+                    entity_type=entity_type,
+                    placeholder=f"[PHI-{order}]",
+                    original_value_encrypted=original_value,
+                    normalized_value_hash="hash",
+                    occurrence_count=1,
+                )
+            )
+        db_session.commit()
+        db_session.refresh(run)
+        return run
+
+    return factory
+
+
+@pytest.fixture
 def make_user_llm_preference(db_session: Session) -> Callable[..., UserLlmPreference]:
     def factory(*, user: User, preferred_model_name: str | None = None) -> UserLlmPreference:
         preference = UserLlmPreference(user_id=user.id, preferred_model_name=preferred_model_name)
@@ -577,3 +624,47 @@ def stub_transcript_ingestion_enqueue(monkeypatch: pytest.MonkeyPatch):
         return FakeTaskResult()
 
     monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fake_enqueue_transcript_ingestion_job)
+
+
+@pytest.fixture(autouse=True)
+def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session):
+    def fake_ensure_redaction_run_for_transcript_version(*, transcript_version: TranscriptVersion):
+        existing = db_session.query(RedactionRun).filter(RedactionRun.transcript_version_id == transcript_version.id).first()
+        if existing is not None:
+            return existing
+        run = RedactionRun(
+            transcript_id=transcript_version.transcript_id,
+            transcript_version_id=transcript_version.id,
+            owner_user_id=transcript_version.transcript.owner_user_id,
+            team_id=transcript_version.transcript.team_id,
+            status=RedactionRunStatus.succeeded,
+            redacted_text_encrypted=transcript_version.text_encrypted,
+            mapping_hash="stub-redaction",
+            entity_count=0,
+            api_provider="stub_redaction",
+            api_model_or_version="stub",
+        )
+        db_session.add(run)
+        db_session.commit()
+        db_session.refresh(run)
+        return run
+
+    def fake_redact_transient_text(text: str, *, start_index: int):
+        return {
+            "redacted_text": text.strip() if text.strip() else text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": "stub_redaction",
+            "api_model_or_version": "stub",
+        }
+
+    monkeypatch.setattr(
+        "app.services.templates.ensure_redaction_run_for_transcript_version",
+        lambda db, *, transcript_version: fake_ensure_redaction_run_for_transcript_version(transcript_version=transcript_version),
+    )
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    monkeypatch.setattr(
+        "app.services.templates.reidentify_text",
+        lambda redacted_text, *, phi_index: redacted_text,
+    )

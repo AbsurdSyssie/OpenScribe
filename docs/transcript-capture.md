@@ -191,6 +191,7 @@ Development note:
 - the transcript-ingestion worker loads Python models and enum definitions at process start
 - after enum/schema-adjacent code changes, restart the Celery worker along with the FastAPI app
 - otherwise new jobs can fail under stale worker code and leave sessions appearing stuck in `queued` or `transcribing`
+- `./start-dev.sh` now kills any existing OpenScribe FastAPI dev server and Celery worker processes before starting a fresh stack, to avoid mixed-code workers consuming the same queue during development
 
 Implemented now for manual browser testing:
 
@@ -234,6 +235,17 @@ Implemented now for manual browser testing:
   - the browser route returns immediately after creating a queued `generated_documents` row
   - a Celery worker performs the LLM call in the background
   - the latest output later becomes `ready` or `failed` under the same transcript root
+- before the worker sends transcript-derived text to an external LLM:
+  - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row
+  - it sends the redacted transcript text, not the raw transcript text
+  - it tells the model that `[PHI-N]` placeholders are deliberate and must be preserved exactly
+  - it validates returned placeholders before re-identification
+  - it re-identifies the finished output before saving it in `generated_documents`
+- localhost-only seeded dev accounts now get a dev redaction debug panel in `/transcribe` for the latest note/follow-up
+  - this fetches the linked `redaction_run`
+  - shows the redacted transcript payload and placeholder inventory that reached the outbound LLM path
+  - does not expose the original PHI values
+- follow-up and quick-action free-text instructions are also redacted transiently before the provider call so outbound user-entered text follows the same PHI rule
 - successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab
 - successful follow-up generation persists a second `generated_documents` type under the same transcript root and renders it back into the Follow-ups tab
 - successful quick action generation persists a third `generated_documents` type under the same transcript root and also renders it back into the Follow-ups tab/history
@@ -244,6 +256,9 @@ Implemented now for manual browser testing:
 - the same metadata is now persisted into `provider_usage_events` for later per-user and per-team usage analysis
 - generated-document rows now also retain per-run token counts, durations, and safe provider error metadata for owner-visible debugging without storing prompts or note text
 - failed generations should now surface a safer, more specific reason when available, such as timeout, unreachable provider, credential rejection, or missing model
+- important current caveat:
+  - redacted transcript text and original PHI mappings are persisted in columns still named `*_encrypted`
+  - until the encryption-at-rest slice lands, those fields are plaintext at rest even though only the redacted text is sent externally
 
 ## Session-root decision
 

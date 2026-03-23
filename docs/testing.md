@@ -109,6 +109,9 @@ What it does:
 - owner-only template generation now queues a generated-document job instead of blocking inline
 - owner-only follow-up generation now queues a generated-document job using the same async worker path
 - generated-document prompt snapshots surviving later template or quick-action deletion
+- generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version
+- generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
+- generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
 - LLM config edits/deletes being blocked while queued or processing generated documents still reference that config
 - server-side STT/LLM model validation rejecting API-submitted model names outside the provider-discovered list
 - leader team-quick-action create/update/delete scope
@@ -145,6 +148,7 @@ What it does:
 - owner transcription workspace output-tab note generation flow
 - owner transcription workspace follow-ups tab queueing a follow-up request into the same async generated-document pipeline
 - owner transcription workspace follow-ups tab quick-action dropdown queueing a quick action into the same async generated-document pipeline
+- localhost-only seeded dev-account access to generated-document redaction debug for manual verification that the outbound LLM path used the redacted transcript payload
 - OpenAI Cloud STT inspection loading a server-side filtered model list into the browser form
 - Ollama LLM inspection and save flow without a required API key for local hosts
 - STT inspect pages rendering inferred values into the save form, not just the API inspection result
@@ -159,6 +163,7 @@ What it does:
 - login form rate-limiting returning `429`
 - login form rate-limiting returning a generic wait-and-retry page
 - seeded dev-account login is allowed from localhost but rejected for non-local browser requests
+- seeded localhost dev accounts can inspect a dev-only redaction debug panel in `/transcribe` for the latest note/follow-up without exposing original PHI values
 - seeded dev-account API sessions are revoked if reused from a non-local request
 
 ### Auth unit tests

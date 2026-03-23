@@ -32,6 +32,13 @@ from app.models import (
 )
 from app.schemas.templates import PromptTemplateUpsert, QuickActionUpsert
 from app.services.llm import resolve_user_llm
+from app.services.redaction import (
+    combined_phi_index,
+    ensure_redaction_run_for_transcript_version,
+    next_placeholder_index,
+    redact_transient_text,
+    reidentify_text,
+)
 from app.services.vault import read_team_llm_bearer_token
 
 
@@ -885,7 +892,9 @@ def _build_template_generation_messages(
 ) -> tuple[str, str]:
     return (
         "You generate concise note output from a transcript using the provided template instructions. "
-        "Return only the finished note text.",
+        "Return only the finished note text. "
+        "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
+        "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
             f"Template name: {template_name}\n\n"
             f"Template instructions:\n{prompt_text}\n\n"
@@ -898,7 +907,9 @@ def _build_followup_generation_messages(*, transcript_text: str, follow_up_promp
     return (
         "You are a medical secretary writing in British English. "
         "Write a follow-up from the doctor's perspective based only on the transcript and the requested follow-up task. "
-        "Return only the finished follow-up text.",
+        "Return only the finished follow-up text. "
+        "The transcript and request may contain pseudonym placeholders like [PHI-1]. "
+        "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         f"Transcript:\n{transcript_text}\n\nFollow-up request:\n{follow_up_prompt_text}",
     )
 
@@ -908,7 +919,9 @@ def _build_quick_action_generation_messages(*, transcript_text: str, quick_actio
         "You are a medical secretary writing in British English. "
         "Write from the perspective of the doctor. "
         "Complete the requested quick action using only the transcript and the quick action instructions. "
-        "Return only the finished text.",
+        "Return only the finished text. "
+        "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
+        "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         f"Transcript:\n{transcript_text}\n\nQuick action instructions:\n{quick_action_text}",
     )
 
@@ -941,6 +954,7 @@ def queue_document_generation_from_template(
         team_id=transcript.team_id,
         transcript_id=transcript.id,
         transcript_version_id=transcript_version.id,
+        redaction_run_id=None,
         generator_type=GeneratedDocumentGeneratorType.template,
         template_version_id=latest_version.id,
         llm_config_id=config.id,
@@ -994,6 +1008,7 @@ def queue_followup_generation(
         team_id=transcript.team_id,
         transcript_id=transcript.id,
         transcript_version_id=transcript_version.id,
+        redaction_run_id=None,
         generator_type=GeneratedDocumentGeneratorType.followup,
         template_version_id=None,
         llm_config_id=config.id,
@@ -1044,6 +1059,7 @@ def queue_quick_action_generation(
         team_id=transcript.team_id,
         transcript_id=transcript.id,
         transcript_version_id=transcript_version.id,
+        redaction_run_id=None,
         generator_type=GeneratedDocumentGeneratorType.quick_action,
         template_version_id=None,
         quick_action_version_id=latest_version.id,
@@ -1108,31 +1124,41 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         raise AppError(422, "business_rule_violation", "Transcript snapshot is missing for this generated document")
     if not document.model_used:
         raise AppError(422, "business_rule_violation", "No resolved LLM model is stored for this generated document")
+    redaction_run = ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
+    document.redaction_run_id = redaction_run.id
+    transcript_text = redaction_run.redacted_text_encrypted or ""
+    extra_phi_index: list[dict[str, str | int]] = []
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
+        prompt_redaction = redact_transient_text(prompt_text, start_index=next_placeholder_index(redaction_run))
+        extra_phi_index = list(prompt_redaction["phi_index"])
         system_message, user_message = _build_template_generation_messages(
             template_name=document.source_template_name,
-            prompt_text=prompt_text,
-            transcript_text=transcript_version.text_encrypted,
+            prompt_text=prompt_redaction["redacted_text"],
+            transcript_text=transcript_text,
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
         follow_up_prompt_text = (document.follow_up_prompt_text or "").strip()
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
+        prompt_redaction = redact_transient_text(follow_up_prompt_text, start_index=next_placeholder_index(redaction_run))
+        extra_phi_index = list(prompt_redaction["phi_index"])
         system_message, user_message = _build_followup_generation_messages(
-            transcript_text=transcript_version.text_encrypted,
-            follow_up_prompt_text=follow_up_prompt_text,
+            transcript_text=transcript_text,
+            follow_up_prompt_text=prompt_redaction["redacted_text"],
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.quick_action:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Quick action snapshot is missing for this generated document")
+        prompt_redaction = redact_transient_text(prompt_text, start_index=next_placeholder_index(redaction_run))
+        extra_phi_index = list(prompt_redaction["phi_index"])
         system_message, user_message = _build_quick_action_generation_messages(
-            transcript_text=transcript_version.text_encrypted,
-            quick_action_text=prompt_text,
+            transcript_text=transcript_text,
+            quick_action_text=prompt_redaction["redacted_text"],
         )
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported generated document type", {"generator_type": document.generator_type.value})
@@ -1201,8 +1227,23 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
         return document
 
-    document.original_output_text_encrypted = generated_text
-    document.edited_output_text_encrypted = generated_text
+    try:
+        restored_text = reidentify_text(
+            generated_text,
+            phi_index=combined_phi_index(redaction_run, extra_phi_index=list(extra_phi_index)),
+        )
+    except AppError as exc:
+        document.status = GeneratedDocumentStatus.failed
+        document.error_code = exc.code
+        document.error_message = exc.message[:255]
+        document.completed_at = utcnow()
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
+        return document
+    document.original_output_text_encrypted = restored_text
+    document.edited_output_text_encrypted = restored_text
     document.status = GeneratedDocumentStatus.ready
     document.completed_at = utcnow()
     document.error_code = None

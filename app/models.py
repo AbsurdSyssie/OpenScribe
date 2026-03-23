@@ -111,6 +111,11 @@ class TemplateMode(str, enum.Enum):
     freeform = "freeform"
 
 
+class RedactionRunStatus(str, enum.Enum):
+    succeeded = "succeeded"
+    failed = "failed"
+
+
 class GeneratedDocumentGeneratorType(str, enum.Enum):
     template = "template"
     followup = "followup"
@@ -533,6 +538,10 @@ class Transcript(Base):
     versions: Mapped[list["TranscriptVersion"]] = relationship(
         back_populates="transcript", cascade="all, delete-orphan"
     )
+    redaction_runs: Mapped[list["RedactionRun"]] = relationship(
+        back_populates="transcript",
+        cascade="all, delete-orphan",
+    )
     ingestion_jobs: Mapped[list["TranscriptIngestionJob"]] = relationship(
         back_populates="transcript",
         cascade="all, delete-orphan",
@@ -554,6 +563,62 @@ class TranscriptVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     transcript: Mapped[Transcript] = relationship(back_populates="versions")
+    redaction_runs: Mapped[list["RedactionRun"]] = relationship(
+        back_populates="transcript_version",
+        cascade="all, delete-orphan",
+    )
+
+
+class RedactionRun(Base):
+    __tablename__ = "redaction_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
+    transcript_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_versions.id"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    status: Mapped[RedactionRunStatus] = mapped_column(
+        Enum(RedactionRunStatus),
+        default=RedactionRunStatus.succeeded,
+        nullable=False,
+    )
+    redacted_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mapping_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    api_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    api_model_or_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="redaction_runs")
+    transcript_version: Mapped[TranscriptVersion] = relationship(back_populates="redaction_runs")
+    entities: Mapped[list["RedactionEntity"]] = relationship(
+        back_populates="redaction_run",
+        cascade="all, delete-orphan",
+    )
+    generated_documents: Mapped[list["GeneratedDocument"]] = relationship(back_populates="redaction_run")
+
+
+class RedactionEntity(Base):
+    __tablename__ = "redaction_entities"
+    __table_args__ = (
+        UniqueConstraint("redaction_run_id", "entity_order", name="uq_redaction_entity_order"),
+        UniqueConstraint("redaction_run_id", "placeholder", name="uq_redaction_entity_placeholder"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    redaction_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("redaction_runs.id"), nullable=False)
+    entity_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    placeholder: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_value_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    redaction_run: Mapped[RedactionRun] = relationship(back_populates="entities")
 
 
 class TranscriptIngestionJob(Base):
@@ -602,6 +667,7 @@ class GeneratedDocument(Base):
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
     transcript_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_versions.id"), nullable=False)
+    redaction_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("redaction_runs.id"), nullable=True)
     generator_type: Mapped[GeneratedDocumentGeneratorType] = mapped_column(
         Enum(GeneratedDocumentGeneratorType),
         default=GeneratedDocumentGeneratorType.template,
@@ -648,6 +714,7 @@ class GeneratedDocument(Base):
     owner: Mapped[User] = relationship(back_populates="generated_documents")
     transcript: Mapped[Transcript] = relationship(back_populates="generated_documents")
     transcript_version: Mapped[TranscriptVersion] = relationship(foreign_keys=[transcript_version_id])
+    redaction_run: Mapped[RedactionRun | None] = relationship(back_populates="generated_documents")
     template_version: Mapped[PromptTemplateVersion | None] = relationship(foreign_keys=[template_version_id])
     quick_action_version: Mapped[QuickActionVersion | None] = relationship(foreign_keys=[quick_action_version_id])
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="generated_document")

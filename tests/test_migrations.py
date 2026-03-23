@@ -48,6 +48,8 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "provider_usage_events",
         "quick_actions",
         "quick_action_versions",
+        "redaction_entities",
+        "redaction_runs",
         "teams",
         "team_llm_configs",
         "team_llm_selections",
@@ -151,6 +153,8 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
     generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
     provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
+    redaction_run_columns = {column["name"] for column in inspector.get_columns("redaction_runs")}
+    redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
 
@@ -172,6 +176,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "team_id",
         "transcript_id",
         "transcript_version_id",
+        "redaction_run_id",
         "template_version_id",
         "quick_action_version_id",
         "llm_config_id",
@@ -218,6 +223,32 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "provider_http_status",
         "created_at",
     } <= provider_usage_event_columns
+    assert {
+        "transcript_id",
+        "transcript_version_id",
+        "owner_user_id",
+        "team_id",
+        "status",
+        "redacted_text_encrypted",
+        "mapping_hash",
+        "entity_count",
+        "api_provider",
+        "api_model_or_version",
+        "error_code",
+        "created_at",
+        "updated_at",
+        "failed_at",
+    } <= redaction_run_columns
+    assert {
+        "redaction_run_id",
+        "entity_order",
+        "entity_type",
+        "placeholder",
+        "original_value_encrypted",
+        "normalized_value_hash",
+        "occurrence_count",
+        "created_at",
+    } <= redaction_entity_columns
     assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
     assert {
         "transcript_id",

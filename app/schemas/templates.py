@@ -76,6 +76,7 @@ class GeneratedDocumentDetail(BaseModel):
     team_id: UUID
     transcript_id: UUID
     transcript_version_id: UUID
+    redaction_run_id: UUID | None = None
     generator_type: GeneratedDocumentGeneratorType
     template_version_id: UUID | None
     quick_action_version_id: UUID | None = None
@@ -106,6 +107,26 @@ class GeneratedDocumentDetail(BaseModel):
     completed_at: datetime | None = None
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class RedactionDebugEntityDetail(BaseModel):
+    entity_order: int
+    entity_type: str
+    placeholder: str
+    occurrence_count: int
+
+
+class GeneratedDocumentRedactionDebugDetail(BaseModel):
+    generated_document_id: UUID
+    redaction_run_id: UUID
+    transcript_version_id: UUID
+    status: str
+    api_provider: str
+    api_model_or_version: str | None = None
+    entity_count: int
+    mapping_hash: str | None = None
+    redacted_text: str
+    entities: list[RedactionDebugEntityDetail]
 
 
 class GenerateTemplateOutputRequest(BaseModel):

@@ -54,6 +54,7 @@ Canonical JSON API routes are versioned under `/api/v1`.
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
+- `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
 - `POST /api/v1/transcripts/{transcript_id}/generate-output`
 - `GET /api/v1/users/{user_id}/transcripts`
 - whole-file upload rejects oversize payloads with:
@@ -290,6 +291,19 @@ Current generation behavior:
   - provider execution metadata needed to keep the worker stable if team defaults later change
 - generation resolves the active team LLM provider plus the user's preferred/default model through the existing provider-selection path
 - generation currently supports both OpenAI chat-style providers and Ollama chat hosts
+- generation now applies native PHI pseudonymisation before outbound LLM calls:
+  - a successful reusable `redaction_runs` row is created lazily per `transcript_versions` snapshot when first needed
+  - `redaction_entities` persist the placeholder-to-original mapping for later reconstruction
+  - generated-document rows keep the `redaction_run_id` used for that run
+  - transcript text is sent to the external LLM only in redacted form
+  - free-text follow-up/template/quick-action instructions are also redacted transiently before the provider call
+  - generated output is validated so only well-formed known placeholders survive to re-identification
+  - final stored output is re-identified before being written back into `generated_documents`
+- a dev-only verification endpoint now exists for localhost seeded test accounts:
+  - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
+  - it remains owner-only
+  - it returns the redacted transcript payload and placeholder inventory for the linked `redaction_run`
+  - it does not return the original PHI values
 - the implemented generators are:
   - template-based freeform note output
   - freeform follow-up output

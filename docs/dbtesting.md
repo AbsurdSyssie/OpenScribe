@@ -465,6 +465,9 @@ Expected:
 - note generation creates both a `transcript_versions` snapshot and a `generated_documents` row
 - quick action generation creates both a `transcript_versions` snapshot and a `generated_documents` row linked to a `quick_action_versions` snapshot
 - generated-document rows now also snapshot prompt/provider execution metadata needed to survive later config or source-asset changes
+- generated-document rows now also link to the `redaction_runs` snapshot used for outbound LLM generation
+- `redaction_runs` are created lazily per `transcript_versions` snapshot and reused for later generation actions on the same version
+- `redaction_entities` persist the PHI placeholder mapping needed to validate returned placeholders and re-identify the finished output
 - generation usage metadata is now also persisted into `provider_usage_events` with team/user IDs and token/duration fields when available
 - deleting a template or quick action no longer removes the prompt context needed by already-queued/generated output
 - deleting the transcript removes the generated document immediately

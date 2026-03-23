@@ -15,6 +15,13 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Native PHI redaction now depends on Presidio plus spaCy:
+
+```bash
+source .venv/bin/activate
+python -m spacy download en_core_web_sm
+```
+
 The app and tests use separate databases by default:
 
 - app DB: `ambient_scribe`
@@ -42,10 +49,12 @@ alembic upgrade head
 This starts Docker services, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
+Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
 
 Important:
 
 - if you change transcript/job enums, Celery task code, or other worker-loaded Python models, restart `./start-dev.sh`
+- `./start-dev.sh` now replaces existing OpenScribe dev server and Celery worker processes automatically; set `DEV_RESTART_EXISTING_PROCESSES=false` only if you explicitly do not want that behavior
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
 
@@ -62,6 +71,7 @@ These seeded accounts are:
 - `mfa_required = false`
 - `mfa_enabled = false`
 - restricted to localhost requests only; non-local login attempts are rejected and any reused non-local session is revoked immediately
+- on localhost, these seeded dev accounts also get a `/transcribe` redaction-debug view for the latest note/follow-up so PHI placeholdering can be verified during development without exposing that view to normal users
 
 You can disable this behavior by setting:
 

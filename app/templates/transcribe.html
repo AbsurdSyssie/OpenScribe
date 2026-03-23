@@ -444,6 +444,31 @@
       background: white;
       line-height: 1.65;
     }
+    .debug-panel {
+      margin-top: 14px;
+      border: 1px dashed #cdbf9f;
+      border-radius: 20px;
+      padding: 14px;
+      background: #fbf8f1;
+      display: grid;
+      gap: 10px;
+    }
+    .debug-summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: #544b3f;
+    }
+    .debug-pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      background: white;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
     .placeholder {
       color: #92877a;
     }
@@ -769,6 +794,14 @@
               Latest output: {{ latest_generated_document.title }} · {{ latest_generated_document.model_used or "unknown model" }} · {{ latest_generated_document.status.value }} · {{ latest_generated_document.created_at }}
             </p>
             {% endif %}
+            {% if show_redaction_debug and latest_generated_document %}
+            <details class="debug-panel" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
+              <summary class="debug-summary">Dev redaction debug</summary>
+              <div class="session-meta">Localhost dev only. Shows the redacted transcript payload and placeholder inventory sent toward the LLM path.</div>
+              <div class="session-meta" data-redaction-debug-meta>Open to load debug data.</div>
+              <div class="debug-pre" data-redaction-debug-text>Redaction debug not loaded yet.</div>
+            </details>
+            {% endif %}
             {% if note_documents %}
             <table>
               <thead>
@@ -861,6 +894,14 @@
               Latest follow-up: {{ latest_followup_document.model_used or "unknown model" }} · {{ latest_followup_document.status.value }} · {{ latest_followup_document.created_at }}
             </p>
             {% endif %}
+            {% if show_redaction_debug and latest_followup_document %}
+            <details class="debug-panel" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">
+              <summary class="debug-summary">Dev redaction debug</summary>
+              <div class="session-meta">Localhost dev only. Shows the redacted transcript payload and placeholder inventory sent toward the LLM path.</div>
+              <div class="session-meta" data-redaction-debug-meta>Open to load debug data.</div>
+              <div class="debug-pre" data-redaction-debug-text>Redaction debug not loaded yet.</div>
+            </details>
+            {% endif %}
             {% if followup_documents %}
             <table>
               <thead>
@@ -924,6 +965,7 @@
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
       const latestFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
       const latestFollowupId = latestFollowupOutput?.dataset.latestFollowupId || '';
+      const redactionDebugPanels = [...document.querySelectorAll('[data-redaction-debug-panel]')];
       const sidebarStatus = transcriptId ? document.querySelector(`[data-sidebar-status="${transcriptId}"]`) : null;
       const uploadForm = document.querySelector('form[action="/transcribe/upload"]');
       const deleteButton = document.querySelector('[data-delete-selected]');
@@ -1259,6 +1301,44 @@
           latestFollowupOutput.innerHTML = `<span class="placeholder">The latest follow-up generation failed${suffix}.</span>`;
         }
       };
+
+      const loadRedactionDebug = async (panel) => {
+        if (!panel || panel.dataset.loaded === 'true' || panel.dataset.loading === 'true') return;
+        const generatedDocumentId = panel.dataset.generatedDocumentId;
+        const meta = panel.querySelector('[data-redaction-debug-meta]');
+        const text = panel.querySelector('[data-redaction-debug-text]');
+        if (!generatedDocumentId || !meta || !text) return;
+        panel.dataset.loading = 'true';
+        meta.textContent = 'Loading redaction debug...';
+        try {
+          const response = await fetch(`/api/v1/generated-documents/${generatedDocumentId}/redaction-debug`, {
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error('Could not load redaction debug.');
+          }
+          const payload = await response.json();
+          const placeholderLines = (payload.entities || []).map((entity) => (
+            `${entity.placeholder} · ${entity.entity_type} · occurrences ${entity.occurrence_count}`
+          ));
+          meta.textContent = `Redaction applied via ${payload.api_provider}${payload.api_model_or_version ? ` (${payload.api_model_or_version})` : ''} · ${payload.entity_count} entities`;
+          text.textContent = `${payload.redacted_text}\n\nPlaceholders:\n${placeholderLines.join('\n') || 'None'}`;
+          panel.dataset.loaded = 'true';
+        } catch (_) {
+          meta.textContent = 'Could not load redaction debug.';
+          text.textContent = 'The debug payload is unavailable for this generated document.';
+        } finally {
+          panel.dataset.loading = 'false';
+        }
+      };
+
+      redactionDebugPanels.forEach((panel) => {
+        panel.addEventListener('toggle', () => {
+          if (panel.open) {
+            loadRedactionDebug(panel);
+          }
+        });
+      });
 
       async function pollTranscript() {
         if (!transcriptId || !activeStatus) return;

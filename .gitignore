@@ -5,3 +5,14 @@ __pycache__/
 *.pyc
 docs/progress
 UI_Extract/
+frontend/node_modules/
+frontend/.next/
+app/templates/glm-2-reference.html
+app/templates/glm-3.html
+app/templates/transcribe_claude.html
+app/templates/transcribe_kimi.html
+app/templates/transcribe_glm.html
+app/templates/transcriber_glm_2.html
+frontend/
+docs/frontend-nextjs.md
+docs/UI_Translation.md

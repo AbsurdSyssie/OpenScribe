@@ -5,6 +5,7 @@ Entry points:
 - setup and local run: [docs/setup.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/setup.md)
 - authentication and access control: [docs/auth.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/auth.md)
 - frontend direction and migration plan: [docs/frontend-roadmap.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-roadmap.md)
+- Next.js frontend implementation notes: [docs/frontend-nextjs.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-nextjs.md)
 - API contract and behavior: [docs/api.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/api.md)
 - team STT configuration and Vault fit: [docs/stt-config.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/stt-config.md)
 - transcript capture and team STT planning: [docs/transcript-capture.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/transcript-capture.md)
@@ -26,7 +27,14 @@ Primary local URLs:
 - MFA challenge: `http://0.0.0.0:8080/mfa/challenge`
 - User home: `http://0.0.0.0:8080/home`
 - Transcription workspace: `http://0.0.0.0:8080/transcribe`
+- Claude transcribe preview: `http://0.0.0.0:8080/transcribe-claude`
+- GLM transcribe workspace: `http://0.0.0.0:8080/transcribe-glm-2`
 - Admin UI: `http://0.0.0.0:8080/admin`
+
+Preview note:
+
+- the preview routes reuse the real owner-only transcribe workspace context
+- the GLM 2 route now keeps its own restored shell while using the same owner-only workspace runtime for session switching, note/follow-up/history rendering, EMIS autosave, upload, and microphone flows
 
 Quick start:
 

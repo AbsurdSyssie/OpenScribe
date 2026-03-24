@@ -148,12 +148,17 @@ What it does:
 - owner transcription workspace at `/transcribe`
 - owner transcription workspace file-upload form
 - owner transcription workspace missing-STT error that names the team leader email when available
-- owner transcription workspace sidebar session list and tabbed transcript shell
+- owner transcription workspace sidebar session list and redesigned tabbed transcript shell
 - owner transcription workspace exposing and hydrating from `GET /api/v1/transcribe/workspace`
+- `/transcribe` header-only audio controls still exposing the upload form hook and the large editable session title control
 - owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace preserving structured EMIS output hooks during workspace refresh and poll-driven rerender
+- owner transcription workspace keeping the redesigned clinical shell copy and core controls while preserving current browser hooks
+- GLM 2 transcribe route exposing the same owner-only workspace endpoint and pane controls for hide, split, and expand states
+- GLM 2 transcribe route rendering the full EMIS section editor surface and the output/follow-up/history assistant pane against real workspace data
+- GLM 2 transcribe route keeping the restored GLM shell while wiring real session switching, title editing, and provider labels through the existing runtime
 - owner transcription workspace post/redirect/get upload flow so refresh does not resubmit the form
 - owner transcription workspace session header showing the resolved user LLM model instead of the raw team default when a user preference is active
 - leader home page team-template management form
@@ -166,6 +171,7 @@ What it does:
 - localhost-only seeded dev-account access to generated-document redaction debug for manual verification that the outbound LLM path used the redacted transcript payload
 - localhost-only seeded dev-account redaction debug exposing the raw redacted failed provider output for malformed note JSON diagnosis
 - home and transcribe UI showing structured EMIS template authoring, transcript-backed EMIS context reload, and line-array context inputs
+- `/transcribe` hiding the EMIS context editor when the selected note template is freeform
 - structured EMIS generation filtering transcript-persisted sections that are removed by the selected template
 - template API responses preserving `latest_version.config_json` for structured template round-tripping
 - OpenAI Cloud STT inspection loading a server-side filtered model list into the browser form

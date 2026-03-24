@@ -878,6 +878,7 @@ def render_transcribe(
     db: Session,
     *,
     current_user: User,
+    template_name: str = "transcribe.html",
     transcript_id: str | None = None,
     queued_transcript_id: str | None = None,
     active_tab: str = "transcript",
@@ -905,7 +906,7 @@ def render_transcribe(
         "message_kind": message_kind,
         "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
     }
-    return templates.TemplateResponse(request, "transcribe.html", context, status_code=status_code)
+    return templates.TemplateResponse(request, template_name, context, status_code=status_code)
 
 
 def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
@@ -2300,6 +2301,64 @@ def transcribe_page(
         request,
         db,
         current_user=context.user,
+        transcript_id=transcript_id,
+        queued_transcript_id=queued_transcript_id,
+        active_tab=tab,
+        message=message,
+        message_kind=safe_message_kind,
+    )
+
+
+@app.get("/transcribe-claude", response_class=HTMLResponse)
+def transcribe_claude_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    tab: str = "transcript",
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_transcribe(
+        request,
+        db,
+        current_user=context.user,
+        template_name="transcribe_claude.html",
+        transcript_id=transcript_id,
+        queued_transcript_id=queued_transcript_id,
+        active_tab=tab,
+        message=message,
+        message_kind=safe_message_kind,
+    )
+
+
+@app.get("/transcribe-glm-2", response_class=HTMLResponse)
+def transcribe_glm_2_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    tab: str = "transcript",
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_transcribe(
+        request,
+        db,
+        current_user=context.user,
+        template_name="transcriber_glm_2.html",
         transcript_id=transcript_id,
         queued_transcript_id=queued_transcript_id,
         active_tab=tab,

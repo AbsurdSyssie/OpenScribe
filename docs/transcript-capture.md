@@ -196,7 +196,7 @@ Development note:
 Implemented now for manual browser testing:
 
 - `/transcribe` is the dedicated owner-facing transcription workspace
-- the workspace reuses the old `transcribev2` shell structure with a session rail, action header, and tabbed main pane
+- the workspace now uses a warmer, more polished clinical shell with a persistent session rail, a dominant session header, and a cleaner tabbed main canvas
 - the workspace now creates explicit transcript-root sessions from the session rail rather than treating upload as the only session-creation path
 - session title currently maps directly to `transcripts.title`
 - the session rail now supports multi-select and bulk-delete for owner transcript roots
@@ -215,11 +215,18 @@ Implemented now for manual browser testing:
 - the workspace now has a dedicated owner-only read model at `GET /api/v1/transcribe/workspace`
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
 - the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
+- `/transcribe-glm-2` now reuses that same workspace API while preserving the restored GLM 2 shell as the visual source of truth
+- the GLM 2 route keeps note output, follow-ups, and history inside a right-side assistant pane that can be hidden, shown in split mode, or expanded to take over the main workspace
+- the GLM 2 route now wires real session switching, title editing, upload, microphone batching, note generation, follow-up generation, quick actions, EMIS autosave, structured-line copy, and history refresh into that shell
 - new-session creation now submits through `POST /api/v1/transcripts/start` from the browser shell
 - selected-session deletion now submits through owner-scoped transcript `DELETE` API calls from the browser shell
 - blank-session mode switching now patches `ingestion_mode` through the transcript JSON API
 - session-rail transcript selection now refreshes the active workspace in place from the workspace API and updates the URL with the selected `transcript_id`
 - session title changes now patch the transcript directly through the transcript JSON API instead of relying on a redirect round-trip
+- the large session title in the workspace header is now the primary editable title control; pressing Enter or blurring the field saves it back to `transcripts.title`
+- whole-file upload and microphone batch controls now live in the header bar instead of a separate audio-input panel
+- the current HTML workspace styling has been tightened to use denser spacing and smaller radii so more of the clinical workspace fits on screen at once
+- the EMIS section context editor is only shown when the selected note template is `structured`; freeform templates keep the output flow freeform-only
 - EMIS working context now autosaves back onto the transcript session through the transcript JSON API
 - whole-file upload and note/follow-up/quick-action queue actions now submit directly to the owner-only JSON APIs from the browser shell
 - the session header reports the resolved user LLM model, not just the team default, so the displayed model matches the model the generation path will actually use
@@ -263,7 +270,7 @@ Implemented now for manual browser testing:
   - the backend validates the returned section keys
   - renders the full note text onto the generated document
   - persists individual section rows for section-by-section display
-  - the workspace shows line-selectable EMIS section output with a copy-selected-lines action, including after workspace API refreshes and polling
+  - the workspace shows line-selectable EMIS section output with clearer row separation and a copy-selected-lines action, including after workspace API refreshes and polling
 - before the worker sends transcript-derived text to an external LLM:
   - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row
   - it sends the redacted transcript text, not the raw transcript text

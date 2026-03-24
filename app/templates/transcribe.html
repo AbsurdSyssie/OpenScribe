@@ -6,104 +6,102 @@
   <title>OpenScribe Transcription</title>
   <style>
     :root {
-      --bg: #f5f2ea;
-      --shell: #fffdf8;
-      --panel: rgba(255, 255, 255, 0.92);
-      --ink: #1b1d1f;
-      --muted: #64605c;
-      --line: #ddd6c7;
-      --warm: #f4d9a6;
-      --accent: #171717;
-      --accent-soft: #f2eee4;
-      --success: #d4f0df;
-      --success-ink: #20593c;
-      --error: #f9dfdf;
+      --bg: #f6f2e9;
+      --shell: rgba(255, 251, 245, 0.84);
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-strong: rgba(255, 255, 255, 0.97);
+      --ink: #18181b;
+      --muted: #6b655c;
+      --line: #e2d8c7;
+      --line-strong: #d5c5aa;
+      --warm: #f3d5a1;
+      --warm-deep: #e5b45d;
+      --accent: #111827;
+      --accent-soft: #f6efe2;
+      --success: #d7efdf;
+      --success-ink: #24583e;
+      --error: #f7dede;
       --error-ink: #872b2b;
+      --info: #dceefb;
+      --info-ink: #255376;
+      --shadow-soft: 0 10px 32px rgba(57, 35, 10, 0.06);
+      --shadow-panel: 0 6px 20px rgba(62, 40, 15, 0.05);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
       background:
-        radial-gradient(circle at top left, rgba(251, 191, 36, 0.12), transparent 28%),
-        linear-gradient(180deg, #fffdf8, #f2efe7);
+        radial-gradient(circle at top left, rgba(245, 158, 11, 0.16), transparent 26%),
+        radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 24%),
+        linear-gradient(180deg, #fffdf8 0%, #f5f1e8 52%, #ede7dc 100%);
     }
     a { color: inherit; }
     .shell {
-      margin: 24px;
+      margin: 6px;
       overflow: hidden;
-      border: 1px solid #e7e0d0;
-      border-radius: 28px;
-      background: rgba(245, 245, 244, 0.94);
-      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
-    }
-    .shell-head {
-      padding: 18px 24px 16px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.9);
-    }
-    .shell-head h1 {
-      margin: 6px 0 0;
-      font-size: 1.75rem;
-    }
-    .shell-head p {
-      margin: 6px 0 0;
-      max-width: 68rem;
-      color: var(--muted);
-      line-height: 1.5;
+      border: 1px solid rgba(255, 255, 255, 0.8);
+      border-radius: 14px;
+      background: var(--shell);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(18px);
     }
     .workspace {
-      min-height: 880px;
+      min-height: calc(100vh - 150px);
       display: flex;
-      background: transparent;
+      background:
+        linear-gradient(180deg, rgba(255, 251, 245, 0.3), rgba(244, 238, 228, 0.3));
     }
     .sidebar {
-      width: 310px;
-      border-right: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.88);
-      padding: 16px 14px;
+      width: 320px;
+      border-right: 1px solid rgba(213, 197, 170, 0.7);
+      background: rgba(255, 255, 255, 0.76);
+      padding: 12px 10px;
       display: grid;
       align-content: start;
-      gap: 18px;
+      gap: 8px;
     }
     .brand {
       display: flex;
-      gap: 12px;
+      gap: 14px;
       align-items: center;
     }
     .eyebrow {
       font-size: 0.75rem;
       text-transform: uppercase;
-      letter-spacing: 0.22em;
+      letter-spacing: 0.24em;
       color: #8d6b2e;
       font-weight: 700;
     }
     .muted { color: var(--muted); }
     .sidebar-card,
     .panel {
-      border: 1px solid var(--line);
-      border-radius: 26px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 12px;
       background: var(--panel);
-      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+      box-shadow: var(--shadow-panel);
     }
     .sidebar-card {
-      padding: 14px;
+      padding: 10px;
       display: grid;
-      gap: 12px;
+      gap: 10px;
     }
     .notes-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-radius: 18px;
-      background: #f3f1ed;
-      padding: 12px 14px;
-      gap: 12px;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #faf7f0, #f2eee5);
+      padding: 10px 11px;
+      gap: 8px;
     }
     .sidebar-list {
       display: grid;
-      gap: 10px;
+      gap: 8px;
+      max-height: calc(100vh - 360px);
+      overflow: auto;
+      padding-right: 2px;
     }
     .notes-toolbar {
       display: flex;
@@ -115,44 +113,47 @@
     .session-item {
       display: grid;
       grid-template-columns: auto 1fr;
-      gap: 10px;
+      gap: 8px;
       align-items: start;
     }
     .session-item.selected .session-link {
-      border-color: #c8b38a;
-      background: #f8f1e2;
+      border-color: #caa96d;
+      background: linear-gradient(180deg, #fff6e6, #fbefda);
     }
     .session-select {
-      margin-top: 14px;
-      width: 18px;
-      height: 18px;
+      margin-top: 12px;
+      width: 19px;
+      height: 19px;
+      accent-color: #ca8a04;
     }
     .session-link {
       display: block;
       text-decoration: none;
-      border: 1px solid var(--line);
-      border-radius: 20px;
-      padding: 12px 13px;
-      background: white;
-      transition: 140ms ease;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      padding: 10px 11px;
+      background: rgba(255, 255, 255, 0.92);
+      transition: 160ms ease;
+      box-shadow: 0 3px 10px rgba(55, 38, 14, 0.03);
     }
     .session-link.active {
-      border-color: #a9d2b5;
-      background: #edf8f0;
+      border-color: #86c99b;
+      background: linear-gradient(180deg, #eff8f1, #e7f4ea);
+      box-shadow: 0 8px 18px rgba(36, 88, 62, 0.08);
     }
     .session-link:hover {
-      background: #faf7f1;
-      transform: translateY(-1px);
+      background: linear-gradient(180deg, #fffdf8, #faf4e8);
+      transform: translateY(-2px);
     }
     .session-title {
-      font-size: 0.98rem;
+      font-size: 1rem;
       font-weight: 700;
-      margin-bottom: 4px;
+      margin-bottom: 5px;
     }
     .session-meta {
       font-size: 0.78rem;
       color: var(--muted);
-      line-height: 1.45;
+      line-height: 1.55;
     }
     .main {
       min-width: 0;
@@ -161,48 +162,88 @@
       flex-direction: column;
     }
     .header {
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.86);
-      padding: 24px 28px 18px;
+      border-bottom: 1px solid rgba(213, 197, 170, 0.7);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 238, 0.82));
+      padding: 14px 16px 12px;
       display: grid;
-      gap: 16px;
+      gap: 12px;
     }
     .session-card {
       display: flex;
       flex-wrap: wrap;
       align-items: start;
       justify-content: space-between;
-      gap: 18px;
-      border: 1px solid #f0d9aa;
-      background: rgba(255, 255, 255, 0.95);
-      border-radius: 28px;
-      padding: 18px 18px 16px;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+      gap: 14px;
+      border: 1px solid #ead6ae;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 249, 239, 0.95));
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 8px 24px rgba(72, 50, 18, 0.05);
     }
     .header-top {
       display: flex;
       justify-content: space-between;
-      gap: 18px;
+      gap: 14px;
       align-items: start;
       flex-wrap: wrap;
     }
+    .session-name {
+      font-size: 2rem;
+      line-height: 1.05;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+    .session-title-form {
+      margin-top: 6px;
+      display: grid;
+      gap: 4px;
+      max-width: 680px;
+    }
+    .session-title-input {
+      border: 0;
+      border-bottom: 1px solid rgba(213, 197, 170, 0.85);
+      border-radius: 0;
+      padding: 0 0 10px;
+      background: transparent;
+      box-shadow: none;
+      font-size: clamp(2rem, 3.4vw, 3.1rem);
+      line-height: 1.02;
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      color: var(--ink);
+    }
+    .session-title-input::placeholder {
+      color: #8c8378;
+    }
+    .session-title-input:focus {
+      border-color: #d6a44d;
+      box-shadow: 0 10px 0 -8px rgba(245, 158, 11, 0.24);
+    }
+    .session-title-hint {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-weight: 700;
+    }
     .chips {
       display: flex;
-      gap: 8px;
+      gap: 9px;
       flex-wrap: wrap;
     }
     .chip {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 7px 12px;
+      padding: 5px 9px;
       font-size: 0.78rem;
       font-weight: 700;
-      background: var(--warm);
-      color: #5c430f;
+      background: #f7dfb6;
+      color: #68460f;
+      box-shadow: inset 0 0 0 1px rgba(194, 128, 24, 0.09);
     }
     .chip.neutral {
-      background: #ece7de;
+      background: #f0ece4;
       color: #4e473d;
     }
     .chip.success {
@@ -220,13 +261,16 @@
       flex-wrap: wrap;
       align-items: center;
     }
+    .top-actions {
+      justify-content: flex-end;
+    }
     .split-action {
       position: relative;
       display: inline-flex;
       align-items: stretch;
       border-radius: 999px;
       overflow: visible;
-      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+      box-shadow: none;
     }
     .split-action button {
       border-radius: 0;
@@ -249,14 +293,14 @@
     }
     .split-menu {
       position: absolute;
-      top: calc(100% + 8px);
+      top: calc(100% + 4px);
       right: 0;
       min-width: 220px;
-      padding: 8px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.98);
-      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.12);
+      padding: 6px;
+      border: 1px solid rgba(226, 216, 199, 0.98);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.99);
+      box-shadow: 0 6px 18px rgba(76, 54, 30, 0.08);
       display: grid;
       gap: 6px;
       z-index: 20;
@@ -275,22 +319,30 @@
     }
     .control-row {
       display: flex;
-      gap: 10px;
+      gap: 6px;
       align-items: center;
       flex-wrap: wrap;
       padding-top: 2px;
+      justify-content: space-between;
+    }
+    .control-row-left,
+    .control-row-right {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
     }
     .control-pill {
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      height: 42px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: white;
-      padding: 0 14px;
+      height: 36px;
+      border-radius: 9px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      background: rgba(255, 255, 255, 0.96);
+      padding: 0 10px;
       color: #5e584f;
-      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+      box-shadow: none;
     }
     .bars {
       display: inline-flex;
@@ -308,41 +360,51 @@
     button,
     .button-link {
       border: 0;
-      border-radius: 999px;
-      padding: 11px 16px;
+      border-radius: 9px;
+      padding: 9px 12px;
       font: inherit;
-      font-size: 0.95rem;
+      font-size: 0.92rem;
+      font-weight: 700;
       cursor: pointer;
       text-decoration: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      background: var(--accent);
+      background: linear-gradient(180deg, #111827, #1f2937);
       color: white;
+      box-shadow: 0 3px 10px rgba(17, 24, 39, 0.08);
+      transition: 140ms ease;
+    }
+    .button:hover,
+    button:hover,
+    .button-link:hover {
+      transform: translateY(-1px);
     }
     .button.secondary,
     .button-link.secondary,
     button.secondary {
-      background: white;
+      background: rgba(255, 255, 255, 0.98);
       color: #4c4740;
-      border: 1px solid var(--line);
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      box-shadow: none;
     }
     button[disabled] {
       cursor: not-allowed;
       opacity: 0.55;
     }
     .button.icon {
-      width: 42px;
-      height: 42px;
+      width: 36px;
+      height: 36px;
       padding: 0;
-      border-radius: 999px;
+      border-radius: 9px;
     }
     .flash {
-      margin: 0 28px;
-      padding: 14px 16px;
-      border-radius: 18px;
-      border: 1px solid var(--line);
+      margin: 0 16px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      box-shadow: none;
     }
     .flash.success {
       background: var(--success);
@@ -352,106 +414,120 @@
       background: var(--error);
       color: var(--error-ink);
     }
-    .upload-panel {
-      margin: 18px 28px 0;
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
     form {
       display: grid;
       gap: 12px;
     }
-    .upload-grid {
-      display: grid;
-      grid-template-columns: 1.1fr 1fr auto;
-      gap: 12px;
-      align-items: end;
-    }
     label {
       display: grid;
-      gap: 6px;
+      gap: 8px;
       color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
     }
     input, textarea, select {
       width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 12px 14px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      padding: 9px 10px;
       font: inherit;
-      background: white;
+      background: rgba(255, 255, 255, 0.98);
+      color: var(--ink);
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: #d6a44d;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
     }
     .tabs {
-      border-bottom: 1px solid var(--line);
-      background: #f7f5ef;
-      padding: 12px 28px;
+      border-bottom: 1px solid rgba(213, 197, 170, 0.7);
+      background: rgba(249, 244, 235, 0.82);
+      padding: 10px 16px;
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
       flex-wrap: wrap;
     }
     .tab {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 9px 14px;
-      background: white;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 9px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.98);
       color: #5f5952;
+      font-weight: 700;
+      box-shadow: none;
     }
     .tab.active {
-      background: #f1cf94;
-      border-color: #f1cf94;
+      background: linear-gradient(180deg, #f6d79f, #f1c36f);
+      border-color: #f1c36f;
       color: #4f3705;
     }
     .tabs .tab-spacer {
       margin-left: auto;
     }
     .content {
-      padding: 22px 28px 28px;
+      padding: 14px 16px 18px;
     }
     .content-grid {
       display: grid;
-      gap: 18px;
+      gap: 12px;
     }
     .panel {
-      padding: 18px;
+      padding: 14px;
     }
     .panel-head {
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .panel-head h2,
     .panel-head h3 {
-      margin: 0 0 4px;
-      font-size: 1rem;
+      margin: 0 0 6px;
+      font-size: 1.08rem;
+      letter-spacing: -0.01em;
     }
     .panel-head p {
       margin: 0;
       color: var(--muted);
-      font-size: 0.84rem;
-      line-height: 1.5;
+      font-size: 0.87rem;
+      line-height: 1.6;
     }
     .session-progress {
-      margin-top: 10px;
-      font-size: 0.88rem;
+      margin-top: 14px;
+      font-size: 0.9rem;
       color: var(--muted);
-      line-height: 1.5;
+      line-height: 1.55;
+      max-width: 44rem;
     }
     .text-surface {
-      min-height: 430px;
+      min-height: 460px;
       white-space: pre-wrap;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      padding: 16px;
-      background: white;
-      line-height: 1.65;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 12px;
+      padding: 14px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(251, 247, 240, 0.96));
+      line-height: 1.72;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+      font-size: 0.97rem;
+    }
+    .text-surface[data-active-draft] {
+      background:
+        radial-gradient(circle at top right, rgba(56, 189, 248, 0.05), transparent 32%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 246, 238, 0.96));
+    }
+    .text-surface[data-latest-generated-output] {
+      background:
+        radial-gradient(circle at top left, rgba(245, 158, 11, 0.08), transparent 28%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(251, 247, 240, 0.96));
     }
     .debug-panel {
-      margin-top: 14px;
-      border: 1px dashed #cdbf9f;
-      border-radius: 20px;
-      padding: 14px;
+      margin-top: 8px;
+      border: 1px dashed #ccb890;
+      border-radius: 10px;
+      padding: 10px;
       background: #fbf8f1;
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     .debug-summary {
       cursor: pointer;
@@ -461,9 +537,9 @@
     .debug-pre {
       white-space: pre-wrap;
       word-break: break-word;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 12px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      padding: 10px;
       background: white;
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 0.82rem;
@@ -473,8 +549,8 @@
       color: #92877a;
     }
     .mic-status {
-      min-height: 1.4rem;
-      font-size: 0.88rem;
+      min-height: 1.5rem;
+      font-size: 0.9rem;
       color: var(--muted);
     }
     .mic-status.error {
@@ -483,32 +559,173 @@
     .mic-status.success {
       color: var(--success-ink);
     }
+    .subgrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      border: 1px solid rgba(226, 216, 199, 0.7);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(249, 245, 238, 0.72);
+    }
+    .emis-editor {
+      display: grid;
+      gap: 8px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.96);
+    }
+    .emis-editor-rows {
+      display: grid;
+      gap: 8px;
+    }
+    .editor-line-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      border: 1px solid rgba(226, 216, 199, 0.75);
+      border-radius: 10px;
+      padding: 8px;
+      background: rgba(255, 252, 246, 0.94);
+    }
+    .editor-line-row textarea {
+      min-height: 64px;
+      resize: vertical;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+    .editor-line-row button,
+    .emis-editor > button[data-emis-editor-add-line] {
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      box-shadow: none;
+      transform: none;
+    }
+    .editor-line-row button {
+      align-self: stretch;
+      background: #fff1f1;
+      color: #8a3131;
+      border: 1px solid #edc8c8;
+    }
+    .editor-line-row button:hover,
+    .emis-editor > button[data-emis-editor-add-line]:hover {
+      transform: none;
+    }
+    .emis-editor > button[data-emis-editor-add-line] {
+      justify-self: start;
+      background: #f6efe2;
+      color: #57452a;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+    }
+    .structured-line-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid rgba(226, 216, 199, 0.75);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255, 252, 246, 0.94);
+    }
+    .structured-line-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin-top: 4px;
+      accent-color: #ca8a04;
+      box-shadow: none;
+    }
+    .structured-line-row span {
+      display: block;
+      line-height: 1.65;
+      color: #4a4338;
+    }
+    .section-block {
+      display: grid;
+      gap: 10px;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      padding: 10px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 248, 241, 0.96));
+    }
+    .section-block + .section-block {
+      margin-top: 8px;
+    }
+    .section-block h4 {
+      margin: 0;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      color: #8b6a2c;
+    }
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      overflow: hidden;
+      border: 1px solid rgba(226, 216, 199, 0.92);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.96);
+      box-shadow: none;
+    }
+    thead {
+      background: rgba(246, 236, 218, 0.9);
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(226, 216, 199, 0.7);
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    th {
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: #7b6750;
+    }
+    td {
+      font-size: 0.9rem;
+      color: #342f29;
+    }
+    code {
+      padding: 0.1rem 0.4rem;
+      border-radius: 999px;
+      background: rgba(245, 158, 11, 0.12);
+      color: #87560f;
+      font-size: 0.88em;
+    }
     [hidden] { display: none !important; }
     @media (max-width: 980px) {
       .shell { margin: 0; border-radius: 0; }
       .workspace { display: block; }
       .sidebar { width: auto; border-right: 0; border-bottom: 1px solid var(--line); }
-      .upload-grid { grid-template-columns: 1fr; }
-      .flash, .upload-panel, .tabs, .content, .header { padding-left: 18px; padding-right: 18px; margin-left: 0; margin-right: 0; }
-      .shell-head { padding-left: 18px; padding-right: 18px; }
+      .subgrid { grid-template-columns: 1fr; }
+      .flash, .tabs, .content, .header { padding-left: 12px; padding-right: 12px; margin-left: 0; margin-right: 0; }
+      .shell-head { padding-left: 12px; padding-right: 12px; }
+      .session-card { padding: 12px; }
+      .session-name { font-size: 1.6rem; }
+      .text-surface { min-height: 420px; }
     }
   </style>
 </head>
 <body>
   <section class="shell" data-workspace-endpoint="{{ workspace_endpoint }}">
-    <div class="shell-head">
-      <div class="eyebrow" style="color: #78716c;">UI reference port</div>
-      <h1>Scribe workspace</h1>
-      <p>Reference shell based on the current <code>transcribev2</code> workspace. This keeps the sidebar, session card, primary tabs, transcript/output panes, and follow-up area while wiring only the current OpenScribe transcription flow.</p>
-    </div>
   <div class="workspace">
     <aside class="sidebar">
       <div class="brand">
-        <div style="display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:18px;background:#f7e3b7;font-size:1.2rem;">🪶</div>
+        <div style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:18px;background:linear-gradient(180deg,#f9e3ba,#f0c980);font-size:1.25rem;box-shadow:0 10px 24px rgba(187,120,22,0.16);">🪶</div>
         <div>
-          <div class="eyebrow">Transcription workspace</div>
-          <div style="font-size: 1.05rem; font-weight: 700;">LocalScribe</div>
-          <div class="muted">Privacy first</div>
+          <div class="eyebrow">Clinical workspace</div>
+          <div style="font-size: 1.08rem; font-weight: 700;">LocalScribe</div>
+          <div class="muted">Private, owner-only sessions</div>
         </div>
       </div>
 
@@ -537,7 +754,7 @@
       <form class="sidebar-card" id="bulk-delete-sessions" method="post" action="/transcribe/sessions/delete" onsubmit="return confirm('Delete the selected transcript sessions permanently?');">
         <div class="notes-head">
           <div>
-            <div class="eyebrow" style="color: var(--muted);">Notes</div>
+            <div class="eyebrow" style="color: var(--muted);">Sessions</div>
             <div style="font-size: 0.95rem; font-weight: 700;">Most recent first</div>
           </div>
           <div class="notes-toolbar">
@@ -578,7 +795,23 @@
         <div class="header-top" style="width:100%;">
           <div>
             <div class="eyebrow">Session</div>
-            <div style="font-size: 1.6rem; font-weight: 700;" data-session-title-display>{{ active_transcript.title if active_transcript else "New transcription session" }}</div>
+            {% if active_transcript %}
+            <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" class="session-title-form" data-transcript-title-form>
+              <input
+                type="text"
+                name="title"
+                class="session-title-input"
+                maxlength="255"
+                value="{{ active_transcript.title or '' }}"
+                placeholder="Untitled session"
+                aria-label="Session title"
+                data-session-title-display
+                data-transcript-title-input>
+              <div class="session-title-hint">Press Enter or click away to save the session title.</div>
+            </form>
+            {% else %}
+            <div class="session-name" data-session-title-display>New transcription session</div>
+            {% endif %}
             <div class="chips" style="margin-top: 12px;">
               {% if active_transcript %}
               <span class="chip neutral" data-active-status>{{ active_transcript.status.value }}</span>
@@ -616,90 +849,46 @@
             </div>
           </div>
           <div class="top-actions">
-            <button type="button" class="secondary">Configure LLM</button>
+            <button type="button" class="secondary">LLM settings</button>
             <button type="submit" form="new-session-form" data-local-busy-protected {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>New session</button>
           </div>
-        </div>
-        <div class="control-row">
-          <div class="control-pill">
-            <span class="bars" aria-hidden="true">
-              <span style="height:10px"></span>
-              <span style="height:16px"></span>
-              <span style="height:24px"></span>
-              <span style="height:18px"></span>
-              <span style="height:12px"></span>
-            </span>
-            <span style="font-size:0.8rem;font-weight:700;">Input</span>
-          </div>
-          <button type="button" class="secondary icon" title="Record" data-mic-start>Mic</button>
-          <button type="button" class="secondary icon" title="Upload">Up</button>
-          <button type="button" class="secondary icon" title="Stop" data-mic-stop disabled>Stop</button>
-          <button type="button" class="secondary icon" title="Quick action" disabled>QA</button>
-          <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-mic-timer>00:00</div>
-        </div>
-        {% if active_transcript %}
-        <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" style="max-width: 520px;" data-transcript-title-form>
-          <label>
-            Session title
-            <input type="text" name="title" maxlength="255" value="{{ active_transcript.title or '' }}" placeholder="Untitled session" data-transcript-title-input>
-          </label>
-          <div class="upload-row">
-            <button type="submit" class="secondary" data-transcript-title-submit>Rename session</button>
-          </div>
-        </form>
-        {% endif %}
-        </div>
-      </section>
-
-      <div class="flash {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
-
-      <section class="upload-panel panel">
-        <div class="panel-head">
-          <h2>Audio input</h2>
-          <p>
-            {% if stt_selection %}
-            Use the selected transcript session for whole-file audio input. Choose file upload or microphone batch from the action dropdown, then start from the main button.
-            {% elif team_leader_email %}
-            No STT is selected for your team yet. Ask {{ team_leader_email }} to choose an active STT endpoint first.
-            {% else %}
-            No STT is selected for your team yet. Ask a team leader or system admin to finish STT setup first.
-            {% endif %}
-          </p>
         </div>
         <form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form>
           {% if active_transcript %}
           <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
           {% endif %}
           <input type="file" name="audio" accept="audio/*" data-audio-file-input hidden {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
-          <div class="upload-grid">
-            <label>
-              Title
-              <input type="text" name="title" maxlength="255" placeholder="Telephone review" value="{{ active_transcript.title if active_transcript and active_transcript.title else '' }}" {% if not active_transcript %}disabled{% endif %}>
-            </label>
-            <div style="display:grid;gap:8px;">
-              <div class="upload-row">
-                <div class="split-action">
-                  <button type="button" data-audio-action-trigger data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>Upload from file</button>
-                  <button type="button" class="split-toggle" data-audio-action-toggle data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>▼</button>
-                  <div class="split-menu" data-audio-action-menu hidden>
-                    <button type="button" class="split-option active" data-audio-action-option="file">Upload from file</button>
-                    <button type="button" class="split-option" data-audio-action-option="microphone">Record microphone batch</button>
-                  </div>
-                </div>
-                <button type="button" class="secondary" data-mic-stop-panel disabled>Stop and queue batch</button>
-              </div>
-              <div class="session-meta" data-audio-source-caption>Selected source: file upload</div>
-            </div>
-          </div>
         </form>
-        {% if active_transcript and active_transcript.ingestion_mode.value == "live_chunked" %}
-        <div class="upload-row">
-          <button type="submit" class="secondary" form="switch-to-whole-file-form" data-local-busy-protected {% if not can_switch_to_whole_file %}disabled title="{{ switch_mode_block_message or 'Cannot switch input mode right now' }}"{% endif %}>Use this session for upload or microphone</button>
+        <div class="control-row">
+          <div class="control-row-left">
+            <div class="control-pill">
+              <span class="bars" aria-hidden="true">
+                <span style="height:10px"></span>
+                <span style="height:16px"></span>
+                <span style="height:24px"></span>
+                <span style="height:18px"></span>
+                <span style="height:12px"></span>
+              </span>
+              <span style="font-size:0.8rem;font-weight:700;">Audio input</span>
+            </div>
+            <div class="split-action">
+              <button type="button" data-audio-action-trigger data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>Upload from file</button>
+              <button type="button" class="split-toggle" data-audio-action-toggle data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>▼</button>
+              <div class="split-menu" data-audio-action-menu hidden>
+                <button type="button" class="split-option active" data-audio-action-option="file">Upload from file</button>
+                <button type="button" class="split-option" data-audio-action-option="microphone">Record microphone batch</button>
+              </div>
+            </div>
+            <button type="button" class="secondary" data-mic-stop-panel disabled>Stop and queue batch</button>
+          </div>
+          <div class="control-row-right">
+            {% if active_transcript and active_transcript.ingestion_mode.value == "live_chunked" %}
+            <button type="submit" class="secondary" form="switch-to-whole-file-form" data-local-busy-protected {% if not can_switch_to_whole_file %}disabled title="{{ switch_mode_block_message or 'Cannot switch input mode right now' }}"{% endif %}>Use this session for upload or microphone</button>
+            {% endif %}
+            <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-audio-source-caption>Selected source: file upload</div>
+            <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-mic-timer>00:00</div>
+          </div>
         </div>
-        <p class="muted">The active session is `live_chunked`, so whole-file input is disabled until you switch this blank session back to `whole_file`.</p>
-        {% elif not active_transcript %}
-        <p class="muted">Create or select a session from the notes rail, then choose whether to upload a file or record from the microphone.</p>
-        {% endif %}
         <div class="mic-status" data-mic-status>
           {% if not active_transcript %}
           Create or select a session to start whole-file transcription.
@@ -711,7 +900,10 @@
           Ready for file upload or microphone batch recording in this session.
           {% endif %}
         </div>
+        </div>
       </section>
+
+      <div class="flash {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
 
       <section class="tabs">
         <button type="button" class="tab{% if active_tab == 'transcript' %} active{% endif %}" data-tab-trigger="transcript">Transcript</button>
@@ -726,7 +918,7 @@
           <div class="panel" data-tab-panel="transcript"{% if active_tab != 'transcript' %} hidden{% endif %}>
             <div class="panel-head">
               <h2>Transcript</h2>
-              <p>Background ingestion writes into the current draft for the selected transcript session.</p>
+              <p>Background ingestion writes into the current draft for the selected transcript session. This pane is your live source of truth before note and follow-up generation.</p>
             </div>
             <div class="text-surface" data-active-draft>
               {% if active_transcript and active_transcript.current_draft_text_encrypted %}
@@ -740,8 +932,14 @@
           <div class="panel" data-tab-panel="output"{% if active_tab != 'output' %} hidden{% endif %}>
             <div class="panel-head">
               <h2>Generated note output</h2>
-              <p>Choose a team or personal template, send the current transcript draft to the active LLM, and review the returned note here.</p>
+              <p>Choose a template, send the current transcript draft to the active LLM, and review either freeform or structured EMIS-style output here.</p>
             </div>
+            {% set template_state = namespace(default_mode='freeform') %}
+            {% if available_templates %}
+              {% set first_template = available_templates[0] %}
+              {% set first_version = first_template.versions|sort(attribute='version_no')|last %}
+              {% set template_state.default_mode = first_version.mode.value %}
+            {% endif %}
             <form method="post" action="/transcribe/generate-output" data-generate-output-form>
               {% if active_transcript %}
               <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
@@ -759,7 +957,7 @@
                   {% endif %}
                 </select>
               </label>
-              <div class="subgrid">
+              <div class="subgrid" data-structured-context-panel {% if template_state.default_mode != "structured" %}hidden{% endif %}>
                 <div class="session-meta" style="grid-column: 1 / -1;">Structured EMIS context. Fill any areas you already know before generation; they will be sent to the LLM as section context.</div>
                 {% for section in emis_sections %}
                 <label>
@@ -778,7 +976,7 @@
                 </label>
                 {% endfor %}
               </div>
-              <div class="session-meta" data-emis-save-status>Saved to this session automatically.</div>
+              <div class="session-meta" data-emis-save-status {% if template_state.default_mode != "structured" %}hidden{% endif %}>Saved to this session automatically.</div>
               <div class="upload-row">
                 <button type="submit" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate note</button>
               </div>
@@ -811,7 +1009,7 @@
             <div class="panel" data-generated-structured-panel {% if not latest_generated_document or latest_generated_document.document_mode.value != "structured" or not latest_generated_document.sections %}hidden{% endif %} style="margin-top: 1rem;">
               <div class="panel-head">
                 <h3>EMIS sections</h3>
-                <p>Select individual lines for clipboard copy. Lines are grouped by EMIS section.</p>
+                <p>Select the individual lines you want to copy. Lines stay clearly grouped by EMIS-style section.</p>
               </div>
               <div class="upload-row">
                 <button type="button" data-copy-structured-lines>Copy selected lines</button>
@@ -823,7 +1021,7 @@
                   <div class="section-block">
                     <h4>{{ section.section_label }}</h4>
                     {% for line in latest_generated_document_section_lines.get(section.id|string, []) %}
-                    <label class="check-row">
+                    <label class="structured-line-row">
                       <input type="checkbox" data-structured-line-checkbox data-section-label="{{ section.section_label }}" value="{{ line }}" checked>
                       <span>{{ line }}</span>
                     </label>
@@ -1023,6 +1221,8 @@
       const switchToWholeFileForm = document.querySelector('#switch-to-whole-file-form');
       const titleForm = document.querySelector('[data-transcript-title-form]');
       const generateOutputForm = document.querySelector('[data-generate-output-form]');
+      const generateOutputTemplateSelect = generateOutputForm?.querySelector('select[name="template_id"]') || null;
+      const structuredContextPanel = document.querySelector('[data-structured-context-panel]');
       const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
       const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
       const emisSaveStatus = document.querySelector('[data-emis-save-status]');
@@ -1142,8 +1342,7 @@
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
-      const renameTitleInput = document.querySelector('form[action*="/transcribe/sessions/"][action$="/title"] input[name="title"]');
-      const titleInput = document.querySelector('form[action="/transcribe/upload"] input[name="title"]');
+      const renameTitleInput = document.querySelector('[data-transcript-title-input]');
       const fileInput = document.querySelector('[data-audio-file-input]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
       const audioActionToggle = document.querySelector('[data-audio-action-toggle]');
@@ -1157,7 +1356,7 @@
       let mediaChunks = [];
       let startedAt = null;
       let timerId = null;
-      let currentTranscriptTitle = (renameTitleInput?.value || titleInput?.value || '').trim();
+      let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let emisSaveTimer = null;
       let lastSavedStructuredContext = null;
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
@@ -1426,6 +1625,21 @@
         return context;
       };
 
+      const selectedOutputTemplateMode = () => {
+        const selectedOption = generateOutputTemplateSelect?.selectedOptions?.[0];
+        return selectedOption?.dataset?.templateMode || 'freeform';
+      };
+
+      const syncStructuredTemplateUi = () => {
+        const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
+        if (structuredContextPanel) {
+          structuredContextPanel.hidden = !isStructuredTemplate;
+        }
+        if (emisSaveStatus) {
+          emisSaveStatus.hidden = !isStructuredTemplate;
+        }
+      };
+
       const saveStructuredContext = async ({ silent = false } = {}) => {
         if (!transcriptId) return null;
         const structuredContext = collectStructuredContext();
@@ -1469,9 +1683,6 @@
           throw new Error(await parseErrorMessage(response, 'Could not update the session title.'));
         }
         currentTranscriptTitle = nextTitle;
-        if (titleInput) {
-          titleInput.value = nextTitle;
-        }
       };
 
       const setEmisEditorLines = (editor, lines) => {
@@ -1502,7 +1713,7 @@
         const disabled = editor.dataset.disabled === 'true';
         if (!rows) return null;
         const row = document.createElement('div');
-        row.className = 'check-row';
+        row.className = 'editor-line-row';
         row.setAttribute('data-emis-line-row', '');
         const textarea = document.createElement('textarea');
         textarea.rows = 2;
@@ -1552,6 +1763,9 @@
           form.addEventListener('submit', () => syncEmisEditor(editor));
         }
         editor.addEventListener('input', () => {
+          if (selectedOutputTemplateMode() !== 'structured') {
+            return;
+          }
           if (emisSaveTimer) {
             window.clearTimeout(emisSaveTimer);
           }
@@ -1566,6 +1780,10 @@
           }, 500);
         });
       });
+      if (generateOutputTemplateSelect) {
+        generateOutputTemplateSelect.addEventListener('change', syncStructuredTemplateUi);
+      }
+      syncStructuredTemplateUi();
 
       const renderGeneratedOutput = (generatedDocument) => {
         if (!latestGeneratedOutput) return;
@@ -1604,7 +1822,7 @@
                 .filter((line) => line.length > 0);
               lines.forEach((line) => {
                 const label = window.document.createElement('label');
-                label.className = 'check-row';
+                label.className = 'structured-line-row';
                 const checkbox = window.document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.checked = true;
@@ -1685,7 +1903,11 @@
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           renderDraft(transcript.current_draft_text_encrypted || '');
           if (sessionTitleDisplay) {
-            sessionTitleDisplay.textContent = transcript.title || 'Untitled session';
+            if ('value' in sessionTitleDisplay) {
+              sessionTitleDisplay.value = transcript.title || '';
+            } else {
+              sessionTitleDisplay.textContent = transcript.title || 'Untitled session';
+            }
           }
           if (activeIngestionModeChip) {
             activeIngestionModeChip.textContent = transcript.ingestion_mode === 'whole_file' ? 'whole-file session' : transcript.ingestion_mode;
@@ -1693,9 +1915,6 @@
           currentTranscriptTitle = (transcript.title || '').trim();
           if (renameTitleInput) {
             renameTitleInput.value = transcript.title || '';
-          }
-          if (titleInput) {
-            titleInput.value = transcript.title || '';
           }
           document.querySelectorAll('input[name="transcript_id"]').forEach((input) => {
             input.value = transcript.id;
@@ -1705,7 +1924,11 @@
           }
         } else {
           if (sessionTitleDisplay) {
-            sessionTitleDisplay.textContent = 'New transcription session';
+            if ('value' in sessionTitleDisplay) {
+              sessionTitleDisplay.value = '';
+            } else {
+              sessionTitleDisplay.textContent = 'New transcription session';
+            }
           }
           if (activeIngestionModeChip) {
             activeIngestionModeChip.textContent = '';
@@ -1807,6 +2030,21 @@
           }
         });
       }
+      if (renameTitleInput) {
+        renameTitleInput.addEventListener('blur', async () => {
+          try {
+            await syncTranscriptTitleIfNeeded();
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not update the session title.', 'error');
+          }
+        });
+        renameTitleInput.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            titleForm?.requestSubmit();
+          }
+        });
+      }
 
       if (uploadForm) {
         uploadForm.addEventListener('submit', async (event) => {
@@ -1852,10 +2090,16 @@
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                template_id: templateId,
-                structured_context: collectStructuredContext(),
-              }),
+              body: JSON.stringify(
+                selectedOutputTemplateMode() === 'structured'
+                  ? {
+                      template_id: templateId,
+                      structured_context: collectStructuredContext(),
+                    }
+                  : {
+                      template_id: templateId,
+                    }
+              ),
             });
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));

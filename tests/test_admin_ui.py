@@ -652,16 +652,230 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     page = client.get("/transcribe")
 
     assert page.status_code == 200
-    assert "Transcription workspace" in page.text
+    assert "Clinical workspace" in page.text
+    assert "LocalScribe" in page.text
     assert "New session" in page.text
-    assert "Microphone batch" in page.text
     assert "Audio input" in page.text
     assert "Upload from file" in page.text
+    assert "Press Enter or click away to save the session title." not in page.text
     assert "Create or select a session to begin." in page.text
     assert "Create mic batch session" not in page.text
     assert "Generated note output" in page.text
     assert "Follow-ups" in page.text
     assert "Create a transcript root first" not in page.text
+
+
+def test_user_transcribe_claude_page_uses_alternate_template(client, make_team, make_user):
+    team = make_team(name="Clinic Claude UI")
+    make_user(email="member-claude@example.com", password="password-3", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "member-claude@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get("/transcribe-claude")
+
+    assert page.status_code == 200
+    assert "LocalScribe" in page.text
+    assert "Follow-ups" in page.text
+
+
+def test_user_transcribe_glm_2_page_uses_alternate_template(client, make_team, make_user):
+    team = make_team(name="Clinic GLM UI")
+    make_user(email="member-glm@example.com", password="password-3", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "member-glm@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get("/transcribe-glm-2")
+
+    assert page.status_code == 200
+    assert "Ambient Scribe" in page.text
+
+
+def test_user_transcribe_glm_2_page_renders_workspace_values(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic GLM Dynamic")
+    member = make_user(email="member-glm-dynamic@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Dynamic hypertension review",
+        current_draft_text_encrypted="Patient reports improved headaches.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(version)
+    db_session.flush()
+    document = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        document_mode=TemplateMode.freeform,
+        title="Hypertension follow-up",
+        source_template_name="GP Note",
+        original_output_text_encrypted="Continue Amlodipine and review in four weeks.",
+        edited_output_text_encrypted="Continue Amlodipine and review in four weeks.",
+        status=GeneratedDocumentStatus.ready,
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-glm-dynamic@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "Dynamic hypertension review" in page.text
+    assert "Patient reports improved headaches." in page.text
+    assert "Continue Amlodipine and review in four weeks." in page.text
+
+
+def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic GLM Hooks")
+    member = make_user(email="member-glm-hooks@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Workspace hooks review",
+        current_draft_text_encrypted="Patient reports stable BP readings at home.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-glm-hooks@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert 'data-workspace-endpoint="' in page.text
+    assert 'data-pane-toggle="collapsed"' in page.text
+    assert 'data-pane-toggle="normal"' in page.text
+    assert 'data-pane-toggle="expanded"' in page.text
+    assert 'data-pane-reopen' in page.text
+    assert 'data-tab-trigger="output"' in page.text
+    assert 'data-tab-trigger="followups"' in page.text
+    assert 'data-tab-trigger="history"' in page.text
+    assert 'data-copy-structured-lines' in page.text
+    assert 'data-latest-followup-output' in page.text
+
+
+def test_user_transcribe_glm_2_page_shows_all_emis_sections_for_structured_templates(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic GLM Structured")
+    admin = make_user(email="glm-structured-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="glm-structured-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="glm-structured-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Structured note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="GLM structured review",
+        current_draft_text_encrypted="Patient is improving after antibiotics.",
+        structured_context_json={"profile": "emis", "sections": {"problem": ["Acute sinusitis"], "tasks": ["Safety net advice"]}},
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "glm-structured-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "Structured EMIS context" in page.text
+    assert 'name="context_problem"' in page.text
+    assert 'name="context_history"' in page.text
+    assert 'name="context_family_history"' in page.text
+    assert 'name="context_social_history"' in page.text
+    assert 'name="context_examination"' in page.text
+    assert 'name="context_comment"' in page.text
+    assert 'name="context_tasks"' in page.text
+    assert 'name="context_investigations"' in page.text
+    assert "Acute sinusitis" in page.text
+    assert "Safety net advice" in page.text
+
+
+def test_user_transcribe_glm_2_page_shows_stt_config_label(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+):
+    team = make_team(name="Clinic GLM STT Label")
+    admin = make_user(email="glm-stt-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="glm-stt-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Parakeet Local",
+        model_name=None,
+    )
+    make_stt_selection(config=config, actor=member)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="GLM STT label review",
+        current_draft_text_encrypted="Transcript text.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "glm-stt-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "STT:" in page.text
+    assert "Parakeet Local" in page.text
 
 
 def test_user_transcribe_page_shows_resolved_user_llm_model(
@@ -1008,6 +1222,50 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
     assert page.status_code == 200
     assert "Structured EMIS context" in page.text
     assert 'name="context_problem"' in page.text
+
+
+def test_user_transcribe_page_hides_emis_context_for_freeform_template(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Freeform Context")
+    admin = make_user(email="freeform-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="freeform-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="freeform-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Freeform note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.freeform,
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "freeform-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert 'data-structured-context-panel hidden' in page.text
+    assert 'data-emis-save-status hidden' in page.text
 
 
 def test_user_transcribe_page_reloads_persisted_structured_emis_context(

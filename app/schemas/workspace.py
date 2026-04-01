@@ -12,6 +12,8 @@ class TranscribeWorkspaceDetail(BaseModel):
     available_quick_actions: list[QuickActionDetail]
     active_structured_context: dict[str, list[str]]
     stt_selected: bool
+    stt_available: bool
+    stt_status_message: str | None = None
     llm_selected: bool
     resolved_user_llm_model: str | None = None
     can_create_new_session: bool

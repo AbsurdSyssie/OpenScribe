@@ -216,6 +216,10 @@ Implemented now for manual browser testing:
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
 - the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
 - `/transcribe-glm-2` now reuses that same workspace API while preserving the restored GLM 2 shell as the visual source of truth
+- the GLM 2 workspace now also consumes STT availability metadata from that workspace API so it can visibly show when the selected STT provider is unavailable and disable whole-file recording/upload controls
+- Parakeet testing showed that `timestamps=segment` returns richer sentence-like segment boundaries than `timestamps=word`, so paragraph formatting can start from segment mode and merge adjacent segments by pause/length/speaker heuristics
+- The first paragraph heuristic was too loose for Parakeet’s relatively long sentence-sized segments; it now uses a tighter default paragraph length cap so whole-file uploads produce multiple readable blocks instead of one long slab
+- whole-file HTTP STT responses that include a top-level `segments` array now paragraphize the stored transcript draft by joining grouped segments with blank lines; providers without `segments` still fall back to the configured response text path unchanged
 - the GLM 2 route keeps note output, follow-ups, and history inside a right-side assistant pane that can be hidden, shown in split mode, or expanded to take over the main workspace
 - the GLM 2 route now wires real session switching, title editing, upload, microphone batching, note generation, follow-up generation, quick actions, EMIS autosave, structured-line copy, and history refresh into that shell
 - new-session creation now submits through `POST /api/v1/transcripts/start` from the browser shell

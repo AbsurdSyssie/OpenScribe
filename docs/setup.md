@@ -31,6 +31,7 @@ The app and tests use separate databases by default:
 - Celery broker/result backend: `redis://localhost:6379/2`
 - Vault dev address: `http://127.0.0.1:8200`
 - Vault dev token: `root`
+- cookie security mode: `auto`
 
 ## Apply database migrations
 
@@ -50,11 +51,16 @@ This starts Docker services, loads `.env`, applies migrations, and runs the Fast
 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
+The default dev configuration keeps Postgres, Redis, and Vault on localhost while exposing FastAPI for reverse-proxied or off-box frontend access.
+Before the server starts, `./start-dev.sh` now also checks the live Docker port bindings for Postgres, Redis, and Vault and prints an error to the terminal if any of them are published beyond localhost.
 
 Important:
 
 - if you change transcript/job enums, Celery task code, or other worker-loaded Python models, restart `./start-dev.sh`
 - `./start-dev.sh` now replaces existing OpenScribe dev server and Celery worker processes automatically; set `DEV_RESTART_EXISTING_PROCESSES=false` only if you explicitly do not want that behavior
+- `APP_HOST` now defaults to `0.0.0.0`
+- `./start-dev.sh` allows the FastAPI frontend bind off-box by default; set `APP_HOST=127.0.0.1` and `DEV_ALLOW_REMOTE_BIND=false` if you want localhost-only app access
+- `./start-dev.sh` also refuses non-local Docker port publication for Postgres, Redis, or Vault unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
 
@@ -101,6 +107,11 @@ The queued transcript-ingestion path uses:
 - `CELERY_RESULT_BACKEND`
 - `CELERY_LOG_LEVEL`
 
+Cookie security uses:
+
+- `COOKIE_SECURE_MODE=auto` by default
+- set `COOKIE_SECURE_MODE=always` on public HTTPS deployments if proxy/scheme handling is ambiguous
+
 You can disable the worker startup in `./start-dev.sh` with:
 
 ```bash
@@ -109,13 +120,29 @@ DEV_START_CELERY=false
 
 ## Local URLs
 
-- API docs: `http://0.0.0.0:8080/docs` locally, or `http://<your-lan-ip>:8080/docs` from another machine
-- Account request page: `http://0.0.0.0:8080/request-access`
-- Login / bootstrap: `http://0.0.0.0:8080/login`
-- Onboarding: `http://0.0.0.0:8080/onboarding`
-- MFA challenge: `http://0.0.0.0:8080/mfa/challenge`
-- User home: `http://0.0.0.0:8080/home`
-- Admin UI: `http://0.0.0.0:8080/admin`
+- API docs: `http://127.0.0.1:8080/docs`
+- Account request page: `http://127.0.0.1:8080/request-access`
+- Login / bootstrap: `http://127.0.0.1:8080/login`
+- Onboarding: `http://127.0.0.1:8080/onboarding`
+- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
+- User home: `http://127.0.0.1:8080/home`
+- Admin UI: `http://127.0.0.1:8080/admin`
+
+## Local network exposure
+
+The checked-in dev defaults now expose only the app itself off-box:
+
+- Docker publishes Postgres, Redis, and Vault on `127.0.0.1` only
+- FastAPI defaults to `APP_HOST=0.0.0.0`
+
+If you want localhost-only app access instead, override it in `.env`:
+
+```bash
+APP_HOST=127.0.0.1
+DEV_ALLOW_REMOTE_BIND=false
+```
+
+That only affects the FastAPI bind and the startup guard. Postgres, Redis, and Vault remain localhost-only unless you deliberately change the Docker port bindings and enable `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`.
 
 ## Current manager STT configuration UI
 
@@ -202,7 +229,7 @@ The app uses an opaque session cookie. Clear it before retrying:
 
 - sign out through `/logout`, or
 - open `/login` in a private/incognito window, or
-- clear cookies for `0.0.0.0:8080` or your LAN IP if needed
+- clear cookies for `127.0.0.1:8080` if needed
 
 Browser flows also use a separate CSRF cookie:
 

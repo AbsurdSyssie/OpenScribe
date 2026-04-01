@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
+from .cookie_security import should_set_secure_cookie
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
 from .models import (
     GeneratedDocument,
@@ -144,6 +145,7 @@ from .services.stt import (
     get_team_stt_selection as get_team_stt_selection_service,
     list_selectable_stt_configs as list_selectable_stt_configs_service,
     list_stt_configs as list_stt_configs_service,
+    run_saved_stt_config_test as run_saved_stt_config_test_service,
     clear_team_stt_selection as clear_team_stt_selection_service,
     set_team_stt_selection as set_team_stt_selection_service,
     upsert_stt_config as upsert_stt_config_service,
@@ -370,35 +372,47 @@ app.add_exception_handler(404, browser_not_found_handler)
 async def ensure_csrf_cookie(request: Request, call_next):
     response = await call_next(request)
     if request.method in {"GET", "HEAD"} and not request.cookies.get(CSRF_COOKIE_NAME):
+        secure_cookie = should_set_secure_cookie(
+            request_url=str(request.url),
+            forwarded_proto=request.headers.get("x-forwarded-proto"),
+        )
         response.set_cookie(
             key=CSRF_COOKIE_NAME,
             value=secrets.token_urlsafe(32),
             httponly=False,
-            secure=False,
+            secure=secure_cookie,
             samesite="lax",
             path="/",
         )
     return response
 
 
-def _set_session_cookie(response: JSONResponse | RedirectResponse, token: str) -> None:
+def _set_session_cookie(request: Request, response: JSONResponse | RedirectResponse, token: str) -> None:
+    secure_cookie = should_set_secure_cookie(
+        request_url=str(request.url),
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+    )
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=False,
+        secure=secure_cookie,
         samesite="lax",
         path="/",
         max_age=60 * 60 * 12,
     )
 
 
-def _set_trusted_device_cookie(response: JSONResponse | RedirectResponse, token: str) -> None:
+def _set_trusted_device_cookie(request: Request, response: JSONResponse | RedirectResponse, token: str) -> None:
+    secure_cookie = should_set_secure_cookie(
+        request_url=str(request.url),
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+    )
     response.set_cookie(
         key=TRUSTED_DEVICE_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=False,
+        secure=secure_cookie,
         samesite="lax",
         path="/",
         max_age=60 * 60 * 24 * 30,
@@ -559,11 +573,16 @@ def render_admin(
     selected_llm_config_id: str | None = None,
     stt_inspection: SttInspectResult | None = None,
     stt_form_override: dict[str, object] | None = None,
+    stt_test_result: dict[str, object] | None = None,
     llm_inspection: LlmConfigInspectResult | None = None,
     llm_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
+    active_admin_tab: str | None = None,
+    admin_page_route: str = "/admin",
+    admin_return_view: str = "",
+    template_name: str | None = None,
 ):
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
@@ -572,6 +591,8 @@ def render_admin(
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    available_admin_tabs = {"providers", "directory", "requests"}
+    resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
     context = {
         "request": request,
         "current_user": current_user,
@@ -585,6 +606,7 @@ def render_admin(
         "stt_selection": stt_selection,
         "stt_inspection": stt_inspection,
         "stt_form": stt_form_override or stt_form_defaults(edit_stt_config, None),
+        "stt_test_result": stt_test_result,
         "selectable_stt_configs": list_selectable_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
         "llm_configs": llm_configs,
         "llm_config": edit_llm_config,
@@ -596,10 +618,43 @@ def render_admin(
         "team_statuses": list(TeamStatus),
         "team_roles": list(TeamRole),
         "user_statuses": list(UserStatus),
+        "active_admin_tab": resolved_admin_tab,
+        "admin_page_route": admin_page_route,
+        "admin_return_view": admin_return_view,
         "message": message,
         "message_kind": message_kind,
     }
-    return templates.TemplateResponse(request, "admin.html", context, status_code=status_code)
+    resolved_template_name = template_name or "admin.html"
+    return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
+
+
+def _admin_page_route_from_return_view(return_view: str | None) -> str:
+    return "/admin-restyled" if return_view == "restyled" else "/admin"
+
+
+def _admin_return_view_value(return_view: str | None) -> str:
+    return "restyled" if return_view == "restyled" else ""
+
+
+def _admin_redirect_url(
+    *,
+    return_view: str | None,
+    return_tab: str | None = None,
+    team_id: str | None = None,
+    stt_config_id: str | None = None,
+    llm_config_id: str | None = None,
+) -> str:
+    base = _admin_page_route_from_return_view(return_view)
+    params: dict[str, str] = {}
+    if team_id:
+        params["team_id"] = team_id
+    if stt_config_id:
+        params["stt_config_id"] = stt_config_id
+    if llm_config_id:
+        params["llm_config_id"] = llm_config_id
+    if return_tab:
+        params["tab"] = return_tab
+    return f"{base}?{urlencode(params)}" if params else base
 
 
 def render_home(
@@ -614,7 +669,13 @@ def render_home(
     message: str | None = None,
     message_kind: str = "success",
     queued_transcript_id: str | None = None,
+    active_home_tab: str | None = None,
+    active_home_modal: str | None = None,
     status_code: int = 200,
+    template_name: str = "home.html",
+    home_page_route: str = "/home",
+    home_return_view: str = "",
+    transcribe_return_tab: str | None = None,
 ):
     def _structured_section_prompt_map(version) -> dict[str, str]:
         if version is None or not version.config_json or not isinstance(version.config_json, dict):
@@ -633,7 +694,12 @@ def render_home(
         return prompts
 
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
-    stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
+    stt_selection = None
+    if current_user.team_id is not None:
+        try:
+            stt_selection = active_team_stt_selection_service(db, team_id=current_user.team_id)
+        except AppError:
+            stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
     selectable_stt_configs = list_selectable_stt_configs_service(db, current_user) if is_manager else []
     llm_selection = None
     if current_user.team_id is not None:
@@ -673,6 +739,29 @@ def render_home(
     personal_template_latest_version = _latest_template_version(selected_personal_template) if selected_personal_template is not None else None
     team_quick_action_latest_version = _latest_quick_action_version(selected_team_quick_action) if selected_team_quick_action is not None else None
     personal_quick_action_latest_version = _latest_quick_action_version(selected_personal_quick_action) if selected_personal_quick_action is not None else None
+    available_home_tabs = ["overview"]
+    if not current_user.is_system_admin and current_user.team_id is not None:
+        available_home_tabs.extend(["templates", "quick-actions"])
+    if is_manager:
+        available_home_tabs.extend(["team-management", "account-requests"])
+
+    if active_home_tab in available_home_tabs:
+        resolved_home_tab = active_home_tab
+    elif selected_team_template or selected_personal_template:
+        resolved_home_tab = "templates" if "templates" in available_home_tabs else "overview"
+    elif selected_team_quick_action or selected_personal_quick_action:
+        resolved_home_tab = "quick-actions" if "quick-actions" in available_home_tabs else "overview"
+    else:
+        resolved_home_tab = "overview"
+
+    allowed_home_modals = {
+        "personal-template",
+        "team-template",
+        "personal-quick-action",
+        "team-quick-action",
+    }
+    resolved_home_modal = active_home_modal if active_home_modal in allowed_home_modals else None
+
     context = {
         "request": request,
         "current_user": current_user,
@@ -694,6 +783,10 @@ def render_home(
         "selected_personal_template_id": selected_personal_template_id,
         "selected_team_quick_action_id": selected_team_quick_action_id,
         "selected_personal_quick_action_id": selected_personal_quick_action_id,
+        "active_home_tab": resolved_home_tab,
+        "active_home_modal": resolved_home_modal,
+        "home_page_route": home_page_route,
+        "home_return_view": home_return_view,
         "team_template": selected_team_template,
         "personal_template": selected_personal_template,
         "team_quick_action": selected_team_quick_action,
@@ -708,8 +801,44 @@ def render_home(
         "message": message,
         "message_kind": message_kind,
         "queued_transcript_id": queued_transcript_id,
+        "transcribe_return_tab": transcribe_return_tab,
     }
-    return templates.TemplateResponse(request, "home.html", context, status_code=status_code)
+    return templates.TemplateResponse(request, template_name, context, status_code=status_code)
+
+
+def _home_template_name_from_return_view(return_view: str | None) -> str:
+    return "home.html"
+
+
+def _home_page_route_from_return_view(return_view: str | None) -> str:
+    return "/home-restyled" if return_view == "restyled" else "/home"
+
+
+def _home_return_view_value(return_view: str | None) -> str:
+    if return_view == "restyled":
+        return "restyled"
+    if return_view == "transcribe":
+        return "transcribe"
+    return ""
+
+
+def _home_redirect_url(
+    *,
+    return_view: str | None,
+    return_tab: str | None = None,
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+) -> str:
+    if return_view == "transcribe":
+        params: dict[str, str] = {}
+        if queued_transcript_id:
+            params["transcript_id"] = queued_transcript_id
+        params["tab"] = transcribe_tab or ("followups" if return_tab == "quick-actions" else "output")
+        return f"/transcribe?{urlencode(params)}" if params else "/transcribe"
+    base = "/home-restyled" if return_view == "restyled" else "/home"
+    if return_tab:
+        return f"{base}?tab={return_tab}"
+    return base
 
 
 def _active_structured_context_map(transcript: Transcript | None) -> dict[str, list[str]]:
@@ -781,7 +910,23 @@ def _resolve_transcribe_workspace(
         else None
     )
 
+    team_leader_email = (
+        db.scalar(
+            select(User.email)
+            .where(
+                User.team_id == current_user.team_id,
+                User.team_role == TeamRole.leader,
+                User.is_system_admin.is_(False),
+                User.status == UserStatus.active,
+            )
+            .order_by(User.created_at.asc())
+        )
+        if current_user.team_id is not None
+        else None
+    )
     stt_selection = None
+    stt_available = False
+    stt_status_message = None
     llm_selection = None
     user_llm_preference = None
     resolved_user_llm_model = None
@@ -790,6 +935,10 @@ def _resolve_transcribe_workspace(
             stt_selection = active_team_stt_selection_service(db, team_id=current_user.team_id)
         except AppError:
             stt_selection = None
+        if stt_selection is None:
+            stt_status_message = _missing_stt_selection_message(team_leader_email=team_leader_email)
+        else:
+            stt_available = True
         try:
             llm_selection = active_team_llm_selection_service(db, team_id=current_user.team_id)
         except AppError:
@@ -839,6 +988,8 @@ def _resolve_transcribe_workspace(
         "active_transcript_latest_job": active_transcript_latest_job,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
         "stt_selection": stt_selection,
+        "stt_available": stt_available,
+        "stt_status_message": stt_status_message,
         "llm_selection": llm_selection,
         "user_llm_preference": user_llm_preference,
         "resolved_user_llm_model": resolved_user_llm_model,
@@ -858,18 +1009,7 @@ def _resolve_transcribe_workspace(
         "active_structured_context": active_structured_context,
         "show_redaction_debug": show_redaction_debug,
         "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
-        "team_leader_email": db.scalar(
-            select(User.email)
-            .where(
-                User.team_id == current_user.team_id,
-                User.team_role == TeamRole.leader,
-                User.is_system_admin.is_(False),
-                User.status == UserStatus.active,
-            )
-            .order_by(User.created_at.asc())
-        )
-        if current_user.team_id is not None
-        else None,
+        "team_leader_email": team_leader_email,
     }
 
 
@@ -902,6 +1042,7 @@ def render_transcribe(
         "current_user": current_user,
         **workspace,
         "workspace_endpoint": workspace_endpoint,
+        "transcribe_route_base": request.url.path if request is not None else "/transcribe",
         "message": message,
         "message_kind": message_kind,
         "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
@@ -1016,6 +1157,8 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         active_structured_context=dict(workspace.get("active_structured_context") or {}),
         stt_selected=bool(workspace.get("stt_selection")),
+        stt_available=bool(workspace.get("stt_available")),
+        stt_status_message=workspace.get("stt_status_message"),
         llm_selected=bool(workspace.get("llm_selection")),
         resolved_user_llm_model=workspace.get("resolved_user_llm_model"),
         can_create_new_session=bool(workspace.get("can_create_new_session")),
@@ -1384,7 +1527,7 @@ def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get
         redirect_to="/onboarding" if auth_level.value == "onboarding" else ("/mfa/challenge" if auth_level.value == "pending_mfa" else ("/admin" if user.is_system_admin else "/home")),
     )
     response = JSONResponse(body.model_dump(mode="json"))
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -1423,9 +1566,9 @@ def api_login_mfa_totp(
             redirect_to="/admin" if user.is_system_admin else "/home",
         ).model_dump(mode="json")
     )
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     if trusted_device_token:
-        _set_trusted_device_cookie(response, trusted_device_token)
+        _set_trusted_device_cookie(request, response, trusted_device_token)
     return response
 
 
@@ -1521,7 +1664,7 @@ def api_onboarding_recovery_codes(request: Request, context: AuthenticatedContex
     refreshed_user = db.get(User, context.user.id)
     token = rotate_session(db, context.token, refreshed_user, auth_level=determine_auth_level(refreshed_user))
     response = JSONResponse(RecoveryCodesResponse(codes=codes).model_dump(mode="json"))
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -1532,7 +1675,7 @@ def api_skip_recovery_codes(request: Request, context: AuthenticatedContext = De
     response = JSONResponse(
         LoginResponse(authenticated=True, auth_level=determine_auth_level(user), redirect_to="/admin" if user.is_system_admin else "/home").model_dump(mode="json")
     )
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -2029,7 +2172,7 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
     token = create_session(db, user, auth_level=auth_level)
     redirect_to = "/onboarding" if auth_level is SessionAuthLevel.onboarding else ("/mfa/challenge" if auth_level is SessionAuthLevel.pending_mfa else _post_login_redirect_for_user(user))
     response = RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -2090,7 +2233,7 @@ def bootstrap_system_admin(request: Request, email: str = Form(...), password: s
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
     token = create_session(db, user)
     response = RedirectResponse(url="/onboarding", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -2144,9 +2287,9 @@ def mfa_challenge_submit(
     except AppError as exc:
         return render_mfa_challenge(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     if trusted_device_token:
-        _set_trusted_device_cookie(response, trusted_device_token)
+        _set_trusted_device_cookie(request, response, trusted_device_token)
     return response
 
 
@@ -2230,7 +2373,7 @@ def onboarding_recovery_codes_submit(request: Request, csrf_protected: BrowserCs
             "totp_qr_svg_data_uri": None,
         },
     )
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -2245,7 +2388,7 @@ def onboarding_skip_recovery_codes_submit(request: Request, csrf_protected: Brow
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     return response
 
 
@@ -2254,7 +2397,11 @@ def home_page(
     request: Request,
     message: str | None = None,
     message_kind: str = "success",
+    return_view: str = "",
     queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+    tab: str | None = None,
+    modal: str | None = None,
     team_template_id: str | None = None,
     personal_template_id: str | None = None,
     team_quick_action_id: str | None = None,
@@ -2278,6 +2425,53 @@ def home_page(
         message=message,
         message_kind=safe_message_kind,
         queued_transcript_id=queued_transcript_id,
+        active_home_tab=tab,
+        active_home_modal=modal,
+        home_page_route="/home",
+        home_return_view=_home_return_view_value(return_view),
+        transcribe_return_tab=transcribe_tab,
+    )
+
+
+@app.get("/home-restyled", response_class=HTMLResponse)
+def home_restyled_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    return_view: str = "",
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+    tab: str | None = None,
+    modal: str | None = None,
+    team_template_id: str | None = None,
+    personal_template_id: str | None = None,
+    team_quick_action_id: str | None = None,
+    personal_quick_action_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_template_id=team_template_id,
+        selected_personal_template_id=personal_template_id,
+        selected_team_quick_action_id=team_quick_action_id,
+        selected_personal_quick_action_id=personal_quick_action_id,
+        message=message,
+        message_kind=safe_message_kind,
+        queued_transcript_id=queued_transcript_id,
+        active_home_tab=tab,
+        active_home_modal=modal,
+        template_name="home.html",
+        home_page_route="/home-restyled",
+        home_return_view=_home_return_view_value(return_view or "restyled"),
+        transcribe_return_tab=transcribe_tab,
     )
 
 
@@ -2358,7 +2552,7 @@ def transcribe_glm_2_page(
         request,
         db,
         current_user=context.user,
-        template_name="transcriber_glm_2.html",
+        template_name="transcribe.html",
         transcript_id=transcript_id,
         queued_transcript_id=queued_transcript_id,
         active_tab=tab,
@@ -2376,6 +2570,8 @@ def home_create_user(
     team_role: str = Form(...),
     status_value: UserStatus = Form(..., alias="status"),
     mfa_required: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2400,8 +2596,22 @@ def home_create_user(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid user form submission"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_home_tab=return_tab or "team-management",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/llm-selection", response_class=HTMLResponse)
@@ -2410,6 +2620,8 @@ def home_set_llm_selection(
     llm_config_id: str = Form(...),
     allowed_model_names: list[str] = Form(default=[]),
     provider_model: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2429,26 +2641,62 @@ def home_set_llm_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_home_tab=return_tab or "team-management",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/llm-selection/clear", response_class=HTMLResponse)
-def home_clear_llm_selection(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_clear_llm_selection(
+    request: Request,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         clear_team_llm_selection_service(db, context.user)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_home_tab=return_tab or "team-management",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/llm-preference", response_class=HTMLResponse)
 def home_set_llm_preference(
     request: Request,
     preferred_model_name: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2464,26 +2712,65 @@ def home_set_llm_preference(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM preference"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_home_tab=return_tab or "overview",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "overview"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/llm-preference/clear", response_class=HTMLResponse)
-def home_clear_llm_preference(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_clear_llm_preference(
+    request: Request,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         clear_user_llm_preference_service(db, context.user)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_home_tab=return_tab or "overview",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "overview"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/team-templates", response_class=HTMLResponse)
 def home_upsert_team_template(
     request: Request,
     template_id: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    home_modal: str = Form(""),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -2539,15 +2826,34 @@ def home_upsert_team_template(
             selected_team_template_id=template_id or None,
             message=detail,
             message_kind="error",
+            active_home_tab=return_tab or "templates",
+            active_home_modal=home_modal or "team-template",
             status_code=status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
         )
-    return RedirectResponse(url=f"/home?team_template_id={template.id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/team-templates/{template_id}/delete", response_class=HTMLResponse)
 def home_delete_team_template(
     request: Request,
     template_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2557,14 +2863,40 @@ def home_delete_team_template(
     try:
         delete_team_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "templates",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/personal-templates", response_class=HTMLResponse)
 def home_upsert_personal_template(
     request: Request,
     template_id: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    home_modal: str = Form(""),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -2620,15 +2952,34 @@ def home_upsert_personal_template(
             selected_personal_template_id=template_id or None,
             message=detail,
             message_kind="error",
+            active_home_tab=return_tab or "templates",
+            active_home_modal=home_modal or "personal-template",
             status_code=status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
         )
-    return RedirectResponse(url=f"/home?personal_template_id={template.id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/personal-templates/{template_id}/delete", response_class=HTMLResponse)
 def home_delete_personal_template(
     request: Request,
     template_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2638,14 +2989,40 @@ def home_delete_personal_template(
     try:
         delete_personal_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "templates",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/team-quick-actions", response_class=HTMLResponse)
 def home_upsert_team_quick_action(
     request: Request,
     quick_action_id: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    home_modal: str = Form(""),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -2679,15 +3056,34 @@ def home_upsert_team_quick_action(
             selected_team_quick_action_id=quick_action_id or None,
             message=detail,
             message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            active_home_modal=home_modal or "team-quick-action",
             status_code=status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
         )
-    return RedirectResponse(url=f"/home?team_quick_action_id={quick_action.id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/team-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
 def home_delete_team_quick_action(
     request: Request,
     quick_action_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2697,14 +3093,40 @@ def home_delete_team_quick_action(
     try:
         delete_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/personal-quick-actions", response_class=HTMLResponse)
 def home_upsert_personal_quick_action(
     request: Request,
     quick_action_id: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    home_modal: str = Form(""),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -2738,15 +3160,34 @@ def home_upsert_personal_quick_action(
             selected_personal_quick_action_id=quick_action_id or None,
             message=detail,
             message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            active_home_modal=home_modal or "personal-quick-action",
             status_code=status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
         )
-    return RedirectResponse(url=f"/home?personal_quick_action_id={quick_action.id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/personal-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
 def home_delete_personal_quick_action(
     request: Request,
     quick_action_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2756,8 +3197,29 @@ def home_delete_personal_quick_action(
     try:
         delete_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/stt-selection", response_class=HTMLResponse)
@@ -2766,6 +3228,8 @@ def home_set_stt_selection(
     stt_config_id: str = Form(...),
     provider_model: str = Form(""),
     language: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -2785,20 +3249,54 @@ def home_set_stt_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_home_tab=return_tab or "team-management",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/stt-selection/clear", response_class=HTMLResponse)
-def home_clear_stt_selection(request: Request, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_clear_stt_selection(
+    request: Request,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         clear_team_stt_selection_service(db, context.user)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_home_tab=return_tab or "team-management",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/transcripts/upload", response_class=HTMLResponse)
@@ -3216,6 +3714,7 @@ def transcribe_update_session_mode(
             transcript_id=transcript_id,
             title=None,
             ingestion_mode=ingestion_mode,
+            structured_context_json=None,
         )
     except AppError as exc:
         return render_transcribe(
@@ -3231,39 +3730,102 @@ def transcribe_update_session_mode(
 
 
 @app.post("/home/users/{user_id}/suspend", response_class=HTMLResponse)
-def home_suspend_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_suspend_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         suspend_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/users/{user_id}/reactivate", response_class=HTMLResponse)
-def home_reactivate_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_reactivate_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         reactivate_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/users/{user_id}/delete", response_class=HTMLResponse)
-def home_delete_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_delete_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         delete_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/account-requests/{request_id}/approve", response_class=HTMLResponse)
@@ -3273,6 +3835,8 @@ def home_approve_account_request(
     temporary_password: str = Form(...),
     team_role: str = Form(...),
     review_notes: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3293,34 +3857,124 @@ def home_approve_account_request(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid account-request approval"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            active_home_tab=return_tab or "account-requests",
+            status_code=status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "account-requests"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/home/account-requests/{request_id}/reject", response_class=HTMLResponse)
-def home_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def home_reject_account_request(
+    request: Request,
+    request_id: UUID,
+    review_notes: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     try:
         reject_account_request_service(db, context.user, request_id, AccountRequestReject(review_notes=review_notes))
     except AppError as exc:
-        return render_home(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/home", status_code=status.HTTP_303_SEE_OTHER)
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "account-requests",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "account-requests"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, team_id: str | None = None, stt_config_id: str | None = None, llm_config_id: str | None = None, db: Session = Depends(get_db)):
+def admin_page(
+    request: Request,
+    team_id: str | None = None,
+    stt_config_id: str | None = None,
+    llm_config_id: str | None = None,
+    tab: str | None = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(request, db, current_user=context.user, selected_team_id=team_id, selected_stt_config_id=stt_config_id, selected_llm_config_id=llm_config_id)
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=stt_config_id,
+        selected_llm_config_id=llm_config_id,
+        active_admin_tab=tab,
+        admin_page_route="/admin",
+        admin_return_view="",
+    )
+
+
+@app.get("/admin-restyled", response_class=HTMLResponse)
+def admin_restyled_page(
+    request: Request,
+    team_id: str | None = None,
+    stt_config_id: str | None = None,
+    llm_config_id: str | None = None,
+    tab: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=stt_config_id,
+        selected_llm_config_id=llm_config_id,
+        active_admin_tab=tab,
+        admin_page_route="/admin-restyled",
+        admin_return_view="restyled",
+    )
 
 
 @app.post("/admin/teams", response_class=HTMLResponse)
-def admin_create_team(request: Request, name: str = Form(...), status_value: TeamStatus = Form(..., alias="status"), default_retention_days: int = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_create_team(
+    request: Request,
+    name: str = Form(...),
+    status_value: TeamStatus = Form(..., alias="status"),
+    default_retention_days: int = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3329,8 +3983,22 @@ def admin_create_team(request: Request, name: str = Form(...), status_value: Tea
     try:
         create_team_service(db, TeamCreate(name=name, status=status_value, default_retention_days=default_retention_days))
     except AppError as exc:
-        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/users", response_class=HTMLResponse)
@@ -3344,6 +4012,9 @@ def admin_create_user(
     is_system_admin: str | None = Form(default=None),
     status_value: UserStatus = Form(..., alias="status"),
     mfa_required: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3370,8 +4041,26 @@ def admin_create_user(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid user form submission"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or team_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "directory",
+            team_id=return_team_id or team_id or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/stt-configs", response_class=HTMLResponse)
@@ -3391,6 +4080,8 @@ def admin_upsert_stt_config(
     response_text_path: str = Form(""),
     extra_form_fields_json: str = Form(""),
     is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3423,12 +4114,34 @@ def admin_upsert_stt_config(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT configuration"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/stt-configs/{config_id}/delete", response_class=HTMLResponse)
-def admin_delete_stt_config(request: Request, config_id: UUID, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_delete_stt_config(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3439,8 +4152,70 @@ def admin_delete_stt_config(request: Request, config_id: UUID, team_id: str = Fo
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT delete request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/stt-configs/{config_id}/test", response_class=HTMLResponse)
+def admin_test_stt_config(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        stt_test_result = run_saved_stt_config_test_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT test request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_stt_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=str(config_id),
+        stt_test_result=stt_test_result,
+        message="STT test completed.",
+        message_kind="success" if stt_test_result.get("success") else "error",
+        active_admin_tab=return_tab or "providers",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
+    )
 
 
 @app.post("/admin/stt-configs/inspect", response_class=HTMLResponse)
@@ -3452,6 +4227,8 @@ def admin_inspect_stt_config(
     base_url: str = Form(""),
     openapi_path: str = Form(""),
     bearer_token: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3475,7 +4252,18 @@ def admin_inspect_stt_config(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT inspection request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
     return render_admin(
         request,
         db,
@@ -3490,6 +4278,9 @@ def admin_inspect_stt_config(
             "preserved_bearer_token": bearer_token,
         },
         message="STT endpoint inspected. Review the inferred fields before saving.",
+        active_admin_tab=return_tab or "providers",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
     )
 
 
@@ -3500,6 +4291,8 @@ def admin_set_stt_selection(
     stt_config_id: str = Form(...),
     provider_model: str = Form(""),
     language: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3522,12 +4315,33 @@ def admin_set_stt_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/stt-selection/clear", response_class=HTMLResponse)
-def admin_clear_stt_selection(request: Request, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_clear_stt_selection(
+    request: Request,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3538,8 +4352,22 @@ def admin_clear_stt_selection(request: Request, team_id: str = Form(...), csrf_p
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection clear request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/llm-configs/inspect", response_class=HTMLResponse)
@@ -3550,6 +4378,8 @@ def admin_inspect_llm_config(
     adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
     base_url: str = Form(""),
     bearer_token: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3572,7 +4402,18 @@ def admin_inspect_llm_config(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM inspection request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
     return render_admin(
         request,
         db,
@@ -3587,6 +4428,9 @@ def admin_inspect_llm_config(
             "preserved_bearer_token": bearer_token,
         },
         message="LLM provider inspected. Review the inferred fields before saving.",
+        active_admin_tab=return_tab or "providers",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
     )
 
 
@@ -3602,6 +4446,8 @@ def admin_upsert_llm_config(
     preserved_bearer_token: str = Form(""),
     provider_model: str = Form(""),
     is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3629,12 +4475,34 @@ def admin_upsert_llm_config(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM configuration"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/llm-configs/{config_id}/delete", response_class=HTMLResponse)
-def admin_delete_llm_config(request: Request, config_id: UUID, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_delete_llm_config(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3645,8 +4513,22 @@ def admin_delete_llm_config(request: Request, config_id: UUID, team_id: str = Fo
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM delete request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/llm-selection", response_class=HTMLResponse)
@@ -3656,6 +4538,8 @@ def admin_set_llm_selection(
     llm_config_id: str = Form(...),
     allowed_model_names: list[str] = Form(default=[]),
     provider_model: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3678,12 +4562,33 @@ def admin_set_llm_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/llm-selection/clear", response_class=HTMLResponse)
-def admin_clear_llm_selection(request: Request, team_id: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_clear_llm_selection(
+    request: Request,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3694,12 +4599,34 @@ def admin_clear_llm_selection(request: Request, team_id: str = Form(...), csrf_p
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection clear request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url=f"/admin?team_id={team_id}", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/users/{user_id}/suspend", response_class=HTMLResponse)
-def admin_suspend_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_suspend_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3708,12 +4635,34 @@ def admin_suspend_user(request: Request, user_id: UUID, csrf_protected: BrowserC
     try:
         suspend_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/users/{user_id}/reactivate", response_class=HTMLResponse)
-def admin_reactivate_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_reactivate_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3722,12 +4671,34 @@ def admin_reactivate_user(request: Request, user_id: UUID, csrf_protected: Brows
     try:
         reactivate_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/users/{user_id}/delete", response_class=HTMLResponse)
-def admin_delete_user(request: Request, user_id: UUID, csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_delete_user(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3736,8 +4707,22 @@ def admin_delete_user(request: Request, user_id: UUID, csrf_protected: BrowserCs
     try:
         delete_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/account-requests/{request_id}/approve", response_class=HTMLResponse)
@@ -3748,6 +4733,9 @@ def admin_approve_account_request(
     temporary_password: str = Form(...),
     team_role: str = Form(...),
     review_notes: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -3771,12 +4759,39 @@ def admin_approve_account_request(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid account-request approval"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_admin(request, db, current_user=context.user, message=detail, message_kind="error", status_code=status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or team_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "requests",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "requests",
+            team_id=return_team_id or team_id or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post("/admin/account-requests/{request_id}/reject", response_class=HTMLResponse)
-def admin_reject_account_request(request: Request, request_id: UUID, review_notes: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def admin_reject_account_request(
+    request: Request,
+    request_id: UUID,
+    review_notes: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
@@ -3785,8 +4800,22 @@ def admin_reject_account_request(request: Request, request_id: UUID, review_note
     try:
         reject_account_request_service(db, context.user, request_id, AccountRequestReject(review_notes=review_notes))
     except AppError as exc:
-        return render_admin(request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "requests",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "requests", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 app.include_router(api)

@@ -15,16 +15,35 @@ if [[ ! -x ".venv/bin/fastapi" ]]; then
   exit 1
 fi
 
-docker compose up -d
-
 set -a
 source .env
 set +a
 
+: "${APP_HOST:=0.0.0.0}"
+: "${DEV_ALLOW_REMOTE_BIND:=true}"
+
+docker compose up -d
+
+.venv/bin/python scripts/security/check_service_exposure.py
+
+APP_BIND_HOST="$(
+.venv/bin/python - <<'PY'
+import os
+
+from app.dev_safety import resolve_dev_bind_host
+
+allow_remote = os.getenv("DEV_ALLOW_REMOTE_BIND", "false").strip().lower() == "true"
+print(resolve_dev_bind_host(host=os.getenv("APP_HOST"), allow_remote=allow_remote))
+PY
+)"
+
 if [[ "${DEV_RESTART_EXISTING_PROCESSES:-true}" == "true" ]]; then
-  echo "Stopping existing OpenScribe dev server and Celery worker processes..."
+  echo "Stopping existing processes..."
+
   pkill -f 'fastapi dev app/main.py' 2>/dev/null || true
   pkill -f 'celery -A app.celery_app:celery_app worker' 2>/dev/null || true
+  pkill -f 'brave-browser.*--remote-debugging-port=9222' 2>/dev/null || true
+
   sleep 1
 fi
 
@@ -46,7 +65,7 @@ while time.time() < deadline:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         break
-    except Exception as exc:  # pragma: no cover - shell startup helper
+    except Exception as exc:
         last_error = exc
         time.sleep(1)
 else:
@@ -60,10 +79,17 @@ if [[ "${DEV_SEED_TEST_ACCOUNTS:-true}" == "true" ]]; then
 fi
 
 CELERY_WORKER_PID=""
+BRAVE_PID=""
 
 cleanup() {
+  echo "Cleaning up processes..."
+
   if [[ -n "${CELERY_WORKER_PID}" ]]; then
     kill "${CELERY_WORKER_PID}" 2>/dev/null || true
+  fi
+
+  if [[ -n "${BRAVE_PID}" ]]; then
+    kill "${BRAVE_PID}" 2>/dev/null || true
   fi
 }
 
@@ -75,4 +101,17 @@ if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   CELERY_WORKER_PID=$!
 fi
 
-.venv/bin/fastapi dev app/main.py --host "${APP_HOST}" --port "${APP_PORT}"
+if [[ "${DEV_START_BRAVE:-true}" == "true" ]]; then
+  echo "Starting Brave with remote debugging..."
+
+  brave-browser \
+    --remote-debugging-port=9222 \
+    --user-data-dir=/tmp/brave-mcp-profile \
+    "http://localhost:8080" \
+    >/dev/null 2>&1 &
+
+  BRAVE_PID=$!
+fi
+
+echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT}..."
+.venv/bin/fastapi dev app/main.py --host "${APP_BIND_HOST}" --port "${APP_PORT}"

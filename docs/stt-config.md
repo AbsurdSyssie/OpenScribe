@@ -117,7 +117,30 @@ Local diagnostic helper:
 Both OpenAI adapter families still keep:
 
 - metadata in Postgres
-- bearer token in Vault
+- optional bearer token in Vault for self-hosted endpoints that do not require auth
+
+## Admin diagnostics
+
+System admins can now run a saved-config STT diagnostic directly from `/admin` for the selected team.
+
+The browser action:
+
+- uses the saved STT config metadata from Postgres
+- reads the saved bearer/API secret from Vault
+- health-checks the provider first when the adapter is not `openai_cloud`
+- uploads the bundled fixture `tests/MoreOrLess.wav`
+- renders the outcome back under the STT area without creating a transcript or ingestion job
+
+The rendered result is metadata-safe and may include:
+
+- health status
+- transcribe URL
+- configured default model/language
+- sample filename and byte count
+- duration
+- either the returned transcript text for the bundled sample or the provider error code/message
+
+This diagnostic is system-admin-only and does not reveal raw provider credentials.
 - no secret reveal path
 
 - system admins add the team STT endpoints and credentials
@@ -194,6 +217,9 @@ First implementation rules:
 
 - system admins may replace the secret
 - system admins may leave the secret field blank when editing to keep the current secret
+- system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth
+- `openai_cloud` still requires a saved API key
+- if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
 - leaders should eventually configure team policy without touching raw credential material
 - responses and logs must never echo the raw secret
 

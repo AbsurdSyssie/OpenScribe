@@ -277,6 +277,7 @@ def make_stt_config(db_session: Session, make_team: Callable[..., Team], make_us
         response_text_path: str = "text",
         extra_form_fields_json: dict[str, str] | None = None,
         is_active: bool = True,
+        has_secret: bool = True,
     ) -> TeamSttConfig:
         resolved_team = team or make_team()
         resolved_actor = actor or make_user(email=f"stt-admin-{resolved_team.id}@example.com", password="password-1", is_system_admin=True)
@@ -293,7 +294,7 @@ def make_stt_config(db_session: Session, make_team: Callable[..., Team], make_us
             language=language,
             response_text_path=response_text_path,
             extra_form_fields_json=extra_form_fields_json or {},
-            vault_secret_ref=f"secret:openscribe/stt/team/{resolved_team.id}/config/{uuid4()}",
+            vault_secret_ref=f"secret:openscribe/stt/team/{resolved_team.id}/config/{uuid4()}" if has_secret else "",
             is_active=is_active,
             created_by_user_id=resolved_actor.id,
             updated_by_user_id=resolved_actor.id,

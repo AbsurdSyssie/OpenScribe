@@ -2,6 +2,8 @@
 
 This document records the current security model and the explicit library and architecture decisions the project is following.
 
+Repeatable XSS checks and the current probe plan are documented in [security-xss.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/security-xss.md).
+
 ## Core rules
 
 - transcript-derived content is owner-only
@@ -85,6 +87,24 @@ Threats and controls for trusted devices:
 - explicit expiry
 - `Secure` should be enabled once deployment moves beyond localhost
 
+Current implementation:
+
+- session and trusted-device cookies are `HttpOnly`
+- the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`
+- `COOKIE_SECURE_MODE` controls the `Secure` flag:
+  - `auto`: set `Secure` on non-local HTTPS requests
+  - `always`: always set `Secure`
+  - `never`: never set `Secure` and use only for local development
+
+## Local infrastructure exposure
+
+- checked-in dev defaults must not publish Postgres, Redis, or Vault beyond localhost
+- checked-in dev defaults must not bind the FastAPI dev server beyond localhost
+- remote/LAN binding for development must require explicit operator opt-in
+- Vault dev mode is development-only and must never be treated as remotely safe
+- startup should fail loudly in the server terminal if live Docker port bindings expose Postgres, Redis, or Vault beyond localhost
+- Celery does not expose its own public port in this stack, but exposing Redis exposes the Celery broker/result backend indirectly
+
 ### Forbidden
 
 - storing session tokens in `localStorage` or `sessionStorage`
@@ -122,6 +142,18 @@ Threats and controls for trusted devices:
 - leaders may manage users and account requests for their own team
 - leader access remains metadata-only, not content-readable
 - STT management is metadata and secret-reference management, not content visibility
+
+### Route-audit guardrail
+
+- `/api/v1` routes are now covered by an explicit auth-audit manifest
+- the manifest treats only these routes as session-public:
+  - `POST /api/v1/auth/login`
+  - `POST /api/v1/auth/logout`
+  - `POST /api/v1/account-requests`
+- all other `/api/v1` routes must deny anonymous access
+- routes requiring full access must also deny onboarding and pending-MFA sessions
+- manager and admin routes must also deny lower-privilege sessions
+- the audit script and regression test fail if a new API route appears without a declared auth expectation
 
 ## Planned account suspension and deletion scope
 

@@ -4,138 +4,414 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #efe8dc;
-      --panel: rgba(255, 251, 245, 0.95);
-      --ink: #1b1d1f;
-      --muted: #5b605f;
-      --line: #d8c9ae;
-      --accent: #9f3a2d;
-      --accent-strong: #7f251b;
-      --error: #9a2e2e;
+      --bg: #FAF8F5;
+      --parchment: #F5F1EB;
+      --card: #FFFFFF;
+      --ink: #1A202C;
+      --slate: #2D3748;
+      --muted: #718096;
+      --border: #E2DED6;
+      --border-strong: #D8D2C8;
+      --accent: #1D4F5E;
+      --accent-soft: #3D7A8C;
+      --accent-pale: #E0F2F5;
+      --success: #38A169;
+      --warning: #D69E2E;
+      --error: #C53030;
+      --shadow-soft: 0 10px 30px rgba(26, 32, 44, 0.04);
+      --shadow-focus: 0 0 0 3px rgba(224, 242, 245, 0.9);
     }
+
     * { box-sizing: border-box; }
+
+    html { background: var(--bg); }
+
     body {
       margin: 0;
       min-height: 100vh;
       display: grid;
       place-items: center;
-      padding: 24px;
-      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      padding: 28px;
+      font-family: "DM Sans", sans-serif;
       color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(159, 58, 45, 0.14), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(64, 90, 69, 0.10), transparent 32%),
-        linear-gradient(180deg, #f7f2ea 0%, var(--bg) 100%);
+      background: var(--bg);
+      line-height: 1.5;
+      position: relative;
     }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      opacity: 0.018;
+      z-index: 0;
+    }
+
     main {
-      width: min(1040px, 100%);
+      position: relative;
+      z-index: 1;
+      width: min(1080px, 100%);
       display: grid;
       gap: 20px;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      align-items: stretch;
     }
+
     .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      padding: 24px;
-      box-shadow: 0 20px 60px rgba(72, 51, 30, 0.08);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 28px;
+      box-shadow: var(--shadow-soft);
     }
-    .eyebrow {
+
+    .panel.hero {
+      background: linear-gradient(180deg, rgba(245, 241, 235, 0.95) 0%, rgba(255, 255, 255, 0.98) 100%);
+    }
+
+    .eyebrow,
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
-      letter-spacing: 0.12em;
-      font-size: 0.8rem;
-      color: var(--accent);
+      color: var(--muted);
     }
-    h1, h2 { margin: 0 0 12px; line-height: 0.98; }
-    .intro, .muted { color: var(--muted); }
-    form { display: grid; gap: 12px; }
-    label { display: grid; gap: 6px; color: var(--muted); }
-    input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font: inherit;
-      background: white;
-      color: var(--ink);
-    }
-    button, .link-button {
-      border: 0;
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
       border-radius: 999px;
-      padding: 12px 18px;
-      font: inherit;
       background: var(--accent);
-      color: white;
-      cursor: pointer;
-      text-decoration: none;
-      text-align: center;
-      display: inline-block;
+      opacity: 0.9;
     }
-    button:hover, .link-button:hover { background: var(--accent-strong); }
-    .flash {
-      margin-bottom: 16px;
-      padding: 14px 16px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      color: var(--error);
-      background: rgba(255, 251, 245, 0.86);
+
+    h1, h2 {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Fraunces", serif;
+      font-weight: 500;
+      letter-spacing: -0.02em;
     }
+
+    h1 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      line-height: 1.03;
+      margin-bottom: 14px;
+      max-width: 11ch;
+    }
+
+    h2 {
+      font-size: 1.55rem;
+      line-height: 1.1;
+      margin-bottom: 8px;
+    }
+
+    p { margin: 0; }
+
+    .intro,
+    .muted {
+      color: var(--muted);
+    }
+
+    .intro {
+      max-width: 60ch;
+      font-size: 1rem;
+    }
+
+    .hero-copy {
+      display: grid;
+      gap: 18px;
+    }
+
+    .feature-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 6px;
+    }
+
+    .feature {
+      display: grid;
+      grid-template-columns: 12px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 0;
+      border-top: 1px solid rgba(226, 222, 214, 0.9);
+    }
+
+    .feature:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .feature-dot {
+      width: 12px;
+      height: 12px;
+      margin-top: 0.25rem;
+      border-radius: 999px;
+      background: var(--accent-pale);
+      border: 1px solid rgba(61, 122, 140, 0.28);
+      box-shadow: inset 0 0 0 3px rgba(29, 79, 94, 0.12);
+    }
+
+    .feature strong {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--ink);
+      font-size: 0.97rem;
+    }
+
+    .feature span {
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
     .actions {
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
-      margin-top: 20px;
+      margin-top: 2px;
+    }
+
+    form {
+      display: grid;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      color: var(--slate);
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: inherit;
+      color: var(--ink);
+      background: var(--parchment);
+      transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: rgba(61, 122, 140, 0.55);
+      background: #fff;
+      box-shadow: var(--shadow-focus);
+    }
+
+    button,
+    .link-button {
+      width: fit-content;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 11px 16px;
+      font: inherit;
+      font-weight: 500;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      text-align: center;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+    }
+
+    button:hover,
+    .link-button:hover {
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+
+    .link-button.secondary {
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--border);
+    }
+
+    .link-button.secondary:hover {
+      background: rgba(29, 79, 94, 0.04);
+      border-color: rgba(61, 122, 140, 0.28);
+    }
+
+    .flash {
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(197, 48, 48, 0.2);
+      color: var(--error);
+      background: rgba(197, 48, 48, 0.06);
+    }
+
+    .login-card {
+      align-self: center;
+    }
+
+    .card-top {
+      display: grid;
+      gap: 8px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(226, 222, 214, 0.9);
+    }
+
+    .helper {
+      margin-top: 4px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .submit-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .footer-note {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(226, 222, 214, 0.9);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 18px;
+      }
+
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        padding: 22px;
+      }
+
+      h1 {
+        max-width: none;
+      }
+
+      button,
+      .link-button {
+        width: 100%;
+      }
+
+      .actions,
+      .submit-row {
+        display: grid;
+      }
     }
   </style>
 </head>
 <body>
   <main>
-    <section class="panel">
-      <div class="eyebrow">OpenScribe</div>
-      <h1>Managed onboarding for teams, leaders, and account requests.</h1>
-      <p class="intro">
-        Users can request access, and leaders or system admins can create active accounts with temporary passwords. Managed accounts are forced through password change and TOTP setup before normal access.
-      </p>
-      <div class="actions">
-        <a class="link-button" href="/request-access">Request an account</a>
+    <section class="panel hero">
+      <div class="hero-copy">
+        <div>
+          <div class="eyebrow">OpenScribe</div>
+          <h1>Managed onboarding for teams, leaders, and account requests.</h1>
+          <p class="intro">
+            Users can request access, and leaders or system admins can create active accounts with temporary passwords. Managed accounts are forced through password change and TOTP setup before normal access.
+          </p>
+        </div>
+
+        <div class="feature-list" aria-hidden="true">
+          <div class="feature">
+            <div class="feature-dot"></div>
+            <div>
+              <strong>Account requests</strong>
+              <span>Users can request managed access without manual back-and-forth.</span>
+            </div>
+          </div>
+          <div class="feature">
+            <div class="feature-dot"></div>
+            <div>
+              <strong>Controlled onboarding</strong>
+              <span>Temporary credentials, password reset, and TOTP setup are enforced before normal use.</span>
+            </div>
+          </div>
+          <div class="feature">
+            <div class="feature-dot"></div>
+            <div>
+              <strong>Admin bootstrap</strong>
+              <span>The first system admin can be created safely when the database is empty.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <a class="link-button" href="/request-access">Request an account</a>
+        </div>
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel login-card">
       {% if message %}
       <div class="flash">{{ message }}</div>
       {% endif %}
 
       {% if bootstrap_allowed %}
-      <h2>Create first system admin</h2>
-      <p class="muted">This form is only available while the database has no users.</p>
+      <div class="card-top">
+        <div class="section-label">System setup</div>
+        <h2>Create first system admin</h2>
+        <p class="muted">This form is only available while the database has no users.</p>
+      </div>
       <form method="post" action="/bootstrap/system-admin">
         <label>
           Email
-          <input type="email" name="email" required>
+          <input type="email" name="email" required autocomplete="email">
         </label>
         <label>
           Password
-          <input type="password" name="password" required minlength="8">
+          <input type="password" name="password" required minlength="8" autocomplete="new-password">
         </label>
-        <button type="submit">Bootstrap system admin</button>
+        <div class="submit-row">
+          <button type="submit">Bootstrap system admin</button>
+        </div>
       </form>
+      <p class="footer-note">Use a strong password for the first administrative account. After bootstrap, standard managed login flow applies.</p>
       {% else %}
-      <h2>Login</h2>
-      <p class="muted">Managed accounts may land in restricted onboarding or a TOTP challenge before they can use the app.</p>
+      <div class="card-top">
+        <div class="section-label">Authentication</div>
+        <h2>Login</h2>
+        <p class="muted">Managed accounts may land in restricted onboarding or a TOTP challenge before they can use the app.</p>
+      </div>
       <form method="post" action="/login">
         <label>
           Email
-          <input type="email" name="email" required>
+          <input type="email" name="email" required autocomplete="email">
         </label>
         <label>
           Password
-          <input type="password" name="password" required minlength="8">
+          <input type="password" name="password" required minlength="8" autocomplete="current-password">
         </label>
-        <button type="submit">Sign in</button>
+        <div class="submit-row">
+          <button type="submit">Sign in</button>
+        </div>
       </form>
+      <p class="footer-note">Managed users may be redirected to password change or TOTP verification before reaching the main application.</p>
       {% endif %}
     </section>
   </main>

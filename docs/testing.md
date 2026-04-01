@@ -29,6 +29,17 @@ Current behavior:
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 
+## API auth route audit
+
+Use `./.venv/bin/python scripts/audit_api_auth.py` for a route-level auth sweep across `/api/v1`.
+
+The audit:
+
+- verifies the manifest matches the live FastAPI route inventory
+- probes protected routes with no session cookie and an invalid session cookie
+- probes higher-trust routes with onboarding, pending-MFA, normal-user, and leader sessions where denial is expected
+- exits with status `1` on auth mismatches and `2` when a new API route lacks an audit entry
+
 ## Manual file-ingestion smoke test
 
 For a real end-to-end file upload against a running local app, use:
@@ -46,6 +57,15 @@ What it does:
 - starts a `whole_file` transcript
 - uploads the provided audio file through `/api/v1/transcripts/{id}/audio-file`
 - prints the start and upload JSON responses
+
+## Transcribe workspace regression highlights
+
+- the workspace API reports whether a new session may be created from the owner’s latest transcript state
+- the GLM 2 transcribe workspace keeps the `New Consultation` control in sync with that API state so it re-enables once the latest session has meaningful transcript content
+- the GLM 2 transcribe workspace also re-enables note, quick-action, and follow-up controls after polling brings transcript draft text in, so a completed transcription no longer needs a manual page refresh before generation
+- the GLM 2 note pane prioritises the latest generated note above the note-input area and allows structured note generation from EMIS context alone when the selected template is structured
+- the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
+- GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 
 ## What the tests currently cover
 
@@ -101,8 +121,12 @@ What it does:
 - STT provider execution using the team config, Vault secret, and configured response text path
 - queued STT jobs snapshotting the resolved provider/model so later team STT selection changes do not retarget already-uploaded audio
 - handled STT worker failures now marking the job/transcript failed without re-raising expected AppError paths into noisy Celery tracebacks
-- missing queued STT Vault credentials surfacing a specific `vault_read_failed` failure message on the ingestion job
+- selected STT configs with missing saved credentials failing immediately with `stt_config_secret_missing` instead of queueing a doomed job
+- already-running STT jobs surfacing the same `stt_config_secret_missing` message if the saved credential disappears before execution
+- self-hosted `generic_rest` and `openai_compatible_rest` STT configs working without a bearer token when the endpoint does not require auth
 - generic REST STT transport failures surfacing distinct connect/timeout/upstream-status error codes instead of flattening them all to `stt_unavailable`
+- timestamped-segment paragraph grouping heuristics for Parakeet-style STT responses
+- whole-file STT responses preferring paragraphized `segments` over flat `text` when timestamped segment data is present
 - transcript detail and the `/transcribe` workspace surfacing the latest owner-visible ingestion failure message instead of only a generic failed-state banner
 - STT config edits/deletes being blocked while queued or processing ingestion jobs still reference that config
 - leader team-template create/update/delete scope
@@ -179,6 +203,8 @@ What it does:
 - STT inspect pages rendering inferred values into the save form, not just the API inspection result
 - admin page provisioned-endpoint add/edit/delete flow
 - admin page active STT selection flow for the selected team
+- admin page saved STT `Test STT` action using the bundled `tests/MoreOrLess.wav` sample and rendering the outcome block
+- GLM 2 workspace showing `idle` instead of backend `recording` for untouched whole-file sessions while leaving whole-file controls available when a team STT selection exists
 - browser manager-account routes redirecting unauthenticated requests to `/login`
 - admin page showing teams, users, and account requests
 - admin page protected-account marker for the current system-admin account

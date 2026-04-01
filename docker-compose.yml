@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ambient
       POSTGRES_PASSWORD: ambient
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -15,7 +15,7 @@ services:
     image: redis:7
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   vault:
     image: hashicorp/vault:1.17
@@ -26,7 +26,7 @@ services:
     cap_add:
       - IPC_LOCK
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     command: vault server -dev
 
 volumes:

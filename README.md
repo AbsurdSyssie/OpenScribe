@@ -9,6 +9,7 @@ Entry points:
 - API contract and behavior: [docs/api.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/api.md)
 - team STT configuration and Vault fit: [docs/stt-config.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/stt-config.md)
 - transcript capture and team STT planning: [docs/transcript-capture.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/transcript-capture.md)
+- XSS testing plan and probe script: [docs/security-xss.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/security-xss.md)
 - test strategy and non-DB coverage: [docs/testing.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/testing.md)
 - database behavior, DB safety, and DB-specific tests: [docs/dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
 
@@ -20,16 +21,17 @@ Documentation convention:
 
 Primary local URLs:
 
-- API docs: `http://0.0.0.0:8080/docs` locally, or `http://<your-lan-ip>:8080/docs` from another machine
-- Account request page: `http://0.0.0.0:8080/request-access`
-- Login / bootstrap: `http://0.0.0.0:8080/login`
-- Onboarding: `http://0.0.0.0:8080/onboarding`
-- MFA challenge: `http://0.0.0.0:8080/mfa/challenge`
-- User home: `http://0.0.0.0:8080/home`
-- Transcription workspace: `http://0.0.0.0:8080/transcribe`
-- Claude transcribe preview: `http://0.0.0.0:8080/transcribe-claude`
-- GLM transcribe workspace: `http://0.0.0.0:8080/transcribe-glm-2`
-- Admin UI: `http://0.0.0.0:8080/admin`
+- API docs: `http://127.0.0.1:8080/docs`
+- Account request page: `http://127.0.0.1:8080/request-access`
+- Login / bootstrap: `http://127.0.0.1:8080/login`
+- Onboarding: `http://127.0.0.1:8080/onboarding`
+- MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
+- User home: `http://127.0.0.1:8080/home`
+- Restyled home preview: `http://127.0.0.1:8080/home-restyled`
+- Transcription workspace: `http://127.0.0.1:8080/transcribe`
+- Claude transcribe preview: `http://127.0.0.1:8080/transcribe-claude`
+- GLM transcribe workspace: `http://127.0.0.1:8080/transcribe-glm-2`
+- Admin UI: `http://127.0.0.1:8080/admin`
 
 Preview note:
 
@@ -40,3 +42,6 @@ Quick start:
 
 - run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker, and launch the dev server
 - by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly
+- the default dev bind exposes FastAPI on `0.0.0.0` so a reverse proxy or another machine can reach the frontend
+- Postgres, Redis, and Vault still stay localhost-only unless you explicitly change their Docker port bindings and opt into `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
+- `./start-dev.sh` now also checks live Docker port bindings for Postgres, Redis, and Vault and aborts with a terminal error if they are exposed beyond localhost unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`

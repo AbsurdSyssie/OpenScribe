@@ -4,97 +4,58 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Request Access</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --bg: #f3efe6;
-      --panel: #fffaf0;
-      --ink: #1b1d1f;
-      --muted: #5b605f;
-      --line: #d4c7ab;
-      --accent: #9f3a2d;
-      --accent-strong: #7f251b;
-      --success: #316b4d;
-      --error: #9a2e2e;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      font-family: "Iowan Old Style", "Palatino Linotype", serif;
-      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
-      color: var(--ink);
-    }
-    main {
-      width: min(720px, 100%);
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      padding: 28px;
-      display: grid;
-      gap: 16px;
-      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
-    }
-    form { display: grid; gap: 12px; }
-    label { display: grid; gap: 6px; color: var(--muted); }
-    input, textarea {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font: inherit;
-    }
-    textarea { min-height: 120px; resize: vertical; }
-    button, a {
-      width: fit-content;
-      border: 0;
-      border-radius: 999px;
-      padding: 12px 18px;
-      font: inherit;
-      background: var(--accent);
-      color: white;
-      text-decoration: none;
-      cursor: pointer;
-    }
-    button:hover, a:hover { background: var(--accent-strong); }
-    .flash { padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; }
-    .flash.success { color: var(--success); }
-    .flash.error { color: var(--error); }
-    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    :root {--bg:#FAF8F5;--parchment:#F5F1EB;--card:#FFFFFF;--ink:#1A202C;--slate:#2D3748;--muted:#718096;--border:#E2DED6;--accent:#1D4F5E;--accent-soft:#3D7A8C;--success:#2F855A;--error:#C53030;--shadow-soft:0 10px 30px rgba(26,32,44,.04);--shadow-focus:0 0 0 3px rgba(224,242,245,.9)}
+    *{box-sizing:border-box} html{background:var(--bg)} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:28px;font-family:"DM Sans",sans-serif;color:var(--ink);background:var(--bg);line-height:1.5;position:relative}
+    body::before{content:"";position:fixed;inset:0;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");opacity:.018}
+    main{position:relative;z-index:1;width:min(760px,100%);display:grid;gap:20px}.panel{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px;box-shadow:var(--shadow-soft)}.hero{background:linear-gradient(180deg, rgba(245,241,235,.95) 0%, rgba(255,255,255,.98) 100%)}
+    .eyebrow{display:inline-flex;align-items:center;gap:8px;width:fit-content;margin-bottom:10px;padding:6px 10px;border-radius:999px;font-size:.75rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);background:rgba(255,255,255,.78);border:1px solid rgba(226,222,214,.92)}.eyebrow::before{content:"";width:8px;height:8px;border-radius:999px;background:var(--accent)}
+    h1{margin:0;font-family:"Fraunces",serif;font-weight:500;letter-spacing:-.02em;color:var(--ink);font-size:clamp(2rem,4vw,2.8rem);line-height:1.04} p{margin:0;color:var(--muted)}
+    form{display:grid;gap:14px} label{display:grid;gap:7px;color:var(--slate);font-size:.95rem;font-weight:500} input,textarea{width:100%;border:1px solid var(--border);border-radius:10px;padding:12px 14px;font:inherit;color:var(--ink);background:var(--parchment);transition:border-color .15s ease, background-color .15s ease, box-shadow .15s ease} textarea{min-height:120px;resize:vertical} input:focus,textarea:focus{outline:none;border-color:rgba(61,122,140,.55);background:#fff;box-shadow:var(--shadow-focus)}
+    .actions{display:flex;gap:12px;flex-wrap:wrap}.btn,a.button{width:fit-content;border:1px solid transparent;border-radius:10px;padding:11px 16px;font:inherit;font-weight:500;background:var(--accent);color:#fff;cursor:pointer;transition:all .15s ease;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-height:44px}.btn:hover,a.button:hover{background:var(--accent-soft);transform:translateY(-1px)}.btn.secondary,a.button.secondary{background:#fff;color:var(--ink);border-color:var(--border)}.btn.secondary:hover,a.button.secondary:hover{background:rgba(29,79,94,.04);border-color:rgba(61,122,140,.28)}
+    .flash{padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(245,241,235,.7)}.flash.success{color:var(--success);border-color:rgba(47,133,90,.2);background:rgba(47,133,90,.06)}.flash.error{color:var(--error);border-color:rgba(197,48,48,.2);background:rgba(197,48,48,.06)}
+    @media (max-width:760px){body{padding:18px}.panel{padding:22px}.actions,.btn,a.button{width:100%}.btn,a.button{justify-content:center}}
   </style>
 </head>
 <body>
   <main>
-    <div>OpenScribe access requests</div>
-    <h1>Request an account</h1>
-    <p>Submit your details and the team you belong to. A system admin or matching team leader can review the request and create your real account manually.</p>
-    {% if message %}
-    <div class="flash {{ message_kind }}">{{ message }}</div>
-    {% endif %}
-    <form method="post" action="/request-access">
-      <label>
-        Name
-        <input type="text" name="requested_name" maxlength="255" required>
-      </label>
-      <label>
-        Email
-        <input type="email" name="requested_email" required>
-      </label>
-      <label>
-        Team name
-        <input type="text" name="requested_team_name" maxlength="255" required>
-      </label>
-      <label>
-        Details
-        <textarea name="request_details" maxlength="2000" placeholder="Context for the reviewer"></textarea>
-      </label>
-      <div class="actions">
-        <button type="submit">Submit request</button>
-        <a href="/login">Back to login</a>
-      </div>
-    </form>
-  </main>
+    <section class="panel hero">
+      <div class="eyebrow">OpenScribe access requests</div>
+      <h1>Request an account</h1>
+      <p>Submit your details and the team you belong to. A system admin or matching team leader can review the request and create your real account manually.</p>
+    </section>
+
+    <section class="panel">
+      {% if message %}
+      <div class="flash {{ message_kind }}">{{ message }}</div>
+      {% endif %}
+      <form method="post" action="/request-access">
+        <label>
+          Name
+          <input type="text" name="requested_name" maxlength="255" required>
+        </label>
+        <label>
+          Email
+          <input type="email" name="requested_email" required>
+        </label>
+        <label>
+          Team name
+          <input type="text" name="requested_team_name" maxlength="255" required>
+        </label>
+        <label>
+          Details
+          <textarea name="request_details" maxlength="2000" placeholder="Context for the reviewer"></textarea>
+        </label>
+        <div class="actions">
+          <button class="btn" type="submit">Submit request</button>
+          <a class="button secondary" href="/login">Back to login</a>
+        </div>
+      </form>
+    </section>
   {% include "_csrf_script.html" %}
+  </main>
 </body>
 </html>

@@ -19,7 +19,7 @@ from app.models import (
 )
 from app.schemas.transcripts import TranscriptCreate, TranscriptStart
 from app.services.audio import enforce_whole_file_duration_limit, normalize_audio_to_wav_16k_mono
-from app.services.stt import resolve_selected_team_stt, transcribe_with_stt_snapshot
+from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
 
 
 def _create_transcript_row(
@@ -283,6 +283,7 @@ def queue_audio_chunk_ingestion(
         )
 
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
+    ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
     job = TranscriptIngestionJob(
         id=uuid4(),
         transcript_id=transcript.id,
@@ -341,6 +342,7 @@ def queue_audio_file_ingestion(
             {"transcript_id": str(transcript.id)},
         )
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
+    ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
 
     job = TranscriptIngestionJob(
         id=uuid4(),

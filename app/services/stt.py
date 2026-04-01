@@ -1,5 +1,9 @@
 import io
+import logging
+from pathlib import Path
+from time import monotonic
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -26,6 +30,11 @@ SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
     "gpt-4o-transcribe-diarize",
     "whisper-1",
 )
+
+
+logger = logging.getLogger("openscribe.stt")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
 
 
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
@@ -123,6 +132,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
     )
     if config is None:
         raise AppError(404, "not_found", "Selectable STT config not found", {"resource": "stt_config", "config_id": str(payload.stt_config_id)})
+    ensure_stt_config_credential_ready(team_id=team.id, config=config)
 
     provider_models = list(config.available_models_json or [])
     override = payload.model_name_override.strip() if payload.model_name_override else None
@@ -200,6 +210,47 @@ def resolve_selected_team_stt(db: Session, *, team_id: UUID) -> tuple[TeamSttSel
     return selection, config, resolved_model_name, resolved_language
 
 
+def _missing_stt_credential_error(*, team_id: UUID, config_id: UUID) -> AppError:
+    return AppError(
+        409,
+        "stt_config_secret_missing",
+        "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
+        {"team_id": str(team_id), "config_id": str(config_id)},
+    )
+
+
+def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str | None:
+    if not config.vault_secret_ref:
+        if config.adapter_kind is SttAdapterKind.openai_cloud:
+            raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
+        return None
+    try:
+        return read_team_stt_bearer_token(team_id=team_id, config_id=config.id)
+    except AppError as exc:
+        if exc.code == "vault_read_failed":
+            raise _missing_stt_credential_error(team_id=team_id, config_id=config.id) from exc
+        raise
+
+
+def _read_stt_snapshot_bearer_token(
+    db: Session,
+    *,
+    team_id: UUID,
+    stt_config_id: UUID,
+    adapter_kind: SttAdapterKind,
+) -> str | None:
+    config = db.get(TeamSttConfig, stt_config_id)
+    if config is not None:
+        return _read_saved_stt_bearer_token(team_id=team_id, config=config)
+    if adapter_kind is SttAdapterKind.openai_cloud:
+        raise _missing_stt_credential_error(team_id=team_id, config_id=stt_config_id)
+    return None
+
+
+def ensure_stt_config_credential_ready(*, team_id: UUID, config: TeamSttConfig) -> None:
+    _read_saved_stt_bearer_token(team_id=team_id, config=config)
+
+
 def _normalized_known_adapter_fields(adapter_kind: SttAdapterKind) -> tuple[str, str, str]:
     if adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
         return "/v1/audio/transcriptions", "file", "text"
@@ -244,6 +295,138 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
     return text
 
 
+def paragraphize_timestamped_segments(
+    segments: list[dict[str, Any]],
+    *,
+    max_chars: int = 180,
+    pause_threshold_seconds: float = 1.2,
+) -> list[dict[str, Any]]:
+    paragraphs: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def flush_current() -> None:
+        nonlocal current
+        if current is None:
+            return
+        current["text"] = " ".join(str(current["text"]).split()).strip()
+        if current["text"]:
+            paragraphs.append(current)
+        current = None
+
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        start = float(segment.get("start") or 0.0)
+        end = float(segment.get("end") or start)
+        speaker = str(segment.get("speaker") or "UNKNOWN")
+        if current is None:
+            current = {
+                "start": start,
+                "end": end,
+                "speaker": speaker,
+                "text": text,
+                "segment_count": 1,
+            }
+            continue
+
+        pause = max(0.0, start - float(current["end"]))
+        current_text = str(current["text"])
+        next_text = f"{current_text} {text}".strip()
+        should_break = (
+            speaker != current["speaker"]
+            or pause >= pause_threshold_seconds
+            or len(next_text) > max_chars
+            or current_text.endswith((".", "?", "!", ":")) and pause >= 0.45
+        )
+        if should_break:
+            flush_current()
+            current = {
+                "start": start,
+                "end": end,
+                "speaker": speaker,
+                "text": text,
+                "segment_count": 1,
+            }
+            continue
+
+        current["end"] = end
+        current["text"] = next_text
+        current["segment_count"] = int(current["segment_count"]) + 1
+
+    flush_current()
+    return paragraphs
+
+
+def _format_timestamped_transcript_payload(payload: dict[str, Any], *, response_text_path: str) -> str:
+    segments = payload.get("segments")
+    if isinstance(segments, list):
+        paragraphs = paragraphize_timestamped_segments(segments)
+        if paragraphs:
+            return "\n\n".join(paragraph["text"] for paragraph in paragraphs if str(paragraph.get("text") or "").strip())
+    return _extract_response_text(payload, response_text_path)
+
+
+def _sanitize_logged_url(raw_url: str | None) -> str | None:
+    if not raw_url:
+        return None
+    parts = urlsplit(raw_url)
+    netloc = parts.hostname or ""
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def ensure_stt_service_healthy(
+    *,
+    adapter_kind: SttAdapterKind,
+    base_url: str,
+    bearer_token: str | None = None,
+    healthcheck_url: str | None = None,
+) -> None:
+    if adapter_kind is SttAdapterKind.openai_cloud or not healthcheck_url:
+        return
+    headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+    try:
+        response = httpx.get(healthcheck_url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        logger.warning(
+            "stt_healthcheck_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "healthcheck": True,
+                }
+            },
+        )
+        raise AppError(
+            502,
+            "stt_healthcheck_failed",
+            "STT provider health check failed",
+            {"status_code": status_code},
+        ) from exc
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "stt_healthcheck_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "healthcheck": True,
+                }
+            },
+        )
+        raise AppError(
+            502,
+            "stt_healthcheck_failed",
+            "Could not reach the STT provider health endpoint",
+            {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
+        ) from exc
+
+
 def _translate_http_stt_error(exc: httpx.HTTPError) -> AppError:
     if isinstance(exc, httpx.TimeoutException):
         return AppError(
@@ -270,6 +453,27 @@ def _translate_http_stt_error(exc: httpx.HTTPError) -> AppError:
     return AppError(502, "stt_unavailable", "STT provider is unavailable")
 
 
+def _safe_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
+    request = getattr(exc, "request", None)
+    response = getattr(exc, "response", None)
+    details: dict[str, Any] = {
+        "error_type": exc.__class__.__name__,
+        "method": getattr(request, "method", None),
+        "url": _sanitize_logged_url(str(request.url)) if getattr(request, "url", None) else None,
+    }
+    if response is not None:
+        details["status_code"] = response.status_code
+    if isinstance(exc, httpx.TimeoutException):
+        details["provider_error_code"] = "timeout"
+    elif isinstance(exc, httpx.ConnectError):
+        details["provider_error_code"] = "connection_error"
+    elif isinstance(exc, httpx.HTTPStatusError):
+        details["provider_error_code"] = "http_status_error"
+    else:
+        details["provider_error_code"] = "http_error"
+    return details
+
+
 def _transcribe_via_http(
     *,
     base_url: str,
@@ -277,7 +481,7 @@ def _transcribe_via_http(
     file_field_name: str,
     response_text_path: str,
     extra_form_fields_json: dict[str, str] | None,
-    bearer_token: str,
+    bearer_token: str | None,
     model_name: str | None,
     language: str | None,
     audio_bytes: bytes,
@@ -291,21 +495,45 @@ def _transcribe_via_http(
     if language:
         form_fields["language"] = language
     try:
+        headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         response = httpx.post(
             url,
-            headers={"Authorization": f"Bearer {bearer_token}"},
+            headers=headers,
             data=form_fields,
             files={file_field_name: (filename, audio_bytes, content_type)},
             timeout=60.0,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
+        logger.warning(
+            "stt_http_request_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "file_field_name": file_field_name,
+                    "response_text_path": response_text_path,
+                    "audio_byte_count": len(audio_bytes),
+                    "form_field_keys": sorted(form_fields.keys()),
+                }
+            },
+        )
         raise _translate_http_stt_error(exc) from exc
     try:
         payload = response.json()
     except ValueError as exc:
+        logger.warning(
+            "stt_http_response_invalid_json",
+            extra={
+                "stt_transport": {
+                    "method": "POST",
+                    "url": _sanitize_logged_url(url),
+                    "status_code": response.status_code,
+                    "response_text_path": response_text_path,
+                }
+            },
+        )
         raise AppError(502, "stt_response_invalid", "STT provider response was not valid JSON") from exc
-    return _extract_response_text(payload, response_text_path)
+    return _format_timestamped_transcript_payload(payload, response_text_path=response_text_path)
 
 
 def _transcribe_via_openai_cloud(
@@ -353,8 +581,10 @@ def transcribe_with_team_stt(
     content_type: str,
 ) -> str:
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id)
-    bearer_token = read_team_stt_bearer_token(team_id=team_id, config_id=config.id)
+    bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
     if config.adapter_kind is SttAdapterKind.openai_cloud:
+        if not bearer_token:
+            raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
         return _transcribe_via_openai_cloud(
             base_url=config.base_url,
             extra_form_fields_json=config.extra_form_fields_json,
@@ -404,9 +634,16 @@ def transcribe_with_stt_snapshot(
             filename=filename,
             content_type=content_type,
         )
-    bearer_token = read_team_stt_bearer_token(team_id=team_id, config_id=stt_config_id)
     resolved_adapter = SttAdapterKind(adapter_kind)
+    bearer_token = _read_stt_snapshot_bearer_token(
+        db,
+        team_id=team_id,
+        stt_config_id=stt_config_id,
+        adapter_kind=resolved_adapter,
+    )
     if resolved_adapter is SttAdapterKind.openai_cloud:
+        if not bearer_token:
+            raise _missing_stt_credential_error(team_id=team_id, config_id=stt_config_id)
         return _transcribe_via_openai_cloud(
             base_url=base_url,
             extra_form_fields_json=extra_form_fields_json,
@@ -431,6 +668,81 @@ def transcribe_with_stt_snapshot(
         filename=filename,
         content_type=content_type,
     )
+
+
+def run_saved_stt_config_test(
+    db: Session,
+    actor: User,
+    *,
+    config_id: UUID,
+    team_id: UUID | None = None,
+    sample_path: Path = DEFAULT_STT_SAMPLE_PATH,
+) -> dict[str, Any]:
+    config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
+    try:
+        audio_bytes = sample_path.read_bytes()
+    except OSError as exc:  # pragma: no cover
+        raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
+
+    started_at = monotonic()
+    health_status = "skipped"
+    health_url = None
+    try:
+        bearer_token = _read_saved_stt_bearer_token(team_id=config.team_id, config=config)
+        transcript_text = (
+            _transcribe_via_openai_cloud(
+                base_url=config.base_url,
+                extra_form_fields_json=config.extra_form_fields_json,
+                bearer_token=bearer_token,
+                model_name=config.model_name,
+                language=config.language,
+                audio_bytes=audio_bytes,
+                filename=sample_path.name,
+            )
+            if config.adapter_kind is SttAdapterKind.openai_cloud
+            else _transcribe_via_http(
+                base_url=config.base_url,
+                transcribe_path=config.transcribe_path,
+                file_field_name=config.file_field_name,
+                response_text_path=config.response_text_path,
+                extra_form_fields_json=config.extra_form_fields_json,
+                bearer_token=bearer_token,
+                model_name=config.model_name,
+                language=config.language,
+                audio_bytes=audio_bytes,
+                filename=sample_path.name,
+                content_type="audio/wav",
+            )
+        )
+        return {
+            "success": True,
+            "health_status": health_status,
+            "sample_filename": sample_path.name,
+            "sample_size_bytes": len(audio_bytes),
+            "health_url": health_url,
+            "transcribe_url": f"{config.base_url.rstrip('/')}{config.transcribe_path}",
+            "model_name": config.model_name,
+            "language": config.language,
+            "duration_ms": int((monotonic() - started_at) * 1000),
+            "transcript_text": transcript_text,
+            "error_code": None,
+            "error_message": None,
+        }
+    except AppError as exc:
+        return {
+            "success": False,
+            "health_status": health_status,
+            "sample_filename": sample_path.name,
+            "sample_size_bytes": len(audio_bytes),
+            "health_url": health_url,
+            "transcribe_url": f"{config.base_url.rstrip('/')}{config.transcribe_path}",
+            "model_name": config.model_name,
+            "language": config.language,
+            "duration_ms": int((monotonic() - started_at) * 1000),
+            "transcript_text": None,
+            "error_code": exc.code,
+            "error_message": exc.message,
+        }
 
 
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
@@ -476,7 +788,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             language=payload.language.strip() if payload.language else None,
             response_text_path=payload.response_text_path.strip(),
             extra_form_fields_json=payload.extra_form_fields_json,
-            vault_secret_ref="pending",
+            vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
             is_active=payload.is_active,
         )
         db.add(config)
@@ -499,8 +811,12 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
 
     if payload.bearer_token:
         config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-    elif creating:
-        raise AppError(422, "business_rule_violation", "Bearer token is required when creating the STT config", {"field": "bearer_token"})
+    elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
+        if config.vault_secret_ref:
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
+        config.vault_secret_ref = ""
+    elif payload.adapter_kind is SttAdapterKind.openai_cloud and not config.vault_secret_ref:
+        raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
 
     db.commit()
     db.refresh(config)

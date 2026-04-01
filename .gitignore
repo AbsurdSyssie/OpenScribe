@@ -16,3 +16,4 @@ app/templates/transcriber_glm_2.html
 frontend/
 docs/frontend-nextjs.md
 docs/UI_Translation.md
+tests/oscar.mp3

@@ -46,6 +46,7 @@ from app.models import (
     UserTrustedDevice,
     TemplateScope,
 )
+from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, run_saved_stt_config_test
 from app.schemas.templates import GenerateFollowupRequest
 from app.services.audio import NormalizedAudio
 from app.services.redaction import reidentify_text as redaction_reidentify_text
@@ -415,6 +416,71 @@ def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_rev
     assert "super-secret-token" not in fetched.text
 
 
+def test_system_admin_can_provision_openai_compatible_stt_without_secret(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-no-auth-stt@example.com", password="password-1", is_system_admin=True)
+
+    login(client, email="admin-no-auth-stt@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Parakeet",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:8000",
+            "model_name": "parakeet",
+            "language": "en",
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["has_secret"] is False
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == UUID(body["id"])))
+    assert persisted is not None
+    assert persisted.vault_secret_ref == ""
+
+
+def test_system_admin_can_clear_saved_stt_secret_when_switching_to_no_auth(client, db_session, make_team, make_user, make_stt_config, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-clear-stt-secret@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
+    deleted: list[tuple[str, str]] = []
+
+    def fake_delete_team_stt_bearer_token(*, team_id, config_id):
+        deleted.append((str(team_id), str(config_id)))
+        return None
+
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
+
+    login(client, email="admin-clear-stt-secret@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Parakeet no auth",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:8000",
+            "transcribe_path": "/v1/audio/transcriptions",
+            "auth_mode": "bearer",
+            "model_name": "parakeet",
+            "file_field_name": "file",
+            "language": "en",
+            "response_text_path": "text",
+            "extra_form_fields_json": {},
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == ""
+    assert deleted == [(str(team.id), str(config.id))]
+
+
 def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -467,6 +533,157 @@ def test_system_admin_can_inspect_stt_openapi_and_get_prefilled_fields(client, m
     assert any(tip["name"] == "chunk_mode" and tip["description"] == "Chunk handling mode." for tip in body["field_tips"])
     assert any("OpenAI-compatible REST" in note for note in body["notes"])
     assert "inspect-token" not in inspected.text
+
+
+def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        base_url="http://127.0.0.1:7000",
+        transcribe_path="/v1/audio/transcriptions",
+        file_field_name="file",
+        response_text_path="text",
+        model_name="whisper-1",
+        language="en",
+    )
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    monkeypatch.setattr(
+        "app.services.stt._transcribe_via_http",
+        lambda **kwargs: "more or less, I suppose",
+    )
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is True
+    assert result["health_status"] == "skipped"
+    assert result["sample_filename"] == "MoreOrLess.wav"
+    assert result["transcribe_url"] == "http://127.0.0.1:7000/v1/audio/transcriptions"
+    assert result["model_name"] == "whisper-1"
+    assert result["language"] == "en"
+    assert result["transcript_text"] == "more or less, I suppose"
+    assert result["error_code"] is None
+
+
+def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_reveal(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, base_url="http://127.0.0.1:7000")
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    def raise_failure(**kwargs):
+        raise AppError(502, "stt_request_failed", "STT provider request failed", {"status_code": 500})
+
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", raise_failure)
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is False
+    assert result["health_status"] == "skipped"
+    assert result["error_code"] == "stt_request_failed"
+    assert result["error_message"] == "STT provider request failed"
+    assert result["transcript_text"] is None
+
+
+def test_paragraphize_timestamped_segments_splits_on_long_pauses():
+    paragraphs = paragraphize_timestamped_segments(
+        [
+            {"start": 0.78, "end": 2.54, "text": "This is my voice.", "speaker": "UNKNOWN"},
+            {"start": 4.7, "end": 13.18, "text": "For those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA.", "speaker": "UNKNOWN"},
+            {"start": 13.42, "end": 14.14, "text": "Update.", "speaker": "UNKNOWN"},
+            {"start": 14.3, "end": 22.54, "text": "The PPA support until Ubuntu 24.04 no longer updates for 24.10 and higher due to a lack of upstream source development.", "speaker": "UNKNOWN"},
+            {"start": 22.78, "end": 30.06, "text": "Audio recorder is a free open-source GTK3 audio recording application for Linux, and it has a stupid simple user interface.", "speaker": "UNKNOWN"},
+        ],
+        max_chars=420,
+        pause_threshold_seconds=1.2,
+    )
+
+    assert paragraphs == [
+        {
+            "start": 0.78,
+            "end": 2.54,
+            "speaker": "UNKNOWN",
+            "text": "This is my voice.",
+            "segment_count": 1,
+        },
+        {
+            "start": 4.7,
+            "end": 30.06,
+            "speaker": "UNKNOWN",
+            "text": "For those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA. Update. The PPA support until Ubuntu 24.04 no longer updates for 24.10 and higher due to a lack of upstream source development. Audio recorder is a free open-source GTK3 audio recording application for Linux, and it has a stupid simple user interface.",
+            "segment_count": 4,
+        },
+    ]
+
+
+def test_paragraphize_timestamped_segments_splits_on_speaker_change_and_length_cap():
+    paragraphs = paragraphize_timestamped_segments(
+        [
+            {"start": 0.0, "end": 2.0, "text": "First speaker opening sentence.", "speaker": "speaker_1"},
+            {"start": 2.1, "end": 4.0, "text": "Another sentence that still belongs to the same speaker.", "speaker": "speaker_1"},
+            {"start": 4.1, "end": 5.0, "text": "Second speaker response.", "speaker": "speaker_2"},
+            {"start": 5.1, "end": 7.5, "text": "A very long continuation that should be forced into another paragraph once the max character threshold is exceeded.", "speaker": "speaker_2"},
+        ],
+        max_chars=90,
+        pause_threshold_seconds=1.2,
+    )
+
+    assert paragraphs == [
+        {
+            "start": 0.0,
+            "end": 4.0,
+            "speaker": "speaker_1",
+            "text": "First speaker opening sentence. Another sentence that still belongs to the same speaker.",
+            "segment_count": 2,
+        },
+        {
+            "start": 4.1,
+            "end": 5.0,
+            "speaker": "speaker_2",
+            "text": "Second speaker response.",
+            "segment_count": 1,
+        },
+        {
+            "start": 5.1,
+            "end": 7.5,
+            "speaker": "speaker_2",
+            "text": "A very long continuation that should be forced into another paragraph once the max character threshold is exceeded.",
+            "segment_count": 1,
+        },
+    ]
+
+
+def test_paragraphize_timestamped_segments_default_heuristic_splits_parakeet_sample_more_aggressively():
+    paragraphs = paragraphize_timestamped_segments(
+        [
+            {"start": 0.78, "end": 2.54, "text": "This is my voice.", "speaker": "UNKNOWN"},
+            {"start": 4.7, "end": 13.18, "text": "For those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA.", "speaker": "UNKNOWN"},
+            {"start": 13.42, "end": 14.14, "text": "Update.", "speaker": "UNKNOWN"},
+            {"start": 14.3, "end": 22.54, "text": "The PPA support until Ubuntu 24.04 no longer updates for 24.10 and higher due to a lack of upstream source development.", "speaker": "UNKNOWN"},
+            {"start": 22.78, "end": 30.06, "text": "Audio recorder is a free open-source GTK3 audio recording application for Linux, and it has a stupid simple user interface.", "speaker": "UNKNOWN"},
+        ]
+    )
+
+    assert [paragraph["text"] for paragraph in paragraphs] == [
+        "This is my voice.",
+        "For those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA. Update.",
+        "The PPA support until Ubuntu 24.04 no longer updates for 24.10 and higher due to a lack of upstream source development.",
+        "Audio recorder is a free open-source GTK3 audio recording application for Linux, and it has a stupid simple user interface.",
+    ]
 
 
 def test_system_admin_can_inspect_openai_cloud_without_openapi_fetch(client, make_team, make_user, monkeypatch):
@@ -734,6 +951,36 @@ def test_leader_can_choose_and_clear_team_stt_selection(client, db_session, make
     assert cleared.status_code == 204
     assert client.get("/api/v1/stt-selection").json() is None
     assert db_session.get(TeamSttConfig, config.id) is not None
+
+
+def test_stt_selection_rejects_config_with_missing_saved_secret(client, make_team, make_user, make_stt_config, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-stt-secret@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader-stt-secret@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(team=team, actor=admin, model_name="whisper-1")
+
+    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "STT provider credential is missing for the queued transcription config",
+            {"team_id": str(team_id), "config_id": str(config_id)},
+        )
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
+
+    login(client, email="leader-stt-secret@example.com", password="password-2")
+    rejected = client.post(
+        "/api/v1/stt-selection",
+        json={"stt_config_id": str(config.id)},
+    )
+
+    assert_error(
+        rejected,
+        status_code=409,
+        code="stt_config_secret_missing",
+        message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
+    )
 
 
 def test_stt_selection_rejects_non_provider_model(client, make_team, make_user, make_stt_config):
@@ -3113,8 +3360,8 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         status=TranscriptIngestionJobStatus.failed,
-        error_code="vault_read_failed",
-        error_message="STT provider credential is missing for the queued transcription config",
+        error_code="stt_config_secret_missing",
+        error_message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
     )
     db_session.add(job)
     db_session.commit()
@@ -3124,8 +3371,8 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
 
     assert detail.status_code == 200
     assert detail.json()["latest_ingestion_job_status"] == "failed"
-    assert detail.json()["latest_ingestion_error_code"] == "vault_read_failed"
-    assert detail.json()["latest_ingestion_error_message"] == "STT provider credential is missing for the queued transcription config"
+    assert detail.json()["latest_ingestion_error_code"] == "stt_config_secret_missing"
+    assert detail.json()["latest_ingestion_error_message"] == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
 
 
 def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
@@ -3194,12 +3441,63 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     assert [item["name"] for item in payload["available_templates"]] == ["My note"]
     assert [item["name"] for item in payload["available_quick_actions"]] == ["Send SMS"]
     assert [item["id"] for item in payload["generated_documents"]] == [str(generated.id)]
+    assert payload["stt_selected"] is False
+    assert payload["stt_available"] is False
+    assert "No STT configured" in payload["stt_status_message"]
+    assert payload["can_create_new_session"] is True
+    assert payload["new_session_block_message"] is None
 
     client.post("/api/v1/auth/logout")
     login(client, email="other-workspace@example.com", password="password-2")
     forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
     assert forbidden.status_code == 200
     assert forbidden.json()["active_transcript"] is None
+
+
+def test_transcribe_workspace_endpoint_does_not_health_check_stt_service(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Workspace Health Team")
+    owner = make_user(email="owner-workspace-health@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    admin = make_user(email="admin-workspace-health@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT", base_url="http://127.0.0.1:7000")
+    make_stt_selection(config=config, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Idle session",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    call_count = 0
+
+    def fail_if_called(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("workspace endpoint should not probe STT health")
+
+    monkeypatch.setattr("app.services.stt.ensure_stt_service_healthy", fail_if_called)
+
+    login(client, email="owner-workspace-health@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stt_selected"] is True
+    assert payload["stt_available"] is True
+    assert payload["stt_status_message"] is None
+    assert call_count == 0
 
 
 def test_transcript_title_update_is_owner_only(client, db_session, make_team, make_user):
@@ -3529,10 +3827,63 @@ def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, 
     )
 
 
-def test_audio_file_upload_queues_job_for_whole_file_mode(client, db_session, make_team, make_user):
+def test_stt_health_probe_uses_explicit_healthcheck_url_and_bearer_auth(monkeypatch):
+    calls = []
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, *, headers, timeout):
+        calls.append((url, headers, timeout))
+        return DummyResponse()
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    ensure_stt_service_healthy(
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://ignored.example",
+        bearer_token="secret-token",
+        healthcheck_url="http://stt.example/internal/ready",
+    )
+
+    assert calls == [("http://stt.example/internal/ready", {"Authorization": "Bearer secret-token"}, 5.0)]
+
+
+def test_stt_health_probe_skips_without_explicit_healthcheck_url(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("health probe should be skipped when no explicit health URL is configured")
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fail_if_called)
+
+    ensure_stt_service_healthy(
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://stt.example",
+        bearer_token="secret-token",
+        healthcheck_url=None,
+    )
+
+
+def test_safe_http_error_details_redacts_url_credentials_and_query():
+    request = httpx.Request(
+        "POST",
+        "http://user:pass@stt.example:7000/v1/audio/transcriptions?token=secret&sig=abc",
+    )
+    exc = httpx.ConnectError("boom", request=request)
+
+    details = _safe_http_error_details(exc)
+
+    assert details["url"] == "http://stt.example:7000/v1/audio/transcriptions"
+
+
+def test_audio_file_upload_queues_job_for_whole_file_mode(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
-
+    admin = make_user(email="admin-audio-file@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
     transcript_id = started.json()["id"]
@@ -3553,6 +3904,109 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(client, db_session, ma
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
     assert job.celery_task_id == "test-task-id"
+
+
+def test_audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-missing-secret@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-missing-secret@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "STT provider credential is missing for the queued transcription config",
+            {"team_id": str(team_id), "config_id": str(config_id)},
+        )
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
+
+    login(client, email="owner-missing-secret@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
+    transcript_id = started.json()["id"]
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    assert_error(
+        uploaded,
+        status_code=409,
+        code="stt_config_secret_missing",
+        message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
+    )
+    assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == UUID(transcript_id))) is None
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript is not None
+    assert transcript.status is TranscriptStatus.recording
+
+
+def test_audio_file_upload_does_not_preflight_stt_health_before_queueing(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-health@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-health@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    login(client, email="owner-health@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
+    transcript_id = started.json()["id"]
+
+    calls = []
+
+    def fake_ensure_stt_service_healthy(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("whole-file queueing should not perform a separate STT health probe")
+
+    monkeypatch.setattr("app.services.stt.ensure_stt_service_healthy", fake_ensure_stt_service_healthy)
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    assert uploaded.status_code == 202
+    assert calls == []
+
+
+def test_audio_file_upload_queues_even_if_health_probe_helper_would_fail(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-healthfail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-healthfail@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    login(client, email="owner-healthfail@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
+    transcript_id = UUID(started.json()["id"])
+
+    def fake_ensure_stt_service_healthy(**kwargs):
+        raise AssertionError("whole-file queueing should not call the STT health probe helper")
+
+    monkeypatch.setattr("app.services.stt.ensure_stt_service_healthy", fake_ensure_stt_service_healthy)
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    assert uploaded.status_code == 202
+    transcript = db_session.get(Transcript, transcript_id)
+    assert transcript is not None
+    assert transcript.status is TranscriptStatus.transcribing
+    jobs = db_session.scalars(
+        select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript_id)
+    ).all()
+    assert len(jobs) == 1
 
 
 def test_audio_file_upload_rejects_duplicate_in_progress_whole_file_job(client, db_session, make_team, make_user):
@@ -4042,9 +4496,9 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
 
     def fake_transcribe_with_stt_snapshot(db, **kwargs):
         raise AppError(
-            502,
-            "vault_read_failed",
-            "STT provider credential is missing for the queued transcription config",
+            409,
+            "stt_config_secret_missing",
+            "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
             {"team_id": str(team.id), "config_id": str(config.id)},
         )
 
@@ -4060,8 +4514,8 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
     processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
 
     assert processed.status is TranscriptIngestionJobStatus.failed
-    assert processed.error_code == "vault_read_failed"
-    assert processed.error_message == "STT provider credential is missing for the queued transcription config"
+    assert processed.error_code == "stt_config_secret_missing"
+    assert processed.error_message == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
     transcript = db_session.get(Transcript, UUID(transcript_id))
     assert transcript is not None
     assert transcript.status is TranscriptStatus.failed
@@ -4181,8 +4635,163 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     assert captured["files"]["file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
 
 
-def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
+def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
     db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-no-auth@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Parakeet",
+        adapter_kind=SttAdapterKind.openai_compatible_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/v1/audio/transcriptions",
+        auth_mode=SttAuthMode.bearer,
+        model_name="parakeet",
+        file_field_name="file",
+        language="en",
+        response_text_path="text",
+        extra_form_fields_json=None,
+        vault_secret_ref="",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+
+    captured = {}
+
+    def fake_httpx_post(url, *, headers, data, files, timeout):
+        captured["headers"] = headers
+        return FakeHttpxResponse({"text": "recognized text"})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"normalized-audio",
+        filename="chunk.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "recognized text"
+    assert captured["headers"] == {}
+
+
+def test_transcribe_with_team_stt_invalid_json_log_redacts_provider_url(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch, caplog
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-invalid-json@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Signed URL STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://user:pass@stt.example:9000?token=secret",
+        transcribe_path="/v1/audio/transcriptions",
+        auth_mode=SttAuthMode.bearer,
+        model_name="whisper-1",
+        file_field_name="file",
+        language="en",
+        response_text_path="text",
+        extra_form_fields_json=None,
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+    caplog.set_level("WARNING", logger="openscribe.stt")
+
+    class InvalidJsonResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: InvalidJsonResponse())
+
+    try:
+        transcribe_with_team_stt(
+            db_session,
+            team_id=team.id,
+            audio_bytes=b"normalized-audio",
+            filename="chunk.wav",
+            content_type="audio/wav",
+        )
+    except AppError as exc:
+        assert exc.code == "stt_response_invalid"
+        log_record = next(record for record in caplog.records if record.message == "stt_http_response_invalid_json")
+        assert log_record.stt_transport["url"] == "http://stt.example:9000"
+        assert "user:pass" not in log_record.stt_transport["url"]
+        assert "token=secret" not in log_record.stt_transport["url"]
+    else:
+        raise AssertionError("Expected invalid JSON STT response to raise an AppError")
+
+
+def test_transcribe_with_team_stt_paragraphizes_timestamped_segments_when_present(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-segments@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Parakeet STT",
+        adapter_kind=SttAdapterKind.openai_compatible_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/v1/audio/transcriptions",
+        auth_mode=SttAuthMode.bearer,
+        model_name="parakeet",
+        file_field_name="file",
+        language="en",
+        response_text_path="text",
+        extra_form_fields_json={"response_format": "verbose_json", "timestamps": "segment"},
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    monkeypatch.setattr(
+        "app.services.stt.httpx.post",
+        lambda *args, **kwargs: FakeHttpxResponse(
+            {
+                "text": "flat transcript that should not win",
+                "segments": [
+                    {"start": 0.78, "end": 2.54, "text": "This is my voice.", "speaker": "UNKNOWN", "id": 0},
+                    {"start": 4.7, "end": 13.18, "text": "For those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA.", "speaker": "UNKNOWN", "id": 1},
+                    {"start": 13.42, "end": 14.14, "text": "Update.", "speaker": "UNKNOWN", "id": 2},
+                ],
+            }
+        ),
+    )
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"normalized-audio",
+        filename="chunk.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "This is my voice.\n\nFor those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA. Update."
+
+
+def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch, caplog
 ):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-connect@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -4206,6 +4815,7 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
     db_session.add(config)
     db_session.commit()
     make_stt_selection(config=config, actor=owner)
+    caplog.set_level("WARNING", logger="openscribe.stt")
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
 
@@ -4226,12 +4836,19 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
         assert exc.code == "stt_unavailable"
         assert exc.message == "Could not reach the STT provider"
         assert exc.details == {"provider_error_code": "connection_error"}
+        assert "stt_http_request_failed" in caplog.text
+        log_record = next(record for record in caplog.records if record.message == "stt_http_request_failed")
+        assert log_record.stt_transport["provider_error_code"] == "connection_error"
+        assert log_record.stt_transport["error_type"] == "ConnectError"
+        assert log_record.stt_transport["url"] == "http://127.0.0.1:9000/v1/audio/transcriptions"
+        assert log_record.stt_transport["audio_byte_count"] == len(b"normalized-audio")
+        assert log_record.stt_transport["form_field_keys"] == ["language", "model"]
     else:
         raise AssertionError("Expected generic REST STT connect failure to raise an AppError")
 
 
 def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cleanly(
-    db_session, make_team, make_user, make_stt_selection, monkeypatch
+    db_session, make_team, make_user, make_stt_selection, monkeypatch, caplog
 ):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-http-status@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -4255,6 +4872,7 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cle
     db_session.add(config)
     db_session.commit()
     make_stt_selection(config=config, actor=owner)
+    caplog.set_level("WARNING", logger="openscribe.stt")
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
     monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "bad request"}, status_code=503))
@@ -4271,5 +4889,10 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cle
         assert exc.code == "stt_request_failed"
         assert exc.message == "STT provider request failed"
         assert exc.details == {"status_code": 503}
+        assert "stt_http_request_failed" in caplog.text
+        log_record = next(record for record in caplog.records if record.message == "stt_http_request_failed")
+        assert log_record.stt_transport["provider_error_code"] == "http_status_error"
+        assert log_record.stt_transport["status_code"] == 503
+        assert log_record.stt_transport["url"] == "http://testserver.local/stt"
     else:
         raise AssertionError("Expected generic REST STT HTTP status failure to raise an AppError")

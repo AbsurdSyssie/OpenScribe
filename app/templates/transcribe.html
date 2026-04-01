@@ -3,1363 +3,1320 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenScribe Transcription</title>
+  <title>Ambient Scribe - Transcribe</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Fraunces', 'serif'],
+            sans: ['DM Sans', 'sans-serif'],
+          },
+          colors: {
+            cream: '#FAF8F5',
+            parchment: '#F5F1EB',
+            stone: '#E8E4DD',
+            slate: '#2D3748',
+            ink: '#1A202C',
+            teal: {
+              deep: '#1D4F5E',
+              muted: '#3D7A8C',
+              soft: '#5BA3B5',
+              pale: '#E0F2F5',
+            },
+            sage: '#7A9E7E',
+            amber: '#D4A574',
+            coral: '#D97D54',
+            error: '#C53030',
+            success: '#38A169',
+            warning: '#D69E2E',
+          }
+        }
+      }
+    };
+  </script>
   <style>
     :root {
-      --bg: #f6f2e9;
-      --shell: rgba(255, 251, 245, 0.84);
-      --panel: rgba(255, 255, 255, 0.9);
-      --panel-strong: rgba(255, 255, 255, 0.97);
-      --ink: #18181b;
-      --muted: #6b655c;
-      --line: #e2d8c7;
-      --line-strong: #d5c5aa;
-      --warm: #f3d5a1;
-      --warm-deep: #e5b45d;
-      --accent: #111827;
-      --accent-soft: #f6efe2;
-      --success: #d7efdf;
-      --success-ink: #24583e;
-      --error: #f7dede;
-      --error-ink: #872b2b;
-      --info: #dceefb;
-      --info-ink: #255376;
-      --shadow-soft: 0 10px 32px rgba(57, 35, 10, 0.06);
-      --shadow-panel: 0 6px 20px rgba(62, 40, 15, 0.05);
+      --bg: #FAF8F5;
+      --fg: #1A202C;
+      --muted: #718096;
+      --accent: #1D4F5E;
+      --accent-soft: #3D7A8C;
+      --card: #FFFFFF;
+      --border: #E2DED6;
+      --success: #38A169;
+      --warning: #D69E2E;
+      --error: #C53030;
+      --split-ratio: 50;
     }
-    * { box-sizing: border-box; }
+
+    html,
     body {
-      margin: 0;
-      color: var(--ink);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-      background:
-        radial-gradient(circle at top left, rgba(245, 158, 11, 0.16), transparent 26%),
-        radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 24%),
-        linear-gradient(180deg, #fffdf8 0%, #f5f1e8 52%, #ede7dc 100%);
-    }
-    a { color: inherit; }
-    .shell {
-      margin: 6px;
+      height: 100%;
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.8);
-      border-radius: 14px;
-      background: var(--shell);
-      box-shadow: var(--shadow-soft);
-      backdrop-filter: blur(18px);
     }
-    .workspace {
-      min-height: calc(100vh - 150px);
-      display: flex;
-      background:
-        linear-gradient(180deg, rgba(255, 251, 245, 0.3), rgba(244, 238, 228, 0.3));
+
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
     }
-    .sidebar {
-      width: 320px;
-      border-right: 1px solid rgba(213, 197, 170, 0.7);
-      background: rgba(255, 255, 255, 0.76);
-      padding: 12px 10px;
-      display: grid;
-      align-content: start;
-      gap: 8px;
+
+    *::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
     }
-    .brand {
-      display: flex;
-      gap: 14px;
-      align-items: center;
-    }
-    .eyebrow {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.24em;
-      color: #8d6b2e;
-      font-weight: 700;
-    }
-    .muted { color: var(--muted); }
-    .sidebar-card,
-    .panel {
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 12px;
-      background: var(--panel);
-      box-shadow: var(--shadow-panel);
-    }
-    .sidebar-card {
-      padding: 10px;
-      display: grid;
-      gap: 10px;
-    }
-    .notes-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-radius: 10px;
-      background: linear-gradient(180deg, #faf7f0, #f2eee5);
-      padding: 10px 11px;
-      gap: 8px;
-    }
-    .sidebar-list {
-      display: grid;
-      gap: 8px;
-      max-height: calc(100vh - 360px);
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .notes-toolbar {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: flex-end;
-    }
-    .session-item {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 8px;
-      align-items: start;
-    }
-    .session-item.selected .session-link {
-      border-color: #caa96d;
-      background: linear-gradient(180deg, #fff6e6, #fbefda);
-    }
-    .session-select {
-      margin-top: 12px;
-      width: 19px;
-      height: 19px;
-      accent-color: #ca8a04;
-    }
-    .session-link {
-      display: block;
-      text-decoration: none;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      padding: 10px 11px;
-      background: rgba(255, 255, 255, 0.92);
-      transition: 160ms ease;
-      box-shadow: 0 3px 10px rgba(55, 38, 14, 0.03);
-    }
-    .session-link.active {
-      border-color: #86c99b;
-      background: linear-gradient(180deg, #eff8f1, #e7f4ea);
-      box-shadow: 0 8px 18px rgba(36, 88, 62, 0.08);
-    }
-    .session-link:hover {
-      background: linear-gradient(180deg, #fffdf8, #faf4e8);
-      transform: translateY(-2px);
-    }
-    .session-title {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 5px;
-    }
-    .session-meta {
-      font-size: 0.78rem;
-      color: var(--muted);
-      line-height: 1.55;
-    }
-    .main {
-      min-width: 0;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-    }
-    .header {
-      border-bottom: 1px solid rgba(213, 197, 170, 0.7);
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 248, 238, 0.82));
-      padding: 14px 16px 12px;
-      display: grid;
-      gap: 12px;
-    }
-    .session-card {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: start;
-      justify-content: space-between;
-      gap: 14px;
-      border: 1px solid #ead6ae;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 249, 239, 0.95));
-      border-radius: 12px;
-      padding: 14px;
-      box-shadow: 0 8px 24px rgba(72, 50, 18, 0.05);
-    }
-    .header-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 14px;
-      align-items: start;
-      flex-wrap: wrap;
-    }
-    .session-name {
-      font-size: 2rem;
-      line-height: 1.05;
-      font-weight: 700;
-      letter-spacing: -0.04em;
-    }
-    .session-title-form {
-      margin-top: 6px;
-      display: grid;
-      gap: 4px;
-      max-width: 680px;
-    }
-    .session-title-input {
-      border: 0;
-      border-bottom: 1px solid rgba(213, 197, 170, 0.85);
-      border-radius: 0;
-      padding: 0 0 10px;
+
+    *::-webkit-scrollbar-track {
       background: transparent;
-      box-shadow: none;
-      font-size: clamp(2rem, 3.4vw, 3.1rem);
-      line-height: 1.02;
-      font-weight: 700;
-      letter-spacing: -0.05em;
-      color: var(--ink);
     }
-    .session-title-input::placeholder {
-      color: #8c8378;
+
+    *::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
     }
-    .session-title-input:focus {
-      border-color: #d6a44d;
-      box-shadow: 0 10px 0 -8px rgba(245, 158, 11, 0.24);
+
+    @keyframes pulse-soft {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
-    .session-title-hint {
-      font-size: 0.78rem;
-      color: var(--muted);
-      font-weight: 700;
+
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
     }
-    .chips {
+
+    .status-pulse {
+      animation: pulse-soft 2s ease-in-out infinite;
+    }
+
+    .noise-bg {
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      opacity: 0.02;
+    }
+
+    .glass-panel {
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    .skeleton {
+      background: linear-gradient(90deg, var(--border) 25%, var(--card) 50%, var(--border) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+
+    .session-item {
+      transition: all 0.15s ease;
+    }
+
+    .session-item:hover {
+      background-color: rgba(29, 79, 94, 0.05);
+    }
+
+    .session-item.active {
+      background-color: rgba(29, 79, 94, 0.1);
+      border-left: 3px solid var(--accent);
+    }
+
+    .session-item.selected {
+      background-color: rgba(212, 165, 116, 0.12);
+      border-left: 3px solid #D4A574;
+    }
+
+    .structured-line {
+      transition: all 0.15s ease;
+    }
+
+    .structured-line:hover {
+      background-color: rgba(29, 79, 94, 0.06);
+    }
+
+    .structured-line-row {
       display: flex;
-      gap: 9px;
-      flex-wrap: wrap;
-    }
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 5px 9px;
-      font-size: 0.78rem;
-      font-weight: 700;
-      background: #f7dfb6;
-      color: #68460f;
-      box-shadow: inset 0 0 0 1px rgba(194, 128, 24, 0.09);
-    }
-    .chip.neutral {
-      background: #f0ece4;
-      color: #4e473d;
-    }
-    .chip.success {
-      background: var(--success);
-      color: var(--success-ink);
-    }
-    .chip.error {
-      background: var(--error);
-      color: var(--error-ink);
-    }
-    .top-actions,
-    .upload-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .top-actions {
-      justify-content: flex-end;
-    }
-    .split-action {
-      position: relative;
-      display: inline-flex;
-      align-items: stretch;
-      border-radius: 999px;
-      overflow: visible;
-      box-shadow: none;
-    }
-    .split-action button {
-      border-radius: 0;
-    }
-    .split-action > button:first-of-type {
-      border-top-left-radius: 999px;
-      border-bottom-left-radius: 999px;
-    }
-    .split-action > button.split-toggle {
-      border-top-right-radius: 999px;
-      border-bottom-right-radius: 999px;
-    }
-    .split-action button + button {
-      border-left: 1px solid rgba(255, 255, 255, 0.18);
-    }
-    .split-toggle {
-      min-width: 44px;
-      padding-left: 12px;
-      padding-right: 12px;
-    }
-    .split-menu {
-      position: absolute;
-      top: calc(100% + 4px);
-      right: 0;
-      min-width: 220px;
-      padding: 6px;
-      border: 1px solid rgba(226, 216, 199, 0.98);
-      border-radius: 10px;
-      background: rgba(255, 255, 255, 0.99);
-      box-shadow: 0 6px 18px rgba(76, 54, 30, 0.08);
-      display: grid;
-      gap: 6px;
-      z-index: 20;
-    }
-    .split-option {
-      justify-content: flex-start;
-      background: white;
-      color: #4c4740;
-      border: 1px solid var(--line);
-      text-align: left;
-    }
-    .split-option.active {
-      background: #f1cf94;
-      border-color: #f1cf94;
-      color: #4f3705;
-    }
-    .control-row {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      flex-wrap: wrap;
-      padding-top: 2px;
-      justify-content: space-between;
-    }
-    .control-row-left,
-    .control-row-right {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .control-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      height: 36px;
-      border-radius: 9px;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      background: rgba(255, 255, 255, 0.96);
-      padding: 0 10px;
-      color: #5e584f;
-      box-shadow: none;
-    }
-    .bars {
-      display: inline-flex;
-      align-items: end;
-      gap: 3px;
-      height: 18px;
-    }
-    .bars span {
-      display: inline-block;
-      width: 4px;
-      border-radius: 999px;
-      background: #f4b740;
-    }
-    .button,
-    button,
-    .button-link {
-      border: 0;
-      border-radius: 9px;
-      padding: 9px 12px;
-      font: inherit;
-      font-size: 0.92rem;
-      font-weight: 700;
+      align-items: flex-start;
+      gap: 0.75rem;
+      border-left: 2px solid rgba(29, 79, 94, 0.28);
+      padding: 0.5rem 0 0.5rem 0.9rem;
+      background: transparent;
       cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
+      transition: all 0.15s ease;
+    }
+
+    .structured-line-row:hover {
+      border-left-color: rgba(61, 122, 140, 0.7);
+      background: rgba(224, 242, 245, 0.24);
+    }
+
+    .structured-line-row input {
+      margin-top: 0.15rem;
+      accent-color: var(--accent);
+    }
+
+    .editor-line-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: stretch;
+    }
+
+    .editor-line-row textarea {
+      flex: 1;
+      min-height: 3.5rem;
+      resize: vertical;
+      border: 1px solid rgba(226, 222, 214, 0.9);
+      background: white;
+      padding: 0.7rem 0.8rem;
+      font-size: 0.92rem;
+      color: var(--fg);
+    }
+
+    .editor-line-row button {
+      align-self: flex-start;
+      border-radius: 999px;
+      border: 1px solid rgba(226, 222, 214, 0.95);
+      padding: 0.65rem 0.95rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #7A4A35;
+      background: rgba(255, 255, 255, 0.9);
+      transition: all 0.15s ease;
+    }
+
+    .editor-line-row button:hover:not(:disabled) {
+      border-color: rgba(217, 125, 84, 0.55);
+      background: rgba(217, 125, 84, 0.08);
+    }
+
+    .copy-toast {
+      transform: translateX(-50%) translateY(20px);
+      opacity: 0;
+      transition: all 0.3s ease;
+      pointer-events: none;
+    }
+
+    .copy-toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    .flash-banner[hidden] {
+      display: none;
+    }
+
+    .flash-banner.success {
+      background: rgba(56, 161, 105, 0.12);
+      color: #276749;
+      border-color: rgba(56, 161, 105, 0.2);
+    }
+
+    .flash-banner.error {
+      background: rgba(197, 48, 48, 0.12);
+      color: #9B2C2C;
+      border-color: rgba(197, 48, 48, 0.2);
+    }
+
+    [data-layout-state="collapsed"] [data-assistant-pane] {
+      display: none;
+    }
+
+    [data-layout-state="collapsed"] [data-transcript-pane] {
+      width: 100% !important;
+      flex-basis: 100% !important;
+    }
+
+    [data-layout-state="expanded"] [data-transcript-pane] {
+      display: none;
+    }
+
+    [data-layout-state="expanded"] [data-assistant-pane] {
+      width: 100% !important;
+      flex-basis: 100% !important;
+      max-width: none;
+    }
+
+    [data-layout-state="expanded"] .assistant-pane-content {
+      max-width: none;
+      margin: 0;
+      padding: 0 1rem;
+      width: 100%;
+    }
+
+    [data-layout-state="normal"] [data-transcript-pane] {
+      width: calc(var(--split-ratio) * 1%) !important;
+      flex-basis: calc(var(--split-ratio) * 1%) !important;
+    }
+
+    [data-layout-state="normal"] [data-assistant-pane] {
+      width: calc((100 - var(--split-ratio)) * 1%) !important;
+      flex-basis: calc((100 - var(--split-ratio)) * 1%) !important;
+    }
+
+    [data-layout-state="normal"] .assistant-pane-content,
+    [data-layout-state="collapsed"] .assistant-pane-content {
+      max-width: none;
+      margin: 0;
+      padding: 0;
+      width: 100%;
+    }
+
+    [data-layout-state="normal"] [data-pane-toggle="normal"] {
+      background: #1D4F5E;
+      color: white;
+      border-color: #1D4F5E;
+    }
+
+    [data-layout-state="normal"] .divider-widget {
+      display: flex;
+      left: calc(var(--split-ratio) * 1%);
+      right: auto;
+      transform: translate(-50%, -50%);
+    }
+
+    [data-layout-state="expanded"] .divider-widget,
+    [data-layout-state="collapsed"] .divider-widget {
+      display: flex;
+      transform: translateY(-50%);
+      opacity: 0.28;
+      transition: opacity 0.18s ease 0.36s, box-shadow 0.18s ease 0.36s, border-color 0.18s ease 0.36s, background-color 0.18s ease 0.36s;
+    }
+
+    [data-layout-state="expanded"] .divider-widget {
+      left: -0.9rem;
+      right: auto;
+    }
+
+    [data-layout-state="collapsed"] .divider-widget {
+      left: auto;
+      right: 0.55rem;
+    }
+
+    [data-layout-state="collapsed"] .btn-collapse {
+      display: none;
+    }
+
+    [data-layout-state="expanded"] .btn-expand {
+      display: none;
+    }
+
+    [data-layout-state="expanded"] .divider-widget:hover,
+    [data-layout-state="expanded"] .divider-widget:focus-within,
+    [data-layout-state="collapsed"] .divider-widget:hover,
+    [data-layout-state="collapsed"] .divider-widget:focus-within {
+      opacity: 1;
+      transition-delay: 0s;
+    }
+
+    [data-tab-trigger].active {
+      color: #1D4F5E;
+      border-color: #1D4F5E;
+      background: white;
+    }
+
+    .hidden-panel[hidden] {
+      display: none;
+    }
+
+    .assistant-section {
+      padding: 0.85rem 0.45rem 1rem 1rem;
+      border-bottom: 1px solid rgba(226, 222, 214, 0.92);
+      background: transparent;
+    }
+
+    .assistant-section:last-child {
+      border-bottom: none;
+    }
+
+    .assistant-subsection {
+      padding: 0.9rem 0 0;
+      border-top: 1px solid rgba(232, 228, 221, 0.92);
+    }
+
+    .assistant-subsection:first-child {
+      border-top: none;
+      padding-top: 0;
+    }
+
+    .assistant-flat-output {
+      padding: 0.8rem 0 0 0;
+      white-space: pre-wrap;
+      font-size: 0.92rem;
+      line-height: 1.9;
+      color: var(--fg);
+      border-top: 1px solid rgba(232, 228, 221, 0.92);
+    }
+
+    .assistant-meta-row {
+      padding-top: 0.2rem;
+    }
+
+    .structured-section-block {
+      border-top: 1px solid rgba(232, 228, 221, 0.92);
+      padding-top: 0.8rem;
+    }
+
+    .structured-section-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #718096;
+      margin-bottom: 0.55rem;
+    }
+
+    .divider-widget {
+      position: absolute;
+      left: calc(var(--split-ratio) * 1%);
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 120;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+    }
+
+    .divider-btn {
+      display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      background: linear-gradient(180deg, #111827, #1f2937);
-      color: white;
-      box-shadow: 0 3px 10px rgba(17, 24, 39, 0.08);
-      transition: 140ms ease;
-    }
-    .button:hover,
-    button:hover,
-    .button-link:hover {
-      transform: translateY(-1px);
-    }
-    .button.secondary,
-    .button-link.secondary,
-    button.secondary {
-      background: rgba(255, 255, 255, 0.98);
-      color: #4c4740;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      box-shadow: none;
-    }
-    button[disabled] {
-      cursor: not-allowed;
-      opacity: 0.55;
-    }
-    .button.icon {
-      width: 36px;
-      height: 36px;
-      padding: 0;
-      border-radius: 9px;
-    }
-    .flash {
-      margin: 0 16px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      box-shadow: none;
-    }
-    .flash.success {
-      background: var(--success);
-      color: var(--success-ink);
-    }
-    .flash.error {
-      background: var(--error);
-      color: var(--error-ink);
-    }
-    form {
-      display: grid;
-      gap: 12px;
-    }
-    label {
-      display: grid;
-      gap: 8px;
+      width: 28px;
+      height: 28px;
       color: var(--muted);
-      font-size: 0.86rem;
-      font-weight: 700;
-    }
-    input, textarea, select {
-      width: 100%;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      padding: 9px 10px;
-      font: inherit;
-      background: rgba(255, 255, 255, 0.98);
-      color: var(--ink);
-      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
-    }
-    input:focus, textarea:focus, select:focus {
-      outline: none;
-      border-color: #d6a44d;
-      box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
-    }
-    .tabs {
-      border-bottom: 1px solid rgba(213, 197, 170, 0.7);
-      background: rgba(249, 244, 235, 0.82);
-      padding: 10px 16px;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .tab {
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 9px;
-      padding: 8px 12px;
-      background: rgba(255, 255, 255, 0.98);
-      color: #5f5952;
-      font-weight: 700;
-      box-shadow: none;
-    }
-    .tab.active {
-      background: linear-gradient(180deg, #f6d79f, #f1c36f);
-      border-color: #f1c36f;
-      color: #4f3705;
-    }
-    .tabs .tab-spacer {
-      margin-left: auto;
-    }
-    .content {
-      padding: 14px 16px 18px;
-    }
-    .content-grid {
-      display: grid;
-      gap: 12px;
-    }
-    .panel {
-      padding: 14px;
-    }
-    .panel-head {
-      margin-bottom: 10px;
-    }
-    .panel-head h2,
-    .panel-head h3 {
-      margin: 0 0 6px;
-      font-size: 1.08rem;
-      letter-spacing: -0.01em;
-    }
-    .panel-head p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 0.87rem;
-      line-height: 1.6;
-    }
-    .session-progress {
-      margin-top: 14px;
-      font-size: 0.9rem;
-      color: var(--muted);
-      line-height: 1.55;
-      max-width: 44rem;
-    }
-    .text-surface {
-      min-height: 460px;
-      white-space: pre-wrap;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 12px;
-      padding: 14px;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(251, 247, 240, 0.96));
-      line-height: 1.72;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
-      font-size: 0.97rem;
-    }
-    .text-surface[data-active-draft] {
-      background:
-        radial-gradient(circle at top right, rgba(56, 189, 248, 0.05), transparent 32%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 246, 238, 0.96));
-    }
-    .text-surface[data-latest-generated-output] {
-      background:
-        radial-gradient(circle at top left, rgba(245, 158, 11, 0.08), transparent 28%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(251, 247, 240, 0.96));
-    }
-    .debug-panel {
-      margin-top: 8px;
-      border: 1px dashed #ccb890;
-      border-radius: 10px;
-      padding: 10px;
-      background: #fbf8f1;
-      display: grid;
-      gap: 8px;
-    }
-    .debug-summary {
-      cursor: pointer;
-      font-weight: 700;
-      color: #544b3f;
-    }
-    .debug-pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      padding: 10px;
       background: white;
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.82rem;
-      line-height: 1.5;
+      cursor: pointer;
+      transition: all 0.15s ease;
     }
-    .placeholder {
-      color: #92877a;
+
+    .divider-btn:hover {
+      background: var(--bg);
+      color: var(--accent);
     }
-    .mic-status {
-      min-height: 1.5rem;
-      font-size: 0.9rem;
-      color: var(--muted);
+
+    .btn-split[data-divider-grip] {
+      cursor: col-resize;
+      touch-action: none;
+      user-select: none;
     }
-    .mic-status.error {
-      color: var(--error-ink);
-    }
-    .mic-status.success {
-      color: var(--success-ink);
-    }
-    .subgrid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-      border: 1px solid rgba(226, 216, 199, 0.7);
-      border-radius: 12px;
-      padding: 12px;
-      background: rgba(249, 245, 238, 0.72);
-    }
-    .emis-editor {
-      display: grid;
-      gap: 8px;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      padding: 10px;
-      background: rgba(255, 255, 255, 0.96);
-    }
-    .emis-editor-rows {
-      display: grid;
-      gap: 8px;
-    }
-    .editor-line-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 8px;
-      align-items: start;
-      border: 1px solid rgba(226, 216, 199, 0.75);
-      border-radius: 10px;
-      padding: 8px;
-      background: rgba(255, 252, 246, 0.94);
-    }
-    .editor-line-row textarea {
-      min-height: 64px;
-      resize: vertical;
-      border-radius: 8px;
-      font-size: 0.9rem;
-      line-height: 1.55;
-    }
-    .editor-line-row button,
-    .emis-editor > button[data-emis-editor-add-line] {
-      padding: 8px 10px;
-      border-radius: 8px;
-      font-size: 0.82rem;
-      font-weight: 700;
-      box-shadow: none;
-      transform: none;
-    }
-    .editor-line-row button {
-      align-self: stretch;
-      background: #fff1f1;
-      color: #8a3131;
-      border: 1px solid #edc8c8;
-    }
-    .editor-line-row button:hover,
-    .emis-editor > button[data-emis-editor-add-line]:hover {
-      transform: none;
-    }
-    .emis-editor > button[data-emis-editor-add-line] {
-      justify-self: start;
-      background: #f6efe2;
-      color: #57452a;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-    }
-    .structured-line-row {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 12px;
-      align-items: start;
-      border: 1px solid rgba(226, 216, 199, 0.75);
-      border-radius: 10px;
-      padding: 8px 10px;
-      background: rgba(255, 252, 246, 0.94);
-    }
-    .structured-line-row input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      margin-top: 4px;
-      accent-color: #ca8a04;
-      box-shadow: none;
-    }
-    .structured-line-row span {
-      display: block;
-      line-height: 1.65;
-      color: #4a4338;
-    }
-    .section-block {
-      display: grid;
-      gap: 10px;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      padding: 10px;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 248, 241, 0.96));
-    }
-    .section-block + .section-block {
-      margin-top: 8px;
-    }
-    .section-block h4 {
-      margin: 0;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.22em;
-      color: #8b6a2c;
-    }
-    table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0;
-      overflow: hidden;
-      border: 1px solid rgba(226, 216, 199, 0.92);
-      border-radius: 10px;
-      background: rgba(255,255,255,0.96);
-      box-shadow: none;
-    }
-    thead {
-      background: rgba(246, 236, 218, 0.9);
-    }
-    th, td {
-      padding: 10px 12px;
-      text-align: left;
-      vertical-align: top;
-      border-bottom: 1px solid rgba(226, 216, 199, 0.7);
-    }
-    tr:last-child td {
-      border-bottom: 0;
-    }
-    th {
-      font-size: 0.76rem;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: #7b6750;
-    }
-    td {
-      font-size: 0.9rem;
-      color: #342f29;
-    }
-    code {
-      padding: 0.1rem 0.4rem;
-      border-radius: 999px;
-      background: rgba(245, 158, 11, 0.12);
-      color: #87560f;
-      font-size: 0.88em;
-    }
-    [hidden] { display: none !important; }
-    @media (max-width: 980px) {
-      .shell { margin: 0; border-radius: 0; }
-      .workspace { display: block; }
-      .sidebar { width: auto; border-right: 0; border-bottom: 1px solid var(--line); }
-      .subgrid { grid-template-columns: 1fr; }
-      .flash, .tabs, .content, .header { padding-left: 12px; padding-right: 12px; margin-left: 0; margin-right: 0; }
-      .shell-head { padding-left: 12px; padding-right: 12px; }
-      .session-card { padding: 12px; }
-      .session-name { font-size: 1.6rem; }
-      .text-surface { min-height: 420px; }
+
+    [data-layout-state="expanded"] .btn-split[data-divider-grip],
+    [data-layout-state="collapsed"] .btn-split[data-divider-grip] {
+      cursor: pointer;
     }
   </style>
 </head>
-<body>
-  <section class="shell" data-workspace-endpoint="{{ workspace_endpoint }}">
-  <div class="workspace">
-    <aside class="sidebar">
-      <div class="brand">
-        <div style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:18px;background:linear-gradient(180deg,#f9e3ba,#f0c980);font-size:1.25rem;box-shadow:0 10px 24px rgba(187,120,22,0.16);">🪶</div>
-        <div>
-          <div class="eyebrow">Clinical workspace</div>
-          <div style="font-size: 1.08rem; font-weight: 700;">LocalScribe</div>
-          <div class="muted">Private, owner-only sessions</div>
+{% set template_state = namespace(default_mode='freeform') %}
+{% if available_templates %}
+  {% set first_template = available_templates[0] %}
+  {% set first_version = first_template.versions|sort(attribute='version_no')|last %}
+  {% set template_state.default_mode = first_version.mode.value %}
+{% endif %}
+<body class="bg-cream font-sans text-ink h-screen overflow-hidden">
+  <div class="fixed inset-0 noise-bg pointer-events-none z-50"></div>
+
+  <section
+    class="flex h-screen overflow-hidden relative"
+    data-workspace-endpoint="{{ workspace_endpoint }}"
+    data-route-base="{{ transcribe_route_base }}"
+    data-layout-state="normal">
+
+    <aside class="w-72 bg-parchment border-r border-stone flex flex-col flex-shrink-0 min-h-0 relative z-10">
+      <div class="p-5 border-b border-stone">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-teal-deep flex items-center justify-center">
+            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <h1 class="font-display font-semibold text-ink text-lg leading-none">Ambient Scribe</h1>
+            <p class="text-xs text-slate mt-0.5">Clinical Documentation</p>
+          </div>
         </div>
       </div>
 
-      <div class="sidebar-card">
-        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center;">
-          <div>
-            <div class="eyebrow" style="color: var(--muted);">Signed in</div>
-            <div style="font-weight: 700;">{{ current_user.full_name or current_user.email }}</div>
-          </div>
-          <a class="button-link secondary" href="/home">Home</a>
+      <div class="px-4 pt-4 pb-2 border-b border-stone/70">
+        <div class="flex items-center justify-between gap-3 mb-1">
+          <div class="text-[11px] font-medium uppercase tracking-[0.2em] text-slate">Signed in</div>
+          <a
+            href="/home"
+            class="inline-flex items-center gap-1 rounded-lg border border-stone bg-white px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-slate hover:text-ink hover:border-teal-muted transition"
+            aria-label="Return home">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10.75 12 3l9 7.75M5.5 9.5V21h13V9.5"/>
+            </svg>
+            Home
+          </a>
         </div>
-        <form method="post" action="/logout">
-          <button type="submit" class="secondary">Sign out</button>
-        </form>
+        <div class="text-sm font-medium text-ink truncate">{{ current_user.full_name or current_user.email }}</div>
+        <div class="text-xs text-slate truncate">{{ current_user.email }}</div>
       </div>
 
-      <form id="new-session-form" method="post" action="/transcribe/sessions">
-        <input type="hidden" name="ingestion_mode" value="whole_file">
-      </form>
-      {% if active_transcript %}
-      <form id="switch-to-whole-file-form" method="post" action="/transcribe/sessions/{{ active_transcript.id }}/mode">
-        <input type="hidden" name="ingestion_mode" value="whole_file">
-      </form>
-      {% endif %}
+      <form id="bulk-delete-sessions" class="flex-1 flex flex-col min-h-0" method="post" action="/transcribe/sessions/delete">
+        <div class="p-4 space-y-3">
+          <button
+            type="submit"
+            form="new-session-form"
+            class="w-full bg-teal-deep text-white rounded-lg px-4 py-2.5 font-medium text-sm flex items-center justify-center gap-2 shadow-sm hover:bg-teal-muted transition"
+            data-new-session-button
+            data-local-busy-protected
+            {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+            New Consultation
+          </button>
+          <div class="flex items-center justify-between">
+            <div class="text-xs font-medium text-slate uppercase tracking-wider">Recent Sessions</div>
+            <button
+              type="submit"
+              class="px-2.5 py-1.5 text-xs font-medium text-slate hover:text-error hover:bg-white rounded-lg transition disabled:opacity-50"
+              data-delete-selected
+              disabled>
+              Delete
+            </button>
+          </div>
+          <div class="text-xs text-coral{% if can_create_new_session or not new_session_block_message %} hidden{% endif %}" data-new-session-block-message>
+            {{ new_session_block_message or '' }}
+          </div>
+        </div>
 
-      <form class="sidebar-card" id="bulk-delete-sessions" method="post" action="/transcribe/sessions/delete" onsubmit="return confirm('Delete the selected transcript sessions permanently?');">
-        <div class="notes-head">
-          <div>
-            <div class="eyebrow" style="color: var(--muted);">Sessions</div>
-            <div style="font-size: 0.95rem; font-weight: 700;">Most recent first</div>
-          </div>
-          <div class="notes-toolbar">
-            <button type="submit" class="secondary" form="new-session-form" data-local-busy-protected {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>New session</button>
-            <button type="submit" class="secondary" data-delete-selected disabled>Delete</button>
+        <div class="flex-1 overflow-y-auto px-3 pb-4">
+          <div class="space-y-1">
+            {% if recent_transcripts %}
+              {% for transcript in recent_transcripts %}
+              <div class="session-item rounded-lg px-3 py-2.5 {% if active_transcript_id == transcript.id|string %}active{% endif %}">
+                <div class="flex items-start gap-2">
+                  <input
+                    class="mt-1"
+                    type="checkbox"
+                    name="transcript_ids"
+                    value="{{ transcript.id }}"
+                    data-session-select>
+                  <a
+                    class="flex-1 min-w-0"
+                    href="{{ transcribe_route_base }}?transcript_id={{ transcript.id }}"
+                    data-session-link
+                    data-transcript-id="{{ transcript.id }}">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="flex-1 min-w-0">
+                        <div class="font-medium text-sm text-ink truncate session-title">{{ transcript.title or "Untitled session" }}</div>
+                        <div class="text-xs text-slate mt-0.5">{{ transcript.created_at }}</div>
+                      </div>
+                      {% set sidebar_state = transcript.status.value %}
+                      {% if transcript.ingestion_mode.value == 'whole_file' and sidebar_state == 'recording' %}
+                        {% set sidebar_state = 'idle' %}
+                      {% endif %}
+                      {% if sidebar_state == 'ready' %}
+                      <span class="flex-shrink-0 px-1.5 py-0.5 bg-teal-pale text-teal-deep text-xs font-medium rounded" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+                      {% elif sidebar_state == 'failed' %}
+                      <span class="flex-shrink-0 px-1.5 py-0.5 bg-coral/15 text-coral text-xs font-medium rounded" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+                      {% else %}
+                      <span class="flex-shrink-0 px-1.5 py-0.5 bg-white text-slate text-xs font-medium rounded border border-stone" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+                      {% endif %}
+                    </div>
+                    <div class="text-xs text-slate mt-1">{{ transcript.ingestion_mode.value|replace('_', ' ') }}</div>
+                  </a>
+                </div>
+              </div>
+              {% endfor %}
+            {% else %}
+            <div class="text-sm text-slate px-2 py-3">No transcript sessions yet.</div>
+            {% endif %}
           </div>
         </div>
-        <div class="sidebar-list">
-          {% if recent_transcripts %}
-            {% for transcript in recent_transcripts %}
-            <div class="session-item">
-              <input
-                class="session-select"
-                type="checkbox"
-                name="transcript_ids"
-                value="{{ transcript.id }}"
-                data-session-select>
-              <a class="session-link{% if active_transcript_id == transcript.id|string %} active{% endif %}" href="/transcribe?transcript_id={{ transcript.id }}" data-session-link data-transcript-id="{{ transcript.id }}">
-                <div class="session-title">{{ transcript.title or "Untitled transcript" }}</div>
-                <div class="session-meta">{{ transcript.created_at }}</div>
-                <div class="session-meta">{{ transcript.ingestion_mode.value }} · <span data-sidebar-status="{{ transcript.id }}">{{ transcript.status.value }}</span></div>
-              </a>
-            </div>
-            {% endfor %}
-          {% else %}
-          <div class="session-meta">No transcripts yet.</div>
-          {% endif %}
-        </div>
-        {% if not can_create_new_session and new_session_block_message %}
-        <div class="session-meta">{{ new_session_block_message }}</div>
-        {% endif %}
       </form>
+
+      <div class="p-4 border-t border-stone bg-parchment/80 space-y-2">
+        <div class="text-xs text-slate uppercase tracking-wider">Active Models</div>
+        <div class="flex flex-col gap-2 text-xs">
+          <div class="px-2.5 py-2 bg-white rounded-lg border border-stone text-ink">
+            STT:
+            {% if stt_selection %}
+            {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}
+            {% else %}
+            Not configured
+            {% endif %}
+          </div>
+          <div class="px-2.5 py-2 bg-white rounded-lg border border-stone text-ink">
+            LLM:
+            {% if llm_selection %}
+            {{ llm_selection.config.label }} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default" }}
+            {% else %}
+            Not configured
+            {% endif %}
+          </div>
+        </div>
+      </div>
     </aside>
 
-    <div class="main">
-      <section class="header">
-        <div class="session-card">
-        <div class="header-top" style="width:100%;">
-          <div>
-            <div class="eyebrow">Session</div>
+    <main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
+      <header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0 flex-1">
             {% if active_transcript %}
-            <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" class="session-title-form" data-transcript-title-form>
+            <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" data-transcript-title-form>
+              <label class="sr-only" for="glm-session-title">Session title</label>
               <input
+                id="glm-session-title"
                 type="text"
                 name="title"
-                class="session-title-input"
                 maxlength="255"
                 value="{{ active_transcript.title or '' }}"
                 placeholder="Untitled session"
+                class="font-display text-[1.95rem] font-medium bg-transparent border-none focus:bg-parchment focus:px-3 focus:py-2 focus:rounded-lg focus:border focus:border-teal-muted/30 transition-all w-full min-w-0"
                 aria-label="Session title"
                 data-session-title-display
                 data-transcript-title-input>
-              <div class="session-title-hint">Press Enter or click away to save the session title.</div>
             </form>
             {% else %}
-            <div class="session-name" data-session-title-display>New transcription session</div>
+            <div class="font-display text-2xl font-medium text-ink" data-session-title-display>New transcription session</div>
             {% endif %}
-            <div class="chips" style="margin-top: 12px;">
-              {% if active_transcript %}
-              <span class="chip neutral" data-active-status>{{ active_transcript.status.value }}</span>
-              <span class="chip neutral" data-active-ingestion-mode>{% if active_transcript.ingestion_mode.value == "whole_file" %}whole-file session{% else %}{{ active_transcript.ingestion_mode.value }}{% endif %}</span>
-              {% endif %}
-              {% if stt_selection %}
-              <span class="chip">{{ stt_selection.config.label }}</span>
-              <span class="chip">{{ stt_selection.model_name_override or stt_selection.config.model_name or "default model" }}</span>
-              {% else %}
-              <span class="chip error">No active STT selection</span>
-              {% endif %}
-              {% if llm_selection %}
-              <span class="chip neutral">{{ llm_selection.config.label }}</span>
-              <span class="chip neutral">{{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default LLM" }}</span>
-              {% else %}
-              <span class="chip error">No active LLM selection</span>
-              {% endif %}
-            </div>
-            <div class="session-progress" data-session-progress>
-              {% if active_transcript %}
-                {% if active_transcript.status.value == "queued" %}
-                Waiting in the worker queue.
-                {% elif active_transcript.status.value == "transcribing" %}
-                Background transcription is in progress.
-                {% elif active_transcript.status.value == "ready" %}
-                Session is ready for review.
-                {% elif active_transcript.status.value == "failed" %}
-                The last ingestion attempt failed{% if active_transcript_latest_job and active_transcript_latest_job.error_message %}: {{ active_transcript_latest_job.error_message }}{% endif %}.
-                {% else %}
-                Session is ready for input.
-                {% endif %}
-              {% else %}
-              Create or select a session to begin.
-              {% endif %}
-            </div>
           </div>
-          <div class="top-actions">
-            <button type="button" class="secondary">LLM settings</button>
-            <button type="submit" form="new-session-form" data-local-busy-protected {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>New session</button>
+          <form id="switch-to-whole-file-form" method="post" action="{% if active_transcript %}/transcribe/sessions/{{ active_transcript.id }}/mode{% else %}#{% endif %}">
+            {% if active_transcript and active_transcript.ingestion_mode.value == "live_chunked" %}
+            <button
+              type="submit"
+              class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-parchment rounded-lg transition-colors"
+              data-local-busy-protected
+              {% if not can_switch_to_whole_file %}disabled title="{{ switch_mode_block_message or 'Cannot switch input mode right now' }}"{% endif %}>
+              Switch to upload mode
+            </button>
+            {% endif %}
+          </form>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap items-center gap-2">
+            {% set active_status_display = active_transcript.status.value if active_transcript else 'idle' %}
+            {% if active_transcript and active_transcript.ingestion_mode.value == 'whole_file' and active_status_display == 'recording' %}
+              {% set active_status_display = 'idle' %}
+            {% endif %}
+            {% if active_status_display == 'ready' %}
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-teal-pale rounded-full">
+              <span class="w-2 h-2 bg-teal-deep rounded-full status-pulse"></span>
+              <span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
+            </div>
+            {% elif active_status_display == 'failed' %}
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-coral/15 rounded-full">
+              <span class="w-2 h-2 bg-coral rounded-full"></span>
+              <span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
+            </div>
+            {% else %}
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone rounded-full">
+              <span class="w-2 h-2 bg-slate rounded-full"></span>
+              <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
+            </div>
+            {% endif %}
+            <button
+              type="button"
+              class="btn-primary px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition flex items-center gap-2"
+              data-audio-action-trigger
+              data-local-busy-protected
+              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Whole-file STT is unavailable for this session.' }}"{% endif %}>
+              Upload Audio
+            </button>
+            <button
+              type="button"
+              class="px-4 py-2 bg-coral text-white rounded-lg text-sm font-medium hover:bg-coral/90 transition flex items-center gap-2 shadow-sm disabled:opacity-50"
+              data-record-toggle
+              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Whole-file STT is unavailable for this session.' }}"{% endif %}>
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" data-record-toggle-icon>
+                <circle cx="12" cy="12" r="6"/>
+              </svg>
+              <span data-record-toggle-label>Record</span>
+            </button>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-sm text-slate">
+            <div class="px-3 py-2 bg-parchment rounded-lg">Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
           </div>
         </div>
-        <form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form>
+
+        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink" data-active-ingestion-mode>
+          {% if active_transcript %}
+          {{ active_transcript.ingestion_mode.value|replace('_', '-') }} session
+          {% endif %}
+        </div>
+        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink">
+          STT:
+          {% if stt_selection %}
+          {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}
+          {% else %}
+          Not configured
+          {% endif %}
+        </div>
+        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink">
+          LLM:
+          {% if llm_selection %}
+          {{ llm_selection.config.label }} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default" }}
+          {% else %}
+          Not configured
+          {% endif %}
+        </div>
+
+        <form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form hidden>
           {% if active_transcript %}
           <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
           {% endif %}
-          <input type="file" name="audio" accept="audio/*" data-audio-file-input hidden {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
+          <input type="file" name="audio" accept="audio/*" data-audio-file-input {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
         </form>
-        <div class="control-row">
-          <div class="control-row-left">
-            <div class="control-pill">
-              <span class="bars" aria-hidden="true">
-                <span style="height:10px"></span>
-                <span style="height:16px"></span>
-                <span style="height:24px"></span>
-                <span style="height:18px"></span>
-                <span style="height:12px"></span>
-              </span>
-              <span style="font-size:0.8rem;font-weight:700;">Audio input</span>
-            </div>
-            <div class="split-action">
-              <button type="button" data-audio-action-trigger data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>Upload from file</button>
-              <button type="button" class="split-toggle" data-audio-action-toggle data-local-busy-protected {% if not active_transcript or not stt_selection or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>▼</button>
-              <div class="split-menu" data-audio-action-menu hidden>
-                <button type="button" class="split-option active" data-audio-action-option="file">Upload from file</button>
-                <button type="button" class="split-option" data-audio-action-option="microphone">Record microphone batch</button>
-              </div>
-            </div>
-            <button type="button" class="secondary" data-mic-stop-panel disabled>Stop and queue batch</button>
-          </div>
-          <div class="control-row-right">
-            {% if active_transcript and active_transcript.ingestion_mode.value == "live_chunked" %}
-            <button type="submit" class="secondary" form="switch-to-whole-file-form" data-local-busy-protected {% if not can_switch_to_whole_file %}disabled title="{{ switch_mode_block_message or 'Cannot switch input mode right now' }}"{% endif %}>Use this session for upload or microphone</button>
+
+        <div class="hidden text-sm text-slate" data-session-progress>
+          {% if active_transcript %}
+            {% if active_transcript.status.value == "queued" %}
+            Waiting in the worker queue.
+            {% elif active_transcript.status.value == "transcribing" %}
+            Background transcription is in progress.
+            {% elif active_transcript.status.value == "ready" %}
+            Session is ready for review.
+            {% elif active_transcript.status.value == "failed" %}
+            The last ingestion attempt failed{% if active_transcript_latest_job and active_transcript_latest_job.error_message %}: {{ active_transcript_latest_job.error_message }}{% endif %}.
+            {% else %}
+            Session is ready for input.
             {% endif %}
-            <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-audio-source-caption>Selected source: file upload</div>
-            <div class="control-pill" style="font-size:0.78rem;font-weight:700;" data-mic-timer>00:00</div>
-          </div>
+          {% else %}
+          Create or select a session to begin.
+          {% endif %}
         </div>
-        <div class="mic-status" data-mic-status>
+        <div class="text-sm {% if stt_selection and not stt_available %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
           {% if not active_transcript %}
           Create or select a session to start whole-file transcription.
           {% elif active_transcript.ingestion_mode.value != "whole_file" %}
           The current session is `{{ active_transcript.ingestion_mode.value }}`. Switch this session to `whole_file` when it is still blank and idle.
           {% elif not stt_selection %}
           No active STT selection is available for your team, so whole-file transcription cannot queue yet.
+          {% elif not stt_available %}
+          {{ stt_status_message }}
           {% else %}
           Ready for file upload or microphone batch recording in this session.
           {% endif %}
         </div>
-        </div>
-      </section>
+      </header>
 
-      <div class="flash {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
+      <div class="px-4{% if message %} pt-3{% endif %}"{% if not message %} hidden{% endif %} data-flash-wrap>
+        <div class="flash-banner border rounded-xl px-4 py-3 text-sm font-medium {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
+      </div>
 
-      <section class="tabs">
-        <button type="button" class="tab{% if active_tab == 'transcript' %} active{% endif %}" data-tab-trigger="transcript">Transcript</button>
-        <button type="button" class="tab{% if active_tab == 'output' %} active{% endif %}" data-tab-trigger="output">Output</button>
-        <button type="button" class="tab{% if active_tab == 'followups' %} active{% endif %}" data-tab-trigger="followups">Follow-ups</button>
-        <div class="tab-spacer"></div>
-        <button type="button" class="tab">Regenerate</button>
-      </section>
-
-      <section class="content">
-        <div class="content-grid">
-          <div class="panel" data-tab-panel="transcript"{% if active_tab != 'transcript' %} hidden{% endif %}>
-            <div class="panel-head">
-              <h2>Transcript</h2>
-              <p>Background ingestion writes into the current draft for the selected transcript session. This pane is your live source of truth before note and follow-up generation.</p>
+      <div class="flex-1 flex min-h-0 pl-0 pr-2 pb-2 pt-0 gap-0 relative" data-split-workspace>
+        <section class="bg-white overflow-hidden flex flex-col min-w-0" data-transcript-pane>
+          <div class="px-4 py-2 border-b border-stone/70 bg-transparent flex items-center justify-between gap-4">
+            <div class="min-w-0">
+              <h2 class="font-display text-xl text-ink">Transcript</h2>
+              
             </div>
-            <div class="text-surface" data-active-draft>
+            <button type="button" class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-white rounded-lg transition" data-copy-transcript>Copy transcript</button>
+          </div>
+          <div class="flex-1 overflow-y-auto px-4 pt-2 pb-3">
+            <div class="min-h-full whitespace-pre-wrap text-[15px] leading-7 text-ink" data-active-draft>
               {% if active_transcript and active_transcript.current_draft_text_encrypted %}
               {{ active_transcript.current_draft_text_encrypted }}
               {% else %}
-              <span class="placeholder">No transcript text yet. Use the audio input control to upload a file or record a microphone batch.</span>
+              <span class="text-slate">No transcript text yet. Use the audio controls to upload a file or record a microphone batch.</span>
               {% endif %}
             </div>
           </div>
-
-          <div class="panel" data-tab-panel="output"{% if active_tab != 'output' %} hidden{% endif %}>
-            <div class="panel-head">
-              <h2>Generated note output</h2>
-              <p>Choose a template, send the current transcript draft to the active LLM, and review either freeform or structured EMIS-style output here.</p>
-            </div>
-            {% set template_state = namespace(default_mode='freeform') %}
-            {% if available_templates %}
-              {% set first_template = available_templates[0] %}
-              {% set first_version = first_template.versions|sort(attribute='version_no')|last %}
-              {% set template_state.default_mode = first_version.mode.value %}
-            {% endif %}
-            <form method="post" action="/transcribe/generate-output" data-generate-output-form>
-              {% if active_transcript %}
-              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-              {% endif %}
-              <label>
-                Template
-                <select name="template_id" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required>
-                  {% if not available_templates %}
-                  <option value="">No templates available</option>
-                  {% else %}
-                    {% for template in available_templates %}
-                    {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-                    <option value="{{ template.id }}" data-template-mode="{{ latest_version.mode.value }}">{{ template.name }} ({{ template.scope.value }} · {{ latest_version.mode.value }})</option>
-                    {% endfor %}
-                  {% endif %}
-                </select>
-              </label>
-              <div class="subgrid" data-structured-context-panel {% if template_state.default_mode != "structured" %}hidden{% endif %}>
-                <div class="session-meta" style="grid-column: 1 / -1;">Structured EMIS context. Fill any areas you already know before generation; they will be sent to the LLM as section context.</div>
-                {% for section in emis_sections %}
-                <label>
-                  {{ section.label }}
-                  <div
-                    class="emis-editor"
-                    data-emis-editor
-                    data-emis-section-label="{{ section.label }}"
-                    data-disabled="{% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}true{% else %}false{% endif %}"
-                    data-initial-lines='{{ active_structured_context.get(section.key, [])|tojson }}'
-                  >
-                    <input type="hidden" name="context_{{ section.key }}" data-emis-editor-hidden>
-                    <div class="emis-editor-rows" data-emis-editor-rows></div>
-                    <button type="button" data-emis-editor-add-line {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Add line</button>
-                  </div>
-                </label>
-                {% endfor %}
-              </div>
-              <div class="session-meta" data-emis-save-status {% if template_state.default_mode != "structured" %}hidden{% endif %}>Saved to this session automatically.</div>
-              <div class="upload-row">
-                <button type="submit" {% if not active_transcript or not available_templates or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate note</button>
-              </div>
-            </form>
-            {% if not available_templates %}
-            <p class="muted">Create a personal template, or ask your team leader to add a team template, before generating note output.</p>
-            {% elif not llm_selection %}
-            <p class="muted">No active LLM selection is set for your team yet.</p>
-            {% elif not active_transcript or not active_transcript.current_draft_text_encrypted %}
-            <p class="muted">Transcript text is required before note generation can run.</p>
-            {% endif %}
-            <div
-              class="text-surface"
-              data-latest-generated-output
-              data-latest-generated-status="{{ latest_generated_document.status.value if latest_generated_document else '' }}"
-              data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
-            >
-              {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
-              {{ latest_generated_document.edited_output_text_encrypted }}
-              {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
-              <span class="placeholder">Note generation is queued in the worker.</span>
-              {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
-              <span class="placeholder">Note generation is in progress.</span>
-              {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
-              <span class="placeholder">The latest note generation failed{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
+          <div class="px-4 py-2 border-t border-stone/60 bg-transparent flex items-center justify-between gap-4 text-xs text-slate">
+            <span data-transcript-stats>
+              {% if active_transcript and active_transcript.current_draft_text_encrypted %}
+              {{ active_transcript.current_draft_text_encrypted.split('\n')|length }} blocks - {{ active_transcript.current_draft_text_encrypted.split()|length }} words
               {% else %}
-              <span class="placeholder">No generated output yet.</span>
+              0 blocks - 0 words
               {% endif %}
-            </div>
-            <div class="panel" data-generated-structured-panel {% if not latest_generated_document or latest_generated_document.document_mode.value != "structured" or not latest_generated_document.sections %}hidden{% endif %} style="margin-top: 1rem;">
-              <div class="panel-head">
-                <h3>EMIS sections</h3>
-                <p>Select the individual lines you want to copy. Lines stay clearly grouped by EMIS-style section.</p>
-              </div>
-              <div class="upload-row">
-                <button type="button" data-copy-structured-lines>Copy selected lines</button>
-              </div>
-              <div class="session-meta" data-structured-copy-status>Select the lines you want to copy.</div>
-              <div data-generated-structured-sections>
-                {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}
-                  {% for section in latest_generated_document.sections %}
-                  <div class="section-block">
-                    <h4>{{ section.section_label }}</h4>
-                    {% for line in latest_generated_document_section_lines.get(section.id|string, []) %}
-                    <label class="structured-line-row">
-                      <input type="checkbox" data-structured-line-checkbox data-section-label="{{ section.section_label }}" value="{{ line }}" checked>
-                      <span>{{ line }}</span>
-                    </label>
-                    {% endfor %}
-                  </div>
-                  {% endfor %}
-                {% endif %}
-              </div>
-            </div>
-            {% if latest_generated_document %}
-            <p class="session-meta">
-              Latest output: {{ latest_generated_document.title }} · {{ latest_generated_document.model_used or "unknown model" }} · {{ latest_generated_document.status.value }} · {{ latest_generated_document.created_at }}
-            </p>
-            {% endif %}
-            {% if show_redaction_debug and latest_generated_document %}
-            <details class="debug-panel" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
-              <summary class="debug-summary">Dev redaction debug</summary>
-              <div class="session-meta">Localhost dev only. Shows the redacted transcript payload and placeholder inventory sent toward the LLM path.</div>
-              <div class="session-meta" data-redaction-debug-meta>Open to load debug data.</div>
-              <div class="debug-pre" data-redaction-debug-text>Redaction debug not loaded yet.</div>
-            </details>
-            {% endif %}
-            {% if note_documents %}
-            <table>
-              <thead>
-                <tr>
-                  <th>Output</th>
-                  <th>Model</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for document in note_documents %}
-                <tr>
-                  <td>{{ document.title }}<br><small>{{ document.source_template_name }}</small></td>
-                  <td>{{ document.model_used or "unknown" }}</td>
-                  <td>{{ document.status.value }}</td>
-                  <td>{{ document.created_at }}</td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-            {% endif %}
+            </span>
+            <span>Transcript content stays private to the owner user.</span>
           </div>
+        </section>
 
-          <div class="panel" data-tab-panel="followups"{% if active_tab != 'followups' %} hidden{% endif %}>
-            <div class="panel-head">
-              <h2>Follow-ups</h2>
-              <p>Run a quick action or type a custom follow-up. Both use the active transcript draft and the same resolved LLM model as note generation.</p>
-            </div>
-            <form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form>
-              {% if active_transcript %}
-              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-              {% endif %}
-              <label>
-                Quick action
-                <select name="quick_action_id" {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required>
-                  {% if not available_quick_actions %}
-                  <option value="">No quick actions available</option>
-                  {% else %}
-                    {% for quick_action in available_quick_actions %}
-                    <option value="{{ quick_action.id }}">{{ quick_action.name }} ({{ quick_action.scope.value }})</option>
-                    {% endfor %}
-                  {% endif %}
-                </select>
-              </label>
-              <div class="upload-row">
-                <button type="submit" {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Run quick action</button>
-              </div>
-            </form>
-            {% if not available_quick_actions %}
-            <p class="muted">Create a personal quick action, or ask your team leader to add a team quick action, before running one here.</p>
-            {% endif %}
-            <form method="post" action="/transcribe/generate-followup" data-generate-followup-form>
-              {% if active_transcript %}
-              <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-              {% endif %}
-              <label>
-                Follow-up request
-                <textarea name="prompt_text" rows="5" maxlength="4000" placeholder="Arrange repeat bloods in two weeks and advise the patient to book a review if the cough persists." {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %} required></textarea>
-              </label>
-              <div class="upload-row">
-                <button type="submit" {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>Generate follow-up</button>
-              </div>
-            </form>
-            {% if not llm_selection %}
-            <p class="muted">No active LLM selection is set for your team yet.</p>
-            {% elif not active_transcript or not active_transcript.current_draft_text_encrypted %}
-            <p class="muted">Transcript text is required before follow-up generation can run.</p>
-            {% endif %}
-            <div
-              class="text-surface"
-              data-latest-followup-output
-              data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
-              data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}"
-            >
-              {% if latest_followup_document and latest_followup_document.status.value == "ready" and latest_followup_document.edited_output_text_encrypted %}
-              {{ latest_followup_document.edited_output_text_encrypted }}
-              {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
-              <span class="placeholder">Follow-up generation is queued in the worker.</span>
-              {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
-              <span class="placeholder">Follow-up generation is in progress.</span>
-              {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
-              <span class="placeholder">The latest follow-up generation failed{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
-              {% else %}
-              <span class="placeholder">No follow-up thread yet.</span>
-              {% endif %}
-            </div>
-            {% if latest_followup_document %}
-            <p class="session-meta">
-              Latest follow-up: {{ latest_followup_document.model_used or "unknown model" }} · {{ latest_followup_document.status.value }} · {{ latest_followup_document.created_at }}
-            </p>
-            {% endif %}
-            {% if show_redaction_debug and latest_followup_document %}
-            <details class="debug-panel" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">
-              <summary class="debug-summary">Dev redaction debug</summary>
-              <div class="session-meta">Localhost dev only. Shows the redacted transcript payload and placeholder inventory sent toward the LLM path.</div>
-              <div class="session-meta" data-redaction-debug-meta>Open to load debug data.</div>
-              <div class="debug-pre" data-redaction-debug-text>Redaction debug not loaded yet.</div>
-            </details>
-            {% endif %}
-            {% if followup_documents %}
-            <table>
-              <thead>
-                <tr>
-                  <th>Action</th>
-                  <th>Model</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for document in followup_documents %}
-                <tr>
-                  <td>
-                    {% if document.generator_type.value == "quick_action" %}
-                    {{ document.source_quick_action_name or document.title }}
-                    {% else %}
-                    {{ document.follow_up_prompt_text or document.title }}
-                    {% endif %}
-                  </td>
-                  <td>{{ document.model_used or "unknown" }}</td>
-                  <td>{{ document.status.value }}</td>
-                  <td>{{ document.created_at }}</td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-            {% endif %}
-          </div>
+        <div class="divider-widget">
+          <button type="button" class="divider-btn btn-expand" data-pane-toggle="expanded" aria-label="Expand clinical note pane" title="Expand note">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <button type="button" class="divider-btn btn-split" data-pane-toggle="normal" data-divider-grip aria-label="Split view" title="Split view">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"/>
+            </svg>
+          </button>
+          <button type="button" class="divider-btn btn-collapse" data-pane-toggle="collapsed" aria-label="Hide clinical note pane" title="Hide note">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
         </div>
-      </section>
-    </div>
-  </div>
+
+        <section class="border-l border-stone bg-white overflow-hidden flex flex-col min-w-0" data-assistant-pane>
+          <div class="px-4 py-3 border-b border-stone bg-parchment/55 flex items-center justify-between gap-4">
+            <div class="min-w-0">
+              <h2 class="font-display text-xl text-ink">Clinical note and follow-ups</h2>
+            </div>
+            <div class="hidden">
+              <button type="button" data-pane-toggle="collapsed">Hide</button>
+              <button type="button" data-pane-toggle="normal">Split</button>
+              <button type="button" data-pane-toggle="expanded">Expand</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between border-b border-stone bg-white px-4 gap-3">
+            <div class="flex gap-2 min-w-0">
+              <button type="button" class="active px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="output">Clinical Note</button>
+              <button type="button" class="px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="followups">Follow-ups</button>
+              <button type="button" class="px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="history">History</button>
+            </div>
+            <a
+              href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
+              class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-lg border border-stone bg-white text-slate hover:text-ink hover:border-teal-muted transition"
+              data-workspace-settings-link
+              aria-label="Open related settings"
+              title="Open related settings">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317a1 1 0 011.35-.936l.833.353a1 1 0 00.95-.07l.75-.5a1 1 0 011.45.348l.436.786a1 1 0 00.84.51l.902.06a1 1 0 01.95 1.146l-.128.895a1 1 0 00.288.88l.642.642a1 1 0 010 1.414l-.642.642a1 1 0 00-.288.88l.128.895a1 1 0 01-.95 1.146l-.901.06a1 1 0 00-.841.51l-.436.786a1 1 0 01-1.45.348l-.75-.5a1 1 0 00-.95-.07l-.833.353a1 1 0 01-1.35-.936l-.06-.902a1 1 0 00-.51-.84l-.786-.436a1 1 0 01-.348-1.45l.5-.75a1 1 0 00.07-.95l-.353-.833a1 1 0 01.936-1.35l.902-.06a1 1 0 00.84-.51l.436-.786z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
+              </svg>
+            </a>
+          </div>
+
+          <div class="flex-1 overflow-y-auto bg-white">
+            <div class="hidden-panel" data-tab-panel="output">
+              <div class="assistant-section space-y-3">
+                <div class="flex items-center justify-between gap-4">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 bg-success rounded-full"></span>
+                    <span class="text-sm font-medium text-ink">Latest note</span>
+                  </div>
+                  <span class="text-xs text-slate" data-note-meta>
+                    {% if latest_generated_document %}
+                    {{ latest_generated_document.title }} · {{ latest_generated_document.model_used or "unknown model" }} · {{ latest_generated_document.status.value }} · {{ latest_generated_document.created_at }}
+                    {% else %}
+                    No note generated yet
+                    {% endif %}
+                  </span>
+                </div>
+
+                <div
+                  class="assistant-flat-output"
+                  data-latest-generated-output
+                  data-latest-generated-status="{{ latest_generated_document.status.value if latest_generated_document else '' }}"
+                  data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
+                  {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}hidden{% endif %}>
+                  {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
+                  {{ latest_generated_document.edited_output_text_encrypted }}
+                  {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
+                  <span class="text-slate">Note generation is queued in the worker.</span>
+                  {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
+                  <span class="text-slate">Note generation is in progress.</span>
+                  {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
+                  <span class="text-slate">The latest note generation failed{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
+                  {% else %}
+                  <span class="text-slate">No generated output yet.</span>
+                  {% endif %}
+                </div>
+
+                <div
+                  class="space-y-4"
+                  data-generated-structured-panel
+                  {% if not latest_generated_document or latest_generated_document.document_mode.value != "structured" or not latest_generated_document.sections %}hidden{% endif %}>
+                  <div class="assistant-meta-row flex items-center justify-between gap-4">
+                    <div class="text-sm text-slate" data-structured-copy-status>Select the lines you want to copy.</div>
+                    <div class="flex items-center gap-2">
+                      <button type="button" class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-parchment rounded-lg transition" data-clear-structured-selection>Clear Selection</button>
+                      <button type="button" class="px-4 py-2 bg-teal-deep text-white rounded-lg text-sm font-medium hover:bg-teal-muted transition" data-copy-structured-lines>Copy Selected</button>
+                    </div>
+                  </div>
+                  <div class="space-y-4" data-generated-structured-sections>
+                    {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}
+                      {% for section in latest_generated_document.sections %}
+                      <div class="structured-section-block">
+                        <h3 class="structured-section-title">{{ section.section_label }}</h3>
+                        <div class="space-y-2">
+                          {% for line in latest_generated_document_section_lines.get(section.id|string, []) %}
+                          <label class="structured-line-row">
+                            <input type="checkbox" data-structured-line-checkbox data-section-label="{{ section.section_label }}" value="{{ line }}" checked>
+                            <span class="text-sm text-ink">{{ line }}</span>
+                          </label>
+                          {% endfor %}
+                        </div>
+                      </div>
+                      {% endfor %}
+                    {% endif %}
+                  </div>
+                </div>
+
+                <div data-output-redaction-debug-slot>
+                  {% if show_redaction_debug and latest_generated_document %}
+                  <details class="border border-stone bg-parchment/40 p-3" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
+                    <summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
+                    <div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
+                    <pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
+                  </details>
+                  {% endif %}
+                </div>
+              </div>
+
+              <div class="assistant-section space-y-3">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <div class="text-sm font-medium text-ink">Generate note</div>
+                    <div class="text-xs text-slate mt-1">Use the current transcript draft or structured EMIS context with the active LLM.</div>
+                  </div>
+                  <div class="text-xs font-medium uppercase tracking-wider text-slate" data-selected-template-mode>{% if template_state.default_mode == "structured" %}Structured mode{% else %}Freeform mode{% endif %}</div>
+                </div>
+                <form method="post" action="/transcribe/generate-output" data-generate-output-form class="space-y-4">
+                  {% if active_transcript %}
+                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+                  {% endif %}
+                  <label class="block">
+                    <span class="block text-sm font-medium text-ink mb-2">Note template</span>
+                    <select
+                      name="template_id"
+                      class="w-full px-3 py-2 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
+                      {% if not active_transcript or not available_templates or not llm_selection %}disabled{% endif %}
+                      required>
+                      {% if not available_templates %}
+                      <option value="">No templates available</option>
+                      {% else %}
+                        {% for template in available_templates %}
+                        {% set latest_version = template.versions|sort(attribute='version_no')|last %}
+                        <option
+                          value="{{ template.id }}"
+                          data-template-mode="{{ latest_version.mode.value }}"
+                          data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
+                          {{ template.name }} ({{ template.scope.value }} · {{ latest_version.mode.value }})
+                        </option>
+                        {% endfor %}
+                      {% endif %}
+                    </select>
+                  </label>
+
+                  <div class="bg-parchment px-3 py-3 space-y-4" data-structured-context-panel {% if template_state.default_mode != "structured" %}hidden{% endif %}>
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <div class="text-xs font-medium uppercase tracking-wider text-slate">Structured EMIS context</div>
+                        <div class="text-xs text-slate mt-1">Only shown for structured templates. Context autosaves to this transcript session.</div>
+                      </div>
+                      <div class="text-xs text-slate" data-emis-save-status>Saved to this session automatically.</div>
+                    </div>
+                    <div class="space-y-4">
+                      {% for section in emis_sections %}
+                      <label class="block">
+                        <span class="block text-sm font-medium text-ink mb-2">{{ section.label }}</span>
+                        <div
+                          class="space-y-3"
+                          data-emis-editor
+                          data-emis-section-label="{{ section.label }}"
+                          data-disabled="{% if not active_transcript %}true{% else %}false{% endif %}"
+                          data-initial-lines='{{ active_structured_context.get(section.key, [])|tojson }}'>
+                          <input type="hidden" name="context_{{ section.key }}" data-emis-editor-hidden>
+                          <div class="space-y-3" data-emis-editor-rows></div>
+                          <button
+                            type="button"
+                            class="px-3 py-2 text-sm bg-white border border-stone text-ink hover:border-teal-muted hover:bg-teal-pale/20 transition"
+                            data-emis-editor-add-line
+                            {% if not active_transcript %}disabled{% endif %}>
+                            Add line
+                          </button>
+                        </div>
+                      </label>
+                      {% endfor %}
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    class="w-full btn-primary bg-teal-deep text-white px-4 py-3 font-medium text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                    {% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text_encrypted and not active_structured_context) %}disabled{% endif %}>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                    Generate Clinical Note
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            <div class="hidden-panel" data-tab-panel="followups" hidden>
+              <div class="assistant-section space-y-4">
+                <div>
+                  <div class="text-sm font-medium text-ink">Quick actions</div>
+                  <div class="text-xs text-slate mt-1">Use the active transcript draft and the same resolved LLM model as note generation.</div>
+                </div>
+                <form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form class="space-y-4">
+                  {% if active_transcript %}
+                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+                  {% endif %}
+                  <label class="block">
+                    <span class="block text-sm font-medium text-ink mb-2">Quick action</span>
+                    <select
+                      name="quick_action_id"
+                      class="w-full px-3 py-2 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
+                      {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}
+                      required>
+                      {% if not available_quick_actions %}
+                      <option value="">No quick actions available</option>
+                      {% else %}
+                        {% for quick_action in available_quick_actions %}
+                        <option
+                          value="{{ quick_action.id }}"
+                          data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value == 'team' %}team-quick-action&team_quick_action_id{% else %}personal-quick-action&personal_quick_action_id{% endif %}={{ quick_action.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=followups">
+                          {{ quick_action.name }} ({{ quick_action.scope.value }})
+                        </option>
+                        {% endfor %}
+                      {% endif %}
+                    </select>
+                  </label>
+                  <button
+                    type="submit"
+                    class="w-full bg-white border border-stone px-4 py-3 font-medium text-sm text-ink hover:border-teal-muted hover:bg-teal-pale/20 transition disabled:opacity-50"
+                    {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>
+                    Run quick action
+                  </button>
+                </form>
+              </div>
+
+              <div class="assistant-section space-y-4">
+                <div>
+                  <div class="text-sm font-medium text-ink">Custom follow-up request</div>
+                  <div class="text-xs text-slate mt-1">Generate freeform follow-up content from the active transcript draft.</div>
+                </div>
+                <form method="post" action="/transcribe/generate-followup" data-generate-followup-form class="space-y-4">
+                  {% if active_transcript %}
+                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+                  {% endif %}
+                  <label class="block">
+                    <span class="sr-only">Follow-up request</span>
+                    <textarea
+                      name="prompt_text"
+                      rows="4"
+                      maxlength="4000"
+                      placeholder="e.g. Generate a patient-facing follow-up summary and booking instructions..."
+                      class="w-full px-3 py-3 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
+                      {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}
+                      required></textarea>
+                  </label>
+                  <button
+                    type="submit"
+                    class="w-full bg-teal-deep text-white px-4 py-3 font-medium text-sm hover:bg-teal-muted transition disabled:opacity-50"
+                    {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>
+                    Generate follow-up
+                  </button>
+                </form>
+              </div>
+
+              <div class="assistant-section space-y-3">
+                <div class="flex items-center justify-between gap-4">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 bg-success rounded-full"></span>
+                    <span class="text-sm font-medium text-ink">Latest follow-up</span>
+                  </div>
+                  <span class="text-xs text-slate" data-followup-meta>
+                    {% if latest_followup_document %}
+                    {{ latest_followup_document.model_used or "unknown model" }} · {{ latest_followup_document.status.value }} · {{ latest_followup_document.created_at }}
+                    {% else %}
+                    No follow-up thread yet
+                    {% endif %}
+                  </span>
+                </div>
+                <div
+                  class="assistant-flat-output"
+                  data-latest-followup-output
+                  data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
+                  data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}">
+                  {% if latest_followup_document and latest_followup_document.status.value == "ready" and latest_followup_document.edited_output_text_encrypted %}
+                  {{ latest_followup_document.edited_output_text_encrypted }}
+                  {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
+                  <span class="text-slate">Follow-up generation is queued in the worker.</span>
+                  {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
+                  <span class="text-slate">Follow-up generation is in progress.</span>
+                  {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
+                  <span class="text-slate">The latest follow-up generation failed{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
+                  {% else %}
+                  <span class="text-slate">No follow-up thread yet.</span>
+                  {% endif %}
+                </div>
+                <div data-followup-redaction-debug-slot>
+                  {% if show_redaction_debug and latest_followup_document %}
+                  <details class="border border-stone bg-parchment/40 p-3" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">
+                    <summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
+                    <div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
+                    <pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
+                  </details>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+
+            <div class="hidden-panel" data-tab-panel="history" hidden>
+              <div class="assistant-section space-y-4">
+                <div class="flex items-center justify-between gap-4">
+                  <h3 class="text-sm font-semibold text-ink">Clinical note history</h3>
+                  <span class="text-xs text-slate">{{ note_documents|length }} items</span>
+                </div>
+                <div class="space-y-3" data-note-history>
+                  {% if note_documents %}
+                    {% for document in note_documents %}
+                    <div class="assistant-subsection">
+                      <div class="flex items-center justify-between gap-4">
+                        <div class="min-w-0">
+                          <div class="text-sm font-medium text-ink">{{ document.title }}</div>
+                          <div class="text-xs text-slate mt-1">{{ document.source_template_name }} · {{ document.model_used or "unknown model" }}</div>
+                        </div>
+                        <div class="text-xs text-slate text-right">{{ document.status.value }}<br>{{ document.created_at }}</div>
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                  <div class="text-sm text-slate">No note history yet.</div>
+                  {% endif %}
+                </div>
+              </div>
+
+              <div class="assistant-section space-y-4">
+                <div class="flex items-center justify-between gap-4">
+                  <h3 class="text-sm font-semibold text-ink">Follow-up and quick action history</h3>
+                  <span class="text-xs text-slate">{{ followup_documents|length }} items</span>
+                </div>
+                <div class="space-y-3" data-followup-history>
+                  {% if followup_documents %}
+                    {% for document in followup_documents %}
+                    <div class="assistant-subsection">
+                      <div class="flex items-center justify-between gap-4">
+                        <div class="min-w-0">
+                          <div class="text-sm font-medium text-ink">
+                            {% if document.generator_type.value == "quick_action" %}
+                            {{ document.source_quick_action_name or document.title }}
+                            {% else %}
+                            {{ document.follow_up_prompt_text or document.title }}
+                            {% endif %}
+                          </div>
+                          <div class="text-xs text-slate mt-1">{{ document.model_used or "unknown model" }} · {{ document.generator_type.value|replace('_', ' ') }}</div>
+                        </div>
+                        <div class="text-xs text-slate text-right">{{ document.status.value }}<br>{{ document.created_at }}</div>
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                  <div class="text-sm text-slate">No follow-up history yet.</div>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
   </section>
+
+  <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden></form>
+
+  <div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
+    Copied to clipboard
+  </div>
+
   <script>
     (() => {
+      const shell = document.querySelector('[data-workspace-endpoint]');
+      const routeBase = shell?.dataset.routeBase || '/transcribe-glm-2';
       const triggers = [...document.querySelectorAll('[data-tab-trigger]')];
       const panels = [...document.querySelectorAll('[data-tab-panel]')];
-      const setTab = (target) => {
-        triggers.forEach((trigger) => {
-          trigger.classList.toggle('active', trigger.getAttribute('data-tab-trigger') === target);
-        });
-        panels.forEach((panel) => {
-          panel.hidden = panel.getAttribute('data-tab-panel') !== target;
-        });
-      };
-      triggers.forEach((trigger) => {
-        trigger.addEventListener('click', () => setTab(trigger.getAttribute('data-tab-trigger')));
-      });
-      setTab({{ active_tab|tojson }});
-
+      const paneToggles = [...document.querySelectorAll('[data-pane-toggle]')];
+      const dividerGrip = document.querySelector('[data-divider-grip]');
+      const splitWorkspace = document.querySelector('[data-split-workspace]');
+      const initialWorkspaceEndpoint = shell?.dataset.workspaceEndpoint || '';
       let transcriptId = {{ active_transcript_id|tojson }};
-      const initialWorkspaceEndpoint = document.querySelector('[data-workspace-endpoint]')?.dataset.workspaceEndpoint || '';
       let activeIngestionMode = {{ (active_transcript.ingestion_mode.value if active_transcript else none)|tojson }};
-      const hasSttSelection = {{ (stt_selection is not none)|tojson }};
+      let hasSttSelection = {{ (stt_selection is not none)|tojson }};
+      let hasLlmSelection = {{ (llm_selection is not none)|tojson }};
+      let sttAvailable = {{ stt_available|tojson }};
+      let sttStatusMessage = {{ stt_status_message|tojson }};
+      const showRedactionDebug = {{ show_redaction_debug|tojson }};
+      const initialTranscriptErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
+
       const activeStatus = document.querySelector('[data-active-status]');
       const activeIngestionModeChip = document.querySelector('[data-active-ingestion-mode]');
       const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
       const activeDraft = document.querySelector('[data-active-draft]');
+      const transcriptStats = document.querySelector('[data-transcript-stats]');
       const activeProgress = document.querySelector('[data-session-progress]');
+      const micStatus = document.querySelector('[data-mic-status]');
+      const micTimer = document.querySelector('[data-mic-timer]');
+      const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
-      const initialTranscriptErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
-      const redactionDebugPanels = [...document.querySelectorAll('[data-redaction-debug-panel]')];
-      const flashBanner = document.querySelector('[data-flash]');
+      const noteMeta = document.querySelector('[data-note-meta]');
+      const followupMeta = document.querySelector('[data-followup-meta]');
+      const noteHistory = document.querySelector('[data-note-history]');
+      const followupHistory = document.querySelector('[data-followup-history]');
+      const outputRedactionSlot = document.querySelector('[data-output-redaction-debug-slot]');
+      const followupRedactionSlot = document.querySelector('[data-followup-redaction-debug-slot]');
       const copyStructuredLinesButton = document.querySelector('[data-copy-structured-lines]');
+      const clearStructuredSelectionButton = document.querySelector('[data-clear-structured-selection]');
       const structuredCopyStatus = document.querySelector('[data-structured-copy-status]');
+      const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
+      const templateModeBadge = document.querySelector('[data-selected-template-mode]');
+      const structuredContextPanel = document.querySelector('[data-structured-context-panel]');
+      const emisSaveStatus = document.querySelector('[data-emis-save-status]');
       const emisEditors = [...document.querySelectorAll('[data-emis-editor]')];
       const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
-      const uploadForm = document.querySelector('form[action="/transcribe/upload"]');
+      const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
+      const deleteButton = document.querySelector('[data-delete-selected]');
+      const newSessionButton = document.querySelector('[data-new-session-button]');
+      const newSessionBlockMessage = document.querySelector('[data-new-session-block-message]');
+      const uploadForm = document.querySelector('[data-upload-form]');
+      const fileInput = document.querySelector('[data-audio-file-input]');
       const newSessionForm = document.querySelector('#new-session-form');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const switchToWholeFileForm = document.querySelector('#switch-to-whole-file-form');
       const titleForm = document.querySelector('[data-transcript-title-form]');
+      const renameTitleInput = document.querySelector('[data-transcript-title-input]');
       const generateOutputForm = document.querySelector('[data-generate-output-form]');
       const generateOutputTemplateSelect = generateOutputForm?.querySelector('select[name="template_id"]') || null;
-      const structuredContextPanel = document.querySelector('[data-structured-context-panel]');
       const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
       const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
-      const emisSaveStatus = document.querySelector('[data-emis-save-status]');
-      const deleteButton = document.querySelector('[data-delete-selected]');
-      const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
-      const syncDeleteState = () => {
-        if (!deleteButton) return;
-        deleteButton.disabled = !selectionBoxes.some((checkbox) => checkbox.checked);
-        selectionBoxes.forEach((checkbox) => {
-          checkbox.closest('.session-item')?.classList.toggle('selected', checkbox.checked);
-        });
-      };
-      selectionBoxes.forEach((checkbox) => {
-        checkbox.addEventListener('change', syncDeleteState);
-      });
-      syncDeleteState();
-
-      if (newSessionForm) {
-        newSessionForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          try {
-            const response = await fetch('/api/v1/transcripts/start', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: 'Untitled session', ingestion_mode: 'whole_file' }),
-            });
-            if (!response.ok) {
-              throw new Error(await parseErrorMessage(response, 'Could not create a new session.'));
-            }
-            const transcript = await response.json();
-            window.location.assign(`/transcribe?transcript_id=${transcript.id}`);
-          } catch (error) {
-            showFlash(error instanceof Error ? error.message : 'Could not create a new session.', 'error');
-          }
-        });
-      }
-
-      if (bulkDeleteForm) {
-        bulkDeleteForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          const selectedIds = selectionBoxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
-          if (selectedIds.length === 0) {
-            return;
-          }
-          try {
-            await Promise.all(
-              selectedIds.map(async (selectedId) => {
-                const response = await fetch(`/api/v1/transcripts/${selectedId}`, {
-                  method: 'DELETE',
-                  credentials: 'include',
-                });
-                if (!response.ok) {
-                  throw new Error(await parseErrorMessage(response, 'Could not delete the selected sessions.'));
-                }
-              })
-            );
-            showFlash(`Deleted ${selectedIds.length} session${selectedIds.length === 1 ? '' : 's'}.`, 'success');
-            window.location.assign('/transcribe');
-          } catch (error) {
-            showFlash(error instanceof Error ? error.message : 'Could not delete the selected sessions.', 'error');
-          }
-        });
-      }
-
-      if (switchToWholeFileForm && transcriptId) {
-        switchToWholeFileForm.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          try {
-            const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
-              method: 'PATCH',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ingestion_mode: 'whole_file' }),
-            });
-            if (!response.ok) {
-              throw new Error(await parseErrorMessage(response, 'Could not switch this session back to upload mode.'));
-            }
-            window.location.assign(`/transcribe?transcript_id=${transcriptId}`);
-          } catch (error) {
-            showFlash(error instanceof Error ? error.message : 'Could not switch this session back to upload mode.', 'error');
-          }
-        });
-      }
-
-      const setVisibleStatus = (label) => {
-        if (activeStatus) activeStatus.textContent = label;
-        if (transcriptId) {
-          const currentSidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
-          if (currentSidebarStatus) currentSidebarStatus.textContent = label;
-        }
-      };
-
-      const setSessionProgress = (message) => {
-        if (!activeProgress) return;
-        activeProgress.textContent = message;
-      };
-
-      const reflectBackendStatus = (statusLabel, errorMessage = null) => {
-        setVisibleStatus(statusLabel);
-        if (statusLabel === 'queued') {
-          setSessionProgress('Waiting in the worker queue.');
-        } else if (statusLabel === 'transcribing') {
-          setSessionProgress('Background transcription is in progress.');
-        } else if (statusLabel === 'ready') {
-          setSessionProgress('Session is ready for review.');
-        } else if (statusLabel === 'failed') {
-          const suffix = errorMessage ? `: ${errorMessage}` : '';
-          setSessionProgress(`The last ingestion attempt failed${suffix}.`);
-        } else if (statusLabel === 'recording') {
-          setSessionProgress('Session is ready for input.');
-        }
-      };
-
-      const micStartButtons = [...document.querySelectorAll('[data-mic-start], [data-mic-start-panel]')];
-      const micStopButtons = [...document.querySelectorAll('[data-mic-stop], [data-mic-stop-panel]')];
-      const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
-      const micStatus = document.querySelector('[data-mic-status]');
-      const micTimer = document.querySelector('[data-mic-timer]');
-      const renameTitleInput = document.querySelector('[data-transcript-title-input]');
-      const fileInput = document.querySelector('[data-audio-file-input]');
+      const runQuickActionSelect = runQuickActionForm?.querySelector('select[name="quick_action_id"]') || null;
+      const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
-      const audioActionToggle = document.querySelector('[data-audio-action-toggle]');
-      const audioActionMenu = document.querySelector('[data-audio-action-menu]');
-      const audioActionOptions = [...document.querySelectorAll('[data-audio-action-option]')];
-      const audioSourceCaption = document.querySelector('[data-audio-source-caption]');
-      const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && activeIngestionMode === 'whole_file');
-      let selectedAudioSource = 'file';
+      const recordToggleButton = document.querySelector('[data-record-toggle]');
+      const recordToggleLabel = document.querySelector('[data-record-toggle-label]');
+      const recordToggleIcon = document.querySelector('[data-record-toggle-icon]');
+      const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
+      const copyToast = document.querySelector('#copy-toast');
+
       let mediaRecorder = null;
       let mediaStream = null;
       let mediaChunks = [];
       let startedAt = null;
       let timerId = null;
-      let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let emisSaveTimer = null;
       let lastSavedStructuredContext = null;
+      let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
+
+      let currentAssistantTab = {{ ('followups' if active_tab == 'followups' else 'output')|tojson }};
+      const paneStorageKey = 'openscribe-glm2-pane-state';
+      const splitRatioStorageKey = 'openscribe-glm2-split-ratio';
+      const initialPaneState = window.localStorage.getItem(paneStorageKey) || shell?.dataset.layoutState || 'normal';
+      const initialSplitRatio = Number.parseFloat(window.localStorage.getItem(splitRatioStorageKey) || '');
+
+      const updateWorkspaceSettingsLink = () => {
+        if (!workspaceSettingsLink) return;
+
+        if (currentAssistantTab === 'history') {
+          workspaceSettingsLink.hidden = true;
+          return;
+        }
+
+        workspaceSettingsLink.hidden = false;
+        if (currentAssistantTab === 'followups') {
+          const selectedOption = runQuickActionSelect?.selectedOptions?.[0] || null;
+          workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=quick-actions&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId || '')}&transcribe_tab=followups`;
+          workspaceSettingsLink.title = 'Edit quick actions';
+          workspaceSettingsLink.setAttribute('aria-label', 'Edit quick actions');
+          return;
+        }
+
+        const selectedOption = generateOutputTemplateSelect?.selectedOptions?.[0] || null;
+        workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=templates&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId || '')}&transcribe_tab=output`;
+        workspaceSettingsLink.title = 'Edit templates';
+        workspaceSettingsLink.setAttribute('aria-label', 'Edit templates');
+      };
+
+      const clampSplitRatio = (value) => {
+        if (!Number.isFinite(value)) return 50;
+        return Math.min(72, Math.max(28, value));
+      };
+
+      const setSplitRatio = (value) => {
+        const next = clampSplitRatio(value);
+        shell.style.setProperty('--split-ratio', String(next));
+        window.localStorage.setItem(splitRatioStorageKey, String(next));
+      };
+
+      const setTab = (target) => {
+        currentAssistantTab = target;
+        triggers.forEach((trigger) => {
+          const isActive = trigger.dataset.tabTrigger === target;
+          trigger.classList.toggle('active', isActive);
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.dataset.tabPanel !== target;
+        });
+        updateWorkspaceSettingsLink();
+      };
+
+      const setPaneState = (state) => {
+        const nextState = ['collapsed', 'normal', 'expanded'].includes(state) ? state : 'normal';
+        shell.dataset.layoutState = nextState;
+        window.localStorage.setItem(paneStorageKey, nextState);
+      };
+
+      triggers.forEach((trigger) => {
+        trigger.addEventListener('click', () => setTab(trigger.dataset.tabTrigger));
+      });
+      paneToggles.forEach((button) => {
+        button.addEventListener('click', () => setPaneState(button.dataset.paneToggle));
+      });
+      if (dividerGrip) {
+        let pointerId = null;
+        let startX = 0;
+        let startRatio = 50;
+        let hasDragged = false;
+
+        const stopDrag = () => {
+          if (pointerId !== null) {
+            dividerGrip.releasePointerCapture?.(pointerId);
+          }
+          pointerId = null;
+          hasDragged = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+
+        dividerGrip.addEventListener('pointerdown', (event) => {
+          if (shell.dataset.layoutState !== 'normal') return;
+          const splitRect = splitWorkspace?.getBoundingClientRect();
+          if (!splitRect?.width) return;
+          pointerId = event.pointerId;
+          startX = event.clientX;
+          startRatio = clampSplitRatio(Number.parseFloat(getComputedStyle(shell).getPropertyValue('--split-ratio')));
+          hasDragged = false;
+          dividerGrip.setPointerCapture?.(pointerId);
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          event.preventDefault();
+        });
+
+        dividerGrip.addEventListener('pointermove', (event) => {
+          if (pointerId === null || event.pointerId !== pointerId || shell.dataset.layoutState !== 'normal') return;
+          const splitRect = splitWorkspace?.getBoundingClientRect();
+          if (!splitRect?.width) return;
+          const deltaX = event.clientX - startX;
+          hasDragged = hasDragged || Math.abs(deltaX) > 3;
+          const nextRatio = startRatio + ((deltaX / splitRect.width) * 100);
+          setSplitRatio(nextRatio);
+        });
+
+        dividerGrip.addEventListener('pointerup', stopDrag);
+        dividerGrip.addEventListener('pointercancel', stopDrag);
+        dividerGrip.addEventListener('click', (event) => {
+          if (hasDragged) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        });
+      }
+      setSplitRatio(initialSplitRatio);
+      setTab(currentAssistantTab);
+      setPaneState(initialPaneState);
+      generateOutputTemplateSelect?.addEventListener('change', updateWorkspaceSettingsLink);
+      runQuickActionSelect?.addEventListener('change', updateWorkspaceSettingsLink);
 
       const showFlash = (message, kind = 'success') => {
         if (!flashBanner) return;
@@ -1378,31 +1335,143 @@
         }
       };
 
+      const showCopyToast = () => {
+        if (!copyToast) return;
+        copyToast.classList.add('show');
+        window.clearTimeout(showCopyToast._timer);
+        showCopyToast._timer = window.setTimeout(() => {
+          copyToast.classList.remove('show');
+        }, 1400);
+      };
+
+      const setVisibleStatus = (label) => {
+        if (activeStatus) activeStatus.textContent = label;
+        if (transcriptId) {
+          const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
+          if (sidebarStatus) sidebarStatus.textContent = label;
+        }
+      };
+
+      const setSessionProgress = (message) => {
+        if (activeProgress) {
+          activeProgress.textContent = message;
+        }
+      };
+
       const setMicStatus = (message, kind = '') => {
         if (!micStatus) return;
         micStatus.textContent = message;
-        micStatus.classList.remove('error', 'success');
-        if (kind) micStatus.classList.add(kind);
+        micStatus.classList.remove('text-coral', 'text-success');
+        if (kind === 'error') {
+          micStatus.classList.add('text-coral');
+        } else if (kind === 'success') {
+          micStatus.classList.add('text-success');
+        }
       };
 
-      const syncAudioSourceUi = () => {
-        if (audioActionTrigger) {
-          audioActionTrigger.textContent = selectedAudioSource === 'file' ? 'Upload from file' : 'Record microphone batch';
+      const displayStatusLabel = (statusLabel, ingestionMode) => {
+        if (statusLabel === 'recording' && ingestionMode === 'whole_file') {
+          return 'idle';
         }
-        if (audioSourceCaption) {
-          audioSourceCaption.textContent = selectedAudioSource === 'file'
-            ? 'Selected source: file upload'
-            : 'Selected source: microphone batch';
+        return statusLabel || 'idle';
+      };
+
+      const reflectBackendStatus = (statusLabel, errorMessage = null) => {
+        const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
+        setVisibleStatus(visibleStatus);
+        if (visibleStatus === 'queued') {
+          setSessionProgress('Waiting in the worker queue.');
+        } else if (visibleStatus === 'transcribing') {
+          setSessionProgress('Background transcription is in progress.');
+        } else if (visibleStatus === 'ready') {
+          setSessionProgress('Session is ready for review.');
+        } else if (visibleStatus === 'failed') {
+          setSessionProgress(`The last ingestion attempt failed${errorMessage ? `: ${errorMessage}` : ''}.`);
+        } else if (visibleStatus === 'recording') {
+          setSessionProgress('Recording locally. Nothing has been queued yet.');
+        } else if (visibleStatus === 'uploading') {
+          setSessionProgress('Uploading audio file to queue transcription...');
+        } else {
+          setSessionProgress('Session is ready for input.');
         }
-        audioActionOptions.forEach((button) => {
-          button.classList.toggle('active', button.dataset.audioActionOption === selectedAudioSource);
-        });
+      };
+
+      const renderTranscriptStats = (text) => {
+        if (!transcriptStats) return;
+        if (!text || !text.trim()) {
+          transcriptStats.textContent = '0 blocks - 0 words';
+          return;
+        }
+        const blocks = text.split('\n').filter((line) => line.trim().length > 0).length || 1;
+        const words = text.trim().split(/\s+/).filter(Boolean).length;
+        transcriptStats.textContent = `${blocks} blocks - ${words} words`;
+      };
+
+      const renderDraft = (text) => {
+        if (!activeDraft) return;
+        if (text && text.trim()) {
+          activeDraft.textContent = text;
+        } else {
+          activeDraft.innerHTML = '<span class="text-slate">No transcript text yet. Use the audio controls to upload a file or record a microphone batch.</span>';
+        }
+        renderTranscriptStats(text || '');
+      };
+
+      const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && sttAvailable && activeIngestionMode === 'whole_file');
+
+      const defaultMicStatusMessage = () => {
+        if (!transcriptId) return 'Create or select a session to start whole-file transcription.';
+        if (activeIngestionMode !== 'whole_file') return `The current session is \`${activeIngestionMode}\`. Switch this session to \`whole_file\` when it is still blank and idle.`;
+        if (!hasSttSelection) return 'No active STT selection is available for your team, so whole-file transcription cannot queue yet.';
+        if (!sttAvailable) return sttStatusMessage || 'The configured STT provider is unavailable right now.';
+        return 'Ready for file upload or microphone batch recording in this session.';
+      };
+
+      const hasSelectableOptions = (select) => {
+        if (!select) return false;
+        return [...select.options].some((option) => option.value);
+      };
+
+      const hasStructuredContextContent = () => {
+        const structuredContext = collectStructuredContext();
+        return Object.values(structuredContext).some((lines) => Array.isArray(lines) && lines.length > 0);
+      };
+
+      const syncGenerationAvailability = (draftText = '') => {
+        const hasDraft = Boolean(draftText && draftText.trim());
+        const hasStructuredInput = selectedOutputTemplateMode() === 'structured' && hasStructuredContextContent();
+        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect) && (hasDraft || hasStructuredInput));
+        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasDraft && hasSelectableOptions(runQuickActionForm?.querySelector('select[name="quick_action_id"]')));
+        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && hasDraft);
+
+        if (generateOutputTemplateSelect) {
+          generateOutputTemplateSelect.disabled = !canGenerateNote;
+        }
+        const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
+        if (generateOutputButton) {
+          generateOutputButton.disabled = !canGenerateNote;
+        }
+
+        const quickActionSelect = runQuickActionForm?.querySelector('select[name="quick_action_id"]');
+        if (quickActionSelect) {
+          quickActionSelect.disabled = !canRunQuickAction;
+        }
+        const quickActionButton = runQuickActionForm?.querySelector('button[type="submit"]');
+        if (quickActionButton) {
+          quickActionButton.disabled = !canRunQuickAction;
+        }
+
+        const followupTextarea = generateFollowupForm?.querySelector('textarea[name="prompt_text"]');
+        if (followupTextarea) {
+          followupTextarea.disabled = !canGenerateFollowup;
+        }
+        const followupButton = generateFollowupForm?.querySelector('button[type="submit"]');
+        if (followupButton) {
+          followupButton.disabled = !canGenerateFollowup;
+        }
       };
 
       const setMicButtons = (isRecording) => {
-        micStopButtons.forEach((button) => {
-          button.disabled = !isRecording;
-        });
         localBusyProtected.forEach((button) => {
           const initiallyDisabled = protectedInitialDisabled.get(button) ?? false;
           button.disabled = isRecording || initiallyDisabled;
@@ -1410,11 +1479,42 @@
         if (audioActionTrigger) {
           audioActionTrigger.disabled = isRecording || !canUseWholeFileInput();
         }
-        if (audioActionToggle) {
-          audioActionToggle.disabled = isRecording || !canUseWholeFileInput();
-        }
         if (fileInput) {
           fileInput.disabled = isRecording || !canUseWholeFileInput();
+        }
+        if (recordToggleButton) {
+          recordToggleButton.disabled = !isRecording && !canUseWholeFileInput();
+          recordToggleButton.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
+        }
+        if (recordToggleLabel) {
+          recordToggleLabel.textContent = isRecording ? 'Stop' : 'Record';
+        }
+        if (recordToggleIcon) {
+          recordToggleIcon.innerHTML = isRecording
+            ? '<rect x="7" y="7" width="10" height="10" rx="2"></rect>'
+            : '<circle cx="12" cy="12" r="6"></circle>';
+        }
+        if (audioActionTrigger) {
+          audioActionTrigger.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
+        }
+        if (fileInput) {
+          fileInput.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
+        }
+      };
+
+      const setNewSessionAvailability = (canCreate, message) => {
+        if (newSessionButton) {
+          newSessionButton.disabled = !canCreate;
+          if (canCreate || !message) {
+            newSessionButton.removeAttribute('title');
+          } else {
+            newSessionButton.title = message;
+          }
+        }
+        if (newSessionBlockMessage) {
+          const shouldShow = !canCreate && Boolean(message);
+          newSessionBlockMessage.textContent = message || '';
+          newSessionBlockMessage.classList.toggle('hidden', !shouldShow);
         }
       };
 
@@ -1455,150 +1555,26 @@
         return candidates.find((candidate) => window.MediaRecorder.isTypeSupported(candidate)) || '';
       };
 
-      const uploadMicrophoneBatch = async (blob) => {
-        setMicStatus('Uploading microphone batch for transcription...');
-        setVisibleStatus('uploading');
-        setSessionProgress('Uploading microphone batch to queue transcription...');
-        try {
-          await syncTranscriptTitleIfNeeded();
-          const formData = new FormData();
-          formData.append('audio', blob, blob.type.includes('mp4') ? 'microphone-batch.mp4' : 'microphone-batch.webm');
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
-            method: 'POST',
-            body: formData,
-            credentials: 'include',
-          });
-          if (!response.ok) {
-            throw new Error(await parseErrorMessage(response, 'Could not queue microphone batch transcription.'));
-          }
-          showFlash('Audio file queued for transcription.', 'success');
-          await fetchWorkspace();
-          window.setTimeout(pollWorkspace, 1200);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Could not queue microphone batch transcription.';
-          setMicStatus(message, 'error');
-          showFlash(message, 'error');
-        }
+      const syncDeleteState = () => {
+        if (!deleteButton) return;
+        deleteButton.disabled = !selectionBoxes.some((checkbox) => checkbox.checked);
+        selectionBoxes.forEach((checkbox) => {
+          checkbox.closest('.session-item')?.classList.toggle('selected', checkbox.checked);
+        });
       };
 
-      const beginMicrophoneBatch = async () => {
-        if (!canUseWholeFileInput()) {
-          setMicStatus('Create or select a session with whole-file input and STT available before recording.', 'error');
-          return;
-        }
-        if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
-          setMicStatus('This browser does not support microphone batch recording.', 'error');
-          return;
-        }
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          const mimeType = chooseMimeType();
-          mediaChunks = [];
-          mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
-          mediaRecorder.addEventListener('dataavailable', (event) => {
-            if (event.data && event.data.size > 0) {
-              mediaChunks.push(event.data);
-            }
-          });
-          mediaRecorder.addEventListener('stop', async () => {
-            const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || mimeType || 'audio/webm' });
-            resetRecordingState();
-            if (blob.size === 0) {
-              setMicStatus('No microphone audio was captured.', 'error');
-              return;
-            }
-            setMicStatus('Microphone capture complete.', 'success');
-            await uploadMicrophoneBatch(blob);
-          });
-          mediaRecorder.start();
-          startedAt = Date.now();
-          renderTimer();
-          timerId = window.setInterval(renderTimer, 1000);
-          setMicButtons(true);
-          setMicStatus('Recording microphone batch locally...');
-          setVisibleStatus('recording (local)');
-          setSessionProgress('Recording locally. Nothing has been queued yet.');
-        } catch (_) {
-          resetRecordingState();
-          setMicStatus('Microphone access was denied or unavailable.', 'error');
-        }
-      };
-
-      const endMicrophoneBatch = () => {
-        if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-        setMicStatus('Stopping microphone capture...');
-        setVisibleStatus('uploading');
-        setSessionProgress('Preparing the microphone batch for upload...');
-        mediaRecorder.stop();
-      };
-
-      micStopButtons.forEach((button) => button.addEventListener('click', endMicrophoneBatch));
-      setMicButtons(false);
-      renderTimer();
-      syncAudioSourceUi();
-      if (audioActionToggle && audioActionMenu) {
-        audioActionToggle.addEventListener('click', () => {
-          audioActionMenu.hidden = !audioActionMenu.hidden;
-        });
-        document.addEventListener('click', (event) => {
-          if (!audioActionMenu.hidden && !audioActionMenu.contains(event.target) && !audioActionToggle.contains(event.target)) {
-            audioActionMenu.hidden = true;
-          }
-        });
-      }
-      audioActionOptions.forEach((button) => {
-        button.addEventListener('click', () => {
-          selectedAudioSource = button.dataset.audioActionOption || 'file';
-          syncAudioSourceUi();
-          if (audioActionMenu) {
-            audioActionMenu.hidden = true;
-          }
-        });
+      selectionBoxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', syncDeleteState);
       });
-      if (audioActionTrigger) {
-        audioActionTrigger.addEventListener('click', () => {
-          if (!canUseWholeFileInput()) {
-            return;
-          }
-          if (selectedAudioSource === 'microphone') {
-            beginMicrophoneBatch();
-            return;
-          }
-          fileInput?.click();
-        });
-      }
-      if (fileInput && uploadForm) {
-        fileInput.addEventListener('change', () => {
-          if (!fileInput.files || fileInput.files.length === 0) {
-            return;
-          }
-          setVisibleStatus('uploading');
-          setSessionProgress('Uploading audio file to queue transcription...');
-          uploadForm.requestSubmit();
-        });
-      }
-      if (activeStatus) {
-        reflectBackendStatus(activeStatus.textContent.trim(), initialTranscriptErrorMessage);
-      } else {
-        setSessionProgress('Create or select a session to begin.');
-      }
-
-      const renderDraft = (text) => {
-        if (!activeDraft) return;
-        if (text && text.length > 0) {
-          activeDraft.textContent = text;
-          return;
-        }
-        activeDraft.innerHTML = '<span class="placeholder">No transcript text yet. Use the audio input control to upload a file or record a microphone batch.</span>';
-      };
+      syncDeleteState();
 
       const syncEmisEditor = (editor) => {
         const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
         const lineInputs = [...editor.querySelectorAll('[data-emis-line-input]')];
         if (!hiddenInput) return;
         const values = lineInputs
-          .map((input) => input.value)
-          .filter((value) => value && value.trim().length > 0);
+          .map((input) => input.value.trim())
+          .filter((value) => value.length > 0);
         hiddenInput.value = JSON.stringify(values);
       };
 
@@ -1625,6 +1601,23 @@
         return context;
       };
 
+      const syncEmisEditorAvailability = () => {
+        const disabled = !transcriptId;
+        emisEditors.forEach((editor) => {
+          editor.dataset.disabled = disabled ? 'true' : 'false';
+          const addButton = editor.querySelector('[data-emis-editor-add-line]');
+          if (addButton) {
+            addButton.disabled = disabled;
+          }
+          editor.querySelectorAll('[data-emis-line-input]').forEach((input) => {
+            input.disabled = disabled;
+          });
+          editor.querySelectorAll('[data-emis-line-row] button').forEach((button) => {
+            button.disabled = disabled;
+          });
+        });
+      };
+
       const selectedOutputTemplateMode = () => {
         const selectedOption = generateOutputTemplateSelect?.selectedOptions?.[0];
         return selectedOption?.dataset?.templateMode || 'freeform';
@@ -1635,9 +1628,291 @@
         if (structuredContextPanel) {
           structuredContextPanel.hidden = !isStructuredTemplate;
         }
-        if (emisSaveStatus) {
-          emisSaveStatus.hidden = !isStructuredTemplate;
+        if (templateModeBadge) {
+          templateModeBadge.textContent = isStructuredTemplate ? 'Structured mode' : 'Freeform mode';
         }
+        syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
+      };
+
+      const attachEmisLineHandlers = (editor, textarea) => {
+        textarea.addEventListener('input', () => syncEmisEditor(editor));
+        textarea.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            addEmisLine(editor, '', textarea.closest('[data-emis-line-row]'));
+          }
+        });
+      };
+
+      const addEmisLine = (editor, value = '', afterRow = null) => {
+        const rows = editor.querySelector('[data-emis-editor-rows]');
+        const disabled = editor.dataset.disabled === 'true';
+        if (!rows) return;
+        const row = document.createElement('div');
+        row.className = 'editor-line-row';
+        row.setAttribute('data-emis-line-row', '');
+        const textarea = document.createElement('textarea');
+        textarea.rows = 2;
+        textarea.placeholder = `Add ${editor.dataset.emisSectionLabel || 'section'} line`;
+        textarea.value = value;
+        textarea.disabled = disabled;
+        textarea.setAttribute('data-emis-line-input', '');
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.textContent = 'Remove';
+        removeButton.disabled = disabled;
+        removeButton.addEventListener('click', () => {
+          row.remove();
+          if (!rows.querySelector('[data-emis-line-row]')) {
+            addEmisLine(editor, '');
+          }
+          syncEmisEditor(editor);
+        });
+        row.appendChild(textarea);
+        row.appendChild(removeButton);
+        if (afterRow && afterRow.parentNode === rows) {
+          afterRow.insertAdjacentElement('afterend', row);
+        } else {
+          rows.appendChild(row);
+        }
+        attachEmisLineHandlers(editor, textarea);
+        syncEmisEditor(editor);
+      };
+
+      const setEmisEditorLines = (editor, lines) => {
+        const rows = editor.querySelector('[data-emis-editor-rows]');
+        if (!rows) return;
+        rows.innerHTML = '';
+        const nextLines = Array.isArray(lines) ? lines.filter((line) => typeof line === 'string' && line.trim().length > 0) : [];
+        if (nextLines.length > 0) {
+          nextLines.forEach((line) => addEmisLine(editor, line));
+        } else {
+          addEmisLine(editor, '');
+        }
+        syncEmisEditor(editor);
+      };
+
+      emisEditors.forEach((editor) => {
+        const initialLines = JSON.parse(editor.dataset.initialLines || '[]');
+        if (Array.isArray(initialLines) && initialLines.length > 0) {
+          initialLines.forEach((line) => addEmisLine(editor, String(line)));
+        } else {
+          addEmisLine(editor, '');
+        }
+        const addButton = editor.querySelector('[data-emis-editor-add-line]');
+        if (addButton) {
+          addButton.addEventListener('click', () => addEmisLine(editor, ''));
+        }
+        const form = editor.closest('form');
+        if (form) {
+          form.addEventListener('submit', () => syncEmisEditor(editor));
+        }
+        editor.addEventListener('input', () => {
+          syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
+          if (selectedOutputTemplateMode() !== 'structured') {
+            return;
+          }
+          if (emisSaveTimer) {
+            window.clearTimeout(emisSaveTimer);
+          }
+          emisSaveTimer = window.setTimeout(async () => {
+            try {
+              await saveStructuredContext({ silent: false });
+            } catch (error) {
+              if (emisSaveStatus) {
+                emisSaveStatus.textContent = error.message || 'Could not save EMIS session context.';
+              }
+            }
+          }, 500);
+        });
+      });
+      syncEmisEditorAvailability();
+
+      const serializeStructuredTextLines = (section) => {
+        const lineText = String(section.edited_text_encrypted || section.original_text_encrypted || '');
+        return lineText
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+      };
+
+      const renderStructuredSections = (sections) => {
+        if (!generatedStructuredSections || !generatedStructuredPanel) return;
+        generatedStructuredSections.innerHTML = '';
+        if (!Array.isArray(sections) || sections.length === 0) {
+          generatedStructuredPanel.hidden = true;
+          return;
+        }
+        sections.forEach((section) => {
+          const card = document.createElement('div');
+          card.className = 'structured-section-block';
+          const header = document.createElement('div');
+          header.className = 'structured-section-title';
+          const title = document.createElement('h3');
+          title.className = '';
+          title.textContent = section.section_label || section.section_key || 'Section';
+          header.appendChild(title);
+          const body = document.createElement('div');
+          body.className = 'space-y-2';
+          serializeStructuredTextLines(section).forEach((line) => {
+            const label = document.createElement('label');
+            label.className = 'structured-line-row';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = true;
+            checkbox.value = line;
+            checkbox.setAttribute('data-structured-line-checkbox', '');
+            checkbox.dataset.sectionLabel = title.textContent;
+            const span = document.createElement('span');
+            span.className = 'text-sm text-ink';
+            span.textContent = line;
+            label.appendChild(checkbox);
+            label.appendChild(span);
+            body.appendChild(label);
+          });
+          card.appendChild(header);
+          card.appendChild(body);
+          generatedStructuredSections.appendChild(card);
+        });
+        generatedStructuredPanel.hidden = false;
+      };
+
+      const renderGeneratedOutput = (generatedDocument) => {
+        if (!latestGeneratedOutput || !generatedStructuredPanel) return;
+        generatedStructuredPanel.hidden = true;
+        if (generatedStructuredSections) generatedStructuredSections.innerHTML = '';
+        if (structuredCopyStatus) structuredCopyStatus.textContent = 'Select the lines you want to copy.';
+        latestGeneratedOutput.hidden = false;
+        if (!generatedDocument) {
+          latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
+          return;
+        }
+        if (generatedDocument.status === 'ready' && generatedDocument.document_mode === 'structured' && Array.isArray(generatedDocument.sections) && generatedDocument.sections.length > 0) {
+          latestGeneratedOutput.hidden = true;
+          renderStructuredSections(generatedDocument.sections);
+          return;
+        }
+        if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text_encrypted) {
+          latestGeneratedOutput.textContent = generatedDocument.edited_output_text_encrypted;
+          return;
+        }
+        if (generatedDocument.status === 'queued') {
+          latestGeneratedOutput.innerHTML = '<span class="text-slate">Note generation is queued in the worker.</span>';
+          return;
+        }
+        if (generatedDocument.status === 'processing') {
+          latestGeneratedOutput.innerHTML = '<span class="text-slate">Note generation is in progress.</span>';
+          return;
+        }
+        if (generatedDocument.status === 'failed') {
+          latestGeneratedOutput.innerHTML = `<span class="text-slate">The latest note generation failed${generatedDocument.error_message ? `: ${generatedDocument.error_message}` : ''}.</span>`;
+          return;
+        }
+        latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
+      };
+
+      const renderFollowupOutput = (document) => {
+        if (!latestFollowupOutput) return;
+        if (!document) {
+          latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up thread yet.</span>';
+          return;
+        }
+        if (document.status === 'ready' && document.edited_output_text_encrypted) {
+          latestFollowupOutput.textContent = document.edited_output_text_encrypted;
+          return;
+        }
+        if (document.status === 'queued') {
+          latestFollowupOutput.innerHTML = '<span class="text-slate">Follow-up generation is queued in the worker.</span>';
+          return;
+        }
+        if (document.status === 'processing') {
+          latestFollowupOutput.innerHTML = '<span class="text-slate">Follow-up generation is in progress.</span>';
+          return;
+        }
+        if (document.status === 'failed') {
+          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest follow-up generation failed${document.error_message ? `: ${document.error_message}` : ''}.</span>`;
+          return;
+        }
+        latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up thread yet.</span>';
+      };
+
+      const renderNoteHistory = (documents) => {
+        if (!noteHistory) return;
+        noteHistory.innerHTML = '';
+        if (!documents.length) {
+          noteHistory.innerHTML = '<div class="text-sm text-slate">No note history yet.</div>';
+          return;
+        }
+        documents.forEach((document) => {
+          const card = document.createElement('div');
+          card.className = 'assistant-subsection';
+          card.innerHTML = `
+            <div class="flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-ink">${escapeHtml(document.title || 'Untitled output')}</div>
+                <div class="text-xs text-slate mt-1">${escapeHtml(document.source_template_name || 'Template output')} · ${escapeHtml(document.model_used || 'unknown model')}</div>
+              </div>
+              <div class="text-xs text-slate text-right">${escapeHtml(document.status || '')}<br>${escapeHtml(document.created_at || '')}</div>
+            </div>
+          `;
+          noteHistory.appendChild(card);
+        });
+      };
+
+      const renderFollowupHistory = (documents) => {
+        if (!followupHistory) return;
+        followupHistory.innerHTML = '';
+        if (!documents.length) {
+          followupHistory.innerHTML = '<div class="text-sm text-slate">No follow-up history yet.</div>';
+          return;
+        }
+        documents.forEach((document) => {
+          const title = document.generator_type === 'quick_action'
+            ? (document.source_quick_action_name || document.title || 'Quick action')
+            : (document.follow_up_prompt_text || document.title || 'Follow-up');
+          const card = document.createElement('div');
+          card.className = 'assistant-subsection';
+          card.innerHTML = `
+            <div class="flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-ink">${escapeHtml(title)}</div>
+                <div class="text-xs text-slate mt-1">${escapeHtml(document.model_used || 'unknown model')} · ${escapeHtml((document.generator_type || '').replaceAll('_', ' '))}</div>
+              </div>
+              <div class="text-xs text-slate text-right">${escapeHtml(document.status || '')}<br>${escapeHtml(document.created_at || '')}</div>
+            </div>
+          `;
+          followupHistory.appendChild(card);
+        });
+      };
+
+      const renderRedactionDebugPanel = (slot, document) => {
+        if (!slot) return;
+        slot.innerHTML = '';
+        if (!showRedactionDebug || !document) return;
+        const wrapper = document.createElement('details');
+        wrapper.className = 'border border-stone bg-parchment/40 p-3';
+        wrapper.setAttribute('data-redaction-debug-panel', '');
+        wrapper.dataset.generatedDocumentId = document.id;
+        wrapper.innerHTML = `
+          <summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
+          <div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
+          <pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
+        `;
+        slot.appendChild(wrapper);
+        wrapper.addEventListener('toggle', () => {
+          if (wrapper.open) {
+            loadRedactionDebug(wrapper);
+          }
+        });
+      };
+
+      const escapeHtml = (value) => {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
       };
 
       const saveStructuredContext = async ({ silent = false } = {}) => {
@@ -1685,276 +1960,11 @@
         currentTranscriptTitle = nextTitle;
       };
 
-      const setEmisEditorLines = (editor, lines) => {
-        const rows = editor.querySelector('[data-emis-editor-rows]');
-        if (!rows) return;
-        rows.innerHTML = '';
-        const nextLines = Array.isArray(lines) ? lines.filter((line) => typeof line === 'string' && line.trim().length > 0) : [];
-        if (nextLines.length > 0) {
-          nextLines.forEach((line) => addEmisLine(editor, line));
-        } else {
-          addEmisLine(editor, '');
+      const workspaceEndpointForTranscript = (nextTranscriptId) => {
+        if (nextTranscriptId) {
+          return `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`;
         }
-        syncEmisEditor(editor);
-      };
-
-      const attachEmisLineHandlers = (editor, lineInput) => {
-        lineInput.addEventListener('input', () => syncEmisEditor(editor));
-        lineInput.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            addEmisLine(editor, '', lineInput.closest('[data-emis-line-row]'));
-          }
-        });
-      };
-
-      const addEmisLine = (editor, value = '', afterRow = null) => {
-        const rows = editor.querySelector('[data-emis-editor-rows]');
-        const disabled = editor.dataset.disabled === 'true';
-        if (!rows) return null;
-        const row = document.createElement('div');
-        row.className = 'editor-line-row';
-        row.setAttribute('data-emis-line-row', '');
-        const textarea = document.createElement('textarea');
-        textarea.rows = 2;
-        textarea.placeholder = `Add ${editor.dataset.emisSectionLabel || 'section'} line`;
-        textarea.disabled = disabled;
-        textarea.value = value;
-        textarea.setAttribute('data-emis-line-input', '');
-        const removeButton = document.createElement('button');
-        removeButton.type = 'button';
-        removeButton.textContent = 'Remove';
-        removeButton.disabled = disabled;
-        removeButton.addEventListener('click', () => {
-          row.remove();
-          if (!rows.querySelector('[data-emis-line-row]')) {
-            addEmisLine(editor, '');
-          }
-          syncEmisEditor(editor);
-        });
-        row.appendChild(textarea);
-        row.appendChild(removeButton);
-        if (afterRow && afterRow.parentNode === rows) {
-          afterRow.insertAdjacentElement('afterend', row);
-        } else {
-          rows.appendChild(row);
-        }
-        attachEmisLineHandlers(editor, textarea);
-        syncEmisEditor(editor);
-        if (!disabled) {
-          textarea.focus();
-        }
-        return row;
-      };
-
-      emisEditors.forEach((editor) => {
-        const initialLines = JSON.parse(editor.dataset.initialLines || '[]');
-        if (Array.isArray(initialLines) && initialLines.length > 0) {
-          initialLines.forEach((line) => addEmisLine(editor, String(line)));
-        } else {
-          addEmisLine(editor, '');
-        }
-        const addButton = editor.querySelector('[data-emis-editor-add-line]');
-        if (addButton) {
-          addButton.addEventListener('click', () => addEmisLine(editor, ''));
-        }
-        const form = editor.closest('form');
-        if (form) {
-          form.addEventListener('submit', () => syncEmisEditor(editor));
-        }
-        editor.addEventListener('input', () => {
-          if (selectedOutputTemplateMode() !== 'structured') {
-            return;
-          }
-          if (emisSaveTimer) {
-            window.clearTimeout(emisSaveTimer);
-          }
-          emisSaveTimer = window.setTimeout(async () => {
-            try {
-              await saveStructuredContext({ silent: false });
-            } catch (error) {
-              if (emisSaveStatus) {
-                emisSaveStatus.textContent = error.message || 'Could not save EMIS session context.';
-              }
-            }
-          }, 500);
-        });
-      });
-      if (generateOutputTemplateSelect) {
-        generateOutputTemplateSelect.addEventListener('change', syncStructuredTemplateUi);
-      }
-      syncStructuredTemplateUi();
-
-      const renderGeneratedOutput = (generatedDocument) => {
-        if (!latestGeneratedOutput) return;
-        if (generatedStructuredPanel) {
-          generatedStructuredPanel.hidden = true;
-        }
-        if (generatedStructuredSections) {
-          generatedStructuredSections.innerHTML = '';
-        }
-        if (structuredCopyStatus) {
-          structuredCopyStatus.textContent = 'Select the lines you want to copy.';
-        }
-        if (!generatedDocument) {
-          latestGeneratedOutput.innerHTML = '<span class="placeholder">No generated output yet.</span>';
-          return;
-        }
-        if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text_encrypted) {
-          latestGeneratedOutput.textContent = generatedDocument.edited_output_text_encrypted;
-          if (
-            generatedStructuredPanel &&
-            generatedStructuredSections &&
-            generatedDocument.document_mode === 'structured' &&
-            Array.isArray(generatedDocument.sections) &&
-            generatedDocument.sections.length > 0
-          ) {
-            generatedDocument.sections.forEach((section) => {
-              const sectionBlock = window.document.createElement('div');
-              sectionBlock.className = 'section-block';
-              const heading = window.document.createElement('h4');
-              heading.textContent = section.section_label || section.section_key || 'Section';
-              sectionBlock.appendChild(heading);
-              const lineText = String(section.edited_text_encrypted || section.original_text_encrypted || '');
-              const lines = lineText
-                .split('\n')
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0);
-              lines.forEach((line) => {
-                const label = window.document.createElement('label');
-                label.className = 'structured-line-row';
-                const checkbox = window.document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.checked = true;
-                checkbox.value = line;
-                checkbox.setAttribute('data-structured-line-checkbox', '');
-                checkbox.dataset.sectionLabel = heading.textContent;
-                const span = window.document.createElement('span');
-                span.textContent = line;
-                label.appendChild(checkbox);
-                label.appendChild(span);
-                sectionBlock.appendChild(label);
-              });
-              generatedStructuredSections.appendChild(sectionBlock);
-            });
-            generatedStructuredPanel.hidden = false;
-          }
-          return;
-        }
-        if (generatedDocument.status === 'queued') {
-          latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is queued in the worker.</span>';
-          return;
-        }
-        if (generatedDocument.status === 'processing') {
-          latestGeneratedOutput.innerHTML = '<span class="placeholder">Note generation is in progress.</span>';
-          return;
-        }
-        if (generatedDocument.status === 'failed') {
-          const suffix = generatedDocument.error_message ? `: ${generatedDocument.error_message}` : '';
-          latestGeneratedOutput.innerHTML = `<span class="placeholder">The latest note generation failed${suffix}.</span>`;
-        }
-      };
-
-      const renderFollowupOutput = (document) => {
-        if (!latestFollowupOutput) return;
-        if (!document) {
-          latestFollowupOutput.innerHTML = '<span class="placeholder">No follow-up thread yet.</span>';
-          return;
-        }
-        if (document.status === 'ready' && document.edited_output_text_encrypted) {
-          latestFollowupOutput.textContent = document.edited_output_text_encrypted;
-          return;
-        }
-        if (document.status === 'queued') {
-          latestFollowupOutput.innerHTML = '<span class="placeholder">Follow-up generation is queued in the worker.</span>';
-          return;
-        }
-        if (document.status === 'processing') {
-          latestFollowupOutput.innerHTML = '<span class="placeholder">Follow-up generation is in progress.</span>';
-          return;
-        }
-        if (document.status === 'failed') {
-          const suffix = document.error_message ? `: ${document.error_message}` : '';
-          latestFollowupOutput.innerHTML = `<span class="placeholder">The latest follow-up generation failed${suffix}.</span>`;
-        }
-      };
-
-      const applyWorkspacePayload = (workspace) => {
-        if (!workspace || typeof workspace !== 'object') return;
-        const transcript = workspace.active_transcript || null;
-        transcriptId = transcript?.id || null;
-        activeIngestionMode = transcript?.ingestion_mode || null;
-        const generatedDocuments = Array.isArray(workspace.generated_documents) ? workspace.generated_documents : [];
-        const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
-        const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
-        const latestNote = noteDocuments[0] || null;
-        const latestFollowup = followupDocuments[0] || null;
-        const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
-        sessionLinks.forEach((link) => {
-          link.classList.toggle('active', link.dataset.transcriptId === transcriptId);
-        });
-        sidebarTranscripts.forEach((item) => {
-          const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
-          if (node) node.textContent = item.status;
-          const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
-          if (titleNode) titleNode.textContent = item.title || 'Untitled transcript';
-        });
-        if (transcript) {
-          reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
-          renderDraft(transcript.current_draft_text_encrypted || '');
-          if (sessionTitleDisplay) {
-            if ('value' in sessionTitleDisplay) {
-              sessionTitleDisplay.value = transcript.title || '';
-            } else {
-              sessionTitleDisplay.textContent = transcript.title || 'Untitled session';
-            }
-          }
-          if (activeIngestionModeChip) {
-            activeIngestionModeChip.textContent = transcript.ingestion_mode === 'whole_file' ? 'whole-file session' : transcript.ingestion_mode;
-          }
-          currentTranscriptTitle = (transcript.title || '').trim();
-          if (renameTitleInput) {
-            renameTitleInput.value = transcript.title || '';
-          }
-          document.querySelectorAll('input[name="transcript_id"]').forEach((input) => {
-            input.value = transcript.id;
-          });
-          if (switchToWholeFileForm) {
-            switchToWholeFileForm.action = `/transcribe/sessions/${transcript.id}/mode`;
-          }
-        } else {
-          if (sessionTitleDisplay) {
-            if ('value' in sessionTitleDisplay) {
-              sessionTitleDisplay.value = '';
-            } else {
-              sessionTitleDisplay.textContent = 'New transcription session';
-            }
-          }
-          if (activeIngestionModeChip) {
-            activeIngestionModeChip.textContent = '';
-          }
-        }
-        if (latestGeneratedOutput) {
-          latestGeneratedOutput.dataset.latestGeneratedStatus = latestNote?.status || '';
-          latestGeneratedOutput.dataset.latestGeneratedId = latestNote?.id || '';
-          renderGeneratedOutput(latestNote);
-        }
-        if (latestFollowupOutput) {
-          latestFollowupOutput.dataset.latestFollowupStatus = latestFollowup?.status || '';
-          latestFollowupOutput.dataset.latestFollowupId = latestFollowup?.id || '';
-          renderFollowupOutput(latestFollowup);
-        }
-        const structuredContext = workspace.active_structured_context || {};
-        lastSavedStructuredContext = JSON.stringify(structuredContext);
-        if (emisSaveStatus) {
-          emisSaveStatus.textContent = 'Saved to this session automatically.';
-        }
-        emisEditors.forEach((editor) => {
-          const sectionKey = editor.closest('label')?.querySelector('[data-emis-editor-hidden]')?.name?.replace(/^context_/, '') || '';
-          if (!sectionKey) return;
-          setEmisEditorLines(editor, structuredContext[sectionKey] || []);
-        });
-        setMicButtons(false);
+        return initialWorkspaceEndpoint || '/api/v1/transcribe/workspace';
       };
 
       const loadRedactionDebug = async (panel) => {
@@ -1973,13 +1983,11 @@
             throw new Error('Could not load redaction debug.');
           }
           const payload = await response.json();
-          const placeholderLines = (payload.entities || []).map((entity) => (
-            `${entity.placeholder} · ${entity.entity_type} · occurrences ${entity.occurrence_count}`
-          ));
-          meta.textContent = `Redaction applied via ${payload.api_provider}${payload.api_model_or_version ? ` (${payload.api_model_or_version})` : ''} · ${payload.entity_count} entities`;
+          const placeholderLines = (payload.entities || []).map((entity) => `${entity.placeholder} · ${entity.entity_type} · occurrences ${entity.occurrence_count}`);
           const failedOutputBlock = payload.failed_provider_output_redacted_text
             ? `\n\nFailed raw provider output (redacted):\n${payload.failed_provider_output_redacted_text}`
             : '';
+          meta.textContent = `Redaction applied via ${payload.api_provider}${payload.api_model_or_version ? ` (${payload.api_model_or_version})` : ''} · ${payload.entity_count} entities`;
           text.textContent = `${payload.redacted_text}\n\nPlaceholders:\n${placeholderLines.join('\n') || 'None'}${failedOutputBlock}`;
           panel.dataset.loaded = 'true';
         } catch (_) {
@@ -1990,30 +1998,408 @@
         }
       };
 
-      redactionDebugPanels.forEach((panel) => {
-        panel.addEventListener('toggle', () => {
-          if (panel.open) {
-            loadRedactionDebug(panel);
+      const applyWorkspacePayload = (workspace) => {
+        if (!workspace || typeof workspace !== 'object') return;
+        const transcript = workspace.active_transcript || null;
+        const generatedDocuments = Array.isArray(workspace.generated_documents) ? workspace.generated_documents : [];
+        const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
+        const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
+        const latestNote = noteDocuments[0] || null;
+        const latestFollowup = followupDocuments[0] || null;
+        const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
+
+        transcriptId = transcript?.id || null;
+        activeIngestionMode = transcript?.ingestion_mode || null;
+        hasSttSelection = Boolean(workspace.stt_selected);
+        sttAvailable = Boolean(workspace.stt_available);
+        sttStatusMessage = workspace.stt_status_message || null;
+        setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
+
+        sessionLinks.forEach((link) => {
+          const isActive = link.dataset.transcriptId === transcriptId;
+          link.classList.toggle('active', isActive);
+          link.closest('.session-item')?.classList.toggle('active', isActive);
+        });
+
+        sidebarTranscripts.forEach((item) => {
+          const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
+          if (node) node.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+          const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
+          if (titleNode) titleNode.textContent = item.title || 'Untitled session';
+        });
+
+        if (transcript) {
+          reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
+          const draftText = transcript.current_draft_text_encrypted || '';
+          renderDraft(draftText);
+          syncGenerationAvailability(draftText);
+          if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
+          if (renameTitleInput) renameTitleInput.value = transcript.title || '';
+          currentTranscriptTitle = (transcript.title || '').trim();
+          if (activeIngestionModeChip) {
+            activeIngestionModeChip.textContent = transcript.ingestion_mode === 'whole_file' ? 'whole-file session' : `${transcript.ingestion_mode.replaceAll('_', '-')} session`;
+          }
+          document.querySelectorAll('input[name="transcript_id"]').forEach((input) => {
+            input.value = transcript.id;
+          });
+          if (switchToWholeFileForm) {
+            switchToWholeFileForm.action = `/transcribe/sessions/${transcript.id}/mode`;
+          }
+        } else {
+          renderDraft('');
+          syncGenerationAvailability('');
+          if (sessionTitleDisplay) sessionTitleDisplay.value = '';
+          if (renameTitleInput) renameTitleInput.value = '';
+          if (activeIngestionModeChip) activeIngestionModeChip.textContent = '';
+          setSessionProgress('Create or select a session to begin.');
+        }
+        setMicStatus(defaultMicStatusMessage(), sttAvailable ? '' : 'error');
+
+        if (latestGeneratedOutput) {
+          latestGeneratedOutput.dataset.latestGeneratedStatus = latestNote?.status || '';
+          latestGeneratedOutput.dataset.latestGeneratedId = latestNote?.id || '';
+          renderGeneratedOutput(latestNote);
+        }
+        if (noteMeta) {
+          noteMeta.textContent = latestNote
+            ? `${latestNote.title} · ${latestNote.model_used || 'unknown model'} · ${latestNote.status} · ${latestNote.created_at}`
+            : 'No note generated yet';
+        }
+        if (latestFollowupOutput) {
+          latestFollowupOutput.dataset.latestFollowupStatus = latestFollowup?.status || '';
+          latestFollowupOutput.dataset.latestFollowupId = latestFollowup?.id || '';
+          renderFollowupOutput(latestFollowup);
+        }
+        if (followupMeta) {
+          followupMeta.textContent = latestFollowup
+            ? `${latestFollowup.model_used || 'unknown model'} · ${latestFollowup.status} · ${latestFollowup.created_at}`
+            : 'No follow-up thread yet';
+        }
+        renderNoteHistory(noteDocuments);
+        renderFollowupHistory(followupDocuments);
+        renderRedactionDebugPanel(outputRedactionSlot, latestNote);
+        renderRedactionDebugPanel(followupRedactionSlot, latestFollowup);
+
+        const structuredContext = workspace.active_structured_context || {};
+        lastSavedStructuredContext = JSON.stringify(structuredContext);
+        if (emisSaveStatus) {
+          emisSaveStatus.textContent = 'Saved to this session automatically.';
+        }
+        emisEditors.forEach((editor) => {
+          const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
+          const sectionKey = hiddenInput?.name?.replace(/^context_/, '') || '';
+          if (!sectionKey) return;
+          setEmisEditorLines(editor, structuredContext[sectionKey] || []);
+        });
+        syncEmisEditorAvailability();
+        setMicButtons(false);
+        syncStructuredTemplateUi();
+      };
+
+      async function fetchWorkspace(targetTranscriptId = transcriptId) {
+        const endpoint = workspaceEndpointForTranscript(targetTranscriptId);
+        if (!endpoint) return null;
+        try {
+          const response = await fetch(endpoint, { credentials: 'include' });
+          if (!response.ok) return null;
+          const workspace = await response.json();
+          applyWorkspacePayload(workspace);
+          return workspace;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      async function pollWorkspace() {
+        if (!transcriptId || !activeStatus) return;
+        const current = activeStatus.textContent.trim();
+        const generatedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
+        const followupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
+        const shouldPoll = (
+          current === 'queued'
+          || current === 'transcribing'
+          || generatedStatus === 'queued'
+          || generatedStatus === 'processing'
+          || followupStatus === 'queued'
+          || followupStatus === 'processing'
+        );
+        if (!shouldPoll) return;
+        const workspace = await fetchWorkspace();
+        const transcript = workspace?.active_transcript || null;
+        const refreshedGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
+        const refreshedFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
+        const stillPending = Boolean(
+          (transcript && (transcript.status === 'queued' || transcript.status === 'transcribing'))
+          || refreshedGeneratedStatus === 'queued'
+          || refreshedGeneratedStatus === 'processing'
+          || refreshedFollowupStatus === 'queued'
+          || refreshedFollowupStatus === 'processing'
+        );
+        if (stillPending) {
+          window.setTimeout(pollWorkspace, 2500);
+        }
+      }
+
+      if (activeStatus) {
+        reflectBackendStatus(activeStatus.textContent.trim(), initialTranscriptErrorMessage);
+      }
+      renderDraft(activeDraft?.textContent?.trim() || '');
+      syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
+      syncStructuredTemplateUi();
+      setMicButtons(false);
+      setMicStatus(defaultMicStatusMessage(), sttAvailable ? '' : 'error');
+      renderTimer();
+
+      const uploadMicrophoneBatch = async (blob) => {
+        setMicStatus('Uploading microphone batch for transcription...');
+        setVisibleStatus('uploading');
+        setSessionProgress('Uploading microphone batch to queue transcription...');
+        try {
+          await syncTranscriptTitleIfNeeded();
+          const formData = new FormData();
+          formData.append('audio', blob, blob.type.includes('mp4') ? 'microphone-batch.mp4' : 'microphone-batch.webm');
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not queue microphone batch transcription.'));
+          }
+          showFlash('Audio file queued for transcription.', 'success');
+          await fetchWorkspace();
+          window.setTimeout(pollWorkspace, 1200);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not queue microphone batch transcription.';
+          setMicStatus(message, 'error');
+          showFlash(message, 'error');
+          reflectBackendStatus('failed', message);
+        }
+      };
+
+      const beginMicrophoneBatch = async () => {
+        if (!canUseWholeFileInput()) {
+          setMicStatus('Create or select a session with whole-file input and STT available before recording.', 'error');
+          return;
+        }
+        if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+          setMicStatus('This browser does not support microphone batch recording.', 'error');
+          return;
+        }
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mimeType = chooseMimeType();
+          mediaChunks = [];
+          mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+          mediaRecorder.addEventListener('dataavailable', (event) => {
+            if (event.data && event.data.size > 0) {
+              mediaChunks.push(event.data);
+            }
+          });
+          mediaRecorder.addEventListener('stop', async () => {
+            const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || mimeType || 'audio/webm' });
+            resetRecordingState();
+            if (blob.size === 0) {
+              setMicStatus('No microphone audio was captured.', 'error');
+              return;
+            }
+            setMicStatus('Microphone capture complete.', 'success');
+            await uploadMicrophoneBatch(blob);
+          });
+          mediaRecorder.start();
+          startedAt = Date.now();
+          renderTimer();
+          timerId = window.setInterval(renderTimer, 1000);
+          setMicButtons(true);
+          setMicStatus('Recording microphone batch locally...');
+          setVisibleStatus('recording');
+          setSessionProgress('Recording locally. Nothing has been queued yet.');
+        } catch (_) {
+          resetRecordingState();
+          setMicStatus('Microphone access was denied or unavailable.', 'error');
+        }
+      };
+
+      const endMicrophoneBatch = () => {
+        if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+        setMicStatus('Stopping microphone capture...');
+        setVisibleStatus('uploading');
+        setSessionProgress('Preparing the microphone batch for upload...');
+        mediaRecorder.stop();
+      };
+
+      if (audioActionTrigger) {
+        audioActionTrigger.addEventListener('click', () => {
+          if (!canUseWholeFileInput()) return;
+          fileInput?.click();
+        });
+      }
+
+      if (recordToggleButton) {
+        recordToggleButton.addEventListener('click', () => {
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            endMicrophoneBatch();
+            return;
+          }
+          beginMicrophoneBatch();
+        });
+      }
+
+      if (fileInput && uploadForm) {
+        fileInput.addEventListener('change', () => {
+          if (!fileInput.files || fileInput.files.length === 0) {
+            return;
+          }
+          setVisibleStatus('uploading');
+          setSessionProgress('Uploading audio file to queue transcription...');
+          uploadForm.requestSubmit();
+        });
+      }
+
+      if (copyTranscriptButton) {
+        copyTranscriptButton.addEventListener('click', async () => {
+          const text = activeDraft?.textContent?.trim() || '';
+          if (!text) return;
+          try {
+            await navigator.clipboard.writeText(text);
+            showCopyToast();
+          } catch (_) {
+            showFlash('Could not copy the transcript.', 'error');
           }
         });
-      });
+      }
 
-      if (copyStructuredLinesButton && structuredCopyStatus) {
+      if (copyStructuredLinesButton) {
         copyStructuredLinesButton.addEventListener('click', async () => {
           const checked = [...document.querySelectorAll('[data-structured-line-checkbox]:checked')];
           if (checked.length === 0) {
-            structuredCopyStatus.textContent = 'Select at least one line to copy.';
+            if (structuredCopyStatus) {
+              structuredCopyStatus.textContent = 'Select at least one line to copy.';
+            }
             return;
           }
-          const textToCopy = checked.map((checkbox) => {
+          const grouped = new Map();
+          checked.forEach((checkbox) => {
             const label = checkbox.dataset.sectionLabel || '';
-            return label ? `${label}: ${checkbox.value}` : checkbox.value;
-          }).join('\n');
+            const line = checkbox.value || '';
+            const lines = grouped.get(label) || [];
+            lines.push(line);
+            grouped.set(label, lines);
+          });
+          const textToCopy = [...grouped.entries()].map(([label, lines]) => {
+            const body = lines.join('\n');
+            return label ? `${label}:\n${body}` : body;
+          }).join('\n\n');
           try {
             await navigator.clipboard.writeText(textToCopy);
-            structuredCopyStatus.textContent = `Copied ${checked.length} selected line${checked.length === 1 ? '' : 's'} to the clipboard.`;
+            if (structuredCopyStatus) {
+              structuredCopyStatus.textContent = `Copied ${checked.length} selected line${checked.length === 1 ? '' : 's'} to the clipboard.`;
+            }
+            showCopyToast();
           } catch (_) {
-            structuredCopyStatus.textContent = 'Could not copy the selected lines.';
+            if (structuredCopyStatus) {
+              structuredCopyStatus.textContent = 'Could not copy the selected lines.';
+            } else {
+              showFlash('Could not copy the selected lines.', 'error');
+            }
+          }
+        });
+      }
+
+      if (clearStructuredSelectionButton) {
+        clearStructuredSelectionButton.addEventListener('click', () => {
+          document.querySelectorAll('[data-structured-line-checkbox]').forEach((checkbox) => {
+            checkbox.checked = false;
+          });
+          if (structuredCopyStatus) {
+            structuredCopyStatus.textContent = 'Selection cleared.';
+          }
+        });
+      }
+
+      if (generateOutputTemplateSelect) {
+        generateOutputTemplateSelect.addEventListener('change', syncStructuredTemplateUi);
+      }
+
+      sessionLinks.forEach((link) => {
+        link.addEventListener('click', async (event) => {
+          event.preventDefault();
+          const nextTranscriptId = link.dataset.transcriptId;
+          if (!nextTranscriptId || nextTranscriptId === transcriptId) {
+            return;
+          }
+          const workspace = await fetchWorkspace(nextTranscriptId);
+          if (!workspace) {
+            window.location.assign(link.href);
+            return;
+          }
+          const url = new URL(window.location.href);
+          url.searchParams.set('transcript_id', nextTranscriptId);
+          window.history.pushState({}, '', url.toString());
+          showFlash('', 'success');
+        });
+      });
+
+      if (newSessionForm) {
+        newSessionForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            const response = await fetch('/api/v1/transcripts/start', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: 'Untitled session', ingestion_mode: 'whole_file' }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not create a new session.'));
+            }
+            const transcript = await response.json();
+            window.location.assign(`${routeBase}?transcript_id=${transcript.id}`);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not create a new session.', 'error');
+          }
+        });
+      }
+
+      if (bulkDeleteForm) {
+        bulkDeleteForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const selectedIds = selectionBoxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+          if (selectedIds.length === 0) return;
+          try {
+            await Promise.all(selectedIds.map(async (selectedId) => {
+              const response = await fetch(`/api/v1/transcripts/${selectedId}`, {
+                method: 'DELETE',
+                credentials: 'include',
+              });
+              if (!response.ok) {
+                throw new Error(await parseErrorMessage(response, 'Could not delete the selected sessions.'));
+              }
+            }));
+            showFlash(`Deleted ${selectedIds.length} session${selectedIds.length === 1 ? '' : 's'}.`, 'success');
+            window.location.assign(routeBase);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not delete the selected sessions.', 'error');
+          }
+        });
+      }
+
+      if (switchToWholeFileForm && transcriptId) {
+        switchToWholeFileForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ingestion_mode: 'whole_file' }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not switch this session back to upload mode.'));
+            }
+            window.location.assign(`${routeBase}?transcript_id=${transcriptId}`);
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not switch this session back to upload mode.', 'error');
           }
         });
       }
@@ -2030,6 +2416,7 @@
           }
         });
       }
+
       if (renameTitleInput) {
         renameTitleInput.addEventListener('blur', async () => {
           try {
@@ -2049,9 +2436,7 @@
       if (uploadForm) {
         uploadForm.addEventListener('submit', async (event) => {
           event.preventDefault();
-          if (!transcriptId || !fileInput?.files || fileInput.files.length === 0) {
-            return;
-          }
+          if (!transcriptId || !fileInput?.files || fileInput.files.length === 0) return;
           setVisibleStatus('uploading');
           setSessionProgress('Uploading audio file to queue transcription...');
           try {
@@ -2092,13 +2477,8 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(
                 selectedOutputTemplateMode() === 'structured'
-                  ? {
-                      template_id: templateId,
-                      structured_context: collectStructuredContext(),
-                    }
-                  : {
-                      template_id: templateId,
-                    }
+                  ? { template_id: templateId, structured_context: collectStructuredContext() }
+                  : { template_id: templateId }
               ),
             });
             if (!response.ok) {
@@ -2164,76 +2544,6 @@
             showFlash(error instanceof Error ? error.message : 'Could not enqueue quick action generation.', 'error');
           }
         });
-      }
-
-      const workspaceEndpointForTranscript = (nextTranscriptId) => {
-        if (nextTranscriptId) {
-          return `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`;
-        }
-        return initialWorkspaceEndpoint || '/api/v1/transcribe/workspace';
-      };
-
-      async function fetchWorkspace(targetTranscriptId = transcriptId) {
-        const endpoint = workspaceEndpointForTranscript(targetTranscriptId);
-        if (!endpoint) return null;
-        try {
-          const response = await fetch(endpoint, { credentials: 'include' });
-          if (!response.ok) return null;
-          const workspace = await response.json();
-          applyWorkspacePayload(workspace);
-          return workspace;
-        } catch (_) {
-          return null;
-        }
-      }
-
-      sessionLinks.forEach((link) => {
-        link.addEventListener('click', async (event) => {
-          event.preventDefault();
-          const nextTranscriptId = link.dataset.transcriptId;
-          if (!nextTranscriptId || nextTranscriptId === transcriptId) {
-            return;
-          }
-          const workspace = await fetchWorkspace(nextTranscriptId);
-          if (!workspace) {
-            window.location.assign(link.href);
-            return;
-          }
-          const url = new URL(window.location.href);
-          url.searchParams.set('transcript_id', nextTranscriptId);
-          window.history.pushState({}, '', url.toString());
-          showFlash('', 'success');
-        });
-      });
-
-      async function pollWorkspace() {
-        if (!transcriptId || !activeStatus) return;
-        const current = activeStatus.textContent.trim();
-        const generatedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
-        const followupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
-        const shouldPoll = (
-          current === 'queued'
-          || current === 'transcribing'
-          || generatedStatus === 'queued'
-          || generatedStatus === 'processing'
-          || followupStatus === 'queued'
-          || followupStatus === 'processing'
-        );
-        if (!shouldPoll) return;
-        const workspace = await fetchWorkspace();
-        const transcript = workspace?.active_transcript || null;
-        const refreshedGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
-        const refreshedFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
-        const stillPending = Boolean(
-          (transcript && (transcript.status === 'queued' || transcript.status === 'transcribing'))
-          || refreshedGeneratedStatus === 'queued'
-          || refreshedGeneratedStatus === 'processing'
-          || refreshedFollowupStatus === 'queued'
-          || refreshedFollowupStatus === 'processing'
-        );
-        if (stillPending) {
-          window.setTimeout(pollWorkspace, 2500);
-        }
       }
 
       window.setTimeout(fetchWorkspace, 250);

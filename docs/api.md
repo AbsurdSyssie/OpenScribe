@@ -136,6 +136,10 @@ Rate-limited requests return the same envelope with:
 - protected JSON routes require a valid opaque session cookie
 - unauthenticated access returns `401 unauthorized`
 - invalid login credentials return the same `401 unauthorized` response shape
+- the explicit session-public API route allowlist is currently:
+  - `POST /api/v1/auth/login`
+  - `POST /api/v1/auth/logout`
+  - `POST /api/v1/account-requests`
 - completed MFA-enabled users may receive `auth_level = pending_mfa` after password success
 - login is rate-limited at `5 per 5 minutes` per client IP
 - whole-file transcript uploads are rate-limited at:
@@ -187,6 +191,16 @@ Rate-limited requests return the same envelope with:
 - normal JSON routes return:
   - `403`
   - code `onboarding_incomplete`
+
+## Route auth audit
+
+- run `./.venv/bin/python scripts/audit_api_auth.py` to probe every `/api/v1` route with:
+  - no session cookie
+  - an invalid session cookie
+  - onboarding, pending-MFA, normal-user, and leader sessions where denial is expected
+- the script exits non-zero if:
+  - a protected route does not deny the expected scenario
+  - a new `/api/v1` route exists without an audit manifest entry
 
 ### Manager routes
 
@@ -445,13 +459,14 @@ Current whole-file ingestion behavior:
 - file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`
 - the route queues a transcript-ingestion job and returns `202 Accepted`
 - queueing now fails early if no active team STT selection exists
+- queueing now also fails early with `stt_config_secret_missing` if the selected STT config expects a saved credential and Vault no longer has it
 - queued file jobs snapshot the resolved STT provider execution settings at enqueue time, so later team-setting changes do not alter where an already-uploaded file is sent
 - the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
-- the backend worker uses the queued STT snapshot plus the Vault-backed secret
+- the backend worker uses the queued STT snapshot plus the saved bearer credential when the selected adapter needs one
 - the backend worker forwards the normalized audio file to the external STT service
 - the backend worker appends the returned transcript text into `current_draft_text_encrypted`
 - the transcript status moves to `ready` when the provider returns successfully
-- if the queued STT config no longer has a readable Vault credential, the job is marked `failed` with a specific `vault_read_failed` message for the missing queued credential
+- if the queued STT config no longer has a readable saved credential, the job is marked `failed` with the same `stt_config_secret_missing` message the browser upload path uses
 - generic REST STT failures now keep safer detail at the job level:
   - connect failure -> `stt_unavailable`
   - timeout -> `stt_timeout`

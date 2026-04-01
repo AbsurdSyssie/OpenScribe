@@ -4,79 +4,314 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #f3efe6;
-      --panel: #fffaf0;
-      --ink: #1b1d1f;
-      --muted: #5b605f;
-      --line: #d4c7ab;
-      --accent: #9f3a2d;
-      --accent-strong: #7f251b;
-      --success: #316b4d;
-      --error: #9a2e2e;
+      --bg: #FAF8F5;
+      --parchment: #F5F1EB;
+      --card: #FFFFFF;
+      --ink: #1A202C;
+      --slate: #2D3748;
+      --muted: #718096;
+      --border: #E2DED6;
+      --border-strong: #D8D2C8;
+      --accent: #1D4F5E;
+      --accent-soft: #3D7A8C;
+      --accent-pale: #E0F2F5;
+      --success: #2F855A;
+      --warning: #B7791F;
+      --error: #C53030;
+      --shadow-soft: 0 10px 30px rgba(26, 32, 44, 0.04);
+      --shadow-focus: 0 0 0 3px rgba(224, 242, 245, 0.9);
     }
+
     * { box-sizing: border-box; }
+    html { background: var(--bg); }
     body {
       margin: 0;
-      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      font-family: "DM Sans", sans-serif;
       color: var(--ink);
-      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
+      background: var(--bg);
+      line-height: 1.5;
+      position: relative;
     }
-    main { max-width: 1280px; margin: 0 auto; padding: 48px 20px 64px; display: grid; gap: 20px; }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      opacity: 0.018;
+      z-index: 0;
+    }
+    main {
+      position: relative;
+      z-index: 1;
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 28px;
+      display: grid;
+      gap: 20px;
+    }
+    h1, h2, h3, legend {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Fraunces", serif;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+    }
+    h1 { font-size: clamp(2rem, 3vw, 2.8rem); line-height: 1.05; margin-top: 10px; }
+    h2 { font-size: 1.48rem; line-height: 1.12; margin-bottom: 10px; }
+    h3 { font-size: 1.08rem; line-height: 1.2; margin: 10px 0 0; }
+    p, ul { margin: 0; }
+    ul { padding-left: 1.1rem; }
+    li + li { margin-top: 0.35rem; }
+    small { font-size: 0.875rem; color: var(--muted); }
+    strong { color: var(--ink); }
+    hr { margin: 28px 0; border: 0; border-top: 1px solid rgba(226, 222, 214, 0.95) !important; }
+    [hidden] { display: none !important; }
+
     .hero, .topbar, .grid { display: grid; gap: 20px; }
     .topbar { grid-template-columns: 1fr auto; align-items: center; }
-    .grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .grid { grid-template-columns: minmax(0, 2.1fr) minmax(320px, 1fr); }
+
     .panel {
-      background: rgba(255, 250, 240, 0.92);
-      border: 1px solid rgba(212, 199, 171, 0.9);
-      border-radius: 24px;
-      padding: 22px;
-      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: var(--shadow-soft);
     }
-    form { display: grid; gap: 12px; }
-    label { display: grid; gap: 6px; color: var(--muted); }
+    .hero {
+      background: linear-gradient(180deg, rgba(245, 241, 235, 0.95) 0%, rgba(255, 255, 255, 0.98) 100%);
+    }
+    .eyebrow, .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      min-height: 28px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .eyebrow {
+      margin-bottom: 2px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.78);
+      border: 1px solid rgba(226, 222, 214, 0.92);
+    }
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      opacity: 0.9;
+    }
+    .pill {
+      padding: 5px 10px;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      background: rgba(224, 242, 245, 0.8);
+      border: 1px solid rgba(61, 122, 140, 0.18);
+    }
+
+    form { display: grid; gap: 14px; }
+    label {
+      display: grid;
+      gap: 7px;
+      color: var(--slate);
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
     input, select, textarea {
       width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
       padding: 12px 14px;
       font: inherit;
-      background: white;
+      color: var(--ink);
+      background: var(--parchment);
+      transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
     }
-    textarea { min-height: 80px; }
+    textarea { min-height: 96px; resize: vertical; }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: rgba(61, 122, 140, 0.55);
+      background: #fff;
+      box-shadow: var(--shadow-focus);
+    }
+    input[type="checkbox"], input[type="radio"] {
+      width: auto;
+      accent-color: var(--accent);
+      margin: 0;
+    }
     button {
       width: fit-content;
-      border: 0;
-      border-radius: 999px;
-      padding: 12px 18px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 11px 16px;
       font: inherit;
+      font-weight: 500;
       background: var(--accent);
       color: white;
       cursor: pointer;
+      transition: all 0.15s ease;
+      min-height: 44px;
     }
-    button:hover { background: var(--accent-strong); }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 0; border-bottom: 1px solid rgba(212, 199, 171, 0.8); text-align: left; vertical-align: top; }
-    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; background: rgba(159, 58, 45, 0.08); color: var(--accent-strong); font-size: 0.82rem; }
-    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
-    .flash.success { color: var(--success); }
-    .flash.error { color: var(--error); }
+    button:hover { background: var(--accent-soft); transform: translateY(-1px); }
+    form[method="get"] button,
+    form[action="/logout"] button,
+    form[action$="/clear"] button,
+    form[action*="/delete"] button,
+    form[action*="/reject"] button,
+    form[action*="/suspend"] button,
+    form[action*="/reactivate"] button {
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--border);
+    }
+    form[method="get"] button:hover,
+    form[action="/logout"] button:hover,
+    form[action$="/clear"] button:hover,
+    form[action*="/delete"] button:hover,
+    form[action*="/reject"] button:hover,
+    form[action*="/suspend"] button:hover,
+    form[action*="/reactivate"] button:hover {
+      background: rgba(29, 79, 94, 0.04);
+      border-color: rgba(61, 122, 140, 0.28);
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    th, td {
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(226, 222, 214, 0.9);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+    tbody tr:hover { background: rgba(29, 79, 94, 0.025); }
+    td form { margin-top: 10px; gap: 10px; }
+
+    fieldset {
+      margin: 0;
+      padding: 14px 16px 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(245, 241, 235, 0.7);
+      display: grid;
+      gap: 12px;
+    }
+    legend {
+      padding: 0 8px;
+      font-size: 1rem;
+    }
+
+    .flash {
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(245, 241, 235, 0.7);
+    }
+    .flash.success {
+      color: var(--success);
+      border-color: rgba(47, 133, 90, 0.2);
+      background: rgba(47, 133, 90, 0.06);
+    }
+    .flash.error {
+      color: var(--error);
+      border-color: rgba(197, 48, 48, 0.2);
+      background: rgba(197, 48, 48, 0.06);
+    }
+
     .tips { display: grid; gap: 10px; margin: 14px 0; }
     .tip {
-      border: 1px solid rgba(212, 199, 171, 0.8);
+      border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 12px 14px;
-      background: rgba(255, 255, 255, 0.72);
+      padding: 14px;
+      background: rgba(245, 241, 235, 0.55);
+      display: grid;
+      gap: 8px;
     }
     .tip strong { display: inline-block; margin-right: 8px; }
-    [hidden] { display: none !important; }
+
+    .topbar > div:first-child {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .hero p { max-width: 72ch; color: var(--muted); }
+    .panel > p + form, .panel > h3 + form, .panel > h2 + form { margin-top: 12px; }
+    .panel > h3 + p, .panel > h2 + p { margin-top: 4px; }
+
+    .tab-shell {
+      display: grid;
+      gap: 20px;
+    }
+
+    .tab-shell__nav {
+      display: none;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .tab-shell__nav.is-tabs-ready {
+      display: flex;
+    }
+
+    .tab-shell__tab {
+      border: 1px solid var(--border);
+      background: rgba(245, 241, 235, 0.85);
+      color: var(--slate);
+      min-height: 40px;
+      box-shadow: none;
+    }
+
+    .tab-shell__tab:hover {
+      background: rgba(224, 242, 245, 0.75);
+      color: var(--ink);
+      transform: none;
+    }
+
+    .tab-shell__tab[aria-selected="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      main { padding: 18px; }
+      .panel { padding: 20px; }
+      .topbar { grid-template-columns: 1fr; }
+      button { width: 100%; }
+      th:nth-child(n+4), td:nth-child(n+4) { }
+      .tab-shell__nav.is-tabs-ready {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      }
+    }
   </style>
 </head>
 <body>
   <main>
     <section class="hero panel">
-      <div class="pill">System admin</div>
+      <div class="eyebrow">System admin</div>
       <h1>Admin foundation for teams, managed onboarding, and account-request review.</h1>
       <p>System admins can manage teams, create users directly, and approve or reject incoming access requests across all teams.</p>
     </section>
@@ -92,11 +327,19 @@
     <div class="panel flash {{ message_kind }}">{{ message }}</div>
     {% endif %}
 
-    <section class="grid">
+    <div class="panel tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Admin sections">
+      <button type="button" class="tab-shell__tab" data-tab-target="providers" role="tab" aria-selected="true">Providers</button>
+      <button type="button" class="tab-shell__tab" data-tab-target="directory" role="tab" aria-selected="false">Directory</button>
+      <button type="button" class="tab-shell__tab" data-tab-target="requests" role="tab" aria-selected="false">Requests</button>
+    </div>
+
+    <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
+    <section class="grid" data-tab-panel="providers">
       <div class="panel">
         <h2>Team STT endpoints</h2>
         <p>System admins provision endpoint rows and credentials here. Team leaders only choose the active endpoint and model from the provisioned options.</p>
-        <form method="get" action="/admin">
+        <form method="get" action="{{ admin_page_route }}">
+          <input type="hidden" name="tab" value="providers">
           <label>
             Team
             <select name="team_id" onchange="this.form.submit()">
@@ -114,6 +357,8 @@
         <p><small>Resolved model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}. Resolved language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}.</small></p>
         <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <button type="submit">Clear active STT selection</button>
         </form>
         {% else %}
@@ -124,6 +369,8 @@
         <h3>Set active team selection</h3>
         <form method="post" action="/admin/stt-selection" data-stt-selection-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <label>
             Provisioned endpoint
             <select name="stt_config_id" data-stt-config-select required>
@@ -171,13 +418,22 @@
                 <small>Language: {{ config.language or "not set" }}</small>
               </td>
               <td>
-                <form method="get" action="/admin">
+                <form method="get" action="{{ admin_page_route }}">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
+                  <input type="hidden" name="tab" value="providers">
                   <button type="submit">Edit</button>
+                </form>
+                <form method="post" action="/admin/stt-configs/{{ config.id }}/test">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Test STT</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned STT endpoint and its saved secret?');">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
                   <button type="submit">Delete</button>
                 </form>
               </td>
@@ -192,6 +448,8 @@
         <h3>{% if stt_config %}Edit provisioned endpoint{% else %}Add provisioned endpoint{% endif %}</h3>
         <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <label>
             Label
             <input type="text" name="label" maxlength="255" value="{{ stt_form.label }}">
@@ -216,7 +474,7 @@
           </label>
           <input type="hidden" name="openapi_path" value="" data-non-generic-openapi {% if stt_form.adapter_kind == "generic_rest" %}disabled{% endif %}>
           <label>
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token for inspection{% endif %}</span>
+            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key for inspection{% else %}Bearer token for inspection (optional){% endif %}</span>
             <input type="password" name="bearer_token">
           </label>
           <button type="submit">Inspect endpoint</button>
@@ -260,6 +518,8 @@
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ stt_form.config_id }}">
           <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <input type="hidden" name="preserved_bearer_token" value="{{ stt_form.preserved_bearer_token or '' }}">
           <label>
             Label
@@ -285,11 +545,13 @@
             <input type="text" name="transcribe_path" data-require-for="generic_rest" required value="{{ stt_form.transcribe_path }}">
           </label>
           <label>
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token{% endif %}</span>
-            <input type="password" name="bearer_token" {% if not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
+            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
+            <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
           </label>
           {% if stt_form.preserved_bearer_token %}
           <p><small>The credential from the inspect step will be reused on save unless you enter a replacement above.</small></p>
+          {% else %}
+          <p><small>Leave this blank for self-hosted STT endpoints that do not require bearer auth.</small></p>
           {% endif %}
           <label>
             Model
@@ -323,8 +585,54 @@
             <input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}>
             Active
           </label>
-          <button type="submit">{% if stt_form.config_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
+          <div class="stack">
+            <button type="submit">{% if stt_form.config_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
+            {% if stt_form.config_id %}
+            <button type="submit" formaction="/admin/stt-configs/{{ stt_form.config_id }}/test" formmethod="post">Test STT</button>
+            {% endif %}
+          </div>
         </form>
+        {% if stt_test_result %}
+        <div class="result {% if stt_test_result.success %}success{% else %}error{% endif %}">
+          <div class="stack">
+            <strong>Bundled STT sample test</strong>
+            <span class="pill">{{ "passed" if stt_test_result.success else "failed" }}</span>
+            <span class="pill">health {{ stt_test_result.health_status }}</span>
+            <span class="pill">{{ stt_test_result.duration_ms }} ms</span>
+          </div>
+          <dl>
+            <div>
+              <dt>Sample</dt>
+              <dd>{{ stt_test_result.sample_filename }} · {{ stt_test_result.sample_size_bytes }} bytes</dd>
+            </div>
+            {% if stt_test_result.health_url %}
+            <div>
+              <dt>Health URL</dt>
+              <dd>{{ stt_test_result.health_url }}</dd>
+            </div>
+            {% endif %}
+            <div>
+              <dt>Transcribe URL</dt>
+              <dd>{{ stt_test_result.transcribe_url }}</dd>
+            </div>
+            <div>
+              <dt>Defaults</dt>
+              <dd>Model: {{ stt_test_result.model_name or "not set" }} · Language: {{ stt_test_result.language or "not set" }}</dd>
+            </div>
+            {% if stt_test_result.success %}
+            <div>
+              <dt>Transcript</dt>
+              <dd><pre>{{ stt_test_result.transcript_text }}</pre></dd>
+            </div>
+            {% else %}
+            <div>
+              <dt>Outcome</dt>
+              <dd>{{ stt_test_result.error_message }}{% if stt_test_result.error_code %} ({{ stt_test_result.error_code }}){% endif %}</dd>
+            </div>
+            {% endif %}
+          </dl>
+        </div>
+        {% endif %}
 
         <hr style="margin: 24px 0; border: 0; border-top: 1px solid rgba(212, 199, 171, 0.8);">
 
@@ -335,6 +643,8 @@
         <p><small>User-visible models: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none selected" }}.</small></p>
         <form method="post" action="/admin/llm-selection/clear" onsubmit="return confirm('Clear the active LLM selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <button type="submit">Clear active LLM selection</button>
         </form>
         {% else %}
@@ -345,6 +655,8 @@
         <h3>Set active team LLM selection</h3>
         <form method="post" action="/admin/llm-selection" data-llm-selection-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <label>
             Provisioned provider
             <select name="llm_config_id" data-llm-config-select required>
@@ -404,13 +716,16 @@
               </td>
               <td>{{ config.model_name or "not set" }}</td>
               <td>
-                <form method="get" action="/admin">
+                <form method="get" action="{{ admin_page_route }}">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="llm_config_id" value="{{ config.id }}">
+                  <input type="hidden" name="tab" value="providers">
                   <button type="submit">Edit</button>
                 </form>
                 <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned LLM provider and its saved secret?');">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
                   <button type="submit">Delete</button>
                 </form>
               </td>
@@ -425,6 +740,8 @@
         <h3>{% if llm_config %}Edit provisioned LLM provider{% else %}Add provisioned LLM provider{% endif %}</h3>
         <form method="post" action="/admin/llm-configs/inspect" data-llm-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <label>
             Label
             <input type="text" name="label" maxlength="255" value="{{ llm_form.label }}">
@@ -463,6 +780,8 @@
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ llm_form.config_id }}">
           <input type="hidden" name="adapter_kind" value="{{ llm_form.adapter_kind }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
           <label data-show-for="ollama_chat">
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url }}">
@@ -504,6 +823,9 @@
       <div class="panel">
         <h2>Create team</h2>
         <form method="post" action="/admin/teams">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="directory">
+          <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
           <label>
             Team name
             <input type="text" name="name" required maxlength="255">
@@ -527,6 +849,9 @@
       <div class="panel">
         <h2>Create managed user</h2>
         <form method="post" action="/admin/users">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="directory">
+          <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
           <label>
             Full name
             <input type="text" name="full_name" maxlength="255">
@@ -578,7 +903,7 @@
       </div>
     </section>
 
-    <section class="grid">
+    <section class="grid" data-tab-panel="directory">
       <div class="panel">
         <h2>Teams</h2>
         <table>
@@ -626,16 +951,25 @@
               {% if user.id != current_user.id %}
                 {% if user.status.value == "active" %}
                 <form method="post" action="/admin/users/{{ user.id }}/suspend">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Suspend</button>
                 </form>
                 {% elif user.status.value in ("suspended", "disabled") %}
                 <form method="post" action="/admin/users/{{ user.id }}/reactivate">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Reactivate</button>
                 </form>
                 {% else %}
                 <span class="pill">Security state</span>
                 {% endif %}
                 <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Delete permanently</button>
                 </form>
               {% else %}
@@ -649,7 +983,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel" data-tab-panel="requests">
       <h2>Account requests</h2>
       <table>
         <thead>
@@ -668,6 +1002,9 @@
               <span class="pill">{{ account_request.status.value }}</span>
               {% if account_request.status.value == "pending" %}
               <form method="post" action="/admin/account-requests/{{ account_request.id }}/approve" style="margin-top: 12px;">
+                <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                <input type="hidden" name="return_tab" value="requests">
+                <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                 <label>
                   Team
                   <select name="team_id">
@@ -694,6 +1031,9 @@
                 <button type="submit">Approve and create user</button>
               </form>
               <form method="post" action="/admin/account-requests/{{ account_request.id }}/reject" style="margin-top: 12px;">
+                <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                <input type="hidden" name="return_tab" value="requests">
+                <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                 <label>
                   Rejection notes
                   <textarea name="review_notes" required></textarea>
@@ -707,9 +1047,39 @@
         </tbody>
       </table>
     </section>
+    </div>
   </main>
   <script>
     (() => {
+      document.querySelectorAll('[data-tab-shell]').forEach((shell) => {
+        const nav = shell.previousElementSibling?.matches('[data-tab-nav]') ? shell.previousElementSibling : null;
+        const tabs = Array.from(nav?.querySelectorAll('[data-tab-target]') || []);
+        const panels = Array.from(shell.querySelectorAll('[data-tab-panel]'));
+        if (!nav || !tabs.length || !panels.length) return;
+
+        const defaultTab = shell.dataset.defaultTab || tabs[0].dataset.tabTarget;
+        shell.classList.add('is-tabs-ready');
+        nav.hidden = false;
+        nav.classList.add('tab-shell__nav');
+        nav.classList.add('is-tabs-ready');
+
+        function activateTab(name) {
+          tabs.forEach((tab) => {
+            const active = tab.dataset.tabTarget === name;
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          panels.forEach((panel) => {
+            panel.hidden = panel.dataset.tabPanel !== name;
+          });
+        }
+
+        tabs.forEach((tab) => {
+          tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget));
+        });
+
+        activateTab(defaultTab);
+      });
+
       function applyAdapterState(form) {
         const adapterField = form.querySelector('[data-stt-adapter-select], input[name="adapter_kind"]');
         if (!adapterField) return;
@@ -730,8 +1100,14 @@
           field.required = !field.disabled && adapters.includes(adapter);
         });
         form.querySelectorAll('[data-stt-token-label]').forEach((el) => {
-          el.textContent = adapter === 'openai_cloud' ? 'API key' : (form.matches('[data-stt-inspect-form]') ? 'Bearer token for inspection' : 'Bearer token');
+          el.textContent = adapter === 'openai_cloud'
+            ? (form.matches('[data-stt-inspect-form]') ? 'API key for inspection' : 'API key')
+            : (form.matches('[data-stt-inspect-form]') ? 'Bearer token for inspection (optional)' : 'Bearer token (optional for no-auth endpoints)');
         });
+        const tokenInput = form.querySelector('[data-stt-token-input]');
+        if (tokenInput) {
+          tokenInput.required = adapter === 'openai_cloud' && !form.querySelector('input[name="config_id"]')?.value && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
+        }
         form.querySelectorAll('[data-openai-base-url]').forEach((el) => {
           el.disabled = adapter !== 'openai_cloud';
           if (adapter === 'openai_cloud') {

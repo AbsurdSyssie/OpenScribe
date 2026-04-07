@@ -33,6 +33,7 @@ from app.schemas import (
     UserCreate,
 )
 from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
+from app.services.content_crypto import ensure_user_dek
 from app.services.transcripts import delete_retry_sources_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
@@ -128,10 +129,16 @@ def create_user(db: Session, payload: UserCreate, *, actor: User | None = None) 
         onboarding_state=UserOnboardingState.pending_password_change,
     )
     try:
+        db.flush()
+        if not user.is_system_admin:
+            ensure_user_dek(db, user=user)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise AppError(409, "conflict", "User already exists", {"resource": "user", "field": "email"}) from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(user)
     return user
 
@@ -419,10 +426,15 @@ def approve_account_request(db: Session, actor: User, request_id, payload: Accou
     request.reviewed_at = utcnow()
     db.add(request)
     try:
+        db.flush()
+        ensure_user_dek(db, user=user)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise AppError(409, "conflict", "User already exists", {"resource": "user", "field": "email"}) from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(request)
     db.refresh(user)
     return request, user

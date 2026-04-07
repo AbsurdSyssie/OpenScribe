@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.models import (
     TranscriptVersion,
     utcnow,
 )
+from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 
 from .redaction_policy import filter_analyzer_results, normalize_span_bounds
 
@@ -196,13 +198,38 @@ def _mapping_hash(phi_index: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _redaction_run_to_phi_index(run: RedactionRun) -> list[dict[str, Any]]:
+def redaction_run_text(db: Session, *, run: RedactionRun) -> str | None:
+    return decrypt_text_for_owner(
+        db,
+        owner_user_id=run.owner_user_id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=run.id,
+        stored_value=run.redacted_text_encrypted,
+    )
+
+
+def redaction_entity_original_value(db: Session, *, entity: RedactionEntity) -> str:
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=entity.redaction_run.owner_user_id,
+            table="redaction_entities",
+            field="original_value_encrypted",
+            record_id=entity.id,
+            stored_value=entity.original_value_encrypted,
+        )
+        or ""
+    )
+
+
+def _redaction_run_to_phi_index(db: Session, run: RedactionRun) -> list[dict[str, Any]]:
     ordered = sorted(run.entities, key=lambda entity: entity.entity_order)
     return [
         {
             "index": entity.entity_order,
             "type": entity.entity_type,
-            "value": entity.original_value_encrypted,
+            "value": redaction_entity_original_value(db, entity=entity),
             "placeholder": entity.placeholder,
         }
         for entity in ordered
@@ -233,8 +260,26 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
     db.add(run)
     db.flush()
     try:
-        result = redact_text_with_mapping(transcript_version.text_encrypted)
-        run.redacted_text_encrypted = result["redacted_text"]
+        transcript_text = (
+            decrypt_text_for_owner(
+                db,
+                owner_user_id=transcript_version.transcript.owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=transcript_version.id,
+                stored_value=transcript_version.text_encrypted,
+            )
+            or ""
+        )
+        result = redact_text_with_mapping(transcript_text)
+        run.redacted_text_encrypted = encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript_version.transcript.owner_user_id,
+            table="redaction_runs",
+            field="redacted_text_encrypted",
+            record_id=run.id,
+            plaintext=result["redacted_text"],
+        )
         run.mapping_hash = _mapping_hash(result["phi_index"])
         run.entity_count = int(result["phi_count"])
         run.api_provider = result["api_provider"]
@@ -242,13 +287,22 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
         run.error_code = None
         run.failed_at = None
         for item in result["phi_index"]:
+            entity_id = uuid.uuid4()
             db.add(
                 RedactionEntity(
+                    id=entity_id,
                     redaction_run_id=run.id,
                     entity_order=int(item["index"]),
                     entity_type=str(item["type"]),
                     placeholder=str(item["placeholder"]),
-                    original_value_encrypted=str(item["value"]),
+                    original_value_encrypted=encrypt_text_for_owner(
+                        db,
+                        owner_user_id=transcript_version.transcript.owner_user_id,
+                        table="redaction_entities",
+                        field="original_value_encrypted",
+                        record_id=entity_id,
+                        plaintext=str(item["value"]),
+                    ),
                     normalized_value_hash=_normalized_value_hash(str(item["value"])),
                     occurrence_count=1,
                 )
@@ -278,11 +332,12 @@ def next_placeholder_index(run: RedactionRun) -> int:
 
 
 def combined_phi_index(
+    db: Session,
     run: RedactionRun,
     *,
     extra_phi_index: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    index = _redaction_run_to_phi_index(run)
+    index = _redaction_run_to_phi_index(db, run)
     if extra_phi_index:
         index.extend(extra_phi_index)
     return index

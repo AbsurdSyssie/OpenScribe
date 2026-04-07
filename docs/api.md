@@ -428,6 +428,8 @@ Current transcript-start behavior:
   - `live_chunked`
 - if the caller omits `ingestion_mode`, the route currently implies `whole_file`
 - team retention defaults are applied when no explicit retention override is supplied
+- transcript JSON responses remain owner-plaintext even though transcript drafts, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document sections, follow-up prompts, redaction output text, and redaction entity values are now stored encrypted at rest per owner
+- transcript and generated-document `title` fields remain plaintext metadata in this slice
 
 Current live chunk-ingestion behavior:
 
@@ -456,6 +458,7 @@ Current live chunk-ingestion behavior:
 - the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
 - the backend worker reads the queued STT snapshot plus the selected provider credentials from Vault
 - the backend worker forwards the normalized chunk to the external STT service
+- the backend worker encrypts the returned live-chunk text at rest before later owner-visible draft reconciliation
 - live chunk application is sequence-aware:
   - duplicate `chunk_sequence_no` values are rejected at queue time
   - completed chunks are appended only in order using `next_live_chunk_sequence_no_applied`
@@ -484,6 +487,7 @@ Current whole-file ingestion behavior:
 - the backend worker uses the queued STT snapshot plus the saved bearer credential when the selected adapter needs one
 - the backend worker forwards the normalized audio file to the external STT service
 - the backend worker appends the returned transcript text into `current_draft_text_encrypted`
+- transcript drafts, committed transcript versions, and STT job result text now use one wrapped user DEK per normal content-owning user, with the DEK wrap/unwrap path handled through Vault Transit
 - the transcript status moves to `ready` when the provider returns successfully
 - if the queued STT config no longer has a readable saved credential, the job is marked `failed` with the same `stt_config_secret_missing` message the browser upload path uses
 - generic REST STT failures now keep safer detail at the job level:

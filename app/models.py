@@ -236,6 +236,27 @@ class User(Base):
     )
     generated_documents: Mapped[list["GeneratedDocument"]] = relationship(back_populates="owner")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="owner")
+    encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class UserEncryptionKey(Base):
+    __tablename__ = "user_encryption_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_encryption_keys_user"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    dek_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    wrapped_dek: Mapped[str] = mapped_column(Text, nullable=False)
+    kek_mount: Mapped[str] = mapped_column(String(64), nullable=False)
+    kek_key_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kek_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="encryption_keys")
 
 
 class AccountRequest(Base):
@@ -633,6 +654,8 @@ class TranscriptIngestionJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     job_kind: Mapped[TranscriptIngestionJobKind] = mapped_column(Enum(TranscriptIngestionJobKind), nullable=False)
     chunk_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)

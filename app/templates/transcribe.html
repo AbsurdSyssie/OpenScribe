@@ -357,6 +357,58 @@
       padding-top: 0.2rem;
     }
 
+    .document-switcher {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .document-switcher-button {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.12rem;
+      min-width: 0;
+      border: 1px solid rgba(226, 222, 214, 0.95);
+      border-radius: 0.8rem;
+      background: rgba(245, 241, 235, 0.68);
+      padding: 0.7rem 0.9rem;
+      text-align: left;
+      transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .document-switcher-button:hover,
+    .document-switcher-button:focus-visible {
+      border-color: rgba(61, 122, 140, 0.55);
+      background: rgba(224, 242, 245, 0.42);
+      outline: none;
+    }
+
+    .document-switcher-button.active {
+      border-color: rgba(29, 79, 94, 0.9);
+      background: rgba(224, 242, 245, 0.82);
+      box-shadow: inset 0 0 0 1px rgba(29, 79, 94, 0.14);
+    }
+
+    .document-switcher-label {
+      max-width: 100%;
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: var(--fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .document-switcher-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+
     .structured-section-block {
       border-top: 1px solid rgba(232, 228, 221, 0.92);
       padding-top: 0.8rem;
@@ -833,7 +885,7 @@
                 <div class="flex items-center justify-between gap-4">
                   <div class="flex items-center gap-2">
                     <span class="w-2 h-2 bg-success rounded-full"></span>
-                    <span class="text-sm font-medium text-ink">Latest note</span>
+                    <span class="text-sm font-medium text-ink">Selected note</span>
                   </div>
                   <span class="text-xs text-slate" data-note-meta>
                     {% if latest_generated_document %}
@@ -842,6 +894,25 @@
                     No note generated yet
                     {% endif %}
                   </span>
+                </div>
+
+                <div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not note_documents %} hidden{% endif %}>
+                  <div class="flex items-center justify-between gap-4">
+                    <span class="text-xs font-medium uppercase tracking-[0.16em] text-slate">Versions</span>
+                    <span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length }} items</span>
+                  </div>
+                  <div class="document-switcher" data-note-selector>
+                    {% for document in note_documents %}
+                    <button
+                      type="button"
+                      class="document-switcher-button{% if latest_generated_document and document.id == latest_generated_document.id %} active{% endif %}"
+                      data-note-document-select
+                      data-document-id="{{ document.id }}">
+                      <span class="document-switcher-label">{{ document.title }}</span>
+                      <span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at }}</span>
+                    </button>
+                    {% endfor %}
+                  </div>
                 </div>
 
                 <div
@@ -1027,7 +1098,7 @@
                 <div class="flex items-center justify-between gap-4">
                   <div class="flex items-center gap-2">
                     <span class="w-2 h-2 bg-success rounded-full"></span>
-                    <span class="text-sm font-medium text-ink">Latest follow-up</span>
+                    <span class="text-sm font-medium text-ink">Selected follow-up</span>
                   </div>
                   <span class="text-xs text-slate" data-followup-meta>
                     {% if latest_followup_document %}
@@ -1036,6 +1107,30 @@
                     No follow-up thread yet
                     {% endif %}
                   </span>
+                </div>
+                <div class="assistant-subsection space-y-2" data-followup-selector-wrap{% if not followup_documents %} hidden{% endif %}>
+                  <div class="flex items-center justify-between gap-4">
+                    <span class="text-xs font-medium uppercase tracking-[0.16em] text-slate">Threads</span>
+                    <span class="text-xs text-slate" data-followup-selector-count>{{ followup_documents|length }} items</span>
+                  </div>
+                  <div class="document-switcher" data-followup-selector>
+                    {% for document in followup_documents %}
+                    <button
+                      type="button"
+                      class="document-switcher-button{% if latest_followup_document and document.id == latest_followup_document.id %} active{% endif %}"
+                      data-followup-document-select
+                      data-document-id="{{ document.id }}">
+                      <span class="document-switcher-label">
+                        {% if document.generator_type.value == "quick_action" %}
+                        {{ document.source_quick_action_name or document.title }}
+                        {% else %}
+                        {{ document.follow_up_prompt_text or document.title }}
+                        {% endif %}
+                      </span>
+                      <span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at }}</span>
+                    </button>
+                    {% endfor %}
+                  </div>
                 </div>
                 <div
                   class="assistant-flat-output"
@@ -1158,6 +1253,11 @@
       let workspaceEventSource = null;
       let workspaceEventSourceEndpoint = null;
       let workspaceStreamFallbackPolling = false;
+      let workspaceNoteDocuments = [];
+      let workspaceFollowupDocuments = [];
+      let workspaceStructuredContext = {};
+      let selectedNoteDocumentId = null;
+      let selectedFollowupDocumentId = null;
       const showRedactionDebug = {{ show_redaction_debug|tojson }};
       const initialTranscriptErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
 
@@ -1174,6 +1274,12 @@
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
+      const noteSelectorWrap = document.querySelector('[data-note-selector-wrap]');
+      const noteSelector = document.querySelector('[data-note-selector]');
+      const noteSelectorCount = document.querySelector('[data-note-selector-count]');
+      const followupSelectorWrap = document.querySelector('[data-followup-selector-wrap]');
+      const followupSelector = document.querySelector('[data-followup-selector]');
+      const followupSelectorCount = document.querySelector('[data-followup-selector-count]');
       const noteMeta = document.querySelector('[data-note-meta]');
       const followupMeta = document.querySelector('[data-followup-meta]');
       const noteHistory = document.querySelector('[data-note-history]');
@@ -1215,6 +1321,9 @@
       const recordToggleIcon = document.querySelector('[data-record-toggle-icon]');
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
       const copyToast = document.querySelector('#copy-toast');
+
+      selectedNoteDocumentId = latestGeneratedOutput?.dataset.latestGeneratedId || null;
+      selectedFollowupDocumentId = latestFollowupOutput?.dataset.latestFollowupId || null;
 
       let mediaRecorder = null;
       let mediaStream = null;
@@ -2400,8 +2509,9 @@
         if (generatedStructuredSections) generatedStructuredSections.innerHTML = '';
         if (structuredCopyStatus) structuredCopyStatus.textContent = 'Select the statements you want to copy.';
         latestGeneratedOutput.hidden = false;
-        const shouldShowStructuredEditor = selectedOutputTemplateMode() === 'structured'
-          || (generatedDocument && generatedDocument.status === 'ready' && generatedDocument.document_mode === 'structured');
+        const shouldShowStructuredEditor = generatedDocument
+          ? generatedDocument.status === 'ready' && generatedDocument.document_mode === 'structured'
+          : selectedOutputTemplateMode() === 'structured';
         if (shouldShowStructuredEditor) {
           generatedStructuredDraft = buildGeneratedStructuredDraft(generatedDocument, structuredContext);
           latestGeneratedOutput.hidden = true;
@@ -2464,7 +2574,54 @@
         latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up thread yet.</span>';
       };
 
-      const renderNoteHistory = (documents) => {
+      const selectedDocumentFromList = (documents, selectedId) => {
+        if (!Array.isArray(documents) || documents.length === 0) {
+          return null;
+        }
+        return documents.find((document) => document.id === selectedId) || documents[0] || null;
+      };
+
+      const noteDocumentLabel = (document) => document?.title || document?.source_template_name || 'Untitled note';
+
+      const followupDocumentLabel = (document) => (
+        document?.generator_type === 'quick_action'
+          ? (document?.source_quick_action_name || document?.title || 'Quick action')
+          : (document?.follow_up_prompt_text || document?.title || 'Follow-up')
+      );
+
+      const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind }) => {
+        if (!wrap || !container) return;
+        wrap.hidden = !documents.length;
+        if (countNode) {
+          countNode.textContent = `${documents.length} item${documents.length === 1 ? '' : 's'}`;
+        }
+        container.innerHTML = '';
+        documents.forEach((document) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = `document-switcher-button${document.id === selectedId ? ' active' : ''}`;
+          button.dataset.documentId = document.id;
+          button.dataset.documentKind = kind;
+          button.innerHTML = `
+            <span class="document-switcher-label">${escapeHtml(kind === 'note' ? noteDocumentLabel(document) : followupDocumentLabel(document))}</span>
+            <span class="document-switcher-meta">${escapeHtml(document.status || '')} · ${escapeHtml(document.created_at || '')}</span>
+          `;
+          button.addEventListener('click', () => {
+            if (kind === 'note') {
+              selectedNoteDocumentId = document.id;
+              renderSelectedNote();
+              setTab('output');
+            } else {
+              selectedFollowupDocumentId = document.id;
+              renderSelectedFollowup();
+              setTab('followups');
+            }
+          });
+          container.appendChild(button);
+        });
+      };
+
+      const renderNoteHistory = (documents, selectedId) => {
         if (!noteHistory) return;
         noteHistory.innerHTML = '';
         if (!documents.length) {
@@ -2472,22 +2629,28 @@
           return;
         }
         documents.forEach((document) => {
-          const card = document.createElement('div');
-          card.className = 'assistant-subsection';
+          const card = document.createElement('button');
+          card.type = 'button';
+          card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${document.id === selectedId ? 'bg-teal-pale/35 border border-teal-muted/35' : 'hover:bg-parchment/50'}`;
           card.innerHTML = `
             <div class="flex items-center justify-between gap-4">
               <div class="min-w-0">
-                <div class="text-sm font-medium text-ink">${escapeHtml(document.title || 'Untitled output')}</div>
+                <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(document))}</div>
                 <div class="text-xs text-slate mt-1">${escapeHtml(document.source_template_name || 'Template output')} · ${escapeHtml(document.model_used || 'unknown model')}</div>
               </div>
               <div class="text-xs text-slate text-right">${escapeHtml(document.status || '')}<br>${escapeHtml(document.created_at || '')}</div>
             </div>
           `;
+          card.addEventListener('click', () => {
+            selectedNoteDocumentId = document.id;
+            renderSelectedNote();
+            setTab('output');
+          });
           noteHistory.appendChild(card);
         });
       };
 
-      const renderFollowupHistory = (documents) => {
+      const renderFollowupHistory = (documents, selectedId) => {
         if (!followupHistory) return;
         followupHistory.innerHTML = '';
         if (!documents.length) {
@@ -2495,22 +2658,75 @@
           return;
         }
         documents.forEach((document) => {
-          const title = document.generator_type === 'quick_action'
-            ? (document.source_quick_action_name || document.title || 'Quick action')
-            : (document.follow_up_prompt_text || document.title || 'Follow-up');
-          const card = document.createElement('div');
-          card.className = 'assistant-subsection';
+          const card = document.createElement('button');
+          card.type = 'button';
+          card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${document.id === selectedId ? 'bg-teal-pale/35 border border-teal-muted/35' : 'hover:bg-parchment/50'}`;
           card.innerHTML = `
             <div class="flex items-center justify-between gap-4">
               <div class="min-w-0">
-                <div class="text-sm font-medium text-ink">${escapeHtml(title)}</div>
+                <div class="text-sm font-medium text-ink">${escapeHtml(followupDocumentLabel(document))}</div>
                 <div class="text-xs text-slate mt-1">${escapeHtml(document.model_used || 'unknown model')} · ${escapeHtml((document.generator_type || '').replaceAll('_', ' '))}</div>
               </div>
               <div class="text-xs text-slate text-right">${escapeHtml(document.status || '')}<br>${escapeHtml(document.created_at || '')}</div>
             </div>
           `;
+          card.addEventListener('click', () => {
+            selectedFollowupDocumentId = document.id;
+            renderSelectedFollowup();
+            setTab('followups');
+          });
           followupHistory.appendChild(card);
         });
+      };
+
+      const renderSelectedNote = () => {
+        const selectedNote = selectedDocumentFromList(workspaceNoteDocuments, selectedNoteDocumentId);
+        selectedNoteDocumentId = selectedNote?.id || null;
+        if (latestGeneratedOutput) {
+          latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || '';
+          latestGeneratedOutput.dataset.latestGeneratedId = selectedNote?.id || '';
+          renderGeneratedOutput(selectedNote, workspaceStructuredContext || {});
+        }
+        if (noteMeta) {
+          noteMeta.textContent = selectedNote
+            ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || 'unknown model'} · ${selectedNote.status} · ${selectedNote.created_at}`
+            : 'No note generated yet';
+        }
+        renderDocumentSelector({
+          wrap: noteSelectorWrap,
+          container: noteSelector,
+          countNode: noteSelectorCount,
+          documents: workspaceNoteDocuments,
+          selectedId: selectedNoteDocumentId,
+          kind: 'note',
+        });
+        renderNoteHistory(workspaceNoteDocuments, selectedNoteDocumentId);
+        renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
+      };
+
+      const renderSelectedFollowup = () => {
+        const selectedFollowup = selectedDocumentFromList(workspaceFollowupDocuments, selectedFollowupDocumentId);
+        selectedFollowupDocumentId = selectedFollowup?.id || null;
+        if (latestFollowupOutput) {
+          latestFollowupOutput.dataset.latestFollowupStatus = selectedFollowup?.status || '';
+          latestFollowupOutput.dataset.latestFollowupId = selectedFollowup?.id || '';
+          renderFollowupOutput(selectedFollowup);
+        }
+        if (followupMeta) {
+          followupMeta.textContent = selectedFollowup
+            ? `${selectedFollowup.model_used || 'unknown model'} · ${selectedFollowup.status} · ${selectedFollowup.created_at}`
+            : 'No follow-up thread yet';
+        }
+        renderDocumentSelector({
+          wrap: followupSelectorWrap,
+          container: followupSelector,
+          countNode: followupSelectorCount,
+          documents: workspaceFollowupDocuments,
+          selectedId: selectedFollowupDocumentId,
+          kind: 'followup',
+        });
+        renderFollowupHistory(workspaceFollowupDocuments, selectedFollowupDocumentId);
+        renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
       };
 
       const renderRedactionDebugPanel = (slot, document) => {
@@ -2670,8 +2886,6 @@
         const generatedDocuments = Array.isArray(workspace.generated_documents) ? workspace.generated_documents : [];
         const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
         const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
-        const latestNote = noteDocuments[0] || null;
-        const latestFollowup = followupDocuments[0] || null;
         const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
 
         transcriptId = transcript?.id || null;
@@ -2737,34 +2951,19 @@
         const micStatusState = defaultMicStatusState();
         setMicStatus(micStatusState.message, micStatusState.kind);
 
-        if (latestGeneratedOutput) {
-          latestGeneratedOutput.dataset.latestGeneratedStatus = latestNote?.status || '';
-          latestGeneratedOutput.dataset.latestGeneratedId = latestNote?.id || '';
-          renderGeneratedOutput(latestNote, workspace.active_structured_context || {});
-        }
-        if (noteMeta) {
-          noteMeta.textContent = latestNote
-            ? `${latestNote.title} · ${latestNote.model_used || 'unknown model'} · ${latestNote.status} · ${latestNote.created_at}`
-            : 'No note generated yet';
-        }
-        if (latestFollowupOutput) {
-          latestFollowupOutput.dataset.latestFollowupStatus = latestFollowup?.status || '';
-          latestFollowupOutput.dataset.latestFollowupId = latestFollowup?.id || '';
-          renderFollowupOutput(latestFollowup);
-        }
-        if (followupMeta) {
-          followupMeta.textContent = latestFollowup
-            ? `${latestFollowup.model_used || 'unknown model'} · ${latestFollowup.status} · ${latestFollowup.created_at}`
-            : 'No follow-up thread yet';
-        }
-        renderNoteHistory(noteDocuments);
-        renderFollowupHistory(followupDocuments);
-        renderRedactionDebugPanel(outputRedactionSlot, latestNote);
-        renderRedactionDebugPanel(followupRedactionSlot, latestFollowup);
-
         const structuredContext = workspace.active_structured_context || {};
+        workspaceNoteDocuments = noteDocuments;
+        workspaceFollowupDocuments = followupDocuments;
+        workspaceStructuredContext = structuredContext;
+        selectedNoteDocumentId = selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || null;
+        selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
+        renderSelectedNote();
+        renderSelectedFollowup();
         lastSavedStructuredContext = JSON.stringify(structuredContext);
-        generatedStructuredDraft = buildGeneratedStructuredDraft(latestNote, structuredContext);
+        generatedStructuredDraft = buildGeneratedStructuredDraft(
+          selectedDocumentFromList(noteDocuments, selectedNoteDocumentId),
+          structuredContext,
+        );
         renderStructuredSections(generatedStructuredDraft);
         syncStructuredContextHiddenInputs();
         syncStructuredEditorAvailability();
@@ -2846,6 +3045,11 @@
       }
       renderTimer();
       syncWorkspaceRealtimeConnection();
+      if (transcriptId) {
+        window.setTimeout(() => {
+          fetchWorkspace();
+        }, 0);
+      }
 
       const uploadMicrophoneBatch = async (blob) => {
         setMicStatus('Uploading microphone batch for transcription...');

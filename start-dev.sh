@@ -26,6 +26,27 @@ docker compose up -d
 
 .venv/bin/python scripts/security/check_service_exposure.py
 
+echo "Ensuring Vault Transit is bootstrapped for local dev..."
+.venv/bin/python - <<'PY'
+import time
+
+from app.errors import AppError
+from app.services.vault import ensure_user_content_transit_ready
+
+deadline = time.time() + 30
+last_error = None
+
+while time.time() < deadline:
+    try:
+        ensure_user_content_transit_ready()
+        break
+    except AppError as exc:
+        last_error = exc
+        time.sleep(1)
+else:
+    raise SystemExit(f"Vault Transit bootstrap did not become ready in time: {last_error}")
+PY
+
 APP_BIND_HOST="$(
 .venv/bin/python - <<'PY'
 import os

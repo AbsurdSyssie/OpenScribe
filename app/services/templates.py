@@ -40,13 +40,16 @@ from app.schemas.templates import (
     StructuredTemplateConfig,
 )
 from app.services.llm import resolve_user_llm
+from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.redaction import (
     combined_phi_index,
     ensure_redaction_run_for_transcript_version,
     next_placeholder_index,
+    redaction_run_text,
     redact_transient_text,
     reidentify_text,
 )
+from app.services.transcripts import set_transcript_structured_context, transcript_structured_context
 from app.services.vault import read_team_llm_bearer_token
 
 
@@ -573,15 +576,33 @@ def list_generated_documents_for_transcript(db: Session, actor: User, *, transcr
 
 
 def _snapshot_transcript_version(db: Session, *, transcript: Transcript) -> TranscriptVersion:
-    current_text = (transcript.current_draft_text_encrypted or "").strip()
+    current_text = (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            stored_value=transcript.current_draft_text_encrypted,
+        )
+        or ""
+    ).strip()
     if not current_text:
         raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
+    version_id = uuid4()
     current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
     version = TranscriptVersion(
-        id=uuid4(),
+        id=version_id,
         transcript_id=transcript.id,
         version_no=(current_max or 0) + 1,
-        text_encrypted=current_text,
+        text_encrypted=encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext=current_text,
+        ),
     )
     transcript.status = TranscriptStatus.ready
     db.add(version)
@@ -846,6 +867,108 @@ def _prompt_snapshot_text_for_document(db: Session, *, document: GeneratedDocume
         if quick_action_version is not None:
             return quick_action_version.prompt_text.strip()
     return ""
+
+
+def generated_document_text(db: Session, *, document: GeneratedDocument, field: str) -> str:
+    stored_value = getattr(document, field)
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field=field,
+            record_id=document.id,
+            stored_value=stored_value,
+        )
+        or ""
+    )
+
+
+def set_generated_document_text(db: Session, *, document: GeneratedDocument, field: str, plaintext: str | None) -> None:
+    setattr(
+        document,
+        field,
+        encrypt_text_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field=field,
+            record_id=document.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None,
+    )
+
+
+def generated_document_structured_context(db: Session, *, document: GeneratedDocument) -> dict:
+    value = decrypt_json_for_owner(
+        db,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="structured_context_json",
+        record_id=document.id,
+        stored_value=document.structured_context_json,
+    )
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise AppError(500, "content_crypto_invalid", "Generated document structured context is invalid")
+    return value
+
+
+def set_generated_document_structured_context(db: Session, *, document: GeneratedDocument, plaintext: dict | None) -> None:
+    document.structured_context_json = (
+        encrypt_json_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field="structured_context_json",
+            record_id=document.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
+def generated_document_section_text(db: Session, *, section: GeneratedDocumentSection, field: str) -> str:
+    stored_value = getattr(section, field)
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=section.generated_document.owner_user_id,
+            table="generated_document_sections",
+            field=field,
+            record_id=section.id,
+            stored_value=stored_value,
+        )
+        or ""
+    )
+
+
+def set_generated_document_section_text(
+    db: Session,
+    *,
+    section: GeneratedDocumentSection,
+    field: str,
+    owner_user_id: UUID,
+    plaintext: str | None,
+) -> None:
+    setattr(
+        section,
+        field,
+        encrypt_text_for_owner(
+            db,
+            owner_user_id=owner_user_id,
+            table="generated_document_sections",
+            field=field,
+            record_id=section.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None,
+    )
 
 
 def _generate_freeform_output_openai(
@@ -1276,9 +1399,10 @@ def queue_document_generation_from_template(
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
     raw_structured_context = structured_context
-    if raw_structured_context is None and isinstance(transcript.structured_context_json, dict):
-        transcript_profile = transcript.structured_context_json.get("profile")
-        transcript_sections = transcript.structured_context_json.get("sections")
+    transcript_context = transcript_structured_context(db, transcript=transcript)
+    if raw_structured_context is None and isinstance(transcript_context, dict):
+        transcript_profile = transcript_context.get("profile")
+        transcript_sections = transcript_context.get("sections")
         if transcript_profile == "emis" and isinstance(transcript_sections, dict):
             raw_structured_context = {
                 str(section_key): value
@@ -1291,10 +1415,14 @@ def queue_document_generation_from_template(
         ignore_unsupported_sections=structured_context is None,
     )
     if template_config is not None:
-        transcript.structured_context_json = {
-            "profile": template_config.profile,
-            "sections": dict(serialized_structured_context or {}),
-        }
+        set_transcript_structured_context(
+            db,
+            transcript=transcript,
+            plaintext={
+                "profile": template_config.profile,
+                "sections": dict(serialized_structured_context or {}),
+            },
+        )
         db.add(transcript)
     transcript_version = _snapshot_transcript_version(db, transcript=transcript)
 
@@ -1314,7 +1442,7 @@ def queue_document_generation_from_template(
         llm_config_id=config.id,
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
-        structured_context_json=serialized_structured_context,
+        structured_context_json=None,
         status=GeneratedDocumentStatus.queued,
         title=f"{template.name} output",
         document_mode=latest_version.mode,
@@ -1326,6 +1454,9 @@ def queue_document_generation_from_template(
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
     )
+    set_generated_document_structured_context(db, document=generated_document, plaintext=serialized_structured_context)
+    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
+    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -1368,7 +1499,7 @@ def queue_followup_generation(
         template_version_id=None,
         llm_config_id=config.id,
         source_template_name="Follow-up",
-        follow_up_prompt_text=clean_prompt_text,
+        follow_up_prompt_text=None,
         status=GeneratedDocumentStatus.queued,
         title=f"Follow-up: {truncated_title}",
         document_mode=TemplateMode.freeform,
@@ -1380,6 +1511,9 @@ def queue_followup_generation(
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
     )
+    set_generated_document_text(db, document=generated_document, field="follow_up_prompt_text", plaintext=clean_prompt_text)
+    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
+    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -1433,6 +1567,8 @@ def queue_quick_action_generation(
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
     )
+    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
+    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -1481,7 +1617,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         raise AppError(422, "business_rule_violation", "No resolved LLM model is stored for this generated document")
     redaction_run = ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
     document.redaction_run_id = redaction_run.id
-    transcript_text = redaction_run.redacted_text_encrypted or ""
+    transcript_text = redaction_run_text(db, run=redaction_run) or ""
     extra_phi_index: list[dict[str, str | int]] = []
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
@@ -1495,7 +1631,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             template_version = db.get(PromptTemplateVersion, document.template_version_id)
             if template_version is not None:
                 template_config = _template_version_config(template_version)
-        structured_context_json = document.structured_context_json if isinstance(document.structured_context_json, dict) else {}
+        structured_context_json = generated_document_structured_context(db, document=document)
         if document.document_mode is TemplateMode.structured:
             if template_config is None:
                 raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
@@ -1532,7 +1668,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 transcript_text=transcript_text,
             )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
-        follow_up_prompt_text = (document.follow_up_prompt_text or "").strip()
+        follow_up_prompt_text = generated_document_text(db, document=document, field="follow_up_prompt_text").strip()
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
         prompt_redaction = redact_transient_text(follow_up_prompt_text, start_index=next_placeholder_index(redaction_run))
@@ -1618,7 +1754,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
         return document
 
-    phi_index = combined_phi_index(redaction_run, extra_phi_index=list(extra_phi_index))
+    phi_index = combined_phi_index(db, redaction_run, extra_phi_index=list(extra_phi_index))
 
     try:
         if document.generator_type is GeneratedDocumentGeneratorType.template:
@@ -1658,32 +1794,50 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         document.error_code = exc.code
         document.error_message = exc.message[:255]
         document.provider_error_code = (exc.details or {}).get("provider_error_code")
-        document.failed_provider_output_redacted_encrypted = generated_text
+        set_generated_document_text(
+            db,
+            document=document,
+            field="failed_provider_output_redacted_encrypted",
+            plaintext=generated_text,
+        )
         document.completed_at = utcnow()
         db.add(document)
         db.commit()
         db.refresh(document)
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
         return document
-    document.original_output_text_encrypted = restored_text
-    document.edited_output_text_encrypted = restored_text
+    set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=restored_text)
+    set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=restored_text)
     document.failed_provider_output_redacted_encrypted = None
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         for existing_section in list(document.sections):
             db.delete(existing_section)
         for section in structured_sections:
-            db.add(
-                GeneratedDocumentSection(
-                    id=uuid4(),
-                    generated_document_id=document.id,
-                    section_key=str(section["section_key"]),
-                    section_label=str(section["section_label"]),
-                    section_order=int(section["section_order"]),
-                    original_text_encrypted=str(section["text"]),
-                    edited_text_encrypted=str(section["text"]),
-                    is_edited=False,
-                )
+            section_record = GeneratedDocumentSection(
+                id=uuid4(),
+                generated_document_id=document.id,
+                section_key=str(section["section_key"]),
+                section_label=str(section["section_label"]),
+                section_order=int(section["section_order"]),
+                original_text_encrypted="",
+                edited_text_encrypted="",
+                is_edited=False,
             )
+            set_generated_document_section_text(
+                db,
+                section=section_record,
+                field="original_text_encrypted",
+                owner_user_id=document.owner_user_id,
+                plaintext=str(section["text"]),
+            )
+            set_generated_document_section_text(
+                db,
+                section=section_record,
+                field="edited_text_encrypted",
+                owner_user_id=document.owner_user_id,
+                plaintext=str(section["text"]),
+            )
+            db.add(section_record)
     if restored_title is not None:
         document.title = restored_title[:255]
         transcript = db.get(Transcript, document.transcript_id)

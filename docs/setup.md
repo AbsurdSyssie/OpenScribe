@@ -159,7 +159,7 @@ That only affects the FastAPI bind and the startup guard. Postgres, Redis, and V
 - normal team users may set their own preferred default LLM model from `/home`
 - system admins provision and manage a selected team's LLM provider rows from `/admin?team_id=<team_uuid>`
 - system admins also manage the active team LLM selection from `/admin?team_id=<team_uuid>`
-- the implemented adapter families are `openai_chat` and `ollama_chat`
+- the implemented adapter families are `openai_chat`, `bedrock_chat`, and `ollama_chat`
 - leader/admin team selection now uses provider-backed model controls instead of free-text:
   - leaders/admins choose a provider
   - choose which provider models are visible to team users
@@ -169,6 +169,8 @@ That only affects the FastAPI bind and the startup guard. Postgres, Redis, and V
 - the UI does not reveal the stored token or the raw Vault reference
 - remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
 - the admin inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
+- Amazon Bedrock provisioning uses the OpenAI-compatible Bedrock Mantle endpoint format `https://bedrock-mantle.<region>.api.aws/v1`
+- the admin Bedrock form now accepts a region and derives the standard Mantle base URL from it; the default region is `eu-west-2`
 - local Ollama defaults to `http://localhost:11434`; model discovery uses `/api/tags`
 
 ## First access

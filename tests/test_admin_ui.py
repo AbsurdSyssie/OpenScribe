@@ -182,7 +182,7 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
     assert home_page.status_code == 200
     assert "OpenScribe home" in home_page.text
     assert "Open transcription workspace" in home_page.text
-    assert "Create a managed user" in home_page.text
+    assert "Create a new team member" in home_page.text
     assert "Account requests" in home_page.text
 
     logout_response = client.post("/logout", follow_redirects=False)
@@ -220,7 +220,8 @@ def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, mak
 
     assert response.status_code == 200
     assert "OpenScribe home" in response.text
-    assert "Team Management" in response.text
+    assert 'data-tab-target="team-management"' in response.text
+    assert "Team management" in response.text
     assert 'name="return_view" value="restyled"' in response.text
     assert "/home-restyled?tab=templates" in response.text
 
@@ -393,7 +394,7 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Team STT selection" in page.text
+    assert "Speech-to-Text" in page.text
     assert "Provisioned endpoint" in page.text
     assert "Clinic STT" in page.text
 
@@ -422,16 +423,16 @@ def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoi
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Current active selection" in page.text
-    assert "Clear active STT selection" in page.text
+    assert "Current selection" in page.text
+    assert "Clear selection" in page.text
 
     cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/home?tab=team-management"
 
     page_after = client.get("/home")
-    assert "Choose active endpoint" in page_after.text
-    assert "Current active selection" not in page_after.text
+    assert "Provisioned endpoint" in page_after.text
+    assert "Current selection" not in page_after.text
     assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
     assert db_session.get(TeamSttConfig, config.id) is not None
 
@@ -444,7 +445,7 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Team LLM selection" in page.text
+    assert "Language Model" in page.text
     assert "Clinic OpenAI" in page.text
 
     save = client.post(
@@ -476,7 +477,7 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
     page = client.get("/home")
     assert "Your LLM preference" in page.text
     assert "Clinic OpenAI" in page.text
-    assert "Team allows:" in page.text
+    assert "Team allows:" not in page.text
 
     save = client.post(
         "/home/llm-preference",
@@ -503,7 +504,7 @@ def test_user_home_can_clear_llm_preference(client, db_session, make_team, make_
     page = client.get("/home")
 
     assert page.status_code == 200
-    assert "Clear model preference" in page.text
+    assert "Clear preference" in page.text
 
     cleared = client.post("/home/llm-preference/clear", follow_redirects=False)
 
@@ -699,7 +700,7 @@ def test_home_restyled_team_management_uses_member_menu_without_duplicate_user_t
     page = client.get("/home-restyled?tab=team-management")
 
     assert page.status_code == 200
-    assert "Manage users in Clinic Restyled Team Management." in page.text
+    assert "Manage members and configuration for Clinic Restyled Team Management." in page.text
     assert "Managed users" not in page.text
     assert "Suspend" in page.text
     assert "Delete" in page.text
@@ -948,6 +949,8 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert page.status_code == 200
     assert "Ambient Scribe" in page.text
     assert 'data-new-session-button' in page.text
+    assert 'data-new-session-mode="live_chunked"' in page.text
+    assert "New Live Session" in page.text
     assert "Upload Audio" in page.text
     assert "Create or select a session to begin." in page.text
     assert "Latest note" in page.text
@@ -955,6 +958,11 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
     assert 'data-route-base="/transcribe"' in page.text
+    assert 'data-workspace-stream-endpoint="' in page.text
+    assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js" in page.text
+    assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
+    assert "new window.EventSource" in page.text
+    assert "syncWorkspaceRealtimeConnection" in page.text
 
 
 def test_user_transcribe_page_exposes_home_and_context_settings_controls(
@@ -1237,7 +1245,6 @@ def test_user_transcribe_glm_2_page_shows_all_emis_sections_for_structured_templ
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "Structured EMIS context" in page.text
     assert 'name="context_problem"' in page.text
     assert 'name="context_history"' in page.text
     assert 'name="context_family_history"' in page.text
@@ -1433,6 +1440,76 @@ def test_user_transcribe_page_can_create_live_chunked_session(client, db_session
     assert transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
 
 
+def test_user_transcribe_page_renders_live_session_controls(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Live Render")
+    member = make_user(email="member-live-render@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Live session",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-live-render@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "Switch to upload mode" in page.text
+    assert "Start live" in page.text
+    assert "Listening for speech" in page.text
+    assert "vad.MicVAD.new" in page.text
+    assert "submitUserSpeechOnPause: true" in page.text
+    assert "Thirty seconds of speech reached. Sending the current live chunk" in page.text
+    assert "liveChunkOverlapMs = 800" in page.text
+    assert "Sending the latest 30 seconds and keeping a 0.8 second overlap" in page.text
+    assert "Reinitializing live capture for the next utterance" in page.text
+    assert "liveRestartPending" in page.text
+    assert "shouldPollWhileLiveCaptureActive" in page.text
+    assert "if (!liveCaptureActive) return;" in page.text
+    assert "isLiveCaptureUiActive" in page.text
+    assert "shouldPreserveLiveMicStatus" in page.text
+
+
+def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Live Failure")
+    member = make_user(email="member-live-failure@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Live session",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="chunk-1.wav",
+            status=TranscriptIngestionJobStatus.failed,
+            error_code="stt_unavailable",
+            error_message="Could not reach the STT provider",
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-live-failure@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "Could not reach the STT provider" in page.text
+    assert "defaultMicStatusState" in page.text
+
+
 def test_user_transcribe_page_can_switch_blank_live_session_to_whole_file(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
     make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
@@ -1480,9 +1557,13 @@ def test_user_transcribe_page_shows_progress_for_transcribing_session(client, db
     assert "Background transcription is in progress." in page.text
 
 
-def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, db_session, make_team, make_user):
+def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic Failure Detail")
     member = make_user(email="member-failure@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    leader = make_user(email="leader-failure@example.com", password="password-5", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-failure@example.com", password="password-4", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
+    make_stt_selection(config=config, actor=leader)
     failed = Transcript(
         owner_user_id=member.id,
         team_id=team.id,
@@ -1498,6 +1579,8 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
         transcript_id=failed.id,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
+        source_audio_blob=b"raw-file-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_config_secret_missing",
         error_message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
@@ -1510,6 +1593,106 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
 
     assert page.status_code == 200
     assert "The last ingestion attempt failed: The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth." in page.text
+    assert "Retry transcription" in page.text
+
+
+def test_user_transcribe_page_hides_retry_when_failed_upload_blob_is_missing(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Failure No Retry")
+    member = make_user(email="member-no-retry@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    failed = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Failed session",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(failed)
+    db_session.commit()
+    job = TranscriptIngestionJob(
+        transcript_id=failed.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=None,
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-no-retry@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={failed.id}")
+
+    assert page.status_code == 200
+    assert "The last ingestion attempt failed: STT provider request failed" in page.text
+    assert 'data-retry-ingestion-form hidden' in page.text
+
+
+def test_user_can_retry_failed_file_transcription_from_browser(client, db_session, monkeypatch, make_team, make_user, make_stt_config, make_stt_selection):
+    team = make_team(name="Clinic Retry Detail")
+    member = make_user(email="member-retry@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    leader = make_user(email="leader-retry@example.com", password="password-5", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry@example.com", password="password-4", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
+    make_stt_selection(config=config, actor=leader)
+    failed = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Retry session",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(failed)
+    db_session.commit()
+    failed_job = TranscriptIngestionJob(
+        transcript_id=failed.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=b"raw-file-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    class FakeTaskResult:
+        id = "retry-task-1"
+
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: FakeTaskResult())
+
+    client.post("/login", data={"email": "member-retry@example.com", "password": "password-3"}, follow_redirects=False)
+    retried = client.post(
+        "/transcribe/retry-file-ingestion",
+        data={"transcript_id": str(failed.id)},
+        follow_redirects=False,
+    )
+
+    assert retried.status_code == 303
+    assert f"queued_transcript_id={failed.id}" in retried.headers["location"]
+    refreshed_failed_job = db_session.get(TranscriptIngestionJob, failed_job.id)
+    assert refreshed_failed_job is not None
+    assert refreshed_failed_job.source_audio_blob is None
+    assert refreshed_failed_job.source_audio_vault_ref is None
+    assert refreshed_failed_job.source_audio_size_bytes is None
+    queued_jobs = db_session.scalars(
+        select(TranscriptIngestionJob)
+        .where(TranscriptIngestionJob.transcript_id == failed.id)
+        .order_by(TranscriptIngestionJob.created_at.desc(), TranscriptIngestionJob.id.desc())
+    ).all()
+    assert len(queued_jobs) >= 2
+    latest_job = queued_jobs[0]
+    assert latest_job.status is TranscriptIngestionJobStatus.queued
+    assert latest_job.celery_task_id == "retry-task-1"
+    assert latest_job.source_audio_blob is None
+    assert latest_job.source_audio_vault_ref is not None
+    assert latest_job.source_audio_size_bytes == len(b"raw-file-audio")
 
 
 def test_user_transcribe_page_blocks_new_blank_session_when_latest_is_still_empty(client, db_session, make_team, make_user):
@@ -1742,8 +1925,13 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert "Structured EMIS context" in page.text
     assert 'name="context_problem"' in page.text
+    assert 'data-generated-structured-section' in page.text
+    assert "event.key === 'Enter' && !event.shiftKey" in page.text
+    assert "event.key === 'Backspace' || event.key === 'Escape'" in page.text
+    assert "event.key === 'ArrowUp'" in page.text
+    assert "event.key === 'ArrowDown'" in page.text
+    assert "event.key === 'Tab'" in page.text
 
 
 def test_user_transcribe_page_hides_emis_context_for_freeform_template(
@@ -1786,7 +1974,8 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert 'data-structured-context-panel hidden' in page.text
+    assert "Freeform mode" in page.text
+    assert "No generated output yet." in page.text
 
 
 def test_user_transcribe_page_reloads_persisted_structured_emis_context(
@@ -1840,7 +2029,6 @@ def test_user_transcribe_page_reloads_persisted_structured_emis_context(
     assert 'name="context_problem"' in page.text
     assert "Known asthma" in page.text
     assert "Peak flow diary" in page.text
-    assert "queued" in page.text
 
 
 def test_user_transcribe_page_exposes_workspace_api_endpoint(
@@ -1943,6 +2131,7 @@ def test_user_transcribe_page_keeps_structured_output_refresh_hooks(
     assert 'data-generated-structured-panel' in page.text
     assert 'data-generated-structured-sections' in page.text
     assert 'data-copy-structured-lines' in page.text
+    assert 'data-structured-line-input' in page.text
 
 
 def test_local_dev_transcribe_page_shows_redaction_debug_panel(
@@ -2401,6 +2590,57 @@ def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(c
 
     assert save.status_code == 303
     assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+
+
+def test_admin_page_can_inspect_and_save_bedrock_provider_without_retyping_api_key(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bedrock")
+    make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm._list_bedrock_chat_models",
+        lambda **kwargs: ["anthropic.claude-3-7-sonnet-20250219-v1:0", "amazon.nova-micro-v1:0"],
+    )
+
+    client.post("/login", data={"email": "admin-bedrock@example.com", "password": "password-1"}, follow_redirects=False)
+    inspect = client.post(
+        "/admin/llm-configs/inspect",
+        data={
+            "team_id": str(team.id),
+            "label": "Amazon Bedrock",
+            "adapter_kind": "bedrock_chat",
+            "base_url": "",
+            "bedrock_region": "us-east-1",
+            "bearer_token": "bedrock-api-key",
+        },
+    )
+
+    assert inspect.status_code == 200
+    assert 'name="preserved_bearer_token" value="bedrock-api-key"' in inspect.text
+    assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (fetched)<" in inspect.text
+    assert "https://bedrock-mantle.us-east-1.api.aws/v1" in inspect.text
+    assert 'name="bedrock_region" value="us-east-1"' in inspect.text
+
+    save = client.post(
+        "/admin/llm-configs",
+        data={
+            "team_id": str(team.id),
+            "config_id": "",
+            "adapter_kind": "bedrock_chat",
+            "label": "Amazon Bedrock",
+            "base_url": "",
+            "bedrock_region": "us-east-1",
+            "preserved_bearer_token": "bedrock-api-key",
+            "bearer_token": "",
+            "provider_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "is_active": "true",
+        },
+        follow_redirects=False,
+    )
+
+    assert save.status_code == 303
+    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved_config is not None
+    assert saved_config.adapter_kind.value == "bedrock_chat"
+    assert saved_config.base_url == "https://bedrock-mantle.us-east-1.api.aws/v1"
 
 
 def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(client, db_session, make_team, make_user, monkeypatch):

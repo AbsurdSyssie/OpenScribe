@@ -16,6 +16,7 @@ Add a first transcript capture flow with:
 - client-side chunking with VAD
 - backend forwarding of audio chunks to the team transcription endpoint
 - backend-owned draft text updates into `transcripts.current_draft_text_encrypted`
+- transcript draft text, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document section text, follow-up prompt text, redaction output text, and redaction entity values encrypted at rest before Postgres persistence
 - existing commit/version behavior preserved
 
 Longer-term capture modes to support on the same foundation:
@@ -26,6 +27,11 @@ Longer-term capture modes to support on the same foundation:
 
 This slice is about transcript draft ingestion on top of admin-provisioned STT endpoints and team-selected STT policy. It is not about note generation, sharing, or admin visibility into content.
 
+Current metadata boundary:
+
+- transcript and generated-document `title` fields remain plaintext metadata in this slice
+- owner-facing API and browser responses still return plaintext content after normal owner authz
+
 ## Core constraints
 
 - transcript-derived content remains owner-only
@@ -34,6 +40,7 @@ This slice is about transcript draft ingestion on top of admin-provisioned STT e
 - neither leaders nor system admins may read transcript content by virtue of STT management
 - provider secrets must not be stored raw in the database
 - Vault remains the secret layer for provider credentials
+- Vault Transit is now also the KEK layer for owner DEKs
 - transcript roots remain the deletion and retention root
 - committed transcript versions are still created only on blur, save, or explicit action
 
@@ -187,6 +194,7 @@ The worker path then:
 - receives transcript text from the provider
 - applies completed live chunks in sequence order
 - updates `transcripts.current_draft_text_encrypted`
+- encrypts transcript draft/version/job text at rest before persistence and decrypts only after owner authz has already resolved the transcript
 - records operational metadata without storing raw secrets in the database
 - whole-file uploads now keep the raw upload blob only until one ingestion attempt succeeds, then that stored blob is cleared
 

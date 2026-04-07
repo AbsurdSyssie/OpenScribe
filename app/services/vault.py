@@ -3,13 +3,164 @@ import os
 from uuid import UUID
 
 import httpx
+import hvac
+from hvac import exceptions as hvac_exceptions
 
 from app.errors import AppError
 
 
 VAULT_ADDR = os.getenv("VAULT_ADDR", "http://127.0.0.1:8200")
 VAULT_TOKEN = os.getenv("VAULT_TOKEN", "root")
+VAULT_TOKEN_FILE = os.getenv("VAULT_TOKEN_FILE")
 VAULT_KV_MOUNT = os.getenv("VAULT_KV_MOUNT", "secret")
+VAULT_TRANSIT_MOUNT = os.getenv("VAULT_TRANSIT_MOUNT", "transit")
+VAULT_USER_CONTENT_KEK_KEY_NAME = os.getenv("VAULT_USER_CONTENT_KEK_KEY_NAME", "openscribe-user-content-kek")
+
+
+def _resolve_vault_token() -> str | None:
+    if VAULT_TOKEN_FILE:
+        try:
+            with open(VAULT_TOKEN_FILE, "r", encoding="utf-8") as handle:
+                token = handle.read().strip()
+        except OSError as exc:
+            raise AppError(502, "vault_unavailable", "Vault token file is unavailable") from exc
+        return token or None
+    return VAULT_TOKEN or None
+
+
+def _vault_headers() -> dict[str, str]:
+    token = _resolve_vault_token()
+    if not token:
+        raise AppError(502, "vault_unavailable", "Vault token is not configured")
+    return {"X-Vault-Token": token}
+
+
+def vault_client() -> hvac.Client:
+    try:
+        client = hvac.Client(url=VAULT_ADDR, token=_resolve_vault_token())
+    except Exception as exc:  # pragma: no cover
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    return client
+
+
+def ensure_user_content_transit_ready() -> None:
+    client = vault_client()
+    mount_path = f"{VAULT_TRANSIT_MOUNT.strip('/')}/"
+    try:
+        mounts_response = client.sys.list_mounted_secrets_engines()
+    except Exception as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    mounts = (mounts_response or {}).get("data") or {}
+    if mount_path not in mounts:
+        try:
+            client.sys.enable_secrets_engine(
+                backend_type="transit",
+                path=VAULT_TRANSIT_MOUNT.strip("/"),
+            )
+        except hvac_exceptions.InvalidRequest:
+            pass
+        except Exception as exc:
+            raise AppError(502, "vault_bootstrap_failed", "Vault Transit mount could not be created") from exc
+    try:
+        client.secrets.transit.read_key(
+            name=VAULT_USER_CONTENT_KEK_KEY_NAME,
+            mount_point=VAULT_TRANSIT_MOUNT,
+        )
+    except hvac_exceptions.InvalidPath:
+        try:
+            client.secrets.transit.create_key(
+                name=VAULT_USER_CONTENT_KEK_KEY_NAME,
+                mount_point=VAULT_TRANSIT_MOUNT,
+            )
+        except hvac_exceptions.InvalidRequest:
+            pass
+        except Exception as exc:
+            raise AppError(502, "vault_bootstrap_failed", "Vault KEK key could not be created") from exc
+    except Exception as exc:
+        raise AppError(502, "vault_bootstrap_failed", "Vault KEK key could not be checked") from exc
+
+
+def _transit_key_version_from_ciphertext(ciphertext: str) -> int:
+    try:
+        _, version_fragment, _ = ciphertext.split(":", 2)
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Vault returned an invalid wrapped key") from exc
+    if not version_fragment.startswith("v"):
+        raise AppError(502, "vault_read_failed", "Vault returned an invalid wrapped key")
+    try:
+        return int(version_fragment[1:])
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Vault returned an invalid wrapped key") from exc
+
+
+def generate_user_content_data_key() -> tuple[bytes, str, int]:
+    client = vault_client()
+    try:
+        response = client.secrets.transit.generate_data_key(
+            name=VAULT_USER_CONTENT_KEK_KEY_NAME,
+            key_type="plaintext",
+            mount_point=VAULT_TRANSIT_MOUNT,
+        )
+    except Exception as exc:
+        raise AppError(502, "vault_write_failed", "Vault data key generation failed") from exc
+    data = response.get("data") or {}
+    plaintext_b64 = data.get("plaintext")
+    wrapped_dek = data.get("ciphertext")
+    if not plaintext_b64 or not wrapped_dek:
+        raise AppError(502, "vault_write_failed", "Vault data key generation failed")
+    try:
+        plaintext = base64.b64decode(str(plaintext_b64), validate=True)
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Vault returned an invalid plaintext data key") from exc
+    key_version = int(data.get("key_version") or _transit_key_version_from_ciphertext(str(wrapped_dek)))
+    return plaintext, str(wrapped_dek), key_version
+
+
+def unwrap_user_content_data_key(
+    *,
+    wrapped_dek: str,
+    mount_point: str | None = None,
+    key_name: str | None = None,
+) -> bytes:
+    client = vault_client()
+    try:
+        response = client.secrets.transit.decrypt_data(
+            name=key_name or VAULT_USER_CONTENT_KEK_KEY_NAME,
+            ciphertext=wrapped_dek,
+            mount_point=mount_point or VAULT_TRANSIT_MOUNT,
+        )
+    except Exception as exc:
+        raise AppError(502, "vault_read_failed", "Vault data key unwrap failed") from exc
+    data = response.get("data") or {}
+    plaintext_b64 = data.get("plaintext")
+    if not plaintext_b64:
+        raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+    try:
+        return base64.b64decode(str(plaintext_b64), validate=True)
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Vault returned an invalid plaintext data key") from exc
+
+
+def rewrap_user_content_data_key(
+    *,
+    wrapped_dek: str,
+    mount_point: str | None = None,
+    key_name: str | None = None,
+) -> tuple[str, int]:
+    client = vault_client()
+    try:
+        response = client.secrets.transit.rewrap_data(
+            name=key_name or VAULT_USER_CONTENT_KEK_KEY_NAME,
+            ciphertext=wrapped_dek,
+            mount_point=mount_point or VAULT_TRANSIT_MOUNT,
+        )
+    except Exception as exc:
+        raise AppError(502, "vault_write_failed", "Vault data key rewrap failed") from exc
+    data = response.get("data") or {}
+    rewrapped = data.get("ciphertext")
+    if not rewrapped:
+        raise AppError(502, "vault_write_failed", "Vault data key rewrap failed")
+    return str(rewrapped), int(data.get("key_version") or _transit_key_version_from_ciphertext(str(rewrapped)))
 
 
 def team_stt_secret_path(team_id: UUID, config_id: UUID) -> str:
@@ -26,7 +177,7 @@ def write_team_stt_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token:
     try:
         response = httpx.post(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             json={"data": {"bearer_token": bearer_token}},
             timeout=10.0,
         )
@@ -43,7 +194,7 @@ def read_team_stt_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
     try:
         response = httpx.get(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -76,7 +227,7 @@ def delete_team_stt_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
     try:
         response = httpx.delete(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -100,7 +251,7 @@ def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token:
     try:
         response = httpx.post(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             json={"data": {"bearer_token": bearer_token}},
             timeout=10.0,
         )
@@ -117,7 +268,7 @@ def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
     try:
         response = httpx.get(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -140,7 +291,7 @@ def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
     try:
         response = httpx.delete(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -176,7 +327,7 @@ def write_transcript_ingestion_source_audio(*, job_id: UUID, audio_bytes: bytes)
     try:
         response = httpx.post(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             json={"data": {"audio_b64": encoded_audio}},
             timeout=15.0,
         )
@@ -193,7 +344,7 @@ def read_transcript_ingestion_source_audio(*, secret_ref: str) -> bytes:
     try:
         response = httpx.get(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=15.0,
         )
     except httpx.HTTPError as exc:
@@ -219,7 +370,7 @@ def delete_transcript_ingestion_source_audio(*, secret_ref: str) -> None:
     try:
         response = httpx.delete(
             url,
-            headers={"X-Vault-Token": VAULT_TOKEN},
+            headers=_vault_headers(),
             timeout=15.0,
         )
     except httpx.HTTPError as exc:

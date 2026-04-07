@@ -60,6 +60,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "templates",
         "users",
         "user_llm_preferences",
+        "user_encryption_keys",
         "user_trusted_devices",
         "user_sessions",
         "user_mfa_methods",
@@ -159,6 +160,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
+    user_encryption_key_columns = {column["name"] for column in inspector.get_columns("user_encryption_keys")}
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
@@ -265,6 +267,8 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"owner_user_id", "team_id", "current_draft_text_encrypted", "structured_context_json", "ingestion_mode", "next_live_chunk_sequence_no_applied"} <= transcript_columns
     assert {
         "transcript_id",
+        "owner_user_id",
+        "team_id",
         "job_kind",
         "chunk_sequence_no",
         "status",
@@ -285,6 +289,17 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "stt_response_text_path",
         "stt_extra_form_fields_json",
     } <= transcript_ingestion_job_columns
+    assert {
+        "user_id",
+        "dek_version",
+        "wrapped_dek",
+        "kek_mount",
+        "kek_key_name",
+        "kek_key_version",
+        "is_active",
+        "created_at",
+        "rotated_at",
+    } <= user_encryption_key_columns
 
 
 @pytest.mark.migration

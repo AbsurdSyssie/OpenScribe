@@ -2,7 +2,7 @@ import json
 import time
 import io
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 import wave
 
 import httpx
@@ -43,6 +43,7 @@ from app.models import (
     TranscriptVersion,
     TemplateMode,
     User,
+    UserEncryptionKey,
     UserLlmPreference,
     UserRecoveryCode,
     UserSession,
@@ -54,7 +55,16 @@ from app.models import (
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, run_saved_stt_config_test
 from app.schemas.templates import GenerateFollowupRequest
 from app.services.audio import NormalizedAudio
+from app.services.content_crypto import (
+    decrypt_json_for_owner,
+    decrypt_text_for_owner,
+    encrypt_json_for_owner,
+    encrypt_text_for_owner,
+    ensure_user_dek,
+    is_encrypted_envelope,
+)
 from app.services.redaction import reidentify_text as redaction_reidentify_text
+from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.stt import transcribe_with_team_stt
 from app.services.templates import (
     _generate_freeform_output_ollama,
@@ -64,7 +74,11 @@ from app.services.templates import (
     queue_followup_generation,
     queue_quick_action_generation,
 )
-from app.services.transcripts import latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service, process_transcript_ingestion_job
+from app.services.transcripts import (
+    latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
+    process_transcript_ingestion_job,
+)
+from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
 
 
 def assert_error(response, *, status_code: int, code: str, message: str):
@@ -105,6 +119,70 @@ def make_test_wav_bytes(*, duration_seconds: float, sample_rate: int = 16000) ->
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\x00\x00" * frame_count)
     return buffer.getvalue()
+
+
+def decrypt_transcript_draft(db_session, transcript: Transcript) -> str | None:
+    return decrypt_text_for_owner(
+        db_session,
+        owner_user_id=transcript.owner_user_id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        stored_value=transcript.current_draft_text_encrypted,
+    )
+
+
+def decrypt_transcript_structured_context(db_session, transcript: Transcript) -> dict | None:
+    return decrypt_json_for_owner(
+        db_session,
+        owner_user_id=transcript.owner_user_id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        stored_value=transcript.structured_context_json,
+    )
+
+
+def decrypt_generated_document_field(db_session, document: GeneratedDocument, field: str) -> str | None:
+    return decrypt_text_for_owner(
+        db_session,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field=field,
+        record_id=document.id,
+        stored_value=getattr(document, field),
+    )
+
+
+def decrypt_generated_document_structured_context(db_session, document: GeneratedDocument) -> dict | None:
+    return decrypt_json_for_owner(
+        db_session,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="structured_context_json",
+        record_id=document.id,
+        stored_value=document.structured_context_json,
+    )
+
+
+def decrypt_generated_document_section_field(db_session, *, owner_user_id, section: GeneratedDocumentSection, field: str) -> str | None:
+    return decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner_user_id,
+        table="generated_document_sections",
+        field=field,
+        record_id=section.id,
+        stored_value=getattr(section, field),
+    )
+
+
+def make_ingestion_job_for_transcript(transcript: Transcript, **kwargs) -> TranscriptIngestionJob:
+    return TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=transcript.owner_user_id,
+        team_id=transcript.team_id,
+        **kwargs,
+    )
 
 
 class FakeHttpxResponse:
@@ -1414,7 +1492,8 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.title == "Visit summary"
-    assert processed.edited_output_text_encrypted == "Generated note body"
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -1423,7 +1502,18 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
 
     versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
     assert len(versions) == 1
-    assert versions[0].text_encrypted == "Patient says symptoms improved."
+    assert is_encrypted_envelope(versions[0].text_encrypted)
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=versions[0].id,
+            stored_value=versions[0].text_encrypted,
+        )
+        == "Patient says symptoms improved."
+    )
 
     client.post("/api/v1/auth/logout")
     login(client, email="other@example.com", password="password-4")
@@ -1484,7 +1574,8 @@ def test_template_generation_supports_ollama_adapter(
     assert persisted_document.celery_task_id == "generated-task-2"
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.title == "Ollama summary"
-    assert processed.edited_output_text_encrypted == "Ollama note body"
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Ollama note body"
     assert persisted_document.model_used == "llama3.2"
 
 
@@ -1544,7 +1635,8 @@ def test_template_generation_supports_bedrock_adapter(
     assert persisted_document.llm_adapter_kind == "bedrock_chat"
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.title == "Bedrock summary"
-    assert processed.edited_output_text_encrypted == "Bedrock note body"
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Bedrock note body"
     assert persisted_document.model_used == "anthropic.claude-3-7-sonnet-20250219-v1:0"
 
 
@@ -1610,7 +1702,8 @@ def test_structured_emis_template_generation_persists_sections(
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.document_mode is TemplateMode.structured
     assert processed.title == "Chest review"
-    assert "Problem\nAsthma flare." in processed.edited_output_text_encrypted
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert "Problem\nAsthma flare." in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
     sections = list(
         db_session.scalars(
             select(GeneratedDocumentSection)
@@ -1619,13 +1712,19 @@ def test_structured_emis_template_generation_persists_sections(
         )
     )
     assert [section.section_key for section in sections] == ["problem", "history", "tasks"]
-    assert sections[0].edited_text_encrypted == "Asthma flare."
+    assert is_encrypted_envelope(sections[0].edited_text_encrypted)
+    assert decrypt_generated_document_section_field(
+        db_session,
+        owner_user_id=owner.id,
+        section=sections[0],
+        field="edited_text_encrypted",
+    ) == "Asthma flare."
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert detail.status_code == 200
     assert detail.json()[0]["document_mode"] == "structured"
     assert len(detail.json()[0]["sections"]) == 3
     persisted_transcript = db_session.get(Transcript, UUID(transcript_id))
-    assert persisted_transcript.structured_context_json == {
+    assert decrypt_transcript_structured_context(db_session, persisted_transcript) == {
         "profile": "emis",
         "sections": {
             "problem": ["Known asthma"],
@@ -1691,7 +1790,7 @@ def test_structured_emis_generation_reuses_transcript_persisted_context_when_req
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
     assert persisted_document is not None
-    assert persisted_document.structured_context_json == {"problem": ["Known asthma"]}
+    assert decrypt_generated_document_structured_context(db_session, persisted_document) == {"problem": ["Known asthma"]}
 
 
 def test_structured_emis_generation_filters_transcript_context_sections_removed_by_template(
@@ -1758,10 +1857,10 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
     assert persisted_document is not None
-    assert persisted_document.structured_context_json == {"problem": ["Known asthma"]}
+    assert decrypt_generated_document_structured_context(db_session, persisted_document) == {"problem": ["Known asthma"]}
     persisted_transcript = db_session.get(Transcript, transcript.id)
     assert persisted_transcript is not None
-    assert persisted_transcript.structured_context_json == {
+    assert decrypt_transcript_structured_context(db_session, persisted_transcript) == {
         "profile": "emis",
         "sections": {"problem": ["Known asthma"]},
     }
@@ -1921,10 +2020,13 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.followup
     assert persisted_document.celery_task_id == "generated-task-followup"
+    assert is_encrypted_envelope(persisted_document.follow_up_prompt_text)
+    assert decrypt_generated_document_field(db_session, persisted_document, "follow_up_prompt_text") == "Arrange repeat bloods and advise review if the cough persists."
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
-    assert "repeat bloods" in processed.edited_output_text_encrypted
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert "repeat bloods" in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -2013,7 +2115,96 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.redaction_run_id == run.id
     assert processed.title == "John Smith review"
-    assert processed.edited_output_text_encrypted == "John Smith should rest and John Smith should book review."
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should rest and John Smith should book review."
+
+
+def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Redaction Encryption")
+    owner = make_user(email="owner-redaction-encryption@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript_id = uuid4()
+    transcript = Transcript(
+        id=transcript_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Encrypted redaction session",
+        current_draft_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript_id,
+            plaintext="John Smith reports headaches.",
+        ),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    version_id = uuid4()
+    transcript_version = TranscriptVersion(
+        id=version_id,
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext="John Smith reports headaches.",
+        ),
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.redaction.redact_text_with_mapping",
+        lambda text, **kwargs: {
+            "redacted_text": "[PHI-1] reports headaches.",
+            "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": 1, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        },
+    )
+
+    run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=transcript_version)
+
+    assert is_encrypted_envelope(run.redacted_text_encrypted)
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="redaction_runs",
+            field="redacted_text_encrypted",
+            record_id=run.id,
+            stored_value=run.redacted_text_encrypted,
+        )
+        == "[PHI-1] reports headaches."
+    )
+    entity = run.entities[0]
+    assert is_encrypted_envelope(entity.original_value_encrypted)
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="redaction_entities",
+            field="original_value_encrypted",
+            record_id=entity.id,
+            stored_value=entity.original_value_encrypted,
+        )
+        == "John Smith"
+    )
 
 
 def test_process_generated_document_uses_first_note_title_to_fill_default_session_title(
@@ -2483,7 +2674,8 @@ def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generatio
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
-    assert "repeat bloods" in processed.edited_output_text_encrypted
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert "repeat bloods" in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -2545,7 +2737,8 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.title == "Snapshot note"
-    assert processed.edited_output_text_encrypted == "Generated note body"
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
 
 
 def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
@@ -2593,7 +2786,8 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
 
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
-    assert processed.edited_output_text_encrypted == "SMS body"
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
 
 
 def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(client, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template):
@@ -3020,8 +3214,8 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
     db_session.commit()
     db_session.refresh(transcript)
     db_session.add(TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="v1"))
-    ingestion_job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    ingestion_job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-delete/source-audio",
@@ -3084,8 +3278,8 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-best-effort/source-audio",
@@ -3509,7 +3703,18 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
     versions = db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id)))
     version_rows = list(versions)
     assert [row.version_no for row in version_rows] == [1, 2]
-    assert version_rows[-1].text_encrypted == "final-text-v2"
+    assert is_encrypted_envelope(version_rows[-1].text_encrypted)
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_rows[-1].id,
+            stored_value=version_rows[-1].text_encrypted,
+        )
+        == "final-text-v2"
+    )
 
     owner_list = client.get(f"/api/v1/users/{owner.id}/transcripts")
     other_list = client.get(f"/api/v1/users/{other.id}/transcripts")
@@ -3524,6 +3729,140 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
     login(client, email="admin@example.com", password="password-3")
     forbidden_admin = client.post("/api/v1/transcripts/start", json={"title": "Admin note", "ingestion_mode": "whole_file"})
     assert_error(forbidden_admin, status_code=403, code="forbidden", message="System-admin accounts cannot own transcript content")
+
+
+def test_start_transcript_encrypts_draft_at_rest_and_provisions_owner_key(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-encrypted-start@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="owner-encrypted-start@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Encrypted visit",
+            "ingestion_mode": "whole_file",
+            "current_draft_text_encrypted": "Sensitive transcript draft",
+        },
+    )
+
+    assert started.status_code == 201
+    assert started.json()["current_draft_text_encrypted"] == "Sensitive transcript draft"
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+    assert is_encrypted_envelope(transcript.current_draft_text_encrypted)
+    assert decrypt_transcript_draft(db_session, transcript) == "Sensitive transcript draft"
+    key_row = db_session.query(UserEncryptionKey).filter(UserEncryptionKey.user_id == owner.id).one_or_none()
+    assert key_row is not None
+    assert key_row.wrapped_dek.startswith("vault:v1:")
+    assert key_row.is_active is True
+
+
+def test_transcript_detail_route_decrypts_structured_context_before_validation(client, db_session, make_team, make_user):
+    team = make_team(name="Structured Detail Team")
+    owner = make_user(email="owner-structured-detail@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="owner-structured-detail@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Structured visit",
+            "ingestion_mode": "whole_file",
+            "structured_context_json": {
+                "profile": "emis",
+                "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]},
+            },
+        },
+    )
+
+    assert started.status_code == 201
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+    assert is_encrypted_envelope(transcript.structured_context_json)
+
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+    assert detail.status_code == 200
+    assert detail.json()["structured_context_json"] == {
+        "profile": "emis",
+        "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]},
+    }
+
+
+def test_unwrap_user_content_data_key_does_not_attempt_transit_bootstrap(monkeypatch):
+    class FakeTransit:
+        @staticmethod
+        def decrypt_data(*, name, ciphertext, mount_point):
+            assert name == "openscribe-user-content-kek"
+            assert ciphertext == "vault:v1:wrapped-1"
+            assert mount_point == "transit"
+            return {"data": {"plaintext": "QUJDRA=="}}
+
+    class FakeSecrets:
+        transit = FakeTransit()
+
+    class FakeClient:
+        secrets = FakeSecrets()
+
+    def fail_bootstrap():
+        raise AssertionError("bootstrap should not be called for unwrap")
+
+    monkeypatch.setattr("app.services.vault.ensure_user_content_transit_ready", fail_bootstrap)
+    monkeypatch.setattr("app.services.vault.vault_client", lambda: FakeClient())
+
+    assert unwrap_user_content_data_key(wrapped_dek="vault:v1:wrapped-1") == b"ABCD"
+
+
+def test_unwrap_user_content_data_key_uses_explicit_kek_metadata(monkeypatch):
+    class FakeTransit:
+        @staticmethod
+        def decrypt_data(*, name, ciphertext, mount_point):
+            assert name == "legacy-kek"
+            assert ciphertext == "vault:v1:wrapped-legacy"
+            assert mount_point == "legacy-transit"
+            return {"data": {"plaintext": "QUJDRA=="}}
+
+    class FakeSecrets:
+        transit = FakeTransit()
+
+    class FakeClient:
+        secrets = FakeSecrets()
+
+    monkeypatch.setattr("app.services.vault.vault_client", lambda: FakeClient())
+
+    assert (
+        unwrap_user_content_data_key(
+            wrapped_dek="vault:v1:wrapped-legacy",
+            mount_point="legacy-transit",
+            key_name="legacy-kek",
+        )
+        == b"ABCD"
+    )
+
+
+def test_generate_user_content_data_key_does_not_attempt_transit_bootstrap(monkeypatch):
+    class FakeTransit:
+        @staticmethod
+        def generate_data_key(*, name, key_type, mount_point):
+            assert name == "openscribe-user-content-kek"
+            assert key_type == "plaintext"
+            assert mount_point == "transit"
+            return {"data": {"plaintext": "QUJDRA==", "ciphertext": "vault:v1:wrapped-1", "key_version": 1}}
+
+    class FakeSecrets:
+        transit = FakeTransit()
+
+    class FakeClient:
+        secrets = FakeSecrets()
+
+    def fail_bootstrap():
+        raise AssertionError("bootstrap should not be called for generate")
+
+    monkeypatch.setattr("app.services.vault.ensure_user_content_transit_ready", fail_bootstrap)
+    monkeypatch.setattr("app.services.vault.vault_client", lambda: FakeClient())
+
+    plaintext, wrapped_dek, key_version = generate_user_content_data_key()
+    assert plaintext == b"ABCD"
+    assert wrapped_dek == "vault:v1:wrapped-1"
+    assert key_version == 1
 
 
 def test_transcript_detail_route_is_owner_only(client, make_team, make_user):
@@ -3561,8 +3900,8 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
     )
     db_session.add(transcript)
     db_session.commit()
-    job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
@@ -3599,8 +3938,8 @@ def test_transcript_detail_hides_retry_when_failed_upload_blob_is_missing(client
     )
     db_session.add(transcript)
     db_session.commit()
-    job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=None,
@@ -3636,15 +3975,15 @@ def test_transcript_detail_includes_next_live_chunk_sequence_number(client, db_s
     db_session.commit()
     db_session.add_all(
         [
-            TranscriptIngestionJob(
-                transcript_id=transcript.id,
+            make_ingestion_job_for_transcript(
+                transcript,
                 job_kind=TranscriptIngestionJobKind.live_chunk,
                 chunk_sequence_no=1,
                 source_filename="chunk-1.webm",
                 status=TranscriptIngestionJobStatus.applied,
             ),
-            TranscriptIngestionJob(
-                transcript_id=transcript.id,
+            make_ingestion_job_for_transcript(
+                transcript,
                 job_kind=TranscriptIngestionJobKind.live_chunk,
                 chunk_sequence_no=2,
                 source_filename="chunk-2.webm",
@@ -3738,6 +4077,207 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
     assert forbidden.status_code == 200
     assert forbidden.json()["active_transcript"] is None
+
+
+def test_transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_fields(
+    client,
+    db_session,
+    monkeypatch,
+    fake_user_content_transit,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Workspace DEK Cache Team")
+    owner = make_user(email="owner-workspace-cache@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="My note", prompt_text="Write a note.")
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Encrypted workspace session",
+        current_draft_text_encrypted=None,
+        structured_context_json=None,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="Patient is improving.",
+    )
+    transcript.structured_context_json = encrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        plaintext={"profile": "emis", "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]}},
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=uuid4(),
+            plaintext="Patient is improving.",
+        ),
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    transcript_version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=transcript_version.id,
+        plaintext="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    generated = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=template.versions[-1].id,
+        source_template_name=template.name,
+        status=GeneratedDocumentStatus.ready,
+        title="Visit summary",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(generated)
+    db_session.flush()
+    generated.original_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="original_output_text_encrypted",
+        record_id=generated.id,
+        plaintext="Body text",
+    )
+    generated.edited_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="edited_output_text_encrypted",
+        record_id=generated.id,
+        plaintext="Body text",
+    )
+    db_session.add(generated)
+    db_session.flush()
+    section = GeneratedDocumentSection(
+        id=uuid4(),
+        generated_document_id=generated.id,
+        section_key="problem",
+        section_label="Problem",
+        section_order=1,
+        original_text_encrypted="",
+        edited_text_encrypted="",
+        is_edited=False,
+    )
+    db_session.add(section)
+    db_session.flush()
+    section.original_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_document_sections",
+        field="original_text_encrypted",
+        record_id=section.id,
+        plaintext="Asthma flare.",
+    )
+    section.edited_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_document_sections",
+        field="edited_text_encrypted",
+        record_id=section.id,
+        plaintext="Asthma flare.",
+    )
+    db_session.add(section)
+    db_session.commit()
+
+    unwrap_calls = {"count": 0}
+
+    def counting_unwrap(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
+        unwrap_calls["count"] += 1
+        return fake_user_content_transit[wrapped_dek]
+
+    monkeypatch.setattr("app.services.content_crypto.unwrap_user_content_data_key", counting_unwrap)
+    db_session.info.clear()
+
+    login(client, email="owner-workspace-cache@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    assert unwrap_calls["count"] == 1
+
+
+def test_transcribe_workspace_endpoint_uses_row_kek_metadata_for_dek_unwrap(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+    fake_user_content_transit,
+):
+    team = make_team(name="Owner Metadata Team")
+    owner = make_user(email="owner-kek-metadata@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Metadata session",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+
+    key_record = ensure_user_dek(db_session, user=owner)
+    key_record.kek_mount = "legacy-transit"
+    key_record.kek_key_name = "legacy-kek"
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="Encrypted draft",
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    unwrap_calls: list[tuple[str | None, str | None]] = []
+
+    def counting_unwrap(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
+        unwrap_calls.append((mount_point, key_name))
+        return fake_user_content_transit[wrapped_dek]
+
+    monkeypatch.setattr("app.services.content_crypto.unwrap_user_content_data_key", counting_unwrap)
+    db_session.info.clear()
+
+    login(client, email="owner-kek-metadata@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert response.status_code == 200
+    assert response.json()["current_draft_text_encrypted"] == "Encrypted draft"
+    assert unwrap_calls == [("legacy-transit", "legacy-kek")]
 
 
 def test_transcribe_workspace_endpoint_does_not_health_check_stt_service(
@@ -3873,8 +4413,10 @@ def test_transcript_input_mode_can_switch_only_for_blank_idle_owner_session(clie
     assert switched.status_code == 200
     assert switched.json()["ingestion_mode"] == "live_chunked"
 
-    job = TranscriptIngestionJob(
-        transcript_id=UUID(transcript_id),
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript is not None
+    job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename="queued.wav",
@@ -3914,15 +4456,15 @@ def test_transcript_start_rejects_second_empty_latest_session_until_content_exis
         message="Finish or delete the current empty session before creating a new one",
     )
 
-    job = TranscriptIngestionJob(
-        transcript_id=first_id,
+    latest = db_session.get(Transcript, first_id)
+    assert latest is not None
+    job = make_ingestion_job_for_transcript(
+        latest,
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename="queued.wav",
         status=TranscriptIngestionJobStatus.queued,
     )
-    latest = db_session.get(Transcript, first_id)
-    assert latest is not None
     latest.status = TranscriptStatus.transcribing
     db_session.add(latest)
     db_session.add(job)
@@ -4029,8 +4571,8 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/delete-best-effort/source-audio",
@@ -4079,7 +4621,8 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert uploaded.json()["job"]["chunk_sequence_no"] == 1
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
-    assert persisted.current_draft_text_encrypted == "draft-1"
+    assert is_encrypted_envelope(persisted.current_draft_text_encrypted)
+    assert decrypt_transcript_draft(db_session, persisted) == "draft-1"
     job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
@@ -4246,8 +4789,8 @@ def test_live_audio_chunk_upload_enforces_hourly_duration_budget(
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.live_chunk,
             chunk_sequence_no=1,
             source_filename="earlier.webm",
@@ -4319,8 +4862,8 @@ def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript_one.id,
+        make_ingestion_job_for_transcript(
+            transcript_one,
             job_kind=TranscriptIngestionJobKind.live_chunk,
             chunk_sequence_no=1,
             source_filename="earlier.webm",
@@ -4386,8 +4929,8 @@ def test_live_audio_chunk_upload_measures_duration_when_declared_value_is_missin
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.live_chunk,
             chunk_sequence_no=1,
             source_filename="earlier.webm",
@@ -4481,7 +5024,8 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
 
     transcript_after_two = db_session.get(Transcript, UUID(transcript_id))
     assert transcript_after_two is not None
-    assert transcript_after_two.current_draft_text_encrypted == "draft-1"
+    assert is_encrypted_envelope(transcript_after_two.current_draft_text_encrypted)
+    assert decrypt_transcript_draft(db_session, transcript_after_two) == "draft-1"
     assert transcript_after_two.next_live_chunk_sequence_no_applied == 1
 
     processed_one = process_transcript_ingestion_job(db_session, job_id=job_one_id, audio_bytes=b"chunk-1")
@@ -4489,7 +5033,8 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
 
     transcript_after_one = db_session.get(Transcript, UUID(transcript_id))
     assert transcript_after_one is not None
-    assert transcript_after_one.current_draft_text_encrypted == "draft-1\nfirst chunk\nsecond chunk"
+    assert is_encrypted_envelope(transcript_after_one.current_draft_text_encrypted)
+    assert decrypt_transcript_draft(db_session, transcript_after_one) == "draft-1\nfirst chunk\nsecond chunk"
     assert transcript_after_one.next_live_chunk_sequence_no_applied == 3
     assert transcript_after_one.status.value == "transcribing"
 
@@ -4517,8 +5062,8 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     db_session.flush()
     db_session.add_all(
         [
-            TranscriptIngestionJob(
-                transcript_id=transcript.id,
+            make_ingestion_job_for_transcript(
+                transcript,
                 job_kind=TranscriptIngestionJobKind.live_chunk,
                 chunk_sequence_no=1,
                 source_filename="chunk-1.wav",
@@ -4526,8 +5071,8 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
                 error_code="stt_unavailable",
                 error_message="Could not reach the STT provider",
             ),
-            TranscriptIngestionJob(
-                transcript_id=transcript.id,
+            make_ingestion_job_for_transcript(
+                transcript,
                 job_kind=TranscriptIngestionJobKind.live_chunk,
                 chunk_sequence_no=2,
                 source_filename="chunk-2.wav",
@@ -4680,8 +5225,8 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     )
     db_session.add(transcript)
     db_session.commit()
-    failed_job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    failed_job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
@@ -4748,8 +5293,8 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
     )
     db_session.add(transcript)
     db_session.commit()
-    failed_job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    failed_job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
@@ -4801,8 +5346,8 @@ def test_retry_audio_file_route_rejects_when_failed_blob_is_missing(
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             status=TranscriptIngestionJobStatus.failed,
@@ -4844,8 +5389,8 @@ def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/missing/source-audio",
@@ -4932,8 +5477,8 @@ def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
     )
     db_session.add(transcript)
     db_session.commit()
-    failed_job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    failed_job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=None,
@@ -5103,8 +5648,8 @@ def test_audio_file_upload_rejects_duplicate_in_progress_whole_file_job(client, 
     db_session.add(transcript)
     db_session.commit()
 
-    job = TranscriptIngestionJob(
-        transcript_id=transcript_id,
+    job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename="existing.mp3",
@@ -5303,8 +5848,8 @@ def test_audio_file_upload_enforces_hourly_upload_size_budget(
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="earlier.mp3",
             source_audio_size_bytes=9,
@@ -5365,8 +5910,8 @@ def test_audio_file_upload_enforces_hourly_duration_budget(
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="earlier.mp3",
             source_audio_size_bytes=20,
@@ -5437,8 +5982,8 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript_one.id,
+        make_ingestion_job_for_transcript(
+            transcript_one,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="earlier.mp3",
             source_audio_size_bytes=20,
@@ -5552,7 +6097,8 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     assert refreshed_job.source_audio_duration_seconds == 42.5
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
-    assert persisted.current_draft_text_encrypted == "earlier transcript\nfull file transcript"
+    assert is_encrypted_envelope(persisted.current_draft_text_encrypted)
+    assert decrypt_transcript_draft(db_session, persisted) == "earlier transcript\nfull file transcript"
     assert persisted.status.value == "ready"
 
 
@@ -5699,8 +6245,8 @@ def test_stt_config_cannot_be_changed_while_jobs_are_in_flight(client, db_sessio
     )
     db_session.add(transcript)
     db_session.commit()
-    job = TranscriptIngestionJob(
-        transcript_id=transcript.id,
+    job = make_ingestion_job_for_transcript(
+        transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="queued.wav",
         stt_config_id=config.id,
@@ -5908,8 +6454,8 @@ def test_retry_audio_file_route_enforces_owner_scope(client, db_session, make_te
     db_session.add(transcript)
     db_session.commit()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_blob=b"raw-file-audio",

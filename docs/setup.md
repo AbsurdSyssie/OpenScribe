@@ -97,9 +97,32 @@ The current STT-config slice writes bearer tokens into Vault through:
 
 - `VAULT_ADDR`
 - `VAULT_TOKEN`
+- `VAULT_TOKEN_FILE`
 - `VAULT_KV_MOUNT`
+- `VAULT_TRANSIT_MOUNT`
+- `VAULT_USER_CONTENT_KEK_KEY_NAME`
 
 The default local values in `.env.example` match the Docker dev Vault container.
+
+The current transcript-at-rest encryption slice also depends on:
+
+- `cryptography`
+- `hvac`
+
+Current owner-content behavior:
+
+- transcript drafts in `transcripts.current_draft_text_encrypted` are written as AES-GCM envelopes at rest
+- committed transcript versions in `transcript_versions.text_encrypted` are written as AES-GCM envelopes at rest
+- STT job result text in `transcript_ingestion_jobs.result_text_encrypted` is written as AES-GCM envelopes at rest
+- normal content-owning users get one wrapped DEK recorded in `user_encryption_keys`
+- Vault Transit wraps and unwraps those DEKs; Vault KV still stores provider credentials and retry-audio refs
+
+Vault bootstrap behavior:
+
+- normal owner-content reads and writes assume the configured Transit mount and `VAULT_USER_CONTENT_KEK_KEY_NAME` key already exist
+- `./start-dev.sh` explicitly bootstraps the Transit mount and KEK for local dev before FastAPI and Celery start
+- in production, pre-provision the Transit mount and KEK during infrastructure bootstrap and give the runtime app and worker only the Transit permissions they actually need (`datakey`, `decrypt`, `rewrap` as appropriate)
+- least-privilege runtime tokens should not need `sys/mounts` or Transit key-management permissions just to read transcript-derived content
 
 The queued transcript-ingestion path uses:
 

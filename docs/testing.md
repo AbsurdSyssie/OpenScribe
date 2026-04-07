@@ -114,19 +114,26 @@ What it does:
 - STT config validation for remote HTTPS-only and leader team-selection scope
 - transcript owner-only access and version history
 - transcript start creating the root for the current user and persisting `ingestion_mode`
+- transcript start provisioning an owner DEK and storing the initial draft encrypted at rest
+- transcript structured context persisting encrypted at rest while owner-facing responses still expose plaintext JSON
 - transcript list responses including the persisted `ingestion_mode`
 - owner-only transcript detail fetch for browser polling
+- transcript detail and workspace reads still returning plaintext draft/context data to the owner while the DB stores ciphertext
+- generated-document queue/process flows storing note bodies, follow-up prompts, structured section text, and structured context encrypted at rest while the owner-facing APIs still return plaintext
+- redaction run creation storing redacted transcript text and placeholder original values encrypted at rest
 - owner-only live audio chunk queueing
 - live audio chunk upload rejecting non-`live_chunked` transcripts
 - duplicate live chunk sequence rejection
 - sequence-aware live chunk worker application
 - sequence-aware live chunk reconciliation advancing past failed live-chunk gaps once later completed chunks are available
 - live chunk worker failure when no active team STT selection exists
+- live chunk worker encrypting provider result text at rest before owner-visible reconciliation
 - owner-only whole-file ingestion queueing
 - whole-file ingestion retaining retryable source audio outside Postgres, with the ingestion job carrying either a legacy blob or a Vault-backed source-audio ref
 - whole-file ingestion rejecting transcripts in the wrong ingestion mode
 - whole-file queueing failing early when no active team STT selection exists
 - whole-file ingestion moving the transcript to `ready` after successful provider completion
+- whole-file ingestion appending plaintext transcript content into an encrypted-at-rest transcript draft
 - STT provider execution using the team config, Vault secret, and configured response text path
 - queued STT jobs snapshotting the resolved provider/model so later team STT selection changes do not retarget already-uploaded audio
 - handled STT worker failures now marking the job/transcript failed without re-raising expected AppError paths into noisy Celery tracebacks

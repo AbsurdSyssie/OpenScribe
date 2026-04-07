@@ -101,6 +101,7 @@ from .schemas import (
     UserLlmPreferenceUpsert,
     UserListItem,
     GeneratedDocumentDetail,
+    GeneratedDocumentSectionDetail,
     GeneratedDocumentRedactionDebugDetail,
     TranscribeWorkspaceDetail,
 )
@@ -119,6 +120,8 @@ from .services.templates import (
     list_team_quick_actions as list_team_quick_actions_service,
     list_team_templates as list_team_templates_service,
     mark_generated_document_enqueue_failed as mark_generated_document_enqueue_failed_service,
+    generated_document_section_text as generated_document_section_text_service,
+    generated_document_text as generated_document_text_service,
     queue_quick_action_generation as queue_quick_action_generation_service,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation as queue_followup_generation_service,
@@ -202,6 +205,7 @@ from .services.transcripts import (
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
     clear_ingestion_retry_source,
+    commit_transcript_text as commit_transcript_text_service,
     create_transcript_from_payload,
     delete_transcripts as delete_transcripts_service,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
@@ -212,11 +216,14 @@ from .services.transcripts import (
     reconcile_live_chunk_progress as reconcile_live_chunk_progress_service,
     retry_audio_file_ingestion,
     start_transcript as start_transcript_service,
+    transcript_draft_text as transcript_draft_text_service,
+    transcript_structured_context as transcript_structured_context_service,
     update_transcript as update_transcript_service,
     update_transcript_title as update_transcript_title_service,
 )
 from .tasks import enqueue_generated_document_job, enqueue_transcript_ingestion_job
 from .services.audio import enforce_whole_file_upload_size
+from .services.redaction import redaction_run_text as redaction_run_text_service
 
 
 @dataclass(slots=True)
@@ -876,12 +883,15 @@ def _home_redirect_url(
     return base
 
 
-def _active_structured_context_map(transcript: Transcript | None) -> dict[str, list[str]]:
-    if transcript is None or not isinstance(transcript.structured_context_json, dict):
+def _active_structured_context_map(db: Session, transcript: Transcript | None) -> dict[str, list[str]]:
+    if transcript is None:
         return {}
-    if transcript.structured_context_json.get("profile") != "emis":
+    transcript_context = transcript_structured_context_service(db, transcript=transcript)
+    if not isinstance(transcript_context, dict):
         return {}
-    sections = transcript.structured_context_json.get("sections")
+    if transcript_context.get("profile") != "emis":
+        return {}
+    sections = transcript_context.get("sections")
     if not isinstance(sections, dict):
         return {}
     normalized: dict[str, list[str]] = {}
@@ -899,18 +909,18 @@ def _active_structured_context_map(transcript: Transcript | None) -> dict[str, l
     return normalized
 
 
-def _document_section_lines(document: GeneratedDocument | None) -> dict[str, list[str]]:
+def _document_section_lines(db: Session, document: GeneratedDocument | None) -> dict[str, list[str]]:
     if document is None:
         return {}
     line_map: dict[str, list[str]] = {}
     for section in getattr(document, "sections", []):
-        raw_text = section.edited_text_encrypted or ""
+        raw_text = generated_document_section_text_service(db, section=section, field="edited_text_encrypted")
         lines = [line for line in raw_text.splitlines() if line.strip()]
         line_map[str(section.id)] = lines or ([raw_text.strip()] if raw_text.strip() else [])
     return line_map
 
 
-def _document_section_lines_by_key(document: GeneratedDocument | None) -> dict[str, list[str]]:
+def _document_section_lines_by_key(db: Session, document: GeneratedDocument | None) -> dict[str, list[str]]:
     if document is None:
         return {}
     line_map: dict[str, list[str]] = {}
@@ -918,7 +928,7 @@ def _document_section_lines_by_key(document: GeneratedDocument | None) -> dict[s
         section_key = str(section.section_key or "").strip()
         if not section_key:
             continue
-        raw_text = section.edited_text_encrypted or ""
+        raw_text = generated_document_section_text_service(db, section=section, field="edited_text_encrypted")
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
         if lines:
             line_map[section_key] = lines
@@ -926,11 +936,12 @@ def _document_section_lines_by_key(document: GeneratedDocument | None) -> dict[s
 
 
 def _structured_editor_sections(
+    db: Session,
     *,
     generated_document: GeneratedDocument | None,
     active_structured_context: dict[str, list[str]],
 ) -> list[dict[str, object]]:
-    generated_lines = _document_section_lines_by_key(generated_document)
+    generated_lines = _document_section_lines_by_key(db, generated_document)
     sections: list[dict[str, object]] = []
     for section_key in EMIS_SECTION_KEYS:
         visible_lines = generated_lines.get(section_key)
@@ -1058,7 +1069,7 @@ def _resolve_transcribe_workspace(
         and current_user.email.lower() in _local_only_dev_emails()
         and _request_is_localhost_only(request)
     )
-    active_structured_context = _active_structured_context_map(active_transcript)
+    active_structured_context = _active_structured_context_map(db, active_transcript)
 
     return {
         "recent_transcripts": recent_transcripts,
@@ -1083,8 +1094,9 @@ def _resolve_transcribe_workspace(
         "note_documents": note_documents,
         "followup_documents": followup_documents,
         "latest_generated_document": latest_generated_document,
-        "latest_generated_document_section_lines": _document_section_lines(latest_generated_document),
+        "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
         "structured_editor_sections": _structured_editor_sections(
+            db,
             generated_document=latest_generated_document,
             active_structured_context=active_structured_context,
         ),
@@ -1120,8 +1132,23 @@ def render_transcribe(
     workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"
     active_transcript = workspace.get("active_transcript")
     if isinstance(active_transcript, Transcript):
+        workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
+    generated_documents = workspace.get("generated_documents") or []
+    if generated_documents:
+        generated_document_details = [generated_document_response(db, document) for document in generated_documents]
+        workspace["generated_documents"] = generated_document_details
+        note_documents = [document for document in generated_document_details if document.generator_type is GeneratedDocumentGeneratorType.template]
+        followup_documents = [
+            document
+            for document in generated_document_details
+            if document.generator_type in {GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
+        ]
+        workspace["note_documents"] = note_documents
+        workspace["followup_documents"] = followup_documents
+        workspace["latest_generated_document"] = note_documents[0] if note_documents else None
+        workspace["latest_followup_document"] = followup_documents[0] if followup_documents else None
     context = {
         "request": request,
         "current_user": current_user,
@@ -1223,7 +1250,9 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
         transcript = reconcile_live_chunk_progress_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
-    payload = TranscriptDetail.model_validate(transcript, from_attributes=True).model_dump()
+    payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
+    payload["current_draft_text_encrypted"] = transcript_draft_text_service(db, transcript=transcript)
+    payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
     if latest_job is not None:
         payload["next_live_chunk_sequence_no_upload"] = (
             next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=transcript.id)
@@ -1253,7 +1282,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     return TranscribeWorkspaceDetail(
         recent_transcripts=[TranscriptListItem.model_validate(transcript, from_attributes=True) for transcript in recent_transcripts],
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
-        generated_documents=[generated_document_response(document) for document in generated_documents],
+        generated_documents=[generated_document_response(db, document) for document in generated_documents],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         active_structured_context=dict(workspace.get("active_structured_context") or {}),
@@ -1503,11 +1532,29 @@ def quick_action_response(quick_action: QuickAction) -> QuickActionDetail:
     )
 
 
-def generated_document_response(document: GeneratedDocument) -> GeneratedDocumentDetail:
-    return GeneratedDocumentDetail.model_validate(document, from_attributes=True)
+def generated_document_response(db: Session, document: GeneratedDocument) -> GeneratedDocumentDetail:
+    payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
+    payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
+    payload["original_output_text_encrypted"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
+    payload["edited_output_text_encrypted"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
+    payload["sections"] = [
+        GeneratedDocumentSectionDetail.model_validate(
+            {
+                "id": section.id,
+                "section_key": section.section_key,
+                "section_label": section.section_label,
+                "section_order": section.section_order,
+                "original_text_encrypted": generated_document_section_text_service(db, section=section, field="original_text_encrypted"),
+                "edited_text_encrypted": generated_document_section_text_service(db, section=section, field="edited_text_encrypted"),
+                "is_edited": section.is_edited,
+            }
+        )
+        for section in getattr(document, "sections", [])
+    ]
+    return GeneratedDocumentDetail.model_validate(payload)
 
 
-def generated_document_redaction_debug_response(document: GeneratedDocument) -> GeneratedDocumentRedactionDebugDetail:
+def generated_document_redaction_debug_response(db: Session, document: GeneratedDocument) -> GeneratedDocumentRedactionDebugDetail:
     if document.redaction_run is None:
         raise AppError(404, "not_found", "No redaction run is linked to this generated document")
     redaction_run = document.redaction_run
@@ -1521,8 +1568,8 @@ def generated_document_redaction_debug_response(document: GeneratedDocument) -> 
         api_model_or_version=redaction_run.api_model_or_version,
         entity_count=redaction_run.entity_count,
         mapping_hash=redaction_run.mapping_hash,
-        redacted_text=redaction_run.redacted_text_encrypted or "",
-        failed_provider_output_redacted_text=document.failed_provider_output_redacted_encrypted,
+        redacted_text=redaction_run_text_service(db, run=redaction_run) or "",
+        failed_provider_output_redacted_text=generated_document_text_service(db, document=document, field="failed_provider_output_redacted_encrypted") or None,
         entities=[
             {
                 "entity_order": entity.entity_order,
@@ -2110,24 +2157,12 @@ def start_transcript(payload: TranscriptStart, context: AuthenticatedContext = D
 
 @api.post("/transcripts/{transcript_id}/commit", response_model=TranscriptDetail, responses=error_responses)
 def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    transcript = db.get(Transcript, transcript_id)
-    if not transcript:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != context.user.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
-    current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
-    next_version = (current_max or 0) + 1
-    version = TranscriptVersion(
-        transcript_id=transcript.id,
-        version_no=next_version,
-        text_encrypted=payload.text_encrypted,
+    transcript = commit_transcript_text_service(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        plaintext=payload.text_encrypted,
     )
-    transcript.current_draft_text_encrypted = payload.text_encrypted
-    transcript.status = TranscriptStatus.ready
-    db.add(version)
-    db.add(transcript)
-    db.commit()
-    db.refresh(transcript)
     return transcript_detail_response(db, transcript)
 
 
@@ -2331,7 +2366,7 @@ async def stream_transcribe_workspace(
 
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
 def list_generated_documents_for_transcript(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    return [generated_document_response(document) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
+    return [generated_document_response(db, document) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
 
 
 @api.get("/generated-documents/{generated_document_id}/redaction-debug", response_model=GeneratedDocumentRedactionDebugDetail, responses=error_responses)
@@ -2345,7 +2380,7 @@ def get_generated_document_redaction_debug(
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != context.user.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
-    return generated_document_redaction_debug_response(document)
+    return generated_document_redaction_debug_response(db, document)
 
 
 @api.post("/transcripts/{transcript_id}/generate-output", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
@@ -2375,7 +2410,7 @@ def generate_transcript_output(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue note generation") from exc
-    return generated_document_response(document)
+    return generated_document_response(db, document)
 
 
 @api.post("/transcripts/{transcript_id}/generate-followup", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
@@ -2399,7 +2434,7 @@ def generate_transcript_followup(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue follow-up generation") from exc
-    return generated_document_response(document)
+    return generated_document_response(db, document)
 
 
 @api.post("/transcripts/{transcript_id}/run-quick-action", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
@@ -2423,7 +2458,7 @@ def run_transcript_quick_action(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue quick action generation") from exc
-    return generated_document_response(document)
+    return generated_document_response(db, document)
 
 
 @api.get("/users/{user_id}/transcripts", response_model=list[TranscriptListItem], responses=error_responses)

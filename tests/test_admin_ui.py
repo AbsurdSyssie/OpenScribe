@@ -82,6 +82,15 @@ STT_OPENAPI_DOCUMENT = {
 }
 
 
+def make_ingestion_job_for_transcript(transcript: Transcript, **kwargs) -> TranscriptIngestionJob:
+    return TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=transcript.owner_user_id,
+        team_id=transcript.team_id,
+        **kwargs,
+    )
+
+
 @pytest.fixture(autouse=True)
 def stub_stt_health_checks(monkeypatch):
     return None
@@ -953,7 +962,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "New Live Session" in page.text
     assert "Upload Audio" in page.text
     assert "Create or select a session to begin." in page.text
-    assert "Latest note" in page.text
+    assert "Selected note" in page.text
     assert "Follow-ups" in page.text
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
@@ -1271,7 +1280,7 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert page.text.index("Latest note") < page.text.index("Generate note")
+    assert page.text.index("Selected note") < page.text.index("Generate note")
     assert "Use the current transcript draft or structured EMIS context with the active LLM." in page.text
     assert "const hasStructuredContextContent = () => {" in page.text
     assert "const hasStructuredInput = selectedOutputTemplateMode() === 'structured' && hasStructuredContextContent();" in page.text
@@ -1490,8 +1499,8 @@ def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_sessio
     db_session.add(transcript)
     db_session.flush()
     db_session.add(
-        TranscriptIngestionJob(
-            transcript_id=transcript.id,
+        make_ingestion_job_for_transcript(
+            transcript,
             job_kind=TranscriptIngestionJobKind.live_chunk,
             chunk_sequence_no=1,
             source_filename="chunk-1.wav",
@@ -1575,8 +1584,8 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
     )
     db_session.add(failed)
     db_session.commit()
-    job = TranscriptIngestionJob(
-        transcript_id=failed.id,
+    job = make_ingestion_job_for_transcript(
+        failed,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
@@ -1610,8 +1619,8 @@ def test_user_transcribe_page_hides_retry_when_failed_upload_blob_is_missing(cli
     )
     db_session.add(failed)
     db_session.commit()
-    job = TranscriptIngestionJob(
-        transcript_id=failed.id,
+    job = make_ingestion_job_for_transcript(
+        failed,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=None,
@@ -1649,8 +1658,8 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
     )
     db_session.add(failed)
     db_session.commit()
-    failed_job = TranscriptIngestionJob(
-        transcript_id=failed.id,
+    failed_job = make_ingestion_job_for_transcript(
+        failed,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
@@ -2242,9 +2251,114 @@ def test_user_transcribe_page_can_queue_followup_generation(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
-    assert "Latest follow-up" in page.text
+    assert "Selected follow-up" in page.text
     assert "Arrange blood tests and a review if symptoms persist." in page.text
     assert "queued" in page.text
+
+
+def test_user_transcribe_page_renders_generated_document_switchers(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Document Switchers")
+    member = make_user(email="member-document-switchers@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    db_session.add_all(
+        [
+            GeneratedDocument(
+                owner_user_id=member.id,
+                team_id=team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=transcript_version.id,
+                generator_type=GeneratedDocumentGeneratorType.template,
+                source_template_name="Clinic note",
+                status=GeneratedDocumentStatus.ready,
+                title="Visit summary v2",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="Latest body",
+                edited_output_text_encrypted="Latest body",
+                retention_expires_at=transcript.retention_expires_at,
+            ),
+            GeneratedDocument(
+                owner_user_id=member.id,
+                team_id=team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=transcript_version.id,
+                generator_type=GeneratedDocumentGeneratorType.template,
+                source_template_name="Clinic note",
+                status=GeneratedDocumentStatus.ready,
+                title="Visit summary v1",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="Earlier body",
+                edited_output_text_encrypted="Earlier body",
+                retention_expires_at=transcript.retention_expires_at,
+            ),
+            GeneratedDocument(
+                owner_user_id=member.id,
+                team_id=team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=transcript_version.id,
+                generator_type=GeneratedDocumentGeneratorType.followup,
+                source_template_name="Follow-up",
+                follow_up_prompt_text="Send patient-facing review advice.",
+                status=GeneratedDocumentStatus.ready,
+                title="Follow-up v2",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="Latest follow-up",
+                edited_output_text_encrypted="Latest follow-up",
+                retention_expires_at=transcript.retention_expires_at,
+            ),
+            GeneratedDocument(
+                owner_user_id=member.id,
+                team_id=team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=transcript_version.id,
+                generator_type=GeneratedDocumentGeneratorType.quick_action,
+                source_template_name="Quick action",
+                source_quick_action_name="Send SMS",
+                status=GeneratedDocumentStatus.ready,
+                title="Quick action v1",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="SMS body",
+                edited_output_text_encrypted="SMS body",
+                retention_expires_at=transcript.retention_expires_at,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-document-switchers@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert "Selected note" in page.text
+    assert 'data-note-selector' in page.text
+    assert "Visit summary v2" in page.text
+    assert "Visit summary v1" in page.text
+    assert "Selected follow-up" in page.text
+    assert 'data-followup-selector' in page.text
+    assert "Send patient-facing review advice." in page.text
+    assert "Send SMS" in page.text
 
 
 def test_user_transcribe_page_can_run_quick_action(

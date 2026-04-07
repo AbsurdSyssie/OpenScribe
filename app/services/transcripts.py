@@ -26,6 +26,7 @@ from app.services.audio import (
     normalize_audio_to_wav_16k_mono,
     probe_audio_duration_seconds,
 )
+from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
@@ -123,12 +124,36 @@ def _create_transcript_row(
         raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(owner.team_id)})
 
     retention_days = retention_days_applied or owner.team.default_retention_days
+    transcript_id = uuid4()
     transcript = Transcript(
+        id=transcript_id,
         owner_user_id=owner.id,
         team_id=owner.team_id,
         title=title,
-        current_draft_text_encrypted=current_draft_text_encrypted,
-        structured_context_json=structured_context_json,
+        current_draft_text_encrypted=(
+            encrypt_text_for_owner(
+                db,
+                owner_user_id=owner.id,
+                table="transcripts",
+                field="current_draft_text_encrypted",
+                record_id=transcript_id,
+                plaintext=current_draft_text_encrypted,
+            )
+            if current_draft_text_encrypted
+            else None
+        ),
+        structured_context_json=(
+            encrypt_json_for_owner(
+                db,
+                owner_user_id=owner.id,
+                table="transcripts",
+                field="structured_context_json",
+                record_id=transcript_id,
+                plaintext=structured_context_json,
+            )
+            if structured_context_json is not None
+            else None
+        ),
         ingestion_mode=ingestion_mode,
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
@@ -192,6 +217,88 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
 
 
+def transcript_draft_text(db: Session, *, transcript: Transcript) -> str | None:
+    return decrypt_text_for_owner(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        stored_value=transcript.current_draft_text_encrypted,
+    )
+
+
+def transcript_structured_context(db: Session, *, transcript: Transcript) -> dict | None:
+    value = decrypt_json_for_owner(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        stored_value=transcript.structured_context_json,
+    )
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AppError(500, "content_crypto_invalid", "Transcript structured context is invalid")
+    return value
+
+
+def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
+    transcript.current_draft_text_encrypted = (
+        encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
+def set_transcript_structured_context(db: Session, *, transcript: Transcript, plaintext: dict | None) -> None:
+    transcript.structured_context_json = (
+        encrypt_json_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="structured_context_json",
+            record_id=transcript.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
+def transcript_version_text(db: Session, *, transcript_version: TranscriptVersion) -> str:
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=transcript_version.transcript.owner_user_id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=transcript_version.id,
+            stored_value=transcript_version.text_encrypted,
+        )
+        or ""
+    )
+
+
+def job_result_text(db: Session, *, transcript: Transcript, job: TranscriptIngestionJob) -> str | None:
+    return decrypt_text_for_owner(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        table="transcript_ingestion_jobs",
+        field="result_text_encrypted",
+        record_id=job.id,
+        stored_value=job.result_text_encrypted,
+    )
+
+
 def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> TranscriptIngestionJob | None:
     return db.scalar(
         select(TranscriptIngestionJob)
@@ -253,7 +360,8 @@ def _latest_owner_transcript(db: Session, owner: User) -> Transcript | None:
 
 
 def _transcript_has_meaningful_content(db: Session, transcript: Transcript) -> bool:
-    if transcript.current_draft_text_encrypted and transcript.current_draft_text_encrypted.strip():
+    current_draft = transcript_draft_text(db, transcript=transcript)
+    if current_draft and current_draft.strip():
         return True
     if db.scalar(select(TranscriptVersion.id).where(TranscriptVersion.transcript_id == transcript.id).limit(1)) is not None:
         return True
@@ -415,7 +523,39 @@ def update_transcript(
             raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
         transcript.ingestion_mode = ingestion_mode
     if structured_context_json is not None:
-        transcript.structured_context_json = structured_context_json
+        set_transcript_structured_context(db, transcript=transcript, plaintext=structured_context_json)
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    return transcript
+
+
+def commit_transcript_text(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    plaintext: str,
+) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
+    version_id = uuid4()
+    version = TranscriptVersion(
+        id=version_id,
+        transcript_id=transcript.id,
+        version_no=(current_max or 0) + 1,
+        text_encrypted=encrypt_text_for_owner(
+            db,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext=plaintext,
+        ),
+    )
+    set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
+    transcript.status = TranscriptStatus.ready
+    db.add(version)
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
@@ -507,6 +647,8 @@ def queue_audio_chunk_ingestion(
     job = TranscriptIngestionJob(
         id=uuid4(),
         transcript_id=transcript.id,
+        owner_user_id=transcript.owner_user_id,
+        team_id=transcript.team_id,
         job_kind=TranscriptIngestionJobKind.live_chunk,
         chunk_sequence_no=chunk_sequence_no,
         source_filename=filename,
@@ -619,6 +761,8 @@ def queue_audio_file_ingestion(
     job = TranscriptIngestionJob(
         id=job_id,
         transcript_id=transcript.id,
+        owner_user_id=transcript.owner_user_id,
+        team_id=transcript.team_id,
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename=filename,
@@ -749,10 +893,11 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
             expected_sequence += 1
             advanced_sequence = True
             continue
-        transcript.current_draft_text_encrypted = _append_chunk_text(
-            transcript.current_draft_text_encrypted,
-            job.result_text_encrypted or "",
+        updated_draft_text = _append_chunk_text(
+            transcript_draft_text(db, transcript=transcript),
+            job_result_text(db, transcript=transcript, job=job) or "",
         )
+        set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
         job.status = TranscriptIngestionJobStatus.applied
         job.applied_at = utcnow()
         expected_sequence += 1
@@ -822,17 +967,25 @@ def process_transcript_ingestion_job(
             content_type=normalized_audio.content_type,
         )
         now = utcnow()
-        job.result_text_encrypted = transcript_text
+        job.result_text_encrypted = encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcript_ingestion_jobs",
+            field="result_text_encrypted",
+            record_id=job.id,
+            plaintext=transcript_text,
+        )
         job.completed_at = now
 
         if job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
             job.source_audio_blob = None
-            transcript.current_draft_text_encrypted = _append_chunk_text(
-                transcript.current_draft_text_encrypted,
+            updated_draft_text = _append_chunk_text(
+                transcript_draft_text(db, transcript=transcript),
                 transcript_text,
             )
+            set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
             transcript.status = TranscriptStatus.ready
             db.add(job)
             db.add(transcript)

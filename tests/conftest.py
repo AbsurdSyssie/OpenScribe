@@ -1,5 +1,6 @@
 import os
 import fcntl
+import secrets
 from collections.abc import Generator
 from typing import Callable
 from uuid import uuid4
@@ -46,6 +47,7 @@ from app.models import (
 )
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
+from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from tests.db_utils import (
     ensure_database_exists,
     ensure_safe_test_database_url,
@@ -172,6 +174,24 @@ def raw_client(db_session: Session) -> Generator[TestClient, None, None]:
         yield test_client
     app.state.db_session_factory = original_session_factory
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_user_content_transit(monkeypatch: pytest.MonkeyPatch) -> Generator[dict[str, bytes], None, None]:
+    wrapped_keys: dict[str, bytes] = {}
+
+    def fake_generate_user_content_data_key() -> tuple[bytes, str, int]:
+        plaintext = secrets.token_bytes(32)
+        wrapped = f"vault:v1:wrapped-{len(wrapped_keys) + 1}"
+        wrapped_keys[wrapped] = plaintext
+        return plaintext, wrapped, 1
+
+    def fake_unwrap_user_content_data_key(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
+        return wrapped_keys[wrapped_dek]
+
+    monkeypatch.setattr("app.services.content_crypto.generate_user_content_data_key", fake_generate_user_content_data_key)
+    monkeypatch.setattr("app.services.content_crypto.unwrap_user_content_data_key", fake_unwrap_user_content_data_key)
+    yield wrapped_keys
 
 
 @pytest.fixture
@@ -656,13 +676,33 @@ def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session
         existing = db_session.query(RedactionRun).filter(RedactionRun.transcript_version_id == transcript_version.id).first()
         if existing is not None:
             return existing
+        run_id = uuid4()
+        plaintext = transcript_version.text_encrypted
         run = RedactionRun(
+            id=run_id,
             transcript_id=transcript_version.transcript_id,
             transcript_version_id=transcript_version.id,
             owner_user_id=transcript_version.transcript.owner_user_id,
             team_id=transcript_version.transcript.team_id,
             status=RedactionRunStatus.succeeded,
-            redacted_text_encrypted=transcript_version.text_encrypted,
+            redacted_text_encrypted=encrypt_text_for_owner(
+                db_session,
+                owner_user_id=transcript_version.transcript.owner_user_id,
+                table="redaction_runs",
+                field="redacted_text_encrypted",
+                record_id=run_id,
+                plaintext=(
+                    decrypt_text_for_owner(
+                        db_session,
+                        owner_user_id=transcript_version.transcript.owner_user_id,
+                        table="transcript_versions",
+                        field="text_encrypted",
+                        record_id=transcript_version.id,
+                        stored_value=transcript_version.text_encrypted,
+                    )
+                    or ""
+                ),
+            ),
             mapping_hash="stub-redaction",
             entity_count=0,
             api_provider="stub_redaction",

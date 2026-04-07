@@ -20,7 +20,7 @@ if [[ ! -f "$AUDIO_PATH" ]]; then
 fi
 
 cleanup() {
-  rm -f "$COOKIE_JAR"
+  rm -f "$COOKIE_JAR"/
 }
 trap cleanup EXIT
 

@@ -17,3 +17,7 @@ frontend/
 docs/frontend-nextjs.md
 docs/UI_Translation.md
 tests/oscar.mp3
+.tmp_parakeet_both_repeat.json
+.tmp_parakeet_both.json
+.tmp_parakeet_segment.json
+.tmp_parakeet_word.json

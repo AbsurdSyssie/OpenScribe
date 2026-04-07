@@ -51,9 +51,11 @@ class TranscriptListItem(BaseModel):
 class TranscriptDetail(TranscriptListItem):
     current_draft_text_encrypted: str | None = None
     structured_context_json: dict | None = None
+    next_live_chunk_sequence_no_upload: int | None = None
     latest_ingestion_job_status: TranscriptIngestionJobStatus | None = None
     latest_ingestion_error_code: str | None = None
     latest_ingestion_error_message: str | None = None
+    latest_ingestion_retry_available: bool = False
 
 
 class TranscriptIngestionJobDetail(BaseModel):

@@ -60,6 +60,7 @@ Browser navigation behavior:
 - `POST /api/v1/transcripts/{transcript_id}/commit`
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
 - `POST /api/v1/transcripts/{transcript_id}/generate-output`
@@ -275,9 +276,12 @@ Current LLM-configuration behavior:
 - normal users may not access provisioning or team-selection routes
 - normal users may set or clear only their own preferred default model through `/api/v1/llm-preference`
 - if the user's preferred model is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
-- the implemented LLM adapter families are `openai_chat` and `ollama_chat`
+- the implemented LLM adapter families are `openai_chat`, `bedrock_chat`, and `ollama_chat`
 - `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
 - if OpenAI model discovery fails, `openai_chat` inspection falls back to a built-in chat-model list and still returns `200`
+- `bedrock_chat` uses Amazon Bedrock's OpenAI-compatible Bedrock Mantle endpoint and the existing OpenAI SDK integration for both `/models` discovery and Chat Completions generation
+- `bedrock_chat` accepts an optional `bedrock_region`; when `base_url` is blank OpenScribe derives `https://bedrock-mantle.<region>.api.aws/v1`
+- `bedrock_chat` does not use a built-in fallback model list because the available models are region- and account-specific; admins may still save a model manually if discovery is unavailable
 - `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses streaming `POST /api/chat`
 - local Ollama may run without an API key; remote Ollama endpoints must still use `https`
 - the admin HTML inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
@@ -428,15 +432,21 @@ Current transcript-start behavior:
 Current live chunk-ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks` accepts multipart audio upload for owner-only live chunked transcripts
+- live chunk upload is rate-limited to `1 request/second` per authenticated user/session bucket
+- live chunk queueing also enforces a rolling hourly audio budget per authenticated owner; the default ceiling is `3600` uploaded seconds per hour via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS`
 - the route currently requires:
   - `audio`
   - `chunk_sequence_no`
 - the route currently accepts:
   - `declared_duration_seconds`
 - chunk uploads are rejected unless the transcript `ingestion_mode` is `live_chunked`
-- declared chunk duration currently rejects values above the current 30-second maximum
+- the server measures the uploaded audio duration before queueing:
+  - that measured duration is what counts toward the rolling hourly budget
+  - client-supplied `declared_duration_seconds` is no longer trusted for budgeting
+- live chunk uploads reject measured durations above the current 30-second maximum
 - the route queues a transcript-ingestion job and returns `202 Accepted`
 - the response includes both the transcript summary and the queued ingestion job
+- queued live chunk jobs now persist both `source_audio_size_bytes` and the measured chunk duration in `declared_duration_seconds` so upload volume can be aggregated later for dashboarding or broader ingestion policy
 - queued chunk jobs now snapshot the resolved STT provider execution settings at enqueue time:
   - selected STT config id
   - adapter kind
@@ -455,6 +465,15 @@ Current live chunk-ingestion behavior:
 Current whole-file ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
+- whole-file queueing now records both `source_audio_size_bytes` and `source_audio_duration_seconds` on the ingestion job for later upload reporting
+- whole-file queueing enforces a rolling hourly upload budget per authenticated owner:
+  - upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `262144000`)
+  - source audio duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS` (default `7200`)
+- whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
+- newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
+- `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
+- transcript deletion and user deletion now attempt best-effort cleanup of any Vault-backed retry audio before the owning rows are removed, without blocking the hard-delete path on a transient Vault outage
+- applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads
 - file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
 - file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`
 - the route queues a transcript-ingestion job and returns `202 Accepted`
@@ -473,9 +492,11 @@ Current whole-file ingestion behavior:
   - upstream non-2xx -> `stt_request_failed` with `status_code`
   - unreadable JSON or missing transcript text path -> `stt_response_invalid`
 - `GET /api/v1/transcripts/{transcript_id}` now includes the latest ingestion failure metadata when present:
+  - `next_live_chunk_sequence_no_upload`
   - `latest_ingestion_job_status`
   - `latest_ingestion_error_code`
   - `latest_ingestion_error_message`
+  - `latest_ingestion_retry_available`
 - `GET /api/v1/transcribe/workspace` now exposes the owner-facing read model for the `/transcribe` page:
   - `recent_transcripts`
   - `active_transcript`
@@ -484,6 +505,10 @@ Current whole-file ingestion behavior:
   - `available_quick_actions`
   - `active_structured_context`
   - current session-level capability flags like `can_create_new_session` and `can_switch_to_whole_file`
+- `GET /api/v1/transcribe/workspace/stream` now exposes the same owner-facing workspace payload as an SSE stream for the `/transcribe` page.
+- the SSE route validates auth using short-lived DB sessions and does not hold a request-scoped SQLAlchemy session open for the lifetime of the stream
+  - emits `workspace` events
+  - follows the same owner-only access rules as the JSON workspace endpoint
 - the owner-facing `/transcribe` workspace now:
   - creates blank sessions from the session rail
   - blocks a second blank session until the latest session has draft content or descendant work, or is deleted
@@ -494,13 +519,15 @@ Current whole-file ingestion behavior:
   - records microphone batches locally in the browser and submits the captured blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
-  - polls the same owner-only workspace read model while visible rows remain pending
+  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
+  - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected
   - creates new sessions through `POST /api/v1/transcripts/start`
   - deletes selected sessions through owner-scoped `DELETE /api/v1/transcripts/{transcript_id}` calls
   - switches a blank session back to `whole_file` through `PATCH /api/v1/transcripts/{transcript_id}`
   - switches the active session in place by refetching `GET /api/v1/transcribe/workspace?transcript_id=...` instead of full-page navigation
   - patches transcript session title and EMIS working context through `PATCH /api/v1/transcripts/{transcript_id}`
   - queues whole-file upload directly through `POST /api/v1/transcripts/{transcript_id}/audio-file`
+  - offers retry through the same workspace when `active_transcript.latest_ingestion_retry_available` is true
   - queues note/follow-up/quick-action generation directly through the corresponding `/api/v1/transcripts/{transcript_id}/...` JSON routes
   - shows recent owner transcripts and current draft text on refresh or poll completion
   - preserves structured EMIS note section rendering and copy-selected-lines behavior during workspace refreshes by rebuilding the section view from generated-document section data

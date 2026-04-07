@@ -631,6 +631,26 @@ def stub_transcript_ingestion_enqueue(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def stub_transcript_ingestion_source_audio_vault(monkeypatch: pytest.MonkeyPatch):
+    stored_audio: dict[str, bytes] = {}
+
+    def fake_write_transcript_ingestion_source_audio(*, job_id, audio_bytes):
+        secret_ref = f"secret:openscribe/transcript-ingestion/{job_id}/source-audio"
+        stored_audio[secret_ref] = audio_bytes
+        return secret_ref
+
+    def fake_read_transcript_ingestion_source_audio(*, secret_ref):
+        return stored_audio[secret_ref]
+
+    def fake_delete_transcript_ingestion_source_audio(*, secret_ref):
+        stored_audio.pop(secret_ref, None)
+
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", fake_write_transcript_ingestion_source_audio)
+    monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", fake_read_transcript_ingestion_source_audio)
+    monkeypatch.setattr("app.services.transcripts.delete_transcript_ingestion_source_audio", fake_delete_transcript_ingestion_source_audio)
+
+
+@pytest.fixture(autouse=True)
 def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session):
     def fake_ensure_redaction_run_for_transcript_version(*, transcript_version: TranscriptVersion):
         existing = db_session.query(RedactionRun).filter(RedactionRun.transcript_version_id == transcript_version.id).first()

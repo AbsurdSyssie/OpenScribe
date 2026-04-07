@@ -8,6 +8,36 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import LlmAdapterKind, LlmAuthMode
 
 
+OPENAI_CHAT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_BEDROCK_CHAT_REGION = "eu-west-2"
+OLLAMA_CHAT_BASE_URL = "http://localhost:11434"
+
+
+def _normalize_bedrock_region(value: str) -> str:
+    normalized = value.strip().lower()
+    if not normalized:
+        raise ValueError("Bedrock region is required")
+    if not normalized.replace("-", "").isalnum():
+        raise ValueError("Bedrock region must contain only letters, numbers, and hyphens")
+    return normalized
+
+
+def bedrock_chat_base_url(region: str) -> str:
+    return f"https://bedrock-mantle.{_normalize_bedrock_region(region)}.api.aws/v1"
+
+
+def bedrock_region_from_base_url(base_url: str) -> str | None:
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").lower()
+    prefix = "bedrock-mantle."
+    suffix = ".api.aws"
+    if host.startswith(prefix) and host.endswith(suffix):
+        candidate = host[len(prefix) : -len(suffix)]
+        if candidate:
+            return candidate
+    return None
+
+
 def _validate_llm_base_url(value: str) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"}:
@@ -46,6 +76,7 @@ class LlmConfigUpsert(BaseModel):
     base_url: str = Field(default="", max_length=2048)
     auth_mode: LlmAuthMode = LlmAuthMode.bearer
     bearer_token: str | None = Field(default=None, min_length=1)
+    bedrock_region: str | None = Field(default=None, max_length=64)
     model_name: str | None = Field(default=None, max_length=255)
     is_active: bool = True
 
@@ -59,9 +90,21 @@ class LlmConfigUpsert(BaseModel):
         if isinstance(adapter_kind, str):
             adapter_kind = LlmAdapterKind(adapter_kind)
         if adapter_kind is LlmAdapterKind.openai_chat:
-            normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
+            normalized["base_url"] = (normalized.get("base_url") or OPENAI_CHAT_BASE_URL).strip()
+        elif adapter_kind is LlmAdapterKind.bedrock_chat:
+            region = normalized.get("bedrock_region")
+            if isinstance(region, str) and region.strip():
+                normalized["bedrock_region"] = _normalize_bedrock_region(region)
+            elif isinstance(normalized.get("base_url"), str) and normalized.get("base_url", "").strip():
+                normalized["bedrock_region"] = bedrock_region_from_base_url(str(normalized["base_url"]).strip())
+            else:
+                normalized["bedrock_region"] = DEFAULT_BEDROCK_CHAT_REGION
+            normalized["base_url"] = (
+                normalized.get("base_url")
+                or bedrock_chat_base_url(str(normalized["bedrock_region"] or DEFAULT_BEDROCK_CHAT_REGION))
+            ).strip()
         elif adapter_kind is LlmAdapterKind.ollama_chat:
-            normalized["base_url"] = (normalized.get("base_url") or "http://localhost:11434").strip()
+            normalized["base_url"] = (normalized.get("base_url") or OLLAMA_CHAT_BASE_URL).strip()
         return normalized
 
     @field_validator("base_url")
@@ -71,9 +114,16 @@ class LlmConfigUpsert(BaseModel):
             raise ValueError("LLM base URL is required")
         return _validate_llm_base_url(value)
 
+    @field_validator("bedrock_region")
+    @classmethod
+    def validate_bedrock_region(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return _normalize_bedrock_region(value)
+
     @model_validator(mode="after")
     def validate_model_name(self):
-        if self.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.ollama_chat} and not self.model_name:
+        if self.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat, LlmAdapterKind.ollama_chat} and not self.model_name:
             raise ValueError("Model name is required for LLM adapters")
         return self
 
@@ -149,6 +199,7 @@ class LlmInspectRequest(BaseModel):
     adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat
     base_url: str = Field(default="", max_length=2048)
     bearer_token: str | None = Field(default=None, min_length=1)
+    bedrock_region: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="before")
     @classmethod
@@ -160,9 +211,21 @@ class LlmInspectRequest(BaseModel):
         if isinstance(adapter_kind, str):
             adapter_kind = LlmAdapterKind(adapter_kind)
         if adapter_kind is LlmAdapterKind.openai_chat:
-            normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
+            normalized["base_url"] = (normalized.get("base_url") or OPENAI_CHAT_BASE_URL).strip()
+        elif adapter_kind is LlmAdapterKind.bedrock_chat:
+            region = normalized.get("bedrock_region")
+            if isinstance(region, str) and region.strip():
+                normalized["bedrock_region"] = _normalize_bedrock_region(region)
+            elif isinstance(normalized.get("base_url"), str) and normalized.get("base_url", "").strip():
+                normalized["bedrock_region"] = bedrock_region_from_base_url(str(normalized["base_url"]).strip())
+            else:
+                normalized["bedrock_region"] = DEFAULT_BEDROCK_CHAT_REGION
+            normalized["base_url"] = (
+                normalized.get("base_url")
+                or bedrock_chat_base_url(str(normalized["bedrock_region"] or DEFAULT_BEDROCK_CHAT_REGION))
+            ).strip()
         elif adapter_kind is LlmAdapterKind.ollama_chat:
-            normalized["base_url"] = (normalized.get("base_url") or "http://localhost:11434").strip()
+            normalized["base_url"] = (normalized.get("base_url") or OLLAMA_CHAT_BASE_URL).strip()
         return normalized
 
     @field_validator("base_url")
@@ -171,6 +234,13 @@ class LlmInspectRequest(BaseModel):
         if not value:
             raise ValueError("LLM base URL is required")
         return _validate_llm_base_url(value)
+
+    @field_validator("bedrock_region")
+    @classmethod
+    def validate_inspect_bedrock_region(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return _normalize_bedrock_region(value)
 
 
 class LlmConfigInspectResult(BaseModel):

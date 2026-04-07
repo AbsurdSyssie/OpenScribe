@@ -1,3 +1,5 @@
+import json
+import time
 import io
 from datetime import timedelta
 from uuid import UUID
@@ -5,9 +7,11 @@ import wave
 
 import httpx
 import pyotp
+from fastapi.routing import APIRoute
 from sqlalchemy import select
 
 from app.errors import AppError
+from app.main import app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
@@ -45,6 +49,7 @@ from app.models import (
     UserStatus,
     UserTrustedDevice,
     TemplateScope,
+    utcnow,
 )
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, run_saved_stt_config_test
 from app.schemas.templates import GenerateFollowupRequest
@@ -59,7 +64,7 @@ from app.services.templates import (
     queue_followup_generation,
     queue_quick_action_generation,
 )
-from app.services.transcripts import process_transcript_ingestion_job
+from app.services.transcripts import latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service, process_transcript_ingestion_job
 
 
 def assert_error(response, *, status_code: int, code: str, message: str):
@@ -887,7 +892,7 @@ def test_stt_config_validates_urls_and_enforces_admin_provisioning_plus_leader_t
     client.post("/api/v1/auth/logout")
     login(client, email="leader@example.com", password="password-1")
     admin = make_user(email="admin-provisioner@example.com", password="password-3", is_system_admin=True)
-    north_config = make_stt_config(team=north, actor=admin)
+    north_config = make_stt_config(team=north, actor=admin, available_models_json=["whisper-1"])
     south_config = make_stt_config(team=south, actor=admin, label="South STT")
 
     forbidden_provision = client.post(
@@ -1066,6 +1071,76 @@ def test_system_admin_can_provision_local_ollama_without_secret(client, db_sessi
     assert persisted is not None
     assert persisted.auth_mode.value == "none"
     assert persisted.vault_secret_ref == ""
+
+
+def test_system_admin_can_inspect_bedrock_chat_models(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bedrock")
+    make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm._list_bedrock_chat_models",
+        lambda **kwargs: ["anthropic.claude-3-7-sonnet-20250219-v1:0", "amazon.nova-micro-v1:0"],
+    )
+
+    login(client, email="admin-bedrock@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/llm-configs/inspect",
+        json={
+            "team_id": str(team.id),
+            "adapter_kind": "bedrock_chat",
+            "base_url": "",
+            "bedrock_region": "us-east-1",
+            "bearer_token": "bedrock-api-key",
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["adapter_kind"] == "bedrock_chat"
+    assert body["base_url"] == "https://bedrock-mantle.us-east-1.api.aws/v1"
+    assert body["available_models"] == [
+        "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "amazon.nova-micro-v1:0",
+    ]
+    assert "Amazon Bedrock model list" in body["notes"][0]
+
+
+def test_system_admin_can_provision_bedrock_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bedrock")
+    make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm._list_bedrock_chat_models",
+        lambda **kwargs: ["anthropic.claude-3-7-sonnet-20250219-v1:0", "amazon.nova-micro-v1:0"],
+    )
+
+    login(client, email="admin-bedrock@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Clinic Bedrock",
+            "adapter_kind": "bedrock_chat",
+            "base_url": "",
+            "bedrock_region": "us-east-1",
+            "bearer_token": "bedrock-api-key",
+            "model_name": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["adapter_kind"] == "bedrock_chat"
+    assert body["has_secret"] is True
+
+    persisted = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == UUID(body["id"])))
+    assert persisted is not None
+    assert persisted.auth_mode.value == "bearer"
+    assert persisted.base_url == "https://bedrock-mantle.us-east-1.api.aws/v1"
+    assert persisted.available_models_json == [
+        "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "amazon.nova-micro-v1:0",
+    ]
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/llm/team/")
 
 
 def test_llm_config_validates_urls_and_enforces_admin_provisioning_plus_leader_team_selection_scope(
@@ -1411,6 +1486,66 @@ def test_template_generation_supports_ollama_adapter(
     assert processed.title == "Ollama summary"
     assert processed.edited_output_text_encrypted == "Ollama note body"
     assert persisted_document.model_used == "llama3.2"
+
+
+def test_template_generation_supports_bedrock_adapter(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    team = make_team(name="Clinic Bedrock")
+    admin = make_user(email="admin-bedrock-template@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-bedrock-template@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        adapter_kind=LlmAdapterKind.bedrock_chat,
+        base_url="https://bedrock-mantle.us-east-1.api.aws/v1",
+        model_name="anthropic.claude-3-7-sonnet-20250219-v1:0",
+        available_models_json=["anthropic.claude-3-7-sonnet-20250219-v1:0"],
+        has_secret=True,
+    )
+    make_llm_selection(
+        config=config,
+        actor=admin,
+        allowed_models_json=["anthropic.claude-3-7-sonnet-20250219-v1:0"],
+        model_name_override="anthropic.claude-3-7-sonnet-20250219-v1:0",
+    )
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Bedrock note", prompt_text="Write a concise note.")
+
+    class FakeTaskResult:
+        id = "generated-task-bedrock"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ('{"title":"Bedrock summary","content":"Bedrock note body"}', {"prompt_tokens": 12, "completion_tokens": 18, "total_tokens": 30, "duration_ms": 20}),
+    )
+
+    login(client, email="owner-bedrock-template@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Bedrock visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript draft."},
+    )
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    assert generated.json()["status"] == "queued"
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert persisted_document is not None
+    assert persisted_document.llm_adapter_kind == "bedrock_chat"
+    processed = process_generated_document(db_session, document_id=persisted_document.id)
+    assert processed.title == "Bedrock summary"
+    assert processed.edited_output_text_encrypted == "Bedrock note body"
+    assert persisted_document.model_used == "anthropic.claude-3-7-sonnet-20250219-v1:0"
 
 
 def test_structured_emis_template_generation_persists_sections(
@@ -2660,17 +2795,27 @@ def test_process_generated_document_persists_provider_failure_details(
 
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
 
-    def fake_post(*args, **kwargs):
-        request = httpx.Request("POST", "http://localhost:11434/api/chat")
-        response = httpx.Response(
-            404,
-            request=request,
-            headers={"content-type": "application/json"},
-            content=b'{"error":"model \\"missing-model\\" not found"}',
-        )
-        raise httpx.HTTPStatusError("not found", request=request, response=response)
+    class FakeOllamaErrorStream:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr("app.services.templates.httpx.post", fake_post)
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            request = httpx.Request("POST", "http://localhost:11434/api/chat")
+            response = httpx.Response(
+                404,
+                request=request,
+                headers={"content-type": "application/json"},
+                content=b'{"error":"model \\"missing-model\\" not found"}',
+            )
+            raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+        def iter_lines(self):
+            return iter(())
+
+    monkeypatch.setattr("app.services.templates.httpx.stream", lambda *args, **kwargs: FakeOllamaErrorStream())
 
     processed = process_generated_document(db_session, document_id=document.id)
 
@@ -2857,7 +3002,7 @@ def test_cannot_suspend_last_active_system_admin_or_self(client, make_user):
     assert suspend_second.status_code == 200
 
 
-def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_session, make_team, make_user):
+def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     leader = make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     member = make_user(email="member@example.com", password="password-2", team=team, team_role=TeamRole.user)
@@ -2875,6 +3020,17 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
     db_session.commit()
     db_session.refresh(transcript)
     db_session.add(TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="v1"))
+    ingestion_job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-delete/source-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(ingestion_job)
     db_session.commit()
 
     account_request = AccountRequest(
@@ -2890,6 +3046,12 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
     db_session.commit()
     db_session.refresh(account_request)
 
+    deleted_secret_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_secret_refs.append(secret_ref),
+    )
+
     login(client, email="leader@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/users/{member.id}")
     assert deleted.status_code == 204
@@ -2902,6 +3064,50 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
     assert refreshed_request is not None
     assert refreshed_request.linked_user_id is None
     assert refreshed_request.reviewed_by_user_id == leader.id
+    assert deleted_secret_refs == ["secret:openscribe/transcript-ingestion/user-delete/source-audio"]
+
+
+def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    leader = make_user(email="leader-delete-best-effort@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    member = make_user(email="member-delete-best-effort@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Visit note",
+        current_draft_text_encrypted="draft",
+        status="failed",
+        retention_days_applied=14,
+        retention_expires_at=team.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.mp3",
+            source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-best-effort/source-audio",
+            source_audio_size_bytes=len(b"raw-file-audio"),
+            status=TranscriptIngestionJobStatus.failed,
+            error_code="stt_request_failed",
+            error_message="STT provider request failed",
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    login(client, email="leader-delete-best-effort@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/users/{member.id}")
+
+    assert deleted.status_code == 204
+    assert db_session.get(User, member.id) is None
+    assert db_session.get(Transcript, transcript.id) is None
 
 
 def test_leader_cannot_delete_cross_team_user_or_system_admin(client, make_team, make_user):
@@ -3359,6 +3565,8 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         transcript_id=transcript.id,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
+        source_audio_blob=b"raw-file-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_config_secret_missing",
         error_message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
@@ -3373,6 +3581,84 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
     assert detail.json()["latest_ingestion_job_status"] == "failed"
     assert detail.json()["latest_ingestion_error_code"] == "stt_config_secret_missing"
     assert detail.json()["latest_ingestion_error_message"] == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
+    assert detail.json()["latest_ingestion_retry_available"] is True
+
+
+def test_transcript_detail_hides_retry_when_failed_upload_blob_is_missing(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-detail-no-retry@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=None,
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    login(client, email="owner-detail-no-retry@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["latest_ingestion_retry_available"] is False
+
+
+def test_transcript_detail_includes_next_live_chunk_sequence_number(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-live-sequence@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add_all(
+        [
+            TranscriptIngestionJob(
+                transcript_id=transcript.id,
+                job_kind=TranscriptIngestionJobKind.live_chunk,
+                chunk_sequence_no=1,
+                source_filename="chunk-1.webm",
+                status=TranscriptIngestionJobStatus.applied,
+            ),
+            TranscriptIngestionJob(
+                transcript_id=transcript.id,
+                job_kind=TranscriptIngestionJobKind.live_chunk,
+                chunk_sequence_no=2,
+                source_filename="chunk-2.webm",
+                status=TranscriptIngestionJobStatus.queued,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-sequence@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
 
 
 def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
@@ -3500,6 +3786,60 @@ def test_transcribe_workspace_endpoint_does_not_health_check_stt_service(
     assert call_count == 0
 
 
+def test_transcribe_workspace_stream_returns_owner_workspace_event(client, db_session, make_team, make_user):
+    team = make_team(name="Workspace Stream Team")
+    owner = make_user(email="owner-workspace-stream@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-workspace-stream@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Streaming session",
+        current_draft_text_encrypted="Live content",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="owner-workspace-stream@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace/stream?transcript_id={transcript.id}&once=true")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    lines = body.splitlines()
+
+    assert "event: workspace" in lines
+    data_line = next(line for line in lines if line.startswith("data: "))
+    payload = json.loads(data_line[6:])
+    assert payload["active_transcript"]["id"] == str(transcript.id)
+    assert payload["active_transcript"]["current_draft_text_encrypted"] == "Live content"
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-workspace-stream@example.com", password="password-2")
+    response = client.get(f"/api/v1/transcribe/workspace/stream?transcript_id={transcript.id}&once=true")
+    assert response.status_code == 200
+    body = response.text
+    lines = body.splitlines()
+
+    data_line = next(line for line in lines if line.startswith("data: "))
+    payload = json.loads(data_line[6:])
+    assert payload["active_transcript"] is None
+
+
+def test_transcribe_workspace_stream_route_does_not_depend_on_request_scoped_db_session():
+    route = next(
+        route
+        for route in fastapi_app.routes
+        if isinstance(route, APIRoute) and route.path == "/api/v1/transcribe/workspace/stream"
+    )
+    dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+
+    assert get_db not in dependency_calls
+    assert require_full_context not in dependency_calls
+
+
 def test_transcript_title_update_is_owner_only(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -3613,10 +3953,16 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
     make_user,
     make_template,
     make_generated_document,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
 ):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     other = make_user(email="other@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    admin = make_user(email="delete-admin@example.com", password="password-3", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
 
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Delete me", "ingestion_mode": "whole_file"})
@@ -3636,12 +3982,16 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
         transcript_version=version,
         template_version=template_version,
     )
+    deleted_secret_refs: list[str] = []
     queued = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
     assert queued.status_code == 202
     job_id = UUID(queued.json()["job"]["id"])
+    job = db_session.get(TranscriptIngestionJob, job_id)
+    assert job is not None
+    assert job.source_audio_vault_ref is not None
 
     client.post("/api/v1/auth/logout")
     login(client, email="other@example.com", password="password-2")
@@ -3650,17 +4000,67 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
 
     client.post("/api/v1/auth/logout")
     login(client, email="owner@example.com", password="password-1")
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_secret_refs.append(secret_ref),
+    )
     deleted = client.delete(f"/api/v1/transcripts/{transcript_id}")
     assert deleted.status_code == 204
     assert db_session.get(Transcript, transcript_id) is None
     assert db_session.get(TranscriptVersion, version.id) is None
     assert db_session.get(TranscriptIngestionJob, job_id) is None
     assert db_session.get(GeneratedDocument, generated_document.id) is None
+    assert deleted_secret_refs == [job.source_audio_vault_ref]
 
 
-def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team, make_user):
+def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-delete-best-effort@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Delete me",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.mp3",
+            source_audio_vault_ref="secret:openscribe/transcript-ingestion/delete-best-effort/source-audio",
+            source_audio_size_bytes=len(b"raw-file-audio"),
+            status=TranscriptIngestionJobStatus.failed,
+            error_code="stt_request_failed",
+            error_message="STT provider request failed",
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    login(client, email="owner-delete-best-effort@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/transcripts/{transcript.id}")
+
+    assert deleted.status_code == 204
+    assert db_session.get(Transcript, transcript.id) is None
+
+
+def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-live-owner-job@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 12.0)
 
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked", "current_draft_text_encrypted": "draft-1"})
@@ -3684,6 +4084,8 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
     assert job.celery_task_id == "test-task-id"
+    assert job.source_audio_size_bytes == len(b"raw-audio")
+    assert job.declared_duration_seconds == 12
 
 
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
@@ -3723,9 +4125,14 @@ def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
-def test_duplicate_live_chunk_sequence_is_rejected(client, make_team, make_user):
+def test_duplicate_live_chunk_sequence_is_rejected(client, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-live-duplicate@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
+    monkeypatch.setattr("app.services.transcripts.LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", 1.0)
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Visit", "ingestion_mode": "live_chunked"})
     transcript_id = started.json()["id"]
@@ -3736,6 +4143,7 @@ def test_duplicate_live_chunk_sequence_is_rejected(client, make_team, make_user)
         data={"chunk_sequence_no": "1"},
     )
     assert first.status_code == 202
+    time.sleep(1.05)
 
     response = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
@@ -3744,6 +4152,269 @@ def test_duplicate_live_chunk_sequence_is_rejected(client, make_team, make_user)
     )
 
     assert_error(response, status_code=409, code="conflict", message="Chunk sequence number has already been submitted")
+
+
+def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-live-limit@example.com", password="password-1", is_system_admin=True)
+    owner_one = make_user(email="owner-live-one@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    owner_two = make_user(email="owner-live-two@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner_one)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
+
+    transcript_one = Transcript(
+        owner_user_id=owner_one.id,
+        team_id=team.id,
+        title="Visit one",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_one.created_at,
+    )
+    transcript_two = Transcript(
+        owner_user_id=owner_two.id,
+        team_id=team.id,
+        title="Visit two",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_two.created_at,
+    )
+    db_session.add_all([transcript_one, transcript_two])
+    db_session.commit()
+
+    login(client, email="owner-live-one@example.com", password="password-2")
+    first = client.post(
+        f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
+        files={"audio": ("chunk-one.webm", b"raw-audio-1", "audio/webm")},
+        data={"chunk_sequence_no": "1", "declared_duration_seconds": "1"},
+    )
+    assert first.status_code == 202
+
+    second = client.post(
+        f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
+        files={"audio": ("chunk-two.webm", b"raw-audio-2", "audio/webm")},
+        data={"chunk_sequence_no": "2", "declared_duration_seconds": "1"},
+    )
+    assert_error(second, status_code=429, code="rate_limited", message="Too many requests")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="owner-live-two@example.com", password="password-3")
+    third = client.post(
+        f"/api/v1/transcripts/{transcript_two.id}/audio-chunks",
+        files={"audio": ("chunk-three.webm", b"raw-audio-3", "audio/webm")},
+        data={"chunk_sequence_no": "1", "declared_duration_seconds": "1"},
+    )
+    assert third.status_code == 202
+
+
+def test_live_audio_chunk_upload_enforces_hourly_duration_budget(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-live-duration@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-live-duration@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 2.0)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="earlier.webm",
+            source_audio_size_bytes=len(b"earlier-audio"),
+            declared_duration_seconds=4.0,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=10),
+            updated_at=utcnow() - timedelta(minutes=10),
+            applied_at=utcnow() - timedelta(minutes=10),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-duration@example.com", password="password-2")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "2", "declared_duration_seconds": "2"},
+    )
+
+    details = assert_error(
+        response,
+        status_code=429,
+        code="rate_limited",
+        message="Live transcription hourly audio limit exceeded",
+    )
+    assert details["window"] == "1 hour"
+    assert details["max_seconds"] == 5.0
+    assert details["used_seconds"] == 4.0
+    assert details["requested_seconds"] == 2.0
+
+
+def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-live-duration-isolated@example.com", password="password-1", is_system_admin=True)
+    owner_one = make_user(email="owner-live-cap-one@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    owner_two = make_user(email="owner-live-cap-two@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner_one)
+    monkeypatch.setattr("app.services.transcripts.LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
+
+    transcript_one = Transcript(
+        owner_user_id=owner_one.id,
+        team_id=team.id,
+        title="Visit one",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_one.created_at,
+    )
+    transcript_two = Transcript(
+        owner_user_id=owner_two.id,
+        team_id=team.id,
+        title="Visit two",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_two.created_at,
+    )
+    db_session.add_all([transcript_one, transcript_two])
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript_one.id,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="earlier.webm",
+            source_audio_size_bytes=len(b"earlier-audio"),
+            declared_duration_seconds=4.5,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=5),
+            updated_at=utcnow() - timedelta(minutes=5),
+            applied_at=utcnow() - timedelta(minutes=5),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-cap-one@example.com", password="password-2")
+    blocked = client.post(
+        f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "2", "declared_duration_seconds": "1"},
+    )
+    assert_error(
+        blocked,
+        status_code=429,
+        code="rate_limited",
+        message="Live transcription hourly audio limit exceeded",
+    )
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="owner-live-cap-two@example.com", password="password-3")
+    allowed = client.post(
+        f"/api/v1/transcripts/{transcript_two.id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "1", "declared_duration_seconds": "1"},
+    )
+    assert allowed.status_code == 202
+
+
+def test_live_audio_chunk_upload_measures_duration_when_declared_value_is_missing(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-live-measured@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-live-measured@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 2.5)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="earlier.webm",
+            source_audio_size_bytes=len(b"earlier-audio"),
+            declared_duration_seconds=4.0,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=10),
+            updated_at=utcnow() - timedelta(minutes=10),
+            applied_at=utcnow() - timedelta(minutes=10),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-measured@example.com", password="password-2")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/audio-chunks",
+        files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
+        data={"chunk_sequence_no": "2"},
+    )
+
+    details = assert_error(
+        response,
+        status_code=429,
+        code="rate_limited",
+        message="Live transcription hourly audio limit exceeded",
+    )
+    assert details["requested_seconds"] == 2.5
 
 
 def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -3760,8 +4431,25 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
         return NormalizedAudio(filename=source_filename.replace(".webm", ".wav"), content_type="audio/wav", data=audio_bytes + b"-normalized")
 
-    def fake_transcribe_with_team_stt(db, *, team_id, audio_bytes, filename, content_type):
+    def fake_transcribe_with_stt_snapshot(
+        db,
+        *,
+        team_id,
+        stt_config_id,
+        adapter_kind,
+        base_url,
+        transcribe_path,
+        file_field_name,
+        response_text_path,
+        extra_form_fields_json,
+        model_name,
+        language,
+        audio_bytes,
+        filename,
+        content_type,
+    ):
         assert team_id == team.id
+        assert stt_config_id == config.id
         assert content_type == "audio/wav"
         if filename == "chunk-1.wav":
             return "first chunk"
@@ -3770,20 +4458,22 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         raise AssertionError(f"unexpected filename {filename}")
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
-    monkeypatch.setattr("app.services.transcripts.transcribe_with_team_stt", fake_transcribe_with_team_stt)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 10.0)
 
     queued_one = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
         files={"audio": ("chunk-1.webm", b"chunk-1", "audio/webm")},
         data={"chunk_sequence_no": "1", "declared_duration_seconds": "12"},
     )
+    job_one_id = UUID(queued_one.json()["job"]["id"])
+    time.sleep(1.05)
     queued_two = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
         files={"audio": ("chunk-2.webm", b"chunk-2", "audio/webm")},
         data={"chunk_sequence_no": "2", "declared_duration_seconds": "10"},
     )
-
-    job_one_id = UUID(queued_one.json()["job"]["id"])
     job_two_id = UUID(queued_two.json()["job"]["id"])
 
     processed_two = process_transcript_ingestion_job(db_session, job_id=job_two_id, audio_bytes=b"chunk-2")
@@ -3806,6 +4496,65 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     refreshed_two = db_session.get(TranscriptIngestionJob, job_two_id)
     assert refreshed_two is not None
     assert refreshed_two.status is TranscriptIngestionJobStatus.applied
+
+
+def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-live-gap@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        current_draft_text_encrypted="draft-1",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        next_live_chunk_sequence_no_applied=1,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add_all(
+        [
+            TranscriptIngestionJob(
+                transcript_id=transcript.id,
+                job_kind=TranscriptIngestionJobKind.live_chunk,
+                chunk_sequence_no=1,
+                source_filename="chunk-1.wav",
+                status=TranscriptIngestionJobStatus.failed,
+                error_code="stt_unavailable",
+                error_message="Could not reach the STT provider",
+            ),
+            TranscriptIngestionJob(
+                transcript_id=transcript.id,
+                job_kind=TranscriptIngestionJobKind.live_chunk,
+                chunk_sequence_no=2,
+                source_filename="chunk-2.wav",
+                status=TranscriptIngestionJobStatus.completed,
+                result_text_encrypted="second chunk",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-gap@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["current_draft_text_encrypted"] == "draft-1\nsecond chunk"
+    assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
+    refreshed_transcript = db_session.get(Transcript, transcript.id)
+    assert refreshed_transcript is not None
+    assert refreshed_transcript.next_live_chunk_sequence_no_applied == 3
+    refreshed_job = db_session.scalar(
+        select(TranscriptIngestionJob).where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.chunk_sequence_no == 2,
+        )
+    )
+    assert refreshed_job is not None
+    assert refreshed_job.status is TranscriptIngestionJobStatus.applied
 
 
 def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, db_session, make_team, make_user, monkeypatch):
@@ -3884,6 +4633,7 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     admin = make_user(email="admin-audio-file@example.com", password="password-2", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
     transcript_id = started.json()["id"]
@@ -3904,6 +4654,337 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
     assert job.celery_task_id == "test-task-id"
+    assert job.source_audio_blob is None
+    assert job.source_audio_vault_ref is not None
+    assert job.source_audio_size_bytes == len(b"raw-file-audio")
+    assert job.source_audio_duration_seconds == 42.5
+
+
+def test_retry_audio_file_route_requeues_failed_blob_for_owner(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry me",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    failed_job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=b"raw-file-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        source_audio_duration_seconds=15.25,
+        stt_config_id=config.id,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name=config.model_name,
+        stt_language=config.language,
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_extra_form_fields_json=config.extra_form_fields_json or {},
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    login(client, email="owner-retry@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+
+    assert retried.status_code == 202
+    body = retried.json()
+    assert body["transcript"]["status"] == "transcribing"
+    assert body["job"]["job_kind"] == "audio_file"
+    refreshed_failed_job = db_session.get(TranscriptIngestionJob, failed_job.id)
+    assert refreshed_failed_job is not None
+    assert refreshed_failed_job.source_audio_blob is None
+    assert refreshed_failed_job.source_audio_size_bytes is None
+    assert refreshed_failed_job.source_audio_duration_seconds is None
+    assert refreshed_failed_job.source_audio_vault_ref is None
+    new_job = db_session.get(TranscriptIngestionJob, UUID(body["job"]["id"]))
+    assert new_job is not None
+    assert new_job.source_audio_blob is None
+    assert new_job.source_audio_vault_ref is not None
+    assert new_job.source_audio_size_bytes == len(b"raw-file-audio")
+    assert new_job.source_audio_duration_seconds == 15.25
+    assert new_job.source_filename == "recording.mp3"
+    assert new_job.celery_task_id == "test-task-id"
+
+
+def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry-budget@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry-budget@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", len(b"raw-file-audio"))
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 15.25)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry budget",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    failed_job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=b"raw-file-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        source_audio_duration_seconds=15.25,
+        stt_config_id=config.id,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name=config.model_name,
+        stt_language=config.language,
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_extra_form_fields_json=config.extra_form_fields_json or {},
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+        created_at=utcnow() - timedelta(minutes=5),
+        updated_at=utcnow() - timedelta(minutes=5),
+        completed_at=utcnow() - timedelta(minutes=5),
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    login(client, email="owner-retry-budget@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+
+    assert retried.status_code == 202
+
+
+def test_retry_audio_file_route_rejects_when_failed_blob_is_missing(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry-missing@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry-missing@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry unavailable",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.mp3",
+            status=TranscriptIngestionJobStatus.failed,
+            error_code="stt_request_failed",
+            error_message="STT provider request failed",
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-retry-missing@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+
+    assert_error(
+        retried,
+        status_code=409,
+        code="ingestion_retry_unavailable",
+        message="The failed upload is no longer available to retry. Upload the audio file again.",
+    )
+
+
+def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry-vault-missing@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry-vault-missing@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry unavailable",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.mp3",
+            source_audio_vault_ref="secret:openscribe/transcript-ingestion/missing/source-audio",
+            source_audio_size_bytes=len(b"raw-file-audio"),
+            status=TranscriptIngestionJobStatus.failed,
+            error_code="stt_request_failed",
+            error_message="STT provider request failed",
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.transcripts.read_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_read_failed", "Stored retry audio is missing")),
+    )
+
+    login(client, email="owner-retry-vault-missing@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+
+    assert_error(
+        retried,
+        status_code=409,
+        code="ingestion_retry_unavailable",
+        message="The failed upload is no longer available to retry. Upload the audio file again.",
+    )
+
+
+def test_audio_file_upload_enqueue_failure_preserves_retry_source_for_uploaded_file(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-enqueue-fail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-enqueue-fail@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 18.0)
+
+    def fail_enqueue(**kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fail_enqueue)
+
+    login(client, email="owner-enqueue-fail@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
+    transcript_id = started.json()["id"]
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    assert_error(
+        uploaded,
+        status_code=502,
+        code="ingestion_enqueue_failed",
+        message="Could not enqueue file ingestion",
+    )
+    latest_job = latest_ingestion_job_for_transcript_service(db_session, transcript_id=UUID(transcript_id))
+    assert latest_job is not None
+    assert latest_job.status is TranscriptIngestionJobStatus.failed
+    assert latest_job.source_audio_vault_ref is not None
+    detail = client.get(f"/api/v1/transcripts/{transcript_id}")
+    assert detail.status_code == 200
+    assert detail.json()["latest_ingestion_retry_available"] is True
+
+
+def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry-enqueue-fail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-retry-enqueue-fail@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry me later",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    failed_job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.mp3",
+        source_audio_blob=None,
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/legacy/source-audio",
+        source_audio_size_bytes=len(b"raw-file-audio"),
+        source_audio_duration_seconds=15.25,
+        stt_config_id=config.id,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name=config.model_name,
+        stt_language=config.language,
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_extra_form_fields_json=config.extra_form_fields_json or {},
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="stt_request_failed",
+        error_message="STT provider request failed",
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    stored_audio = {failed_job.source_audio_vault_ref: b"raw-file-audio"}
+    monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda *, secret_ref: stored_audio[secret_ref])
+
+    def fail_enqueue(**kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fail_enqueue)
+
+    login(client, email="owner-retry-enqueue-fail@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+
+    assert_error(
+        retried,
+        status_code=502,
+        code="ingestion_enqueue_failed",
+        message="Could not enqueue file ingestion retry",
+    )
+    refreshed_failed_job = db_session.get(TranscriptIngestionJob, failed_job.id)
+    assert refreshed_failed_job is not None
+    assert refreshed_failed_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    assert refreshed_failed_job.source_audio_size_bytes is None
+    latest_job = latest_ingestion_job_for_transcript_service(db_session, transcript_id=transcript.id)
+    assert latest_job is not None
+    assert latest_job.id != failed_job.id
+    assert latest_job.status is TranscriptIngestionJobStatus.failed
+    assert latest_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+    assert detail.status_code == 200
+    assert detail.json()["latest_ingestion_retry_available"] is True
 
 
 def test_audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing(
@@ -4192,6 +5273,205 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
     assert second.status_code == 202
 
 
+def test_audio_file_upload_enforces_hourly_upload_size_budget(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-file-size-budget@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-file-size-budget@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 10)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 9999.0)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 5.0)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Imported visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="earlier.mp3",
+            source_audio_size_bytes=9,
+            source_audio_duration_seconds=4.0,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=10),
+            updated_at=utcnow() - timedelta(minutes=10),
+            applied_at=utcnow() - timedelta(minutes=10),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-file-size-budget@example.com", password="password-2")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/audio-file",
+        files={"audio": ("recording.mp3", b"12", "audio/mpeg")},
+    )
+
+    details = assert_error(
+        response,
+        status_code=429,
+        code="rate_limited",
+        message="Whole-file hourly upload size limit exceeded",
+    )
+    assert details["window"] == "1 hour"
+    assert details["max_bytes"] == 10
+    assert details["used_bytes"] == 9
+    assert details["requested_bytes"] == 2
+
+
+def test_audio_file_upload_enforces_hourly_duration_budget(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-file-duration-budget@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-file-duration-budget@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 999999)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 2.0)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Imported visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="earlier.mp3",
+            source_audio_size_bytes=20,
+            source_audio_duration_seconds=4.5,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=5),
+            updated_at=utcnow() - timedelta(minutes=5),
+            applied_at=utcnow() - timedelta(minutes=5),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-file-duration-budget@example.com", password="password-2")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+
+    details = assert_error(
+        response,
+        status_code=429,
+        code="rate_limited",
+        message="Whole-file hourly audio limit exceeded",
+    )
+    assert details["window"] == "1 hour"
+    assert details["max_seconds"] == 5.0
+    assert details["used_seconds"] == 4.5
+    assert details["requested_seconds"] == 2.0
+
+
+def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    admin = make_user(email="admin-file-budget-isolated@example.com", password="password-1", is_system_admin=True)
+    owner_one = make_user(email="owner-file-cap-one@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    owner_two = make_user(email="owner-file-cap-two@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner_one)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 999999)
+    monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 1.0)
+
+    transcript_one = Transcript(
+        owner_user_id=owner_one.id,
+        team_id=team.id,
+        title="Visit one",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_one.created_at,
+    )
+    transcript_two = Transcript(
+        owner_user_id=owner_two.id,
+        team_id=team.id,
+        title="Visit two",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner_two.created_at,
+    )
+    db_session.add_all([transcript_one, transcript_two])
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript_one.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="earlier.mp3",
+            source_audio_size_bytes=20,
+            source_audio_duration_seconds=4.8,
+            status=TranscriptIngestionJobStatus.applied,
+            created_at=utcnow() - timedelta(minutes=20),
+            updated_at=utcnow() - timedelta(minutes=20),
+            applied_at=utcnow() - timedelta(minutes=20),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-file-cap-one@example.com", password="password-2")
+    blocked = client.post(
+        f"/api/v1/transcripts/{transcript_one.id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+    assert_error(
+        blocked,
+        status_code=429,
+        code="rate_limited",
+        message="Whole-file hourly audio limit exceeded",
+    )
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="owner-file-cap-two@example.com", password="password-3")
+    allowed = client.post(
+        f"/api/v1/transcripts/{transcript_two.id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+    assert allowed.status_code == 202
+
+
 def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -4253,6 +5533,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -4263,10 +5544,62 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
 
     assert uploaded.status_code == 202
     assert processed.status is TranscriptIngestionJobStatus.applied
+    refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
+    assert refreshed_job is not None
+    assert refreshed_job.source_audio_blob is None
+    assert refreshed_job.source_audio_vault_ref is None
+    assert refreshed_job.source_audio_size_bytes == len(b"raw-file-audio")
+    assert refreshed_job.source_audio_duration_seconds == 42.5
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
     assert persisted.current_draft_text_encrypted == "earlier transcript\nfull file transcript"
     assert persisted.status.value == "ready"
+
+
+def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-cleanup-fail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="admin-cleanup-fail@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+
+    login(client, email="owner-cleanup-fail@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Imported visit",
+            "ingestion_mode": "whole_file",
+            "current_draft_text_encrypted": "earlier transcript",
+        },
+    )
+    transcript_id = started.json()["id"]
+
+    def fake_normalize_audio_to_wav_16k_mono(*, audio_bytes, source_filename):
+        return NormalizedAudio(
+            filename="recording.wav",
+            content_type="audio/wav",
+            data=make_test_wav_bytes(duration_seconds=1.0),
+        )
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", lambda *args, **kwargs: "full file transcript")
+    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/audio-file",
+        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+    )
+    job_id = UUID(uploaded.json()["job"]["id"])
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+
+    assert processed.status is TranscriptIngestionJobStatus.applied
+    refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
+    assert refreshed_job is not None
+    assert refreshed_job.source_audio_vault_ref is not None
 
 
 def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_changes(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -4516,6 +5849,9 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
     assert processed.status is TranscriptIngestionJobStatus.failed
     assert processed.error_code == "stt_config_secret_missing"
     assert processed.error_message == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
+    assert processed.source_audio_blob is None
+    assert processed.source_audio_vault_ref is not None
+    assert processed.source_audio_size_bytes == len(b"raw-file-audio")
     transcript = db_session.get(Transcript, UUID(transcript_id))
     assert transcript is not None
     assert transcript.status is TranscriptStatus.failed
@@ -4552,6 +5888,42 @@ def test_audio_file_route_enforces_owner_scope_and_file_modes(client, make_team,
         f"/api/v1/transcripts/{transcript_id}/audio-file",
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
+def test_retry_audio_file_route_enforces_owner_scope(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-retry-scope@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-retry-scope@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Retry scope",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.mp3",
+            source_audio_blob=b"raw-file-audio",
+            source_audio_size_bytes=len(b"raw-file-audio"),
+            status=TranscriptIngestionJobStatus.failed,
+        )
+    )
+    db_session.commit()
+
+    unauthorized = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
+    assert_error(unauthorized, status_code=401, code="unauthorized", message="Authentication required")
+
+    login(client, email="other-retry-scope@example.com", password="password-2")
+    forbidden = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 

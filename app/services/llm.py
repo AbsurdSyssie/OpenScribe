@@ -19,6 +19,21 @@ OPENAI_CHAT_MODEL_FALLBACKS = (
 )
 
 
+def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        models_page = client.models.list()
+    except Exception as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available models") from exc
+
+    models: set[str] = set()
+    for model in getattr(models_page, "data", []):
+        model_id = getattr(model, "id", None)
+        if isinstance(model_id, str) and model_id.strip():
+            models.add(model_id.strip())
+    return sorted(models)
+
+
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
     team = db.get(Team, team_id)
     if team is None:
@@ -61,17 +76,12 @@ def _ollama_api_url(base_url: str, path: str) -> str:
 
 def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        models_page = client.models.list()
-    except Exception as exc:  # pragma: no cover
+        models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
+    except AppError as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI chat models") from exc
 
     allowed: set[str] = set()
-    for model in getattr(models_page, "data", []):
-        model_id = getattr(model, "id", None)
-        if not model_id:
-            continue
-        normalized = str(model_id)
+    for normalized in models:
         lower = normalized.lower()
         if any(token in lower for token in ("embedding", "transcribe", "whisper", "tts", "moderation", "image", "search")):
             continue
@@ -80,11 +90,22 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     return sorted(allowed)
 
 
+def _list_bedrock_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        return _list_openai_compatible_models(api_key=api_key, base_url=base_url)
+    except AppError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Amazon Bedrock chat models") from exc
+
+
 def _fallback_openai_chat_models() -> list[str]:
     return list(OPENAI_CHAT_MODEL_FALLBACKS)
 
 
 def _openai_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
+    return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
+
+
+def _bedrock_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
     return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
 
 
@@ -131,6 +152,27 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
             source = "default"
             notes = ["No API key provided for inspection, so OpenScribe used the built-in default chat model list."]
         model_options = _openai_model_options(models, source=source)
+    elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
+        if payload.bearer_token:
+            try:
+                models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
+                source = "fetched"
+                notes = [
+                    "OpenScribe loaded the Amazon Bedrock model list through the OpenAI-compatible Models API for the supplied Bedrock Mantle endpoint.",
+                ]
+            except AppError:
+                models = []
+                source = "default"
+                notes = [
+                    "Live Amazon Bedrock model discovery failed. Verify the Bedrock Mantle base URL, region, and API key, or enter a model name manually.",
+                ]
+        else:
+            models = []
+            source = "default"
+            notes = [
+                "No Bedrock API key provided for inspection, so OpenScribe could not load the region-specific model list. Enter a model name manually or inspect again with a key.",
+            ]
+        model_options = _bedrock_model_options(models, source=source)
     elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
         try:
             models = _list_ollama_chat_models(base_url=payload.base_url, bearer_token=payload.bearer_token)
@@ -207,6 +249,16 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             available_models_json = list(config.available_models_json or [])
         else:
             available_models_json = _fallback_openai_chat_models()
+    elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
+        if payload.bearer_token:
+            try:
+                available_models_json = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
+            except AppError:
+                available_models_json = list(config.available_models_json or []) if config is not None else []
+        elif config is not None:
+            available_models_json = list(config.available_models_json or [])
+        else:
+            available_models_json = []
     elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
         try:
             token_for_lookup = payload.bearer_token if payload.bearer_token else None
@@ -218,7 +270,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     else:
         available_models_json = []
 
-    if payload.adapter_kind is LlmAdapterKind.openai_chat:
+    if payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         resolved_auth_mode = LlmAuthMode.bearer
     else:
         resolved_auth_mode = LlmAuthMode.bearer if payload.bearer_token or (config is not None and config.vault_secret_ref) else LlmAuthMode.none
@@ -233,7 +285,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             auth_mode=resolved_auth_mode,
             model_name=payload.model_name.strip() if payload.model_name else None,
             available_models_json=available_models_json,
-            vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind is LlmAdapterKind.openai_chat else "",
+            vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
             created_by_user_id=actor.id,
             updated_by_user_id=actor.id,

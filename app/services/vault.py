@@ -1,3 +1,4 @@
+import base64
 import os
 from uuid import UUID
 
@@ -141,6 +142,85 @@ def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
             url,
             headers={"X-Vault-Token": VAULT_TOKEN},
             timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code in {200, 204, 404}:
+        return
+    raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
+
+
+def transcript_ingestion_source_audio_path(job_id: UUID) -> str:
+    return f"openscribe/transcript-ingestion/{job_id}/source-audio"
+
+
+def transcript_ingestion_source_audio_ref(job_id: UUID) -> str:
+    return f"{VAULT_KV_MOUNT}:{transcript_ingestion_source_audio_path(job_id)}"
+
+
+def _kv_url_for_path(*, mount: str, path: str, endpoint: str = "data") -> str:
+    return f"{VAULT_ADDR.rstrip('/')}/v1/{mount}/{endpoint}/{path}"
+
+
+def _split_secret_ref(secret_ref: str) -> tuple[str, str]:
+    mount, separator, path = secret_ref.partition(":")
+    if not separator or not mount or not path:
+        raise AppError(500, "vault_ref_invalid", "Vault secret reference is invalid")
+    return mount, path
+
+
+def write_transcript_ingestion_source_audio(*, job_id: UUID, audio_bytes: bytes) -> str:
+    path = transcript_ingestion_source_audio_path(job_id)
+    url = _kv_url_for_path(mount=VAULT_KV_MOUNT, path=path)
+    encoded_audio = base64.b64encode(audio_bytes).decode("ascii")
+    try:
+        response = httpx.post(
+            url,
+            headers={"X-Vault-Token": VAULT_TOKEN},
+            json={"data": {"audio_b64": encoded_audio}},
+            timeout=15.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code >= 400:
+        raise AppError(502, "vault_write_failed", "Vault secret write failed")
+    return transcript_ingestion_source_audio_ref(job_id)
+
+
+def read_transcript_ingestion_source_audio(*, secret_ref: str) -> bytes:
+    mount, path = _split_secret_ref(secret_ref)
+    url = _kv_url_for_path(mount=mount, path=path)
+    try:
+        response = httpx.get(
+            url,
+            headers={"X-Vault-Token": VAULT_TOKEN},
+            timeout=15.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code == 404:
+        raise AppError(502, "vault_read_failed", "Stored retry audio is missing")
+    if response.status_code >= 400:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    payload = response.json()
+    encoded_audio = (((payload.get("data") or {}).get("data") or {}).get("audio_b64"))
+    if not encoded_audio:
+        raise AppError(502, "vault_read_failed", "Stored retry audio is missing")
+    try:
+        return base64.b64decode(str(encoded_audio), validate=True)
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Stored retry audio is invalid") from exc
+
+
+def delete_transcript_ingestion_source_audio(*, secret_ref: str) -> None:
+    mount, path = _split_secret_ref(secret_ref)
+    url = _kv_url_for_path(mount=mount, path=path, endpoint="metadata")
+    try:
+        response = httpx.delete(
+            url,
+            headers={"X-Vault-Token": VAULT_TOKEN},
+            timeout=15.0,
         )
     except httpx.HTTPError as exc:
         raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc

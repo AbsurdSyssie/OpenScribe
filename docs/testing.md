@@ -87,9 +87,16 @@ What it does:
 - repeated bad login attempts returning `429 rate_limited`
 - repeated bad TOTP challenge attempts returning `429 rate_limited`
 - repeated public account-request submissions returning `429 rate_limited`
+- repeated live chunk transcript uploads returning `429 rate_limited`
+- live chunk uploads exceeding the rolling hourly declared-audio budget returning `429 rate_limited`
 - repeated whole-file transcript uploads returning `429 rate_limited`
+- whole-file uploads exceeding the rolling hourly upload-size budget returning `429 rate_limited`
+- whole-file uploads exceeding the rolling hourly audio-duration budget returning `429 rate_limited`
 - browser and JSON whole-file upload routes sharing the same authenticated rate-limit bucket
+- live chunk upload rate limiting being isolated per authenticated user instead of globally by shared test-client IP
+- live chunk hourly duration budgeting being isolated per authenticated owner
 - whole-file upload rate limiting being isolated per authenticated user instead of globally by shared test-client IP
+- whole-file hourly byte/duration budgeting being isolated per authenticated owner
 - browser state-changing routes rejecting missing CSRF tokens
 - whole-file uploads rejecting oversize payloads before queueing
 - whole-file ingestion jobs failing when normalized duration exceeds the configured maximum
@@ -113,8 +120,10 @@ What it does:
 - live audio chunk upload rejecting non-`live_chunked` transcripts
 - duplicate live chunk sequence rejection
 - sequence-aware live chunk worker application
+- sequence-aware live chunk reconciliation advancing past failed live-chunk gaps once later completed chunks are available
 - live chunk worker failure when no active team STT selection exists
 - owner-only whole-file ingestion queueing
+- whole-file ingestion retaining retryable source audio outside Postgres, with the ingestion job carrying either a legacy blob or a Vault-backed source-audio ref
 - whole-file ingestion rejecting transcripts in the wrong ingestion mode
 - whole-file queueing failing early when no active team STT selection exists
 - whole-file ingestion moving the transcript to `ready` after successful provider completion
@@ -128,6 +137,7 @@ What it does:
 - timestamped-segment paragraph grouping heuristics for Parakeet-style STT responses
 - whole-file STT responses preferring paragraphized `segments` over flat `text` when timestamped segment data is present
 - transcript detail and the `/transcribe` workspace surfacing the latest owner-visible ingestion failure message instead of only a generic failed-state banner
+- transcript detail and the `/transcribe` workspace surfacing `latest_ingestion_retry_available` so the owner UI can show a retry control only when stored retry audio still exists
 - STT config edits/deletes being blocked while queued or processing ingestion jobs still reference that config
 - leader team-template create/update/delete scope
 - user personal-template create/update/delete scope
@@ -172,15 +182,21 @@ What it does:
 - owner transcription workspace at `/transcribe`
 - owner transcription workspace file-upload form
 - owner transcription workspace missing-STT error that names the team leader email when available
+- owner transcription workspace showing a `Retry transcription` control only when a failed whole-file job still has stored retry audio available
+- owner transcription workspace hiding the retry control when a failed whole-file job has no stored retry audio available
 - owner transcription workspace sidebar session list and redesigned tabbed transcript shell
 - owner transcription workspace exposing and hydrating from `GET /api/v1/transcribe/workspace`
+- owner transcription workspace SSE updates from `GET /api/v1/transcribe/workspace/stream`
 - `/transcribe` header-only audio controls still exposing the upload form hook and the large editable session title control
 - owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
+- owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace preserving structured EMIS output hooks during workspace refresh and poll-driven rerender
 - owner transcription workspace keeping the redesigned clinical shell copy and core controls while preserving current browser hooks
 - GLM 2 transcribe route exposing the same owner-only workspace endpoint and pane controls for hide, split, and expand states
+- `live_chunked` sessions rendering live-specific controls, pinned `vad-web` runtime hooks, and Silero/VAD status copy in the transcribe workspace
+- `live_chunked` sessions surfacing the latest live-chunk STT failure message instead of immediately reverting to generic ready copy
 - GLM 2 transcribe route rendering the full EMIS section editor surface and the output/follow-up/history assistant pane against real workspace data
 - GLM 2 transcribe route keeping the restored GLM shell while wiring real session switching, title editing, and provider labels through the existing runtime
 - owner transcription workspace post/redirect/get upload flow so refresh does not resubmit the form

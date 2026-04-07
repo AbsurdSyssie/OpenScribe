@@ -1,7 +1,9 @@
-from datetime import datetime
+import logging
+import os
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -18,8 +20,91 @@ from app.models import (
     utcnow,
 )
 from app.schemas.transcripts import TranscriptCreate, TranscriptStart
-from app.services.audio import enforce_whole_file_duration_limit, normalize_audio_to_wav_16k_mono
+from app.services.audio import (
+    enforce_whole_file_duration_limit,
+    inspect_audio_duration_seconds,
+    normalize_audio_to_wav_16k_mono,
+    probe_audio_duration_seconds,
+)
 from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
+from app.services.vault import (
+    delete_transcript_ingestion_source_audio,
+    read_transcript_ingestion_source_audio,
+    write_transcript_ingestion_source_audio,
+)
+
+LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", "3600"))
+WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(250 * 1024 * 1024)))
+WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", "7200"))
+retry_audio_logger = logging.getLogger("openscribe.retry_audio")
+
+
+def _retry_source_available(job: TranscriptIngestionJob) -> bool:
+    return bool(job.source_audio_blob or job.source_audio_vault_ref)
+
+
+def _read_retry_source_audio(job: TranscriptIngestionJob) -> bytes:
+    if job.source_audio_blob:
+        return job.source_audio_blob
+    if job.source_audio_vault_ref:
+        try:
+            return read_transcript_ingestion_source_audio(secret_ref=job.source_audio_vault_ref)
+        except AppError as exc:
+            if exc.code == "vault_read_failed" and exc.message == "Stored retry audio is missing":
+                raise AppError(
+                    409,
+                    "ingestion_retry_unavailable",
+                    "The failed upload is no longer available to retry. Upload the audio file again.",
+                ) from exc
+            raise
+    raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
+
+
+def clear_ingestion_retry_source(
+    db: Session,
+    *,
+    job_id: UUID,
+    clear_storage: bool,
+    clear_accounting: bool,
+    delete_backing_secret: bool = False,
+) -> TranscriptIngestionJob:
+    job = db.get(TranscriptIngestionJob, job_id)
+    if job is None:
+        raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
+    source_audio_vault_ref = job.source_audio_vault_ref
+    if clear_storage and delete_backing_secret and source_audio_vault_ref:
+        delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
+    if clear_storage:
+        job.source_audio_blob = None
+        job.source_audio_vault_ref = None
+    if clear_accounting:
+        job.source_audio_size_bytes = None
+        job.source_audio_duration_seconds = None
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def delete_retry_sources_for_transcripts(db: Session, *, transcript_ids: list[UUID]) -> None:
+    if not transcript_ids:
+        return
+    vault_refs = list(
+        db.scalars(
+            select(TranscriptIngestionJob.source_audio_vault_ref).where(
+                TranscriptIngestionJob.transcript_id.in_(transcript_ids),
+                TranscriptIngestionJob.source_audio_vault_ref.is_not(None),
+            )
+        )
+    )
+    for secret_ref in {secret_ref for secret_ref in vault_refs if secret_ref}:
+        try:
+            delete_transcript_ingestion_source_audio(secret_ref=secret_ref)
+        except AppError as exc:
+            retry_audio_logger.warning(
+                "retry_audio_delete_failed",
+                extra={"secret_ref": secret_ref, "error_code": exc.code, "error_message": exc.message},
+            )
 
 
 def _create_transcript_row(
@@ -116,6 +201,48 @@ def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> 
     )
 
 
+def ingestion_usage_totals_for_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    since: datetime,
+    job_kinds: tuple[TranscriptIngestionJobKind, ...],
+    duration_column,
+    exclude_job_ids: tuple[UUID, ...] = (),
+) -> tuple[int, float]:
+    statement = (
+        select(
+            func.coalesce(func.sum(TranscriptIngestionJob.source_audio_size_bytes), 0),
+            func.coalesce(func.sum(duration_column), 0.0),
+        )
+        .select_from(TranscriptIngestionJob)
+        .join(Transcript, Transcript.id == TranscriptIngestionJob.transcript_id)
+        .where(
+            Transcript.owner_user_id == owner_user_id,
+            TranscriptIngestionJob.job_kind.in_(job_kinds),
+            TranscriptIngestionJob.created_at >= since,
+        )
+    )
+    if exclude_job_ids:
+        statement = statement.where(TranscriptIngestionJob.id.not_in(exclude_job_ids))
+    total_bytes, total_duration = db.execute(statement).one()
+    return int(total_bytes or 0), float(total_duration or 0.0)
+
+
+def next_live_chunk_sequence_no_for_transcript(db: Session, *, transcript_id: UUID) -> int:
+    max_sequence = db.scalar(
+        select(TranscriptIngestionJob.chunk_sequence_no)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+            TranscriptIngestionJob.chunk_sequence_no.is_not(None),
+        )
+        .order_by(TranscriptIngestionJob.chunk_sequence_no.desc())
+        .limit(1)
+    )
+    return (max_sequence or 0) + 1
+
+
 def _latest_owner_transcript(db: Session, owner: User) -> Transcript | None:
     return db.scalar(
         select(Transcript)
@@ -170,6 +297,83 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
     if transcript.owner_user_id != owner.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
     return transcript
+
+
+def _enforce_live_chunk_hourly_duration_budget(
+    db: Session,
+    *,
+    owner: User,
+    duration_seconds: float,
+) -> None:
+    if LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS <= 0:
+        return
+    _, used_duration_seconds = ingestion_usage_totals_for_owner(
+        db,
+        owner_user_id=owner.id,
+        since=utcnow() - timedelta(hours=1),
+        job_kinds=(TranscriptIngestionJobKind.live_chunk,),
+        duration_column=TranscriptIngestionJob.declared_duration_seconds,
+    )
+    projected_duration_seconds = used_duration_seconds + duration_seconds
+    if projected_duration_seconds <= LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS:
+        return
+    raise AppError(
+        429,
+        "rate_limited",
+        "Live transcription hourly audio limit exceeded",
+        {
+            "window": "1 hour",
+            "max_seconds": LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS,
+            "used_seconds": round(used_duration_seconds, 2),
+            "requested_seconds": round(duration_seconds, 3),
+        },
+    )
+
+
+def _enforce_whole_file_hourly_usage_budget(
+    db: Session,
+    *,
+    owner: User,
+    source_audio_size_bytes: int,
+    source_audio_duration_seconds: float,
+    exclude_job_ids: tuple[UUID, ...] = (),
+) -> None:
+    if WHOLE_FILE_HOURLY_UPLOAD_BYTES <= 0 and WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS <= 0:
+        return
+    used_bytes, used_duration_seconds = ingestion_usage_totals_for_owner(
+        db,
+        owner_user_id=owner.id,
+        since=utcnow() - timedelta(hours=1),
+        job_kinds=(TranscriptIngestionJobKind.audio_file,),
+        duration_column=TranscriptIngestionJob.source_audio_duration_seconds,
+        exclude_job_ids=exclude_job_ids,
+    )
+    projected_bytes = used_bytes + source_audio_size_bytes
+    projected_duration_seconds = used_duration_seconds + source_audio_duration_seconds
+    if WHOLE_FILE_HOURLY_UPLOAD_BYTES > 0 and projected_bytes > WHOLE_FILE_HOURLY_UPLOAD_BYTES:
+        raise AppError(
+            429,
+            "rate_limited",
+            "Whole-file hourly upload size limit exceeded",
+            {
+                "window": "1 hour",
+                "max_bytes": WHOLE_FILE_HOURLY_UPLOAD_BYTES,
+                "used_bytes": used_bytes,
+                "requested_bytes": source_audio_size_bytes,
+            },
+        )
+    if WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS > 0 and projected_duration_seconds > WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS:
+        raise AppError(
+            429,
+            "rate_limited",
+            "Whole-file hourly audio limit exceeded",
+            {
+                "window": "1 hour",
+                "max_seconds": WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS,
+                "used_seconds": round(used_duration_seconds, 2),
+                "requested_seconds": round(source_audio_duration_seconds, 2),
+            },
+        )
 
 
 def update_transcript_title(
@@ -236,6 +440,7 @@ def delete_transcripts(
         _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
         for transcript_id in unique_ids
     ]
+    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcripts])
     deleted_count = len(transcripts)
     for transcript in transcripts:
         db.delete(transcript)
@@ -249,6 +454,7 @@ def queue_audio_chunk_ingestion(
     *,
     transcript_id: UUID,
     filename: str,
+    source_audio_bytes: bytes,
     chunk_sequence_no: int,
     declared_duration_seconds: float | None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
@@ -260,14 +466,6 @@ def queue_audio_chunk_ingestion(
             "Transcript ingestion mode does not accept live audio chunks",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
-    if declared_duration_seconds is not None and declared_duration_seconds > 30:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "Declared chunk duration exceeds the current maximum",
-            {"field": "declared_duration_seconds", "max_seconds": 30},
-        )
-
     existing = db.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -281,15 +479,39 @@ def queue_audio_chunk_ingestion(
             "Chunk sequence number has already been submitted",
             {"transcript_id": str(transcript.id), "chunk_sequence_no": chunk_sequence_no},
         )
-
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
+    try:
+        measured_duration_seconds = inspect_audio_duration_seconds(
+            audio_bytes=source_audio_bytes,
+            source_filename=filename,
+        )
+    except AppError as exc:
+        if exc.code not in {"audio_duration_probe_failed", "audio_normalization_failed"}:
+            raise
+        raise AppError(422, "business_rule_violation", "Audio duration could not be inspected", {"field": "audio"}) from exc
+
+    if measured_duration_seconds > 30:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "Audio duration exceeds the current maximum",
+            {"field": "audio", "max_seconds": 30, "duration_seconds": round(measured_duration_seconds, 3)},
+        )
+
+    _enforce_live_chunk_hourly_duration_budget(
+        db,
+        owner=owner,
+        duration_seconds=measured_duration_seconds,
+    )
     job = TranscriptIngestionJob(
         id=uuid4(),
         transcript_id=transcript.id,
         job_kind=TranscriptIngestionJobKind.live_chunk,
         chunk_sequence_no=chunk_sequence_no,
         source_filename=filename,
+        source_audio_size_bytes=len(source_audio_bytes),
+        declared_duration_seconds=measured_duration_seconds,
         stt_config_id=config.id,
         stt_adapter_kind=config.adapter_kind.value,
         stt_base_url=config.base_url,
@@ -316,6 +538,10 @@ def queue_audio_file_ingestion(
     *,
     transcript_id: UUID,
     filename: str,
+    source_audio_blob: bytes,
+    source_audio_duration_seconds: float | None = None,
+    source_audio_vault_ref: str | None = None,
+    exclude_job_ids: tuple[UUID, ...] = (),
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
@@ -343,13 +569,63 @@ def queue_audio_file_ingestion(
         )
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
+    resolved_source_audio_duration_seconds = source_audio_duration_seconds
+    if resolved_source_audio_duration_seconds is None:
+        try:
+            resolved_source_audio_duration_seconds = probe_audio_duration_seconds(
+                audio_bytes=source_audio_blob,
+                source_filename=filename,
+            )
+        except AppError as exc:
+            if exc.code != "audio_duration_probe_failed":
+                raise
+            resolved_source_audio_duration_seconds = None
+    if resolved_source_audio_duration_seconds is not None:
+        _enforce_whole_file_hourly_usage_budget(
+            db,
+            owner=owner,
+            source_audio_size_bytes=len(source_audio_blob),
+            source_audio_duration_seconds=resolved_source_audio_duration_seconds,
+            exclude_job_ids=exclude_job_ids,
+        )
+    elif WHOLE_FILE_HOURLY_UPLOAD_BYTES > 0:
+        used_bytes, _ = ingestion_usage_totals_for_owner(
+            db,
+            owner_user_id=owner.id,
+            since=utcnow() - timedelta(hours=1),
+            job_kinds=(TranscriptIngestionJobKind.audio_file,),
+            duration_column=TranscriptIngestionJob.source_audio_duration_seconds,
+            exclude_job_ids=exclude_job_ids,
+        )
+        projected_bytes = used_bytes + len(source_audio_blob)
+        if projected_bytes > WHOLE_FILE_HOURLY_UPLOAD_BYTES:
+            raise AppError(
+                429,
+                "rate_limited",
+                "Whole-file hourly upload size limit exceeded",
+                {
+                    "window": "1 hour",
+                    "max_bytes": WHOLE_FILE_HOURLY_UPLOAD_BYTES,
+                    "used_bytes": used_bytes,
+                    "requested_bytes": len(source_audio_blob),
+                },
+            )
+
+    job_id = uuid4()
+    persisted_source_audio_vault_ref = source_audio_vault_ref
+    if persisted_source_audio_vault_ref is None:
+        persisted_source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job_id, audio_bytes=source_audio_blob)
 
     job = TranscriptIngestionJob(
-        id=uuid4(),
+        id=job_id,
         transcript_id=transcript.id,
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename=filename,
+        source_audio_blob=None,
+        source_audio_vault_ref=persisted_source_audio_vault_ref,
+        source_audio_size_bytes=len(source_audio_blob),
+        source_audio_duration_seconds=resolved_source_audio_duration_seconds,
         stt_config_id=config.id,
         stt_adapter_kind=config.adapter_kind.value,
         stt_base_url=config.base_url,
@@ -364,10 +640,54 @@ def queue_audio_file_ingestion(
     transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        if source_audio_vault_ref is None and persisted_source_audio_vault_ref is not None:
+            try:
+                delete_transcript_ingestion_source_audio(secret_ref=persisted_source_audio_vault_ref)
+            except AppError:
+                pass
+        raise
     db.refresh(transcript)
     db.refresh(job)
     return transcript, job
+
+
+def retry_audio_file_ingestion(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+) -> tuple[Transcript, TranscriptIngestionJob, bytes, TranscriptIngestionJob]:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
+    if latest_job is None or latest_job.job_kind is not TranscriptIngestionJobKind.audio_file:
+        raise AppError(409, "ingestion_retry_unavailable", "There is no failed uploaded audio available to retry for this session")
+    if latest_job.status is not TranscriptIngestionJobStatus.failed:
+        raise AppError(409, "ingestion_retry_unavailable", "The latest uploaded audio is not in a retryable failed state")
+    if not _retry_source_available(latest_job):
+        raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
+
+    source_audio_blob = _read_retry_source_audio(latest_job)
+    source_audio_duration_seconds = latest_job.source_audio_duration_seconds
+    transcript, retry_job = queue_audio_file_ingestion(
+        db,
+        owner,
+        transcript_id=transcript.id,
+        filename=latest_job.source_filename,
+        source_audio_blob=source_audio_blob,
+        source_audio_duration_seconds=source_audio_duration_seconds,
+        source_audio_vault_ref=latest_job.source_audio_vault_ref,
+        exclude_job_ids=(latest_job.id,),
+    )
+    latest_job.source_audio_size_bytes = None
+    latest_job.source_audio_duration_seconds = None
+    db.add(latest_job)
+    db.commit()
+    db.refresh(latest_job)
+    db.refresh(retry_job)
+    return transcript, retry_job, source_audio_blob, latest_job
 
 
 def _mark_job_processing(db: Session, job: TranscriptIngestionJob) -> None:
@@ -391,6 +711,7 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
 
 def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
     expected_sequence = transcript.next_live_chunk_sequence_no_applied
+    advanced_sequence = False
     while True:
         job = db.scalar(
             select(TranscriptIngestionJob).where(
@@ -401,7 +722,33 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
             )
         )
         if job is None:
-            break
+            failed_job = db.scalar(
+                select(TranscriptIngestionJob).where(
+                    TranscriptIngestionJob.transcript_id == transcript.id,
+                    TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+                    TranscriptIngestionJob.chunk_sequence_no == expected_sequence,
+                    TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed,
+                )
+            )
+            if failed_job is None:
+                break
+
+            later_completed_job = db.scalar(
+                select(TranscriptIngestionJob.id).where(
+                    TranscriptIngestionJob.transcript_id == transcript.id,
+                    TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+                    TranscriptIngestionJob.chunk_sequence_no > expected_sequence,
+                    TranscriptIngestionJob.status.in_(
+                        [TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied]
+                    ),
+                ).limit(1)
+            )
+            if later_completed_job is None:
+                break
+
+            expected_sequence += 1
+            advanced_sequence = True
+            continue
         transcript.current_draft_text_encrypted = _append_chunk_text(
             transcript.current_draft_text_encrypted,
             job.result_text_encrypted or "",
@@ -409,13 +756,32 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
         job.status = TranscriptIngestionJobStatus.applied
         job.applied_at = utcnow()
         expected_sequence += 1
+        advanced_sequence = True
         db.add(job)
         db.add(transcript)
 
     transcript.next_live_chunk_sequence_no_applied = expected_sequence
+    if not advanced_sequence:
+        return
+
     transcript.status = TranscriptStatus.transcribing
     db.add(transcript)
     db.commit()
+
+
+def reconcile_live_chunk_progress(
+    db: Session,
+    *,
+    transcript: Transcript,
+) -> Transcript:
+    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
+        return transcript
+    if transcript.status not in {TranscriptStatus.transcribing, TranscriptStatus.failed, TranscriptStatus.recording}:
+        return transcript
+
+    _apply_completed_live_chunks(db, transcript)
+    db.refresh(transcript)
+    return transcript
 
 
 def process_transcript_ingestion_job(
@@ -462,6 +828,7 @@ def process_transcript_ingestion_job(
         if job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
+            job.source_audio_blob = None
             transcript.current_draft_text_encrypted = _append_chunk_text(
                 transcript.current_draft_text_encrypted,
                 transcript_text,
@@ -470,6 +837,18 @@ def process_transcript_ingestion_job(
             db.add(job)
             db.add(transcript)
             db.commit()
+            if job.source_audio_vault_ref:
+                try:
+                    clear_ingestion_retry_source(
+                        db,
+                        job_id=job.id,
+                        clear_storage=True,
+                        clear_accounting=False,
+                        delete_backing_secret=True,
+                    )
+                    db.refresh(transcript)
+                except AppError:
+                    pass
         else:
             job.status = TranscriptIngestionJobStatus.completed
             db.add(job)

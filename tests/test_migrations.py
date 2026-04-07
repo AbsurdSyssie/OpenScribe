@@ -269,6 +269,11 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "chunk_sequence_no",
         "status",
         "celery_task_id",
+        "source_audio_blob",
+        "source_audio_vault_ref",
+        "source_audio_size_bytes",
+        "source_audio_duration_seconds",
+        "declared_duration_seconds",
         "result_text_encrypted",
         "stt_config_id",
         "stt_adapter_kind",
@@ -450,6 +455,89 @@ def test_alembic_head_supports_llm_adapter_values():
 
     assert adapter_kind == "ollama_chat"
     assert auth_mode == "none"
+
+
+@pytest.mark.migration
+def test_alembic_head_supports_bedrock_llm_adapter_value():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000130',
+                    'Admin User',
+                    'bedrock-admin@example.com',
+                    'hash',
+                    NULL,
+                    NULL,
+                    true,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000131',
+                    'Clinic Bedrock',
+                    'clinic bedrock',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_llm_configs (
+                    id, team_id, label, adapter_kind, base_url, auth_mode, model_name, available_models_json,
+                    vault_secret_ref, is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000132',
+                    '00000000-0000-0000-0000-000000000131',
+                    'Amazon Bedrock',
+                    'bedrock_chat',
+                    'https://bedrock-mantle.us-east-1.api.aws/v1',
+                    'bearer',
+                    'anthropic.claude-3-7-sonnet-20250219-v1:0',
+                    '[]'::json,
+                    'secret:openscribe/llm/team/1/config/2',
+                    true,
+                    '00000000-0000-0000-0000-000000000130',
+                    '00000000-0000-0000-0000-000000000130',
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+
+        adapter_kind, auth_mode = connection.execute(text("SELECT adapter_kind::text, auth_mode::text FROM team_llm_configs")).one()
+
+    assert adapter_kind == "bedrock_chat"
+    assert auth_mode == "bearer"
 
 
 @pytest.mark.migration

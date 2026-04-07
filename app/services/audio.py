@@ -44,6 +44,62 @@ def normalized_wav_duration_seconds(*, audio_bytes: bytes) -> float:
     return frame_count / frame_rate
 
 
+def probe_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) -> float:
+    if not audio_bytes:
+        raise AppError(422, "business_rule_violation", "Audio chunk is required", {"field": "audio"})
+
+    source_suffix = Path(source_filename or "audio.bin").suffix or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=source_suffix, delete=False, dir="/tmp") as source_file:
+        source_file.write(audio_bytes)
+        source_path = source_file.name
+
+    try:
+        try:
+            completed = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    source_path,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            raise AppError(502, "audio_duration_probe_failed", "ffprobe is unavailable for audio duration inspection") from exc
+
+        if completed.returncode != 0:
+            raise AppError(502, "audio_duration_probe_failed", "Audio duration could not be inspected")
+
+        try:
+            duration_seconds = float((completed.stdout or "").strip())
+        except ValueError as exc:
+            raise AppError(502, "audio_duration_probe_failed", "Audio duration could not be inspected") from exc
+        if duration_seconds <= 0:
+            raise AppError(502, "audio_duration_probe_failed", "Audio duration could not be inspected")
+        return duration_seconds
+    finally:
+        try:
+            os.unlink(source_path)
+        except FileNotFoundError:
+            pass
+
+
+def inspect_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) -> float:
+    try:
+        return probe_audio_duration_seconds(audio_bytes=audio_bytes, source_filename=source_filename)
+    except AppError as probe_exc:
+        if probe_exc.code != "audio_duration_probe_failed":
+            raise
+    normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=source_filename)
+    return normalized_wav_duration_seconds(audio_bytes=normalized_audio.data)
+
+
 def enforce_whole_file_duration_limit(*, audio_bytes: bytes) -> None:
     duration_seconds = normalized_wav_duration_seconds(audio_bytes=audio_bytes)
     if duration_seconds > WHOLE_FILE_MAX_DURATION_SECONDS:

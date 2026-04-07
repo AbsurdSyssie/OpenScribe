@@ -1576,7 +1576,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
         adapter_kind = LlmAdapterKind(document.llm_adapter_kind or config.adapter_kind.value)
         base_url = document.llm_base_url or config.base_url
-        if adapter_kind is LlmAdapterKind.openai_chat:
+        if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(
                 api_key=bearer_token or "",
                 base_url=base_url,

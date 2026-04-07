@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -99,6 +99,7 @@ class LlmAuthMode(str, enum.Enum):
 
 class LlmAdapterKind(str, enum.Enum):
     openai_chat = "openai_chat"
+    bedrock_chat = "bedrock_chat"
     ollama_chat = "ollama_chat"
 
 
@@ -650,6 +651,11 @@ class TranscriptIngestionJob(Base):
         nullable=False,
     )
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_audio_blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
+    source_audio_vault_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_audio_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_audio_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    declared_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)

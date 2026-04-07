@@ -2,6 +2,8 @@
 
 This document defines the next transcript-facing MVP slice before implementation starts.
 
+The detailed browser live-VAD concept for the implemented `live_chunked` path, now based on pinned `@ricky0123/vad-web` browser assets, lives in [live_stt.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/live_stt.md).
+
 The goal is to let a user create a transcript by recording audio locally, chunking it on the client, and sending chunks to a team-managed speech-to-text endpoint without weakening the existing ownership and privacy model.
 
 This planning doc now explicitly covers three future ingestion modes so the backend foundation does not overfit the first one we implement.
@@ -95,7 +97,8 @@ Shared backend concepts:
 - ingestion mode
 - optional recording session identifier
 - normalized audio handoff to provider adapters
-- metadata-only chunk or upload records for observability and idempotency later
+- metadata-only chunk records for observability and idempotency later
+- whole-file upload records may retain the owner upload blob temporarily so failed STT attempts can be retried without asking the user to upload the same file again
 
 Recommended ingestion-mode values:
 
@@ -184,7 +187,8 @@ The worker path then:
 - receives transcript text from the provider
 - applies completed live chunks in sequence order
 - updates `transcripts.current_draft_text_encrypted`
-- records operational metadata without storing raw audio or raw secrets in the database
+- records operational metadata without storing raw secrets in the database
+- whole-file uploads now keep the raw upload blob only until one ingestion attempt succeeds, then that stored blob is cleared
 
 Development note:
 
@@ -213,8 +217,12 @@ Implemented now for manual browser testing:
 - the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
 - the upload flow is post/redirect/get, so page refresh does not re-upload the file
 - the workspace now has a dedicated owner-only read model at `GET /api/v1/transcribe/workspace`
+- the transcribe page now keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates can arrive without constant request polling when the stream is healthy
+- if SSE is unavailable or disconnected, fallback polling is now limited to active live-recording/restart windows instead of continuing for the broader workspace
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
 - the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
+- failed whole-file STT attempts now expose a retry control in the workspace when stored retry audio is still available and the team still has a usable STT selection
+- failed live chunks no longer permanently block later successful chunks; the owner workspace reconciles completed live chunks past failed sequence gaps as soon as later results exist
 - `/transcribe-glm-2` now reuses that same workspace API while preserving the restored GLM 2 shell as the visual source of truth
 - the GLM 2 workspace now also consumes STT availability metadata from that workspace API so it can visibly show when the selected STT provider is unavailable and disable whole-file recording/upload controls
 - Parakeet testing showed that `timestamps=segment` returns richer sentence-like segment boundaries than `timestamps=word`, so paragraph formatting can start from segment mode and merge adjacent segments by pause/length/speaker heuristics
@@ -404,12 +412,18 @@ Implemented now for `live_chunked`:
 - multipart `audio`
 - `chunk_sequence_no`
 - optional `declared_duration_seconds`
+- `1 request/second` rate limiting per authenticated user/session bucket
+- rolling hourly audio budgeting per authenticated owner, default `3600` uploaded seconds/hour
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `live_chunked`
 - queued ingestion job response
+- persisted live upload telemetry on the queued ingestion job:
+  - `source_audio_size_bytes`
+  - measured audio duration stored in `declared_duration_seconds`
 - queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
 - backend worker audio normalization before provider submission
 - provider text append into `current_draft_text_encrypted` only when completed chunks can be applied in order
+- live hourly budgeting is now based on server-inspected audio duration, not trusted client form input
 
 Planned start request additions:
 
@@ -438,11 +452,22 @@ Implemented now for `whole_file`:
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `whole_file`
 - queued ingestion job response
+- queued whole-file jobs now persist:
+  - `source_audio_size_bytes`
+  - `source_audio_duration_seconds`
+- rolling hourly whole-file upload budgets per authenticated owner:
+  - upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES`
+  - source duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS`
 - rejection at queue time when no active team STT selection exists
 - queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
 - backend worker audio normalization before provider submission
 - provider transcript text appended into `current_draft_text_encrypted`
 - transcript status set to `ready` after successful provider completion
+- newly queued whole-file jobs no longer persist raw source audio blobs in Postgres while the owner-content encryption layer is still pending
+- newly uploaded whole-file retry audio is stored behind a Vault ref on the ingestion job rather than as a raw DB blob
+- whole-file retry remains available when the failed job still has stored retry audio, either through the legacy blob column or the Vault-backed source-audio ref
+- transcript-root deletion and user deletion attempt best-effort cleanup of any Vault-backed retry audio before the owning transcript rows are deleted, without blocking the delete path on a transient Vault outage
+- applied whole-file jobs keep byte and duration telemetry so rolling hourly budgets continue to count recently completed uploads
 - the browser microphone-batch UX uses `MediaRecorder` locally, then posts the captured blob into the same file-ingestion route rather than introducing a separate STT processing path
 
 ### Backend audio normalization
@@ -479,7 +504,7 @@ Implemented now:
 - whole-file uploads are bounded by:
   - raw upload size cap: `25 MB`
   - normalized duration cap: `30 minutes`
-- normalization failures surface as provider-path errors without storing raw audio in Postgres
+- normalization failures surface as provider-path errors without storing newly uploaded raw audio in Postgres
 - queued/generated LLM output now snapshots prompt/provider execution context as well:
   - transcript draft is committed into a `transcript_versions` row before generation
   - template and quick-action prompt text is copied onto the queued generated-document row

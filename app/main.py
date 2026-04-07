@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import secrets
+from contextlib import contextmanager
 from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import Annotated
@@ -9,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -34,6 +36,8 @@ from .models import (
     TemplateMode,
     TemplateScope,
     Transcript,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptStatus,
     TranscriptVersion,
@@ -100,6 +104,7 @@ from .schemas import (
     GeneratedDocumentRedactionDebugDetail,
     TranscribeWorkspaceDetail,
 )
+from .schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from .services.templates import (
     attach_generated_document_task_id as attach_generated_document_task_id_service,
     delete_personal_quick_action as delete_personal_quick_action_service,
@@ -196,12 +201,16 @@ from .services.transcripts import (
     attach_task_id_to_ingestion_job,
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
+    clear_ingestion_retry_source,
     create_transcript_from_payload,
     delete_transcripts as delete_transcripts_service,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     mark_ingestion_job_enqueue_failed,
+    next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     queue_audio_chunk_ingestion,
     queue_audio_file_ingestion,
+    reconcile_live_chunk_progress as reconcile_live_chunk_progress_service,
+    retry_audio_file_ingestion,
     start_transcript as start_transcript_service,
     update_transcript as update_transcript_service,
     update_transcript_title as update_transcript_title_service,
@@ -326,6 +335,11 @@ app.state.db_session_factory = SessionLocal
 LOGIN_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="login")
 MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
 ACCOUNT_REQUEST_RATE_LIMIT = limiter.shared_limit("3/hour", scope="account_request")
+LIVE_CHUNK_UPLOAD_RATE_LIMIT = limiter.shared_limit(
+    "1/second",
+    scope="live_chunk_upload",
+    key_func=whole_file_upload_rate_limit_key,
+)
 WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT = limiter.shared_limit(
     "1/5 seconds",
     scope="whole_file_upload_burst",
@@ -479,6 +493,27 @@ def require_full_context(context: AuthenticatedContext = Depends(require_authent
     if context.session.auth_level.value != "full":
         raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
     return context
+
+
+def _require_full_context_from_token(request: Request, raw_session_token: str | None) -> AuthenticatedContext:
+    if not raw_session_token:
+        raise AppError(401, "unauthorized", "Authentication required")
+    with _open_realtime_workspace_db_session(request) as db:
+        resolved = resolve_authenticated_session(db, raw_session_token)
+        if resolved is None:
+            raise AppError(401, "unauthorized", "Authentication required")
+        user, session = resolved
+        if user.email.lower() in _local_only_dev_emails() and not _request_is_localhost_only(request):
+            revoke_session_by_token(db, raw_session_token, reason="dev_account_non_local")
+            raise AppError(401, "unauthorized", "Authentication required")
+        context = AuthenticatedContext(user=user, session=session, token=raw_session_token)
+        if context.session.auth_level.value == "pending_mfa":
+            raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
+        if context.session.auth_level is not determine_auth_level(context.user):
+            raise AppError(401, "unauthorized", "Authentication required")
+        if context.session.auth_level.value != "full":
+            raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
+        return context
 
 
 def require_local_dev_debug_context(
@@ -875,6 +910,44 @@ def _document_section_lines(document: GeneratedDocument | None) -> dict[str, lis
     return line_map
 
 
+def _document_section_lines_by_key(document: GeneratedDocument | None) -> dict[str, list[str]]:
+    if document is None:
+        return {}
+    line_map: dict[str, list[str]] = {}
+    for section in getattr(document, "sections", []):
+        section_key = str(section.section_key or "").strip()
+        if not section_key:
+            continue
+        raw_text = section.edited_text_encrypted or ""
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if lines:
+            line_map[section_key] = lines
+    return line_map
+
+
+def _structured_editor_sections(
+    *,
+    generated_document: GeneratedDocument | None,
+    active_structured_context: dict[str, list[str]],
+) -> list[dict[str, object]]:
+    generated_lines = _document_section_lines_by_key(generated_document)
+    sections: list[dict[str, object]] = []
+    for section_key in EMIS_SECTION_KEYS:
+        visible_lines = generated_lines.get(section_key)
+        if visible_lines is None:
+            visible_lines = list(active_structured_context.get(section_key) or [])
+        rows = [{"text": line, "checked": True} for line in visible_lines if isinstance(line, str) and line.strip()]
+        rows.append({"text": "", "checked": True})
+        sections.append(
+            {
+                "key": section_key,
+                "label": EMIS_SECTION_LABELS[section_key],
+                "rows": rows,
+            }
+        )
+    return sections
+
+
 def _resolve_transcribe_workspace(
     db: Session,
     *,
@@ -907,6 +980,11 @@ def _resolve_transcribe_workspace(
     active_transcript_latest_job = (
         latest_ingestion_job_for_transcript_service(db, transcript_id=active_transcript.id)
         if active_transcript is not None
+        else None
+    )
+    active_transcript_next_live_chunk_sequence_no_upload = (
+        next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=active_transcript.id)
+        if active_transcript is not None and active_transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
         else None
     )
 
@@ -986,6 +1064,7 @@ def _resolve_transcribe_workspace(
         "recent_transcripts": recent_transcripts,
         "active_transcript": active_transcript,
         "active_transcript_latest_job": active_transcript_latest_job,
+        "active_transcript_next_live_chunk_sequence_no_upload": active_transcript_next_live_chunk_sequence_no_upload,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
         "stt_selection": stt_selection,
         "stt_available": stt_available,
@@ -1005,6 +1084,10 @@ def _resolve_transcribe_workspace(
         "followup_documents": followup_documents,
         "latest_generated_document": latest_generated_document,
         "latest_generated_document_section_lines": _document_section_lines(latest_generated_document),
+        "structured_editor_sections": _structured_editor_sections(
+            generated_document=latest_generated_document,
+            active_structured_context=active_structured_context,
+        ),
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
         "show_redaction_debug": show_redaction_debug,
@@ -1034,14 +1117,17 @@ def render_transcribe(
         request=request,
     )
     workspace_endpoint = "/api/v1/transcribe/workspace"
+    workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"
     active_transcript = workspace.get("active_transcript")
     if isinstance(active_transcript, Transcript):
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
+        workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
     context = {
         "request": request,
         "current_user": current_user,
         **workspace,
         "workspace_endpoint": workspace_endpoint,
+        "workspace_stream_endpoint": workspace_stream_endpoint,
         "transcribe_route_base": request.url.path if request is not None else "/transcribe",
         "message": message,
         "message_kind": message_kind,
@@ -1134,12 +1220,27 @@ def stt_config_response(config) -> SttConfigDetail:
 
 
 def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
+    if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        transcript = reconcile_live_chunk_progress_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
     payload = TranscriptDetail.model_validate(transcript, from_attributes=True).model_dump()
     if latest_job is not None:
+        payload["next_live_chunk_sequence_no_upload"] = (
+            next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=transcript.id)
+            if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
+            else None
+        )
         payload["latest_ingestion_job_status"] = latest_job.status
         payload["latest_ingestion_error_code"] = latest_job.error_code
         payload["latest_ingestion_error_message"] = latest_job.error_message
+        payload["latest_ingestion_retry_available"] = bool(
+            latest_job.job_kind is TranscriptIngestionJobKind.audio_file
+            and latest_job.status is TranscriptIngestionJobStatus.failed
+            and (latest_job.source_audio_blob or latest_job.source_audio_vault_ref)
+            and latest_job.source_audio_size_bytes
+        )
+    elif transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        payload["next_live_chunk_sequence_no_upload"] = next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=transcript.id)
     return TranscriptDetail.model_validate(payload)
 
 
@@ -1167,6 +1268,102 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         switch_mode_block_message=workspace.get("switch_mode_block_message"),
         team_leader_email=workspace.get("team_leader_email"),
     )
+
+
+def resolve_transcribe_workspace_detail(
+    db: Session,
+    *,
+    current_user: User,
+    transcript_id: str | None = None,
+    queued_transcript_id: str | None = None,
+    request: Request | None = None,
+) -> TranscribeWorkspaceDetail:
+    workspace = _resolve_transcribe_workspace(
+        db,
+        current_user=current_user,
+        transcript_id=transcript_id,
+        queued_transcript_id=queued_transcript_id,
+        request=request,
+    )
+    return transcribe_workspace_response(db, workspace)
+
+
+def _serialize_sse_event(*, event: str, payload: dict[str, object]) -> str:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return f"event: {event}\ndata: {body}\n\n"
+
+
+@contextmanager
+def _open_realtime_workspace_db_session(request: Request):
+    session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
+    with session_factory() as db:
+        yield db
+
+
+def _resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | None) -> User | None:
+    if not raw_session_token:
+        return None
+    session = db.scalar(
+        select(UserSession).where(UserSession.session_token_hash == session_token_hash(raw_session_token))
+    )
+    if session is None:
+        return None
+    if session.status is not SessionStatus.active or session.expires_at <= utcnow():
+        return None
+    if session.auth_level is not SessionAuthLevel.full:
+        return None
+    user = db.get(User, session.user_id)
+    if user is None or user.status is not UserStatus.active:
+        return None
+    if determine_auth_level(user) is not SessionAuthLevel.full:
+        return None
+    return user
+
+
+async def stream_transcribe_workspace_events(
+    *,
+    request: Request,
+    raw_session_token: str | None,
+    transcript_id: str | None,
+    queued_transcript_id: str | None,
+    once: bool,
+):
+    last_payload_json: str | None = None
+    sent_initial_event = False
+    heartbeat_interval_seconds = 15.0
+    poll_interval_seconds = 1.0
+    next_heartbeat_at = asyncio.get_running_loop().time() + heartbeat_interval_seconds
+
+    while True:
+        if sent_initial_event and await request.is_disconnected():
+            break
+
+        with _open_realtime_workspace_db_session(request) as db:
+            current_user = _resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
+            if current_user is None:
+                break
+            payload = resolve_transcribe_workspace_detail(
+                db,
+                current_user=current_user,
+                transcript_id=transcript_id,
+                queued_transcript_id=queued_transcript_id,
+                request=request,
+            ).model_dump(mode="json")
+
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        current_time = asyncio.get_running_loop().time()
+        if payload_json != last_payload_json:
+            last_payload_json = payload_json
+            next_heartbeat_at = current_time + heartbeat_interval_seconds
+            yield _serialize_sse_event(event="workspace", payload=payload)
+            sent_initial_event = True
+            if once:
+                break
+        elif current_time >= next_heartbeat_at:
+            next_heartbeat_at = current_time + heartbeat_interval_seconds
+            yield ": keepalive\n\n"
+
+        await asyncio.sleep(poll_interval_seconds)
 
 
 def stt_selection_response(selection) -> SttSelectionDetail:
@@ -1399,11 +1596,13 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
 
 def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict[str, object]:
     if inspection is not None:
+        bedrock_region = bedrock_region_from_base_url(inspection.base_url) if inspection.adapter_kind is LlmAdapterKind.bedrock_chat else ""
         return {
             "config_id": "",
             "label": "",
             "adapter_kind": inspection.adapter_kind.value,
             "base_url": inspection.base_url,
+            "bedrock_region": bedrock_region or (DEFAULT_BEDROCK_CHAT_REGION if inspection.adapter_kind is LlmAdapterKind.bedrock_chat else ""),
             "model_name": inspection.model_name or "",
             "available_models": inspection.available_models,
             "available_model_options": [option.model_dump(mode="json") for option in inspection.available_model_options],
@@ -1411,11 +1610,13 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             "preserved_bearer_token": "",
         }
     if config is not None:
+        bedrock_region = bedrock_region_from_base_url(config.base_url) if config.adapter_kind is LlmAdapterKind.bedrock_chat else ""
         return {
             "config_id": str(config.id),
             "label": config.label,
             "adapter_kind": config.adapter_kind.value,
             "base_url": config.base_url,
+            "bedrock_region": bedrock_region or (DEFAULT_BEDROCK_CHAT_REGION if config.adapter_kind is LlmAdapterKind.bedrock_chat else ""),
             "model_name": config.model_name or "",
             "available_models": list(config.available_models_json or []),
             "available_model_options": [
@@ -1430,6 +1631,7 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
         "label": "",
         "adapter_kind": LlmAdapterKind.openai_chat.value,
         "base_url": "https://api.openai.com/v1",
+        "bedrock_region": "",
         "model_name": "",
         "available_models": [],
         "available_model_options": [],
@@ -1957,7 +2159,9 @@ def delete_transcript(
 
 
 @api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@LIVE_CHUNK_UPLOAD_RATE_LIMIT
 def upload_transcript_audio_chunk(
+    request: Request,
     transcript_id: UUID,
     audio: UploadFile = File(...),
     chunk_sequence_no: int = Form(..., ge=1),
@@ -1971,6 +2175,7 @@ def upload_transcript_audio_chunk(
         context.user,
         transcript_id=transcript_id,
         filename=audio.filename or "chunk.bin",
+        source_audio_bytes=audio_bytes,
         chunk_sequence_no=chunk_sequence_no,
         declared_duration_seconds=declared_duration_seconds,
     )
@@ -2004,12 +2209,47 @@ def upload_transcript_audio_file(
         context.user,
         transcript_id=transcript_id,
         filename=audio.filename or "audio.bin",
+        source_audio_blob=audio_bytes,
     )
     try:
         task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
     except Exception as exc:
         mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
         raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion") from exc
+    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    refreshed_transcript = db.get(Transcript, transcript.id) or transcript
+    return TranscriptIngestionAccepted(
+        transcript=transcript_detail_response(db, refreshed_transcript),
+        job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
+    )
+
+
+@api.post("/transcripts/{transcript_id}/retry-audio-file", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def retry_transcript_audio_file(
+    request: Request,
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript, job, source_audio_blob, previous_job = retry_audio_file_ingestion(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+    )
+    try:
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=source_audio_blob)
+    except Exception as exc:
+        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion retry")
+        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion retry") from exc
+    clear_ingestion_retry_source(
+        db,
+        job_id=previous_job.id,
+        clear_storage=True,
+        clear_accounting=False,
+        delete_backing_secret=False,
+    )
     job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
@@ -2035,13 +2275,58 @@ def get_transcribe_workspace(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    workspace = _resolve_transcribe_workspace(
+    return resolve_transcribe_workspace_detail(
         db,
         current_user=context.user,
         transcript_id=str(transcript_id) if transcript_id is not None else None,
         queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
     )
-    return transcribe_workspace_response(db, workspace)
+
+
+@api.get("/transcribe/workspace/stream", responses=error_responses)
+async def stream_transcribe_workspace(
+    request: Request,
+    transcript_id: UUID | None = None,
+    queued_transcript_id: UUID | None = None,
+    once: bool = False,
+):
+    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    context = _require_full_context_from_token(request, raw_session_token)
+
+    if once:
+        with _open_realtime_workspace_db_session(request) as db:
+            payload = resolve_transcribe_workspace_detail(
+                db,
+                current_user=context.user,
+                transcript_id=str(transcript_id) if transcript_id is not None else None,
+                queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
+                request=request,
+            ).model_dump(mode="json")
+        return Response(
+            content=_serialize_sse_event(event="workspace", payload=payload),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return StreamingResponse(
+        stream_transcribe_workspace_events(
+            request=request,
+            raw_session_token=raw_session_token,
+            transcript_id=str(transcript_id) if transcript_id is not None else None,
+            queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
+            once=once,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
@@ -3358,6 +3643,7 @@ def home_upload_transcript_file(
             context.user,
             transcript_id=transcript.id,
             filename=audio.filename or "audio.bin",
+            source_audio_blob=audio_bytes,
         )
         task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
         attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
@@ -3443,6 +3729,7 @@ def transcribe_upload_transcript_file(
             context.user,
             transcript_id=transcript.id,
             filename=audio.filename or "audio.bin",
+            source_audio_blob=audio_bytes,
         )
         task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
         attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
@@ -3462,6 +3749,54 @@ def transcribe_upload_transcript_file(
         )
     return _transcribe_redirect(
         message="Audio file queued for transcription.",
+        message_kind="success",
+        queued_transcript_id=transcript.id,
+    )
+
+
+@app.post("/transcribe/retry-file-ingestion", response_class=HTMLResponse)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def transcribe_retry_file_ingestion(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        transcript, job, source_audio_blob, previous_job = retry_audio_file_ingestion(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+        )
+        task_result = enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=source_audio_blob)
+        clear_ingestion_retry_source(
+            db,
+            job_id=previous_job.id,
+            clear_storage=True,
+            clear_accounting=False,
+            delete_backing_secret=False,
+        )
+        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
+    except AppError as exc:
+        return _transcribe_redirect(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    except Exception:
+        if "job" in locals():
+            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion retry")
+        return _transcribe_redirect(
+            message="Could not enqueue file ingestion retry",
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    return _transcribe_redirect(
+        message="Audio file queued for transcription retry.",
         message_kind="success",
         queued_transcript_id=transcript.id,
     )
@@ -4377,6 +4712,7 @@ def admin_inspect_llm_config(
     label: str = Form(""),
     adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
     base_url: str = Form(""),
+    bedrock_region: str = Form(""),
     bearer_token: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
@@ -4396,6 +4732,7 @@ def admin_inspect_llm_config(
                 team_id=UUID(team_id),
                 adapter_kind=LlmAdapterKind(adapter_kind),
                 base_url=base_url,
+                bedrock_region=bedrock_region or None,
                 bearer_token=bearer_token or None,
             ),
         )
@@ -4425,6 +4762,11 @@ def admin_inspect_llm_config(
             **llm_form_defaults(None, inspection),
             "label": label,
             "adapter_kind": inspection.adapter_kind.value,
+            "bedrock_region": (
+                bedrock_region or bedrock_region_from_base_url(inspection.base_url) or DEFAULT_BEDROCK_CHAT_REGION
+                if inspection.adapter_kind is LlmAdapterKind.bedrock_chat
+                else ""
+            ),
             "preserved_bearer_token": bearer_token,
         },
         message="LLM provider inspected. Review the inferred fields before saving.",
@@ -4442,6 +4784,7 @@ def admin_upsert_llm_config(
     label: str = Form(...),
     adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
     base_url: str = Form(""),
+    bedrock_region: str = Form(""),
     bearer_token: str = Form(""),
     preserved_bearer_token: str = Form(""),
     provider_model: str = Form(""),
@@ -4467,6 +4810,7 @@ def admin_upsert_llm_config(
                 label=label,
                 adapter_kind=LlmAdapterKind(adapter_kind),
                 base_url=base_url,
+                bedrock_region=bedrock_region or None,
                 bearer_token=resolved_bearer_token,
                 model_name=provider_model or None,
                 is_active=is_active == "true",

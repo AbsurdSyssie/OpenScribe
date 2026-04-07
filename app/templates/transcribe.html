@@ -39,6 +39,8 @@
       }
     };
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
   <style>
     :root {
       --bg: #FAF8F5;
@@ -135,59 +137,62 @@
       background-color: rgba(29, 79, 94, 0.06);
     }
 
-    .structured-line-row {
+    .structured-statement-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+
+    .statement-row {
       display: flex;
       align-items: flex-start;
       gap: 0.75rem;
       border-left: 2px solid rgba(29, 79, 94, 0.28);
-      padding: 0.5rem 0 0.5rem 0.9rem;
+      padding: 0.32rem 0 0.32rem 0.9rem;
       background: transparent;
-      cursor: pointer;
-      transition: all 0.15s ease;
+      transition: border-left-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
     }
 
-    .structured-line-row:hover {
+    .statement-row:hover,
+    .statement-row:focus-within {
       border-left-color: rgba(61, 122, 140, 0.7);
       background: rgba(224, 242, 245, 0.24);
     }
 
-    .structured-line-row input {
-      margin-top: 0.15rem;
-      accent-color: var(--accent);
+    .statement-row.is-unchecked {
+      opacity: 0.52;
     }
 
-    .editor-line-row {
+    .statement-checkbox {
       display: flex;
-      gap: 0.75rem;
-      align-items: stretch;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 0.15rem;
     }
 
-    .editor-line-row textarea {
-      flex: 1;
-      min-height: 3.5rem;
-      resize: vertical;
-      border: 1px solid rgba(226, 222, 214, 0.9);
-      background: white;
-      padding: 0.7rem 0.8rem;
-      font-size: 0.92rem;
+    .statement-checkbox input {
+      accent-color: var(--accent);
+      width: 1rem;
+      height: 1rem;
+      margin: 0;
+    }
+
+    .statement-editor {
+      width: 100%;
+      min-height: 1.25rem;
+      resize: none;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      font-size: 0.875rem;
+      line-height: 1.5;
       color: var(--fg);
+      outline: none;
+      overflow: hidden;
     }
 
-    .editor-line-row button {
-      align-self: flex-start;
-      border-radius: 999px;
-      border: 1px solid rgba(226, 222, 214, 0.95);
-      padding: 0.65rem 0.95rem;
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: #7A4A35;
-      background: rgba(255, 255, 255, 0.9);
-      transition: all 0.15s ease;
-    }
-
-    .editor-line-row button:hover:not(:disabled) {
-      border-color: rgba(217, 125, 84, 0.55);
-      background: rgba(217, 125, 84, 0.08);
+    .statement-editor::placeholder {
+      color: rgba(113, 128, 150, 0.9);
     }
 
     .copy-toast {
@@ -423,6 +428,7 @@
   <section
     class="flex h-screen overflow-hidden relative"
     data-workspace-endpoint="{{ workspace_endpoint }}"
+    data-workspace-stream-endpoint="{{ workspace_stream_endpoint }}"
     data-route-base="{{ transcribe_route_base }}"
     data-layout-state="normal">
 
@@ -460,18 +466,35 @@
 
       <form id="bulk-delete-sessions" class="flex-1 flex flex-col min-h-0" method="post" action="/transcribe/sessions/delete">
         <div class="p-4 space-y-3">
-          <button
-            type="submit"
-            form="new-session-form"
-            class="w-full bg-teal-deep text-white rounded-lg px-4 py-2.5 font-medium text-sm flex items-center justify-center gap-2 shadow-sm hover:bg-teal-muted transition"
-            data-new-session-button
-            data-local-busy-protected
-            {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-            </svg>
-            New Consultation
-          </button>
+          <div class="space-y-2">
+            <button
+              type="submit"
+              form="new-session-form"
+              class="w-full bg-teal-deep text-white rounded-lg px-4 py-2.5 font-medium text-sm flex items-center justify-center gap-2 shadow-sm hover:bg-teal-muted transition"
+              data-new-session-button
+              data-new-session-mode="whole_file"
+              data-local-busy-protected
+              {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              </svg>
+              New Consultation
+            </button>
+            <button
+              type="submit"
+              form="new-session-form"
+              class="w-full bg-white text-ink rounded-lg px-4 py-2.5 font-medium text-sm flex items-center justify-center gap-2 border border-stone hover:border-teal-muted hover:bg-teal-pale/30 transition"
+              data-new-live-session-button
+              data-new-session-mode="live_chunked"
+              data-local-busy-protected
+              {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m6-6H6"/>
+                <circle cx="12" cy="12" r="9"/>
+              </svg>
+              New Live Session
+            </button>
+          </div>
           <div class="flex items-center justify-between">
             <div class="text-xs font-medium text-slate uppercase tracking-wider">Recent Sessions</div>
             <button
@@ -595,7 +618,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-2">
             {% set active_status_display = active_transcript.status.value if active_transcript else 'idle' %}
-            {% if active_transcript and active_transcript.ingestion_mode.value == 'whole_file' and active_status_display == 'recording' %}
+            {% if active_transcript and active_status_display == 'recording' %}
               {% set active_status_display = 'idle' %}
             {% endif %}
             {% if active_status_display == 'ready' %}
@@ -619,6 +642,7 @@
               class="btn-primary px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition flex items-center gap-2"
               data-audio-action-trigger
               data-local-busy-protected
+              {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
               {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Whole-file STT is unavailable for this session.' }}"{% endif %}>
               Upload Audio
             </button>
@@ -626,12 +650,23 @@
               type="button"
               class="px-4 py-2 bg-coral text-white rounded-lg text-sm font-medium hover:bg-coral/90 transition flex items-center gap-2 shadow-sm disabled:opacity-50"
               data-record-toggle
-              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Whole-file STT is unavailable for this session.' }}"{% endif %}>
+              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) or (active_transcript and active_transcript.ingestion_mode.value == 'whole_file' and not stt_available) or (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and not stt_available) %}disabled title="{{ stt_status_message or 'Speech transcription is unavailable for this session.' }}"{% endif %}>
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" data-record-toggle-icon>
                 <circle cx="12" cy="12" r="6"/>
               </svg>
-              <span data-record-toggle-label>Record</span>
+              <span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Record{% endif %}</span>
             </button>
+            <form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
+              <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>
+              <button
+                type="submit"
+                class="px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition disabled:opacity-50"
+                data-retry-ingestion-trigger
+                data-local-busy-protected
+                {% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
+                Retry transcription
+              </button>
+            </form>
           </div>
           <div class="flex flex-wrap items-center gap-2 text-sm text-slate">
             <div class="px-3 py-2 bg-parchment rounded-lg">Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
@@ -684,9 +719,19 @@
           Create or select a session to begin.
           {% endif %}
         </div>
-        <div class="text-sm {% if stt_selection and not stt_available %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
+        <div class="text-sm {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and active_transcript_latest_job and active_transcript_latest_job.status.value == 'failed' and active_transcript_latest_job.error_message) or (stt_selection and not stt_available) %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
           {% if not active_transcript %}
-          Create or select a session to start whole-file transcription.
+          Create or select a session to start transcription.
+          {% elif active_transcript.ingestion_mode.value == "live_chunked" %}
+          {% if active_transcript_latest_job and active_transcript_latest_job.status.value == "failed" and active_transcript_latest_job.error_message %}
+          {{ active_transcript_latest_job.error_message }}
+          {% elif not stt_selection %}
+          No active STT selection is available for your team, so live transcription cannot queue yet.
+          {% elif not stt_available %}
+          {{ stt_status_message }}
+          {% else %}
+          Ready for live speech detection. Press Start live to stream VAD chunks.
+          {% endif %}
           {% elif active_transcript.ingestion_mode.value != "whole_file" %}
           The current session is `{{ active_transcript.ingestion_mode.value }}`. Switch this session to `whole_file` when it is still blank and idle.
           {% elif not stt_selection %}
@@ -821,30 +866,30 @@
                 <div
                   class="space-y-4"
                   data-generated-structured-panel
-                  {% if not latest_generated_document or latest_generated_document.document_mode.value != "structured" or not latest_generated_document.sections %}hidden{% endif %}>
+                  {% if template_state.default_mode != "structured" and (not latest_generated_document or latest_generated_document.document_mode.value != "structured") %}hidden{% endif %}>
                   <div class="assistant-meta-row flex items-center justify-between gap-4">
-                    <div class="text-sm text-slate" data-structured-copy-status>Select the lines you want to copy.</div>
+                    <div class="text-sm text-slate" data-structured-copy-status>Select the statements you want to copy.</div>
                     <div class="flex items-center gap-2">
                       <button type="button" class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-parchment rounded-lg transition" data-clear-structured-selection>Clear Selection</button>
                       <button type="button" class="px-4 py-2 bg-teal-deep text-white rounded-lg text-sm font-medium hover:bg-teal-muted transition" data-copy-structured-lines>Copy Selected</button>
                     </div>
                   </div>
                   <div class="space-y-4" data-generated-structured-sections>
-                    {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}
-                      {% for section in latest_generated_document.sections %}
-                      <div class="structured-section-block">
-                        <h3 class="structured-section-title">{{ section.section_label }}</h3>
-                        <div class="space-y-2">
-                          {% for line in latest_generated_document_section_lines.get(section.id|string, []) %}
-                          <label class="structured-line-row">
-                            <input type="checkbox" data-structured-line-checkbox data-section-label="{{ section.section_label }}" value="{{ line }}" checked>
-                            <span class="text-sm text-ink">{{ line }}</span>
-                          </label>
+                    {% for section in structured_editor_sections %}
+                      <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
+                        <h3 class="structured-section-title">{{ section.label }}</h3>
+                        <div class="structured-statement-list" data-generated-structured-section-rows>
+                          {% for row in section.rows %}
+                          <div class="statement-row" data-structured-statement-row>
+                            <label class="statement-checkbox" aria-label="Select statement">
+                              <input type="checkbox" data-structured-line-checkbox data-section-key="{{ section.key }}" data-section-label="{{ section.label }}" {% if row.checked %}checked{% endif %}>
+                            </label>
+                            <textarea class="statement-editor" rows="1" data-structured-line-input data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">{{ row.text }}</textarea>
+                          </div>
                           {% endfor %}
                         </div>
                       </div>
-                      {% endfor %}
-                    {% endif %}
+                    {% endfor %}
                   </div>
                 </div>
 
@@ -893,39 +938,9 @@
                       {% endif %}
                     </select>
                   </label>
-
-                  <div class="bg-parchment px-3 py-3 space-y-4" data-structured-context-panel {% if template_state.default_mode != "structured" %}hidden{% endif %}>
-                    <div class="flex items-center justify-between gap-3">
-                      <div>
-                        <div class="text-xs font-medium uppercase tracking-wider text-slate">Structured EMIS context</div>
-                        <div class="text-xs text-slate mt-1">Only shown for structured templates. Context autosaves to this transcript session.</div>
-                      </div>
-                      <div class="text-xs text-slate" data-emis-save-status>Saved to this session automatically.</div>
-                    </div>
-                    <div class="space-y-4">
-                      {% for section in emis_sections %}
-                      <label class="block">
-                        <span class="block text-sm font-medium text-ink mb-2">{{ section.label }}</span>
-                        <div
-                          class="space-y-3"
-                          data-emis-editor
-                          data-emis-section-label="{{ section.label }}"
-                          data-disabled="{% if not active_transcript %}true{% else %}false{% endif %}"
-                          data-initial-lines='{{ active_structured_context.get(section.key, [])|tojson }}'>
-                          <input type="hidden" name="context_{{ section.key }}" data-emis-editor-hidden>
-                          <div class="space-y-3" data-emis-editor-rows></div>
-                          <button
-                            type="button"
-                            class="px-3 py-2 text-sm bg-white border border-stone text-ink hover:border-teal-muted hover:bg-teal-pale/20 transition"
-                            data-emis-editor-add-line
-                            {% if not active_transcript %}disabled{% endif %}>
-                            Add line
-                          </button>
-                        </div>
-                      </label>
-                      {% endfor %}
-                    </div>
-                  </div>
+                  {% for section in emis_sections %}
+                  <input type="hidden" name="context_{{ section.key }}" data-structured-context-hidden data-section-key="{{ section.key }}">
+                  {% endfor %}
 
                   <button
                     type="submit"
@@ -1112,7 +1127,9 @@
     </main>
   </section>
 
-  <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden></form>
+  <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
+    <input type="hidden" name="ingestion_mode" value="whole_file" data-new-session-mode-input>
+  </form>
 
   <div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
     Copied to clipboard
@@ -1128,12 +1145,19 @@
       const dividerGrip = document.querySelector('[data-divider-grip]');
       const splitWorkspace = document.querySelector('[data-split-workspace]');
       const initialWorkspaceEndpoint = shell?.dataset.workspaceEndpoint || '';
+      const initialWorkspaceStreamEndpoint = shell?.dataset.workspaceStreamEndpoint || '';
       let transcriptId = {{ active_transcript_id|tojson }};
       let activeIngestionMode = {{ (active_transcript.ingestion_mode.value if active_transcript else none)|tojson }};
+      let nextLiveChunkSequenceNo = {{ (active_transcript_next_live_chunk_sequence_no_upload if active_transcript_next_live_chunk_sequence_no_upload is not none else 1)|tojson }};
       let hasSttSelection = {{ (stt_selection is not none)|tojson }};
       let hasLlmSelection = {{ (llm_selection is not none)|tojson }};
       let sttAvailable = {{ stt_available|tojson }};
       let sttStatusMessage = {{ stt_status_message|tojson }};
+      let latestIngestionJobStatus = {{ (active_transcript_latest_job.status.value if active_transcript_latest_job else none)|tojson }};
+      let latestIngestionErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
+      let workspaceEventSource = null;
+      let workspaceEventSourceEndpoint = null;
+      let workspaceStreamFallbackPolling = false;
       const showRedactionDebug = {{ show_redaction_debug|tojson }};
       const initialTranscriptErrorMessage = {{ (active_transcript_latest_job.error_message if active_transcript_latest_job else none)|tojson }};
 
@@ -1161,17 +1185,20 @@
       const structuredCopyStatus = document.querySelector('[data-structured-copy-status]');
       const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
-      const structuredContextPanel = document.querySelector('[data-structured-context-panel]');
-      const emisSaveStatus = document.querySelector('[data-emis-save-status]');
-      const emisEditors = [...document.querySelectorAll('[data-emis-editor]')];
+      const structuredContextHiddenInputs = [...document.querySelectorAll('[data-structured-context-hidden]')];
       const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
       const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
       const deleteButton = document.querySelector('[data-delete-selected]');
       const newSessionButton = document.querySelector('[data-new-session-button]');
+      const newSessionButtons = [...document.querySelectorAll('[data-new-session-mode]')];
       const newSessionBlockMessage = document.querySelector('[data-new-session-block-message]');
       const uploadForm = document.querySelector('[data-upload-form]');
       const fileInput = document.querySelector('[data-audio-file-input]');
+      const retryIngestionForm = document.querySelector('[data-retry-ingestion-form]');
+      const retryIngestionTrigger = document.querySelector('[data-retry-ingestion-trigger]');
+      const retryTranscriptIdInput = document.querySelector('[data-retry-transcript-id]');
       const newSessionForm = document.querySelector('#new-session-form');
+      const newSessionModeInput = document.querySelector('[data-new-session-mode-input]');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const switchToWholeFileForm = document.querySelector('#switch-to-whole-file-form');
       const titleForm = document.querySelector('[data-transcript-title-form]');
@@ -1192,12 +1219,35 @@
       let mediaRecorder = null;
       let mediaStream = null;
       let mediaChunks = [];
+      let captureMode = 'batch';
+      let liveVadInstance = null;
+      let liveChunkTimeoutId = null;
+      let liveStopRequested = false;
+      let liveForceContinueRequested = false;
+      let liveSpeechActive = false;
+      let liveRestartPending = false;
+      let livePendingOverlapAudio = null;
+      let liveChunkProcessing = Promise.resolve();
       let startedAt = null;
       let timerId = null;
       let emisSaveTimer = null;
       let lastSavedStructuredContext = null;
+      let generatedStructuredDraft = null;
       let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
+      const liveVadBundleVersion = '0.0.29';
+      const liveVadModel = 'v5';
+      const liveVadAssetBasePath = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${liveVadBundleVersion}/dist/`;
+      const liveVadOnnxBasePath = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+      const liveVadSampleRate = 16000;
+      const livePreRollMs = 800;
+      const livePostRollTrimMs = 1000;
+      const liveSilenceThresholdMs = 2000;
+      const liveMaxChunkMs = 30000;
+      const liveMinChunkMs = 400;
+      const liveChunkOverlapMs = 800;
+      const liveRestartDelayMs = 150;
+      const structuredSectionDefinitions = {{ emis_sections | tojson }};
 
       let currentAssistantTab = {{ ('followups' if active_tab == 'followups' else 'output')|tojson }};
       const paneStorageKey = 'openscribe-glm2-pane-state';
@@ -1370,7 +1420,7 @@
       };
 
       const displayStatusLabel = (statusLabel, ingestionMode) => {
-        if (statusLabel === 'recording' && ingestionMode === 'whole_file') {
+        if (statusLabel === 'recording') {
           return 'idle';
         }
         return statusLabel || 'idle';
@@ -1419,12 +1469,43 @@
 
       const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && sttAvailable && activeIngestionMode === 'whole_file');
 
-      const defaultMicStatusMessage = () => {
-        if (!transcriptId) return 'Create or select a session to start whole-file transcription.';
-        if (activeIngestionMode !== 'whole_file') return `The current session is \`${activeIngestionMode}\`. Switch this session to \`whole_file\` when it is still blank and idle.`;
-        if (!hasSttSelection) return 'No active STT selection is available for your team, so whole-file transcription cannot queue yet.';
-        if (!sttAvailable) return sttStatusMessage || 'The configured STT provider is unavailable right now.';
-        return 'Ready for file upload or microphone batch recording in this session.';
+      const setRetryAvailability = (canRetry) => {
+        if (retryIngestionForm) {
+          retryIngestionForm.hidden = !canRetry;
+        }
+        if (retryIngestionTrigger) {
+          retryIngestionTrigger.hidden = !canRetry;
+          retryIngestionTrigger.disabled = !canRetry;
+        }
+        if (retryTranscriptIdInput) {
+          retryTranscriptIdInput.value = transcriptId || '';
+        }
+      };
+
+      const canUseLiveInput = () => Boolean(transcriptId && hasSttSelection && sttAvailable && activeIngestionMode === 'live_chunked');
+
+      const defaultMicStatusState = () => {
+        if (!transcriptId) return { message: 'Create or select a session to start transcription.', kind: '' };
+        if (activeIngestionMode === 'live_chunked') {
+          if (latestIngestionJobStatus === 'failed' && latestIngestionErrorMessage) {
+            return { message: latestIngestionErrorMessage, kind: 'error' };
+          }
+          if (!hasSttSelection) {
+            return { message: 'No active STT selection is available for your team, so live transcription cannot queue yet.', kind: 'error' };
+          }
+          if (!sttAvailable) {
+            return { message: sttStatusMessage || 'The configured STT provider is unavailable right now.', kind: 'error' };
+          }
+          return { message: 'Ready for live speech detection. Open a live session and press Start live.', kind: '' };
+        }
+        if (activeIngestionMode !== 'whole_file') return { message: `The current session is \`${activeIngestionMode}\`.`, kind: '' };
+        if (!hasSttSelection) {
+          return { message: 'No active STT selection is available for your team, so whole-file transcription cannot queue yet.', kind: 'error' };
+        }
+        if (!sttAvailable) {
+          return { message: sttStatusMessage || 'The configured STT provider is unavailable right now.', kind: 'error' };
+        }
+        return { message: 'Ready for file upload or microphone batch recording in this session.', kind: '' };
       };
 
       const hasSelectableOptions = (select) => {
@@ -1472,27 +1553,36 @@
       };
 
       const setMicButtons = (isRecording) => {
+        const liveMode = activeIngestionMode === 'live_chunked';
+        const canUseRecorder = liveMode ? canUseLiveInput() : canUseWholeFileInput();
         localBusyProtected.forEach((button) => {
           const initiallyDisabled = protectedInitialDisabled.get(button) ?? false;
           button.disabled = isRecording || initiallyDisabled;
         });
         if (audioActionTrigger) {
-          audioActionTrigger.disabled = isRecording || !canUseWholeFileInput();
+          audioActionTrigger.hidden = liveMode;
+          audioActionTrigger.disabled = isRecording || liveMode || !canUseWholeFileInput();
         }
         if (fileInput) {
-          fileInput.disabled = isRecording || !canUseWholeFileInput();
+          fileInput.disabled = isRecording || liveMode || !canUseWholeFileInput();
         }
         if (recordToggleButton) {
-          recordToggleButton.disabled = !isRecording && !canUseWholeFileInput();
-          recordToggleButton.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
+          recordToggleButton.disabled = !isRecording && !canUseRecorder;
+          recordToggleButton.title = (!isRecording && !canUseRecorder && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
         }
         if (recordToggleLabel) {
-          recordToggleLabel.textContent = isRecording ? 'Stop' : 'Record';
+          if (isRecording) {
+            recordToggleLabel.textContent = 'Stop';
+          } else {
+            recordToggleLabel.textContent = liveMode ? 'Start live' : 'Record';
+          }
         }
         if (recordToggleIcon) {
           recordToggleIcon.innerHTML = isRecording
             ? '<rect x="7" y="7" width="10" height="10" rx="2"></rect>'
-            : '<circle cx="12" cy="12" r="6"></circle>';
+            : (liveMode
+              ? '<path d="M12 3v18M3 12h18"></path><circle cx="12" cy="12" r="8"></circle>'
+              : '<circle cx="12" cy="12" r="6"></circle>');
         }
         if (audioActionTrigger) {
           audioActionTrigger.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
@@ -1503,14 +1593,14 @@
       };
 
       const setNewSessionAvailability = (canCreate, message) => {
-        if (newSessionButton) {
-          newSessionButton.disabled = !canCreate;
+        newSessionButtons.forEach((button) => {
+          button.disabled = !canCreate;
           if (canCreate || !message) {
-            newSessionButton.removeAttribute('title');
+            button.removeAttribute('title');
           } else {
-            newSessionButton.title = message;
+            button.title = message;
           }
-        }
+        });
         if (newSessionBlockMessage) {
           const shouldShow = !canCreate && Boolean(message);
           newSessionBlockMessage.textContent = message || '';
@@ -1536,16 +1626,45 @@
         mediaStream = null;
       };
 
+      const clearLiveChunkTimeout = () => {
+        if (liveChunkTimeoutId) {
+          window.clearTimeout(liveChunkTimeoutId);
+          liveChunkTimeoutId = null;
+        }
+      };
+
+      const cleanupLiveVad = () => {
+        const instance = liveVadInstance;
+        liveVadInstance = null;
+        if (!instance) return;
+        try {
+          if (typeof instance.destroy === 'function') {
+            instance.destroy();
+          } else {
+            instance.pause();
+          }
+        } catch (_) {}
+      };
+
       const resetRecordingState = () => {
         if (timerId) {
           window.clearInterval(timerId);
           timerId = null;
         }
+        clearLiveChunkTimeout();
         startedAt = null;
         renderTimer();
         mediaRecorder = null;
         mediaChunks = [];
+        captureMode = 'batch';
+        liveStopRequested = false;
+        liveForceContinueRequested = false;
+        liveSpeechActive = false;
+        liveRestartPending = false;
+        livePendingOverlapAudio = null;
+        liveChunkProcessing = Promise.resolve();
         stopStreamTracks();
+        cleanupLiveVad();
         setMicButtons(false);
       };
 
@@ -1553,6 +1672,287 @@
         if (!window.MediaRecorder) return '';
         const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
         return candidates.find((candidate) => window.MediaRecorder.isTypeSupported(candidate)) || '';
+      };
+
+      const armLiveChunkTimeout = () => {
+        clearLiveChunkTimeout();
+        if (liveStopRequested) return;
+        liveChunkTimeoutId = window.setTimeout(() => {
+          if (!liveVadInstance || liveStopRequested) {
+            return;
+          }
+          liveForceContinueRequested = true;
+          setMicStatus('Thirty seconds of speech reached. Sending the current live chunk...');
+          setSessionProgress('Thirty second speech window reached. Flushing the current live chunk...');
+          try {
+            liveVadInstance.pause();
+          } catch (_) {
+            resetRecordingState();
+            setMicStatus('Could not flush the live speech segment.', 'error');
+          }
+        }, liveMaxChunkMs);
+      };
+
+      const trimLiveVadSamples = (audio, trailingTrimMs = 0) => {
+        if (!(audio instanceof Float32Array)) {
+          return new Float32Array();
+        }
+        if (trailingTrimMs <= 0) {
+          return audio;
+        }
+        const trimSampleCount = Math.floor((trailingTrimMs / 1000) * liveVadSampleRate);
+        if (trimSampleCount <= 0 || trimSampleCount >= audio.length) {
+          return audio;
+        }
+        return audio.slice(0, audio.length - trimSampleCount);
+      };
+
+      const sampleCountForDurationMs = (durationMs) => {
+        if (durationMs <= 0) {
+          return 0;
+        }
+        return Math.floor((durationMs / 1000) * liveVadSampleRate);
+      };
+
+      const takeTailLiveVadSamples = (audio, durationMs) => {
+        if (!(audio instanceof Float32Array) || audio.length === 0) {
+          return new Float32Array();
+        }
+        const sampleCount = sampleCountForDurationMs(durationMs);
+        if (sampleCount <= 0 || sampleCount >= audio.length) {
+          return audio;
+        }
+        return audio.slice(audio.length - sampleCount);
+      };
+
+      const capLiveVadSamplesToMaxDuration = (audio) => {
+        if (!(audio instanceof Float32Array) || audio.length === 0) {
+          return new Float32Array();
+        }
+        const maxSampleCount = sampleCountForDurationMs(liveMaxChunkMs);
+        if (maxSampleCount <= 0 || audio.length <= maxSampleCount) {
+          return audio;
+        }
+        return audio.slice(audio.length - maxSampleCount);
+      };
+
+      const prependLiveVadOverlap = (audio) => {
+        if (!(audio instanceof Float32Array)) {
+          return new Float32Array();
+        }
+        if (!(livePendingOverlapAudio instanceof Float32Array) || livePendingOverlapAudio.length === 0) {
+          return audio;
+        }
+        const merged = new Float32Array(livePendingOverlapAudio.length + audio.length);
+        merged.set(livePendingOverlapAudio, 0);
+        merged.set(audio, livePendingOverlapAudio.length);
+        livePendingOverlapAudio = null;
+        return merged;
+      };
+
+      const encodeWavPcm = (audio) => {
+        const pcmData = new ArrayBuffer(44 + (audio.length * 2));
+        const view = new DataView(pcmData);
+        const writeString = (offset, value) => {
+          for (let index = 0; index < value.length; index += 1) {
+            view.setUint8(offset + index, value.charCodeAt(index));
+          }
+        };
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + (audio.length * 2), true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, liveVadSampleRate, true);
+        view.setUint32(28, liveVadSampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeString(36, 'data');
+        view.setUint32(40, audio.length * 2, true);
+
+        let offset = 44;
+        for (let index = 0; index < audio.length; index += 1) {
+          const sample = Math.max(-1, Math.min(1, audio[index]));
+          view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+          offset += 2;
+        }
+        return pcmData;
+      };
+
+      const createLiveVadWavBlob = (audio) => {
+        if (!(audio instanceof Float32Array) || audio.length === 0) {
+          return null;
+        }
+        return new Blob([encodeWavPcm(audio)], { type: 'audio/wav' });
+      };
+
+      const uploadLiveChunk = async (blob, durationSeconds) => {
+        if (!transcriptId) {
+          throw new Error('Select a live session before sending audio.');
+        }
+        const chunkSequenceNo = nextLiveChunkSequenceNo;
+        nextLiveChunkSequenceNo += 1;
+        setMicStatus(`Sending live chunk ${chunkSequenceNo}...`);
+        setVisibleStatus('uploading');
+        setSessionProgress(`Sending live chunk ${chunkSequenceNo} for transcription...`);
+        const formData = new FormData();
+        formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
+        formData.append('chunk_sequence_no', String(chunkSequenceNo));
+        formData.append('declared_duration_seconds', durationSeconds.toFixed(3));
+        const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+        });
+        if (!response.ok) {
+          nextLiveChunkSequenceNo = chunkSequenceNo;
+          throw new Error(await parseErrorMessage(response, 'Could not queue live transcription chunk.'));
+        }
+        reflectBackendStatus('transcribing');
+        window.setTimeout(pollWorkspace, 1200);
+      };
+
+      const durationSecondsForVadAudio = (audio) => Math.max(0.1, audio.length / liveVadSampleRate);
+
+      const buildLiveVadInstance = async () => {
+        return window.vad.MicVAD.new({
+          model: liveVadModel,
+          preSpeechPadMs: livePreRollMs,
+          redemptionMs: liveSilenceThresholdMs,
+          minSpeechMs: liveMinChunkMs,
+          submitUserSpeechOnPause: true,
+          baseAssetPath: liveVadAssetBasePath,
+          onnxWASMBasePath: liveVadOnnxBasePath,
+          onSpeechStart: () => {
+            liveSpeechActive = true;
+            setVisibleStatus('recording');
+            setSessionProgress('Speech detected. Building a live transcription chunk...');
+            setMicStatus('Speech detected. Waiting for a pause or 30 second split...');
+            armLiveChunkTimeout();
+          },
+          onSpeechEnd: (audio) => {
+            clearLiveChunkTimeout();
+            liveSpeechActive = false;
+            const resumeAfterSegment = liveForceContinueRequested && !liveStopRequested;
+            const stopAfterSegment = liveStopRequested;
+            liveForceContinueRequested = false;
+            queueLiveVadSegment(audio, {
+              resumeAfterSegment,
+              stopAfterSegment,
+              trimTrailingMs: resumeAfterSegment || stopAfterSegment ? 0 : livePostRollTrimMs,
+            });
+          },
+          onVADMisfire: () => {
+            clearLiveChunkTimeout();
+            liveSpeechActive = false;
+            const shouldResume = liveForceContinueRequested && !liveStopRequested;
+            const shouldStop = liveStopRequested;
+            liveForceContinueRequested = false;
+            if (shouldStop) {
+              resetRecordingState();
+              const micStatusState = defaultMicStatusState();
+              setMicStatus(micStatusState.message, micStatusState.kind);
+              return;
+            }
+            if (shouldResume) {
+              liveChunkProcessing = liveChunkProcessing.then(() => resumeLiveListeningAfterForcedFlush());
+              return;
+            }
+            setMicStatus('Listening for speech...');
+            setVisibleStatus('idle');
+            setSessionProgress('Listening for speech. Live chunks will queue after a pause.');
+          },
+        });
+      };
+
+      const startLiveListeningLoop = () => {
+        if (!liveVadInstance) {
+          throw new Error('Live transcription is not ready to start.');
+        }
+        liveVadInstance.start();
+        setVisibleStatus('idle');
+        setSessionProgress('Listening for speech. The Silero browser VAD will queue live chunks after 2 seconds of silence.');
+        setMicStatus('Listening for speech...');
+      };
+
+      const resumeLiveListeningAfterForcedFlush = async () => {
+        if (liveStopRequested) return;
+        try {
+          liveRestartPending = true;
+          cleanupLiveVad();
+          setVisibleStatus('transcribing');
+          setSessionProgress('Live chunk queued. Reinitializing live capture for the next utterance...');
+          setMicStatus('Reinitializing live transcription capture...');
+          if (liveRestartDelayMs > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, liveRestartDelayMs));
+          }
+          if (liveStopRequested) {
+            resetRecordingState();
+            const micStatusState = defaultMicStatusState();
+            setMicStatus(micStatusState.message, micStatusState.kind);
+            return;
+          }
+          liveVadInstance = await buildLiveVadInstance();
+          liveRestartPending = false;
+          startLiveListeningLoop();
+        } catch (_) {
+          liveRestartPending = false;
+          resetRecordingState();
+          setMicStatus('Could not resume live transcription capture.', 'error');
+        }
+      };
+
+      const processLiveVadSegment = async (audio, { trimTrailingMs = 0, resumeAfterSegment = false, stopAfterSegment = false } = {}) => {
+        try {
+          let preparedAudio = trimLiveVadSamples(audio, trimTrailingMs);
+          if (!resumeAfterSegment) {
+            preparedAudio = prependLiveVadOverlap(preparedAudio);
+          }
+          const uncappedDurationMs = (preparedAudio.length / liveVadSampleRate) * 1000;
+          if (resumeAfterSegment) {
+            livePendingOverlapAudio = takeTailLiveVadSamples(preparedAudio, liveChunkOverlapMs);
+          }
+          preparedAudio = capLiveVadSamplesToMaxDuration(preparedAudio);
+          const durationMs = (preparedAudio.length / liveVadSampleRate) * 1000;
+          if (durationMs >= liveMinChunkMs) {
+            const blob = createLiveVadWavBlob(preparedAudio);
+            if (blob && blob.size > 0) {
+              if (resumeAfterSegment && uncappedDurationMs > liveMaxChunkMs) {
+                setSessionProgress('Thirty second speech window reached. Sending the latest 30 seconds and keeping a 0.8 second overlap for the next live chunk...');
+              }
+              await uploadLiveChunk(blob, durationSecondsForVadAudio(preparedAudio));
+            }
+          }
+          if (stopAfterSegment) {
+            resetRecordingState();
+            const micStatusState = defaultMicStatusState();
+            setMicStatus(micStatusState.message, micStatusState.kind);
+            if (transcriptId) {
+              window.setTimeout(pollWorkspace, 1200);
+            }
+            return;
+          }
+          if (resumeAfterSegment) {
+            await resumeLiveListeningAfterForcedFlush();
+            return;
+          }
+          setMicStatus('Listening for speech...');
+          setVisibleStatus('idle');
+          setSessionProgress('Live chunk queued. Listening for the next utterance...');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not queue live transcription chunk.';
+          setMicStatus(message, 'error');
+          showFlash(message, 'error');
+          reflectBackendStatus('failed', message);
+          resetRecordingState();
+        }
+      };
+
+      const queueLiveVadSegment = (audio, options = {}) => {
+        liveChunkProcessing = liveChunkProcessing.then(() => processLiveVadSegment(audio, options));
+        return liveChunkProcessing;
       };
 
       const syncDeleteState = () => {
@@ -1568,54 +1968,119 @@
       });
       syncDeleteState();
 
-      const syncEmisEditor = (editor) => {
-        const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
-        const lineInputs = [...editor.querySelectorAll('[data-emis-line-input]')];
-        if (!hiddenInput) return;
-        const values = lineInputs
-          .map((input) => input.value.trim())
-          .filter((value) => value.length > 0);
-        hiddenInput.value = JSON.stringify(values);
+      const autosizeStatementEditor = (textarea) => {
+        if (!textarea) return;
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.max(textarea.scrollHeight, 22)}px`;
+      };
+
+      const focusStatementEditor = (textarea) => {
+        if (!(textarea instanceof HTMLTextAreaElement)) return;
+        textarea.focus();
+        const length = textarea.value.length;
+        textarea.setSelectionRange(length, length);
+      };
+
+      const syncStatementRowVisualState = (row) => {
+        if (!row) return;
+        const checkbox = row.querySelector('input[type="checkbox"]');
+        row.classList.toggle('is-unchecked', Boolean(checkbox && !checkbox.checked));
+      };
+
+      const scheduleStructuredContextSave = () => {
+        if (selectedOutputTemplateMode() !== 'structured') {
+          return;
+        }
+        if (emisSaveTimer) {
+          window.clearTimeout(emisSaveTimer);
+        }
+        emisSaveTimer = window.setTimeout(async () => {
+          try {
+            await saveStructuredContext({ silent: true });
+          } catch (_) {}
+        }, 500);
+      };
+
+      const handleStructuredContextChanged = () => {
+        syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
+        scheduleStructuredContextSave();
       };
 
       const collectStructuredContext = () => {
         const context = {};
-        emisEditors.forEach((editor) => {
-          const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
-          const sectionKey = hiddenInput?.name?.replace(/^context_/, '') || '';
-          if (!hiddenInput || !sectionKey) return;
-          try {
-            const parsed = JSON.parse(hiddenInput.value || '[]');
-            if (Array.isArray(parsed)) {
-              const lines = parsed.filter((line) => typeof line === 'string' && line.trim().length > 0);
-              if (lines.length > 0) {
-                context[sectionKey] = lines;
-              }
-            }
-          } catch (_) {
-            if (hiddenInput.value.trim()) {
-              context[sectionKey] = [hiddenInput.value.trim()];
-            }
+        document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
+          const sectionKey = section.dataset.sectionKey || '';
+          if (!sectionKey) return;
+          const lines = [...section.querySelectorAll('[data-structured-statement-row]')]
+            .map((row) => {
+              const checkbox = row.querySelector('[data-structured-line-checkbox]');
+              const input = row.querySelector('[data-structured-line-input]');
+              if (!checkbox?.checked || !input) return '';
+              return input.value.trim();
+            })
+            .filter((value) => value.length > 0);
+          if (lines.length > 0) {
+            context[sectionKey] = lines;
           }
         });
         return context;
       };
 
-      const syncEmisEditorAvailability = () => {
-        const disabled = !transcriptId;
-        emisEditors.forEach((editor) => {
-          editor.dataset.disabled = disabled ? 'true' : 'false';
-          const addButton = editor.querySelector('[data-emis-editor-add-line]');
-          if (addButton) {
-            addButton.disabled = disabled;
-          }
-          editor.querySelectorAll('[data-emis-line-input]').forEach((input) => {
-            input.disabled = disabled;
-          });
-          editor.querySelectorAll('[data-emis-line-row] button').forEach((button) => {
-            button.disabled = disabled;
-          });
+      const syncStructuredContextHiddenInputs = () => {
+        const context = collectStructuredContext();
+        structuredContextHiddenInputs.forEach((input) => {
+          const sectionKey = input.dataset.sectionKey || '';
+          input.value = JSON.stringify(context[sectionKey] || []);
         });
+        return context;
+      };
+
+      const syncStructuredEditorAvailability = () => {
+        const disabled = !transcriptId;
+        document.querySelectorAll('[data-structured-line-checkbox]').forEach((input) => {
+          input.disabled = disabled;
+        });
+        document.querySelectorAll('[data-structured-line-input]').forEach((input) => {
+          input.disabled = disabled;
+        });
+      };
+
+      const getAdjacentStatementRow = (row, direction) => {
+        const direct = direction === 'previous' ? row.previousElementSibling : row.nextElementSibling;
+        if (direct instanceof HTMLElement) {
+          return direct;
+        }
+        const currentSection = row.closest('[data-generated-structured-section]');
+        if (!(currentSection instanceof HTMLElement)) return null;
+        let siblingSection = direction === 'previous' ? currentSection.previousElementSibling : currentSection.nextElementSibling;
+        while (siblingSection) {
+          if (siblingSection instanceof HTMLElement && siblingSection.hasAttribute('data-generated-structured-section')) {
+            const rows = [...siblingSection.querySelectorAll('[data-structured-statement-row]')];
+            if (rows.length > 0) {
+              return direction === 'previous' ? rows[rows.length - 1] : rows[0];
+            }
+          }
+          siblingSection = direction === 'previous' ? siblingSection.previousElementSibling : siblingSection.nextElementSibling;
+        }
+        return null;
+      };
+
+      const focusAdjacentSectionArea = (row, direction) => {
+        const currentSection = row.closest('[data-generated-structured-section]');
+        if (!(currentSection instanceof HTMLElement)) return false;
+        let siblingSection = direction === 'previous' ? currentSection.previousElementSibling : currentSection.nextElementSibling;
+        while (siblingSection) {
+          if (siblingSection instanceof HTMLElement && siblingSection.hasAttribute('data-generated-structured-section')) {
+            const rows = [...siblingSection.querySelectorAll('[data-structured-statement-row]')];
+            const targetRow = direction === 'previous' ? rows[rows.length - 1] : rows[0];
+            if (targetRow) {
+              focusStatementEditor(targetRow.querySelector('[data-structured-line-input]'));
+              return true;
+            }
+          }
+          siblingSection = direction === 'previous' ? siblingSection.previousElementSibling : siblingSection.nextElementSibling;
+        }
+        return false;
       };
 
       const selectedOutputTemplateMode = () => {
@@ -1625,108 +2090,131 @@
 
       const syncStructuredTemplateUi = () => {
         const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
-        if (structuredContextPanel) {
-          structuredContextPanel.hidden = !isStructuredTemplate;
-        }
         if (templateModeBadge) {
           templateModeBadge.textContent = isStructuredTemplate ? 'Structured mode' : 'Freeform mode';
+        }
+        if (isStructuredTemplate) {
+          if (!generatedStructuredDraft) {
+            generatedStructuredDraft = buildGeneratedStructuredDraft(null, collectStructuredContext());
+          }
+          renderStructuredSections(generatedStructuredDraft);
+          if (latestGeneratedOutput) {
+            latestGeneratedOutput.hidden = true;
+          }
+        } else if (!latestGeneratedOutput?.dataset.latestGeneratedId) {
+          if (generatedStructuredPanel) {
+            generatedStructuredPanel.hidden = true;
+          }
+          if (latestGeneratedOutput) {
+            latestGeneratedOutput.hidden = false;
+            latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
+          }
         }
         syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
       };
 
-      const attachEmisLineHandlers = (editor, textarea) => {
-        textarea.addEventListener('input', () => syncEmisEditor(editor));
+      const createStatementRow = ({
+        sectionLabel = 'section',
+        value = '',
+        checked = true,
+        disabled = false,
+        placeholder = '',
+        lineInputAttr,
+        lineCheckboxAttr,
+        lineRowAttr,
+        onChange,
+        onAddAfter,
+        onEmptyDelete,
+      }) => {
+        const row = document.createElement('div');
+        row.className = 'statement-row';
+        row.setAttribute(lineRowAttr, '');
+
+        const checkboxLabel = document.createElement('label');
+        checkboxLabel.className = 'statement-checkbox';
+        checkboxLabel.setAttribute('aria-label', `Select ${sectionLabel} statement`);
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = checked;
+        checkbox.disabled = disabled;
+        checkbox.setAttribute(lineCheckboxAttr, '');
+        checkbox.dataset.sectionLabel = sectionLabel;
+        checkboxLabel.appendChild(checkbox);
+
+        const textarea = document.createElement('textarea');
+        textarea.rows = 1;
+        textarea.className = 'statement-editor';
+        textarea.placeholder = placeholder || `Add ${sectionLabel} statement`;
+        textarea.value = value;
+        textarea.disabled = disabled;
+        textarea.setAttribute(lineInputAttr, '');
+        textarea.dataset.sectionLabel = sectionLabel;
+
+        row.appendChild(checkboxLabel);
+        row.appendChild(textarea);
+
+        const emitChange = () => {
+          syncStatementRowVisualState(row);
+          autosizeStatementEditor(textarea);
+          onChange?.();
+        };
+
+        row.addEventListener('click', (event) => {
+          const target = event.target;
+          if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+            return;
+          }
+          checkbox.checked = !checkbox.checked;
+          emitChange();
+        });
+        checkbox.addEventListener('change', emitChange);
+        textarea.addEventListener('input', emitChange);
         textarea.addEventListener('keydown', (event) => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
-            addEmisLine(editor, '', textarea.closest('[data-emis-line-row]'));
-          }
-        });
-      };
-
-      const addEmisLine = (editor, value = '', afterRow = null) => {
-        const rows = editor.querySelector('[data-emis-editor-rows]');
-        const disabled = editor.dataset.disabled === 'true';
-        if (!rows) return;
-        const row = document.createElement('div');
-        row.className = 'editor-line-row';
-        row.setAttribute('data-emis-line-row', '');
-        const textarea = document.createElement('textarea');
-        textarea.rows = 2;
-        textarea.placeholder = `Add ${editor.dataset.emisSectionLabel || 'section'} line`;
-        textarea.value = value;
-        textarea.disabled = disabled;
-        textarea.setAttribute('data-emis-line-input', '');
-        const removeButton = document.createElement('button');
-        removeButton.type = 'button';
-        removeButton.textContent = 'Remove';
-        removeButton.disabled = disabled;
-        removeButton.addEventListener('click', () => {
-          row.remove();
-          if (!rows.querySelector('[data-emis-line-row]')) {
-            addEmisLine(editor, '');
-          }
-          syncEmisEditor(editor);
-        });
-        row.appendChild(textarea);
-        row.appendChild(removeButton);
-        if (afterRow && afterRow.parentNode === rows) {
-          afterRow.insertAdjacentElement('afterend', row);
-        } else {
-          rows.appendChild(row);
-        }
-        attachEmisLineHandlers(editor, textarea);
-        syncEmisEditor(editor);
-      };
-
-      const setEmisEditorLines = (editor, lines) => {
-        const rows = editor.querySelector('[data-emis-editor-rows]');
-        if (!rows) return;
-        rows.innerHTML = '';
-        const nextLines = Array.isArray(lines) ? lines.filter((line) => typeof line === 'string' && line.trim().length > 0) : [];
-        if (nextLines.length > 0) {
-          nextLines.forEach((line) => addEmisLine(editor, line));
-        } else {
-          addEmisLine(editor, '');
-        }
-        syncEmisEditor(editor);
-      };
-
-      emisEditors.forEach((editor) => {
-        const initialLines = JSON.parse(editor.dataset.initialLines || '[]');
-        if (Array.isArray(initialLines) && initialLines.length > 0) {
-          initialLines.forEach((line) => addEmisLine(editor, String(line)));
-        } else {
-          addEmisLine(editor, '');
-        }
-        const addButton = editor.querySelector('[data-emis-editor-add-line]');
-        if (addButton) {
-          addButton.addEventListener('click', () => addEmisLine(editor, ''));
-        }
-        const form = editor.closest('form');
-        if (form) {
-          form.addEventListener('submit', () => syncEmisEditor(editor));
-        }
-        editor.addEventListener('input', () => {
-          syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
-          if (selectedOutputTemplateMode() !== 'structured') {
+            onAddAfter?.(row);
             return;
           }
-          if (emisSaveTimer) {
-            window.clearTimeout(emisSaveTimer);
+          if ((event.key === 'Backspace' || event.key === 'Escape') && textarea.value.length === 0) {
+            event.preventDefault();
+            onEmptyDelete?.(row);
+            return;
           }
-          emisSaveTimer = window.setTimeout(async () => {
-            try {
-              await saveStructuredContext({ silent: false });
-            } catch (error) {
-              if (emisSaveStatus) {
-                emisSaveStatus.textContent = error.message || 'Could not save EMIS session context.';
+          if (event.key === 'ArrowUp') {
+            const position = textarea.selectionStart ?? 0;
+            if (!textarea.value.slice(0, position).includes('\n')) {
+              const previousRow = getAdjacentStatementRow(row, 'previous');
+              if (previousRow) {
+                event.preventDefault();
+                focusStatementEditor(previousRow.querySelector('[data-structured-line-input]'));
               }
             }
-          }, 500);
+            return;
+          }
+          if (event.key === 'ArrowDown') {
+            const position = textarea.selectionEnd ?? textarea.value.length;
+            if (!textarea.value.slice(position).includes('\n')) {
+              const nextRow = getAdjacentStatementRow(row, 'next');
+              if (nextRow) {
+                event.preventDefault();
+                focusStatementEditor(nextRow.querySelector('[data-structured-line-input]'));
+              }
+            }
+            return;
+          }
+          if (event.key === 'Tab') {
+            const moved = focusAdjacentSectionArea(row, event.shiftKey ? 'previous' : 'next');
+            if (moved) {
+              event.preventDefault();
+            }
+          }
         });
-      });
-      syncEmisEditorAvailability();
+
+        syncStatementRowVisualState(row);
+        window.requestAnimationFrame(() => autosizeStatementEditor(textarea));
+        return row;
+      };
 
       const serializeStructuredTextLines = (section) => {
         const lineText = String(section.edited_text_encrypted || section.original_text_encrypted || '');
@@ -1736,60 +2224,193 @@
           .filter((line) => line.length > 0);
       };
 
-      const renderStructuredSections = (sections) => {
+      const buildGeneratedStructuredDraft = (generatedDocument, structuredContext = {}) => {
+        const generatedSectionMap = (
+          generatedDocument
+          && generatedDocument.status === 'ready'
+          && generatedDocument.document_mode === 'structured'
+          && Array.isArray(generatedDocument.sections)
+        )
+          ? new Map(
+              generatedDocument.sections.map((section) => [
+                section.section_key || '',
+                serializeStructuredTextLines(section),
+              ])
+            )
+          : new Map();
+        return {
+          documentId: generatedDocument?.id || '',
+          sections: structuredSectionDefinitions.map((section) => ({
+            sectionKey: section.key,
+            sectionLabel: section.label,
+            lines: [
+              ...(generatedSectionMap.get(section.key) || structuredContext[section.key] || [])
+                .filter((line) => typeof line === 'string' && line.trim().length > 0)
+                .map((line) => ({ text: line, checked: true })),
+              { text: '', checked: true },
+            ],
+          })),
+        };
+      };
+
+      const buildGeneratedStructuredDraftFromDom = () => {
+        if (!generatedStructuredSections) return null;
+        const sections = [...generatedStructuredSections.querySelectorAll('[data-generated-structured-section]')].map((section) => ({
+          sectionKey: section.dataset.sectionKey || '',
+          sectionLabel: section.dataset.sectionLabel || 'Section',
+          lines: [...section.querySelectorAll('[data-structured-statement-row]')].map((row) => {
+            const checkbox = row.querySelector('[data-structured-line-checkbox]');
+            const textarea = row.querySelector('[data-structured-line-input]');
+            return {
+              text: textarea?.value || '',
+              checked: Boolean(checkbox?.checked),
+            };
+          }),
+        }));
+        if (!sections.length) return null;
+        return {
+          documentId: latestGeneratedOutput?.dataset.latestGeneratedId || '',
+          sections,
+        };
+      };
+
+      const ensureSectionHasEmptyRow = (sectionContainer) => {
+        const rows = [...sectionContainer.querySelectorAll('[data-structured-statement-row]')];
+        const hasEmptyRow = rows.some((row) => {
+          const input = row.querySelector('[data-structured-line-input]');
+          return !input || !input.value.trim();
+        });
+        if (!hasEmptyRow) {
+          addGeneratedStructuredLine(sectionContainer, '', null, true);
+        }
+      };
+
+      const syncGeneratedStructuredDraftFromDom = () => {
+        if (!generatedStructuredDraft || !generatedStructuredSections) return;
+        const sections = [...generatedStructuredSections.querySelectorAll('[data-generated-structured-section]')];
+        generatedStructuredDraft.sections = sections.map((section) => ({
+          sectionKey: section.dataset.sectionKey || '',
+          sectionLabel: section.dataset.sectionLabel || 'Section',
+          lines: [...section.querySelectorAll('[data-structured-statement-row]')].map((row) => {
+            const checkbox = row.querySelector('[data-structured-line-checkbox]');
+            const textarea = row.querySelector('[data-structured-line-input]');
+            return {
+              text: textarea?.value || '',
+              checked: Boolean(checkbox?.checked),
+            };
+          }),
+        }));
+      };
+
+      const addGeneratedStructuredLine = (sectionContainer, value = '', afterRow = null, checked = true, options = {}) => {
+        const rows = sectionContainer.querySelector('[data-generated-structured-section-rows]');
+        if (!rows) return null;
+        const row = createStatementRow({
+          sectionLabel: sectionContainer.dataset.sectionLabel || 'Section',
+          value,
+          checked,
+          disabled: false,
+          placeholder: `Add ${(sectionContainer.dataset.sectionLabel || 'section').toLowerCase()} statement`,
+          lineInputAttr: 'data-structured-line-input',
+          lineCheckboxAttr: 'data-structured-line-checkbox',
+          lineRowAttr: 'data-structured-statement-row',
+          onChange: () => {
+            ensureSectionHasEmptyRow(sectionContainer);
+            syncGeneratedStructuredDraftFromDom();
+            syncStructuredContextHiddenInputs();
+            handleStructuredContextChanged();
+            if (structuredCopyStatus) {
+              structuredCopyStatus.textContent = 'Select the statements you want to copy.';
+            }
+          },
+          onAddAfter: (currentRow) => {
+            const nextRow = addGeneratedStructuredLine(sectionContainer, '', currentRow, true);
+            focusStatementEditor(nextRow?.querySelector('[data-structured-line-input]'));
+          },
+          onEmptyDelete: (currentRow) => {
+            const previousRow = getAdjacentStatementRow(currentRow, 'previous');
+            if (!(previousRow instanceof HTMLElement)) {
+              return;
+            }
+            currentRow.remove();
+            ensureSectionHasEmptyRow(sectionContainer);
+            syncGeneratedStructuredDraftFromDom();
+            syncStructuredContextHiddenInputs();
+            handleStructuredContextChanged();
+            if (structuredCopyStatus) {
+              structuredCopyStatus.textContent = 'Select the statements you want to copy.';
+            }
+            focusStatementEditor(previousRow.querySelector('[data-structured-line-input]'));
+          },
+        });
+        if (afterRow && afterRow.parentNode === rows) {
+          afterRow.insertAdjacentElement('afterend', row);
+        } else {
+          rows.appendChild(row);
+        }
+        if (options.focus === true) {
+          focusStatementEditor(row.querySelector('[data-structured-line-input]'));
+        }
+        return row;
+      };
+
+      const renderStructuredSections = (draft) => {
         if (!generatedStructuredSections || !generatedStructuredPanel) return;
         generatedStructuredSections.innerHTML = '';
-        if (!Array.isArray(sections) || sections.length === 0) {
+        if (!draft || !Array.isArray(draft.sections) || draft.sections.length === 0) {
           generatedStructuredPanel.hidden = true;
           return;
         }
-        sections.forEach((section) => {
+        draft.sections.forEach((section) => {
           const card = document.createElement('div');
           card.className = 'structured-section-block';
-          const header = document.createElement('div');
-          header.className = 'structured-section-title';
+          card.setAttribute('data-generated-structured-section', '');
+          card.dataset.sectionKey = section.sectionKey || '';
+          card.dataset.sectionLabel = section.sectionLabel || 'Section';
+
           const title = document.createElement('h3');
-          title.className = '';
-          title.textContent = section.section_label || section.section_key || 'Section';
-          header.appendChild(title);
+          title.className = 'structured-section-title';
+          title.textContent = section.sectionLabel || 'Section';
+
           const body = document.createElement('div');
-          body.className = 'space-y-2';
-          serializeStructuredTextLines(section).forEach((line) => {
-            const label = document.createElement('label');
-            label.className = 'structured-line-row';
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = true;
-            checkbox.value = line;
-            checkbox.setAttribute('data-structured-line-checkbox', '');
-            checkbox.dataset.sectionLabel = title.textContent;
-            const span = document.createElement('span');
-            span.className = 'text-sm text-ink';
-            span.textContent = line;
-            label.appendChild(checkbox);
-            label.appendChild(span);
-            body.appendChild(label);
-          });
-          card.appendChild(header);
+          body.className = 'structured-statement-list';
+          body.setAttribute('data-generated-structured-section-rows', '');
+
+          card.appendChild(title);
           card.appendChild(body);
           generatedStructuredSections.appendChild(card);
+          const sectionLines = Array.isArray(section.lines) ? section.lines : [];
+          if (sectionLines.length > 0) {
+            sectionLines.forEach((line) => {
+              addGeneratedStructuredLine(card, line.text || '', null, line.checked !== false);
+            });
+          } else {
+            addGeneratedStructuredLine(card, '', null, true);
+          }
         });
+        syncGeneratedStructuredDraftFromDom();
+        syncStructuredContextHiddenInputs();
+        syncStructuredEditorAvailability();
         generatedStructuredPanel.hidden = false;
       };
 
-      const renderGeneratedOutput = (generatedDocument) => {
+      const renderGeneratedOutput = (generatedDocument, structuredContext = {}) => {
         if (!latestGeneratedOutput || !generatedStructuredPanel) return;
         generatedStructuredPanel.hidden = true;
         if (generatedStructuredSections) generatedStructuredSections.innerHTML = '';
-        if (structuredCopyStatus) structuredCopyStatus.textContent = 'Select the lines you want to copy.';
+        if (structuredCopyStatus) structuredCopyStatus.textContent = 'Select the statements you want to copy.';
         latestGeneratedOutput.hidden = false;
-        if (!generatedDocument) {
-          latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
+        const shouldShowStructuredEditor = selectedOutputTemplateMode() === 'structured'
+          || (generatedDocument && generatedDocument.status === 'ready' && generatedDocument.document_mode === 'structured');
+        if (shouldShowStructuredEditor) {
+          generatedStructuredDraft = buildGeneratedStructuredDraft(generatedDocument, structuredContext);
+          latestGeneratedOutput.hidden = true;
+          renderStructuredSections(generatedStructuredDraft);
           return;
         }
-        if (generatedDocument.status === 'ready' && generatedDocument.document_mode === 'structured' && Array.isArray(generatedDocument.sections) && generatedDocument.sections.length > 0) {
-          latestGeneratedOutput.hidden = true;
-          renderStructuredSections(generatedDocument.sections);
+        generatedStructuredDraft = null;
+        if (!generatedDocument) {
+          latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
           return;
         }
         if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text_encrypted) {
@@ -1810,6 +2431,13 @@
         }
         latestGeneratedOutput.innerHTML = '<span class="text-slate">No generated output yet.</span>';
       };
+
+      if (generatedStructuredPanel && !generatedStructuredPanel.hidden) {
+        generatedStructuredDraft = buildGeneratedStructuredDraftFromDom();
+        if (generatedStructuredDraft) {
+          renderStructuredSections(generatedStructuredDraft);
+        }
+      }
 
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
@@ -1920,13 +2548,7 @@
         const structuredContext = collectStructuredContext();
         const serializedContext = JSON.stringify(structuredContext);
         if (lastSavedStructuredContext === serializedContext) {
-          if (emisSaveStatus && !silent) {
-            emisSaveStatus.textContent = 'Saved to this session automatically.';
-          }
           return structuredContext;
-        }
-        if (emisSaveStatus && !silent) {
-          emisSaveStatus.textContent = 'Saving session context...';
         }
         const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
@@ -1938,9 +2560,6 @@
           throw new Error(await parseErrorMessage(response, 'Could not save EMIS session context.'));
         }
         lastSavedStructuredContext = serializedContext;
-        if (emisSaveStatus && !silent) {
-          emisSaveStatus.textContent = 'Saved to this session automatically.';
-        }
         return structuredContext;
       };
 
@@ -1965,6 +2584,53 @@
           return `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`;
         }
         return initialWorkspaceEndpoint || '/api/v1/transcribe/workspace';
+      };
+
+      const workspaceStreamEndpointForTranscript = (nextTranscriptId) => {
+        if (nextTranscriptId) {
+          return `/api/v1/transcribe/workspace/stream?transcript_id=${nextTranscriptId}`;
+        }
+        return initialWorkspaceStreamEndpoint || '/api/v1/transcribe/workspace/stream';
+      };
+
+      const closeWorkspaceEventSource = () => {
+        if (!workspaceEventSource) return;
+        workspaceEventSource.close();
+        workspaceEventSource = null;
+        workspaceEventSourceEndpoint = null;
+      };
+
+      const shouldUseWorkspacePollingFallback = () => {
+        return !window.EventSource || workspaceStreamFallbackPolling || !workspaceEventSource;
+      };
+
+      const syncWorkspaceRealtimeConnection = () => {
+        if (!window.EventSource) return;
+        const endpoint = workspaceStreamEndpointForTranscript(transcriptId);
+        if (!endpoint) {
+          closeWorkspaceEventSource();
+          return;
+        }
+        if (workspaceEventSource && workspaceEventSourceEndpoint === endpoint) {
+          return;
+        }
+        closeWorkspaceEventSource();
+        workspaceStreamFallbackPolling = false;
+        workspaceEventSourceEndpoint = endpoint;
+        workspaceEventSource = new window.EventSource(endpoint);
+        workspaceEventSource.addEventListener('open', () => {
+          workspaceStreamFallbackPolling = false;
+        });
+        workspaceEventSource.addEventListener('workspace', (event) => {
+          try {
+            const workspace = JSON.parse(event.data);
+            applyWorkspacePayload(workspace);
+          } catch (_) {}
+        });
+        workspaceEventSource.onerror = () => {
+          workspaceStreamFallbackPolling = true;
+          window.setTimeout(pollWorkspace, 1200);
+        };
       };
 
       const loadRedactionDebug = async (panel) => {
@@ -2010,10 +2676,22 @@
 
         transcriptId = transcript?.id || null;
         activeIngestionMode = transcript?.ingestion_mode || null;
+        nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
         sttAvailable = Boolean(workspace.stt_available);
         sttStatusMessage = workspace.stt_status_message || null;
+        latestIngestionJobStatus = transcript?.latest_ingestion_job_status || null;
+        latestIngestionErrorMessage = transcript?.latest_ingestion_error_message || null;
+        const retryAvailable = Boolean(
+          transcript
+          && transcript.latest_ingestion_retry_available
+          && workspace.stt_selected
+          && workspace.stt_available
+          && transcript.ingestion_mode === 'whole_file'
+          && transcript.status === 'failed'
+        );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
+        setRetryAvailability(retryAvailable);
 
         sessionLinks.forEach((link) => {
           const isActive = link.dataset.transcriptId === transcriptId;
@@ -2051,14 +2729,18 @@
           if (sessionTitleDisplay) sessionTitleDisplay.value = '';
           if (renameTitleInput) renameTitleInput.value = '';
           if (activeIngestionModeChip) activeIngestionModeChip.textContent = '';
+          latestIngestionJobStatus = null;
+          latestIngestionErrorMessage = null;
+          setRetryAvailability(false);
           setSessionProgress('Create or select a session to begin.');
         }
-        setMicStatus(defaultMicStatusMessage(), sttAvailable ? '' : 'error');
+        const micStatusState = defaultMicStatusState();
+        setMicStatus(micStatusState.message, micStatusState.kind);
 
         if (latestGeneratedOutput) {
           latestGeneratedOutput.dataset.latestGeneratedStatus = latestNote?.status || '';
           latestGeneratedOutput.dataset.latestGeneratedId = latestNote?.id || '';
-          renderGeneratedOutput(latestNote);
+          renderGeneratedOutput(latestNote, workspace.active_structured_context || {});
         }
         if (noteMeta) {
           noteMeta.textContent = latestNote
@@ -2082,18 +2764,13 @@
 
         const structuredContext = workspace.active_structured_context || {};
         lastSavedStructuredContext = JSON.stringify(structuredContext);
-        if (emisSaveStatus) {
-          emisSaveStatus.textContent = 'Saved to this session automatically.';
-        }
-        emisEditors.forEach((editor) => {
-          const hiddenInput = editor.querySelector('[data-emis-editor-hidden]');
-          const sectionKey = hiddenInput?.name?.replace(/^context_/, '') || '';
-          if (!sectionKey) return;
-          setEmisEditorLines(editor, structuredContext[sectionKey] || []);
-        });
-        syncEmisEditorAvailability();
-        setMicButtons(false);
+        generatedStructuredDraft = buildGeneratedStructuredDraft(latestNote, structuredContext);
+        renderStructuredSections(generatedStructuredDraft);
+        syncStructuredContextHiddenInputs();
+        syncStructuredEditorAvailability();
+        setMicButtons(isLiveCaptureUiActive());
         syncStructuredTemplateUi();
+        syncWorkspaceRealtimeConnection();
       };
 
       async function fetchWorkspace(targetTranscriptId = transcriptId) {
@@ -2110,33 +2787,47 @@
         }
       }
 
+      const shouldPollWhileLiveCaptureActive = () => {
+        return (
+          activeIngestionMode === 'live_chunked'
+          && captureMode === 'live'
+          && (Boolean(liveVadInstance) || liveRestartPending)
+        );
+      };
+
+      const isLiveCaptureUiActive = () => {
+        return (
+          activeIngestionMode === 'live_chunked'
+          && captureMode === 'live'
+          && !liveStopRequested
+          && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+        );
+      };
+
+      const shouldPreserveLiveMicStatus = () => {
+        return (
+          isLiveCaptureUiActive()
+          || (
+            activeIngestionMode === 'live_chunked'
+            && captureMode === 'live'
+            && !liveStopRequested
+            && (
+              latestIngestionJobStatus === 'queued'
+              || latestIngestionJobStatus === 'processing'
+            )
+          )
+        );
+      };
+
       async function pollWorkspace() {
+        if (!shouldUseWorkspacePollingFallback()) return;
         if (!transcriptId || !activeStatus) return;
-        const current = activeStatus.textContent.trim();
-        const generatedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
-        const followupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
-        const shouldPoll = (
-          current === 'queued'
-          || current === 'transcribing'
-          || generatedStatus === 'queued'
-          || generatedStatus === 'processing'
-          || followupStatus === 'queued'
-          || followupStatus === 'processing'
-        );
-        if (!shouldPoll) return;
+        const liveCaptureActive = shouldPollWhileLiveCaptureActive();
+        if (!liveCaptureActive) return;
         const workspace = await fetchWorkspace();
-        const transcript = workspace?.active_transcript || null;
-        const refreshedGeneratedStatus = latestGeneratedOutput?.dataset.latestGeneratedStatus || '';
-        const refreshedFollowupStatus = latestFollowupOutput?.dataset.latestFollowupStatus || '';
-        const stillPending = Boolean(
-          (transcript && (transcript.status === 'queued' || transcript.status === 'transcribing'))
-          || refreshedGeneratedStatus === 'queued'
-          || refreshedGeneratedStatus === 'processing'
-          || refreshedFollowupStatus === 'queued'
-          || refreshedFollowupStatus === 'processing'
-        );
-        if (stillPending) {
-          window.setTimeout(pollWorkspace, 2500);
+        const keepPollingForLiveCapture = shouldPollWhileLiveCaptureActive();
+        if (workspace && keepPollingForLiveCapture) {
+          window.setTimeout(pollWorkspace, 1200);
         }
       }
 
@@ -2147,13 +2838,20 @@
       syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
       syncStructuredTemplateUi();
       setMicButtons(false);
-      setMicStatus(defaultMicStatusMessage(), sttAvailable ? '' : 'error');
+      {
+        if (!(shouldPreserveLiveMicStatus() && !(latestIngestionJobStatus === 'failed' && latestIngestionErrorMessage))) {
+          const micStatusState = defaultMicStatusState();
+          setMicStatus(micStatusState.message, micStatusState.kind);
+        }
+      }
       renderTimer();
+      syncWorkspaceRealtimeConnection();
 
       const uploadMicrophoneBatch = async (blob) => {
         setMicStatus('Uploading microphone batch for transcription...');
         setVisibleStatus('uploading');
         setSessionProgress('Uploading microphone batch to queue transcription...');
+        setRetryAvailability(false);
         try {
           await syncTranscriptTitleIfNeeded();
           const formData = new FormData();
@@ -2174,6 +2872,61 @@
           setMicStatus(message, 'error');
           showFlash(message, 'error');
           reflectBackendStatus('failed', message);
+          setRetryAvailability(false);
+        }
+      };
+
+      const beginLiveTranscription = async () => {
+        if (!canUseLiveInput()) {
+          setMicStatus('Create or select a live session with STT available before starting live transcription.', 'error');
+          return;
+        }
+        if (!window.vad?.MicVAD || !navigator.mediaDevices?.getUserMedia) {
+          setMicStatus('The Silero browser VAD runtime did not load in this browser.', 'error');
+          return;
+        }
+        try {
+          captureMode = 'live';
+          liveStopRequested = false;
+          liveForceContinueRequested = false;
+          liveRestartPending = false;
+          liveChunkProcessing = Promise.resolve();
+          liveVadInstance = await buildLiveVadInstance();
+          startedAt = Date.now();
+          renderTimer();
+          timerId = window.setInterval(renderTimer, 1000);
+          setMicButtons(true);
+          startLiveListeningLoop();
+        } catch (_) {
+          resetRecordingState();
+          setMicStatus('Microphone access was denied, or the browser VAD assets could not initialize.', 'error');
+        }
+      };
+
+      const endLiveTranscription = () => {
+        if (!liveVadInstance && !liveRestartPending) return;
+        liveStopRequested = true;
+        liveForceContinueRequested = false;
+        clearLiveChunkTimeout();
+        setMicStatus('Stopping live transcription capture...');
+        setSessionProgress('Finalizing the current speech segment before upload...');
+        if (liveRestartPending && !liveSpeechActive) {
+          resetRecordingState();
+          const micStatusState = defaultMicStatusState();
+          setMicStatus(micStatusState.message, micStatusState.kind);
+          return;
+        }
+        try {
+          liveVadInstance?.pause();
+          if (!liveSpeechActive) {
+            resetRecordingState();
+            const micStatusState = defaultMicStatusState();
+            setMicStatus(micStatusState.message, micStatusState.kind);
+          }
+        } catch (_) {
+          resetRecordingState();
+          const micStatusState = defaultMicStatusState();
+          setMicStatus(micStatusState.message, micStatusState.kind);
         }
       };
 
@@ -2237,11 +2990,21 @@
 
       if (recordToggleButton) {
         recordToggleButton.addEventListener('click', () => {
-          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-            endMicrophoneBatch();
+          const liveCaptureActive = captureMode === 'live' && (Boolean(liveVadInstance) || liveRestartPending);
+          const batchCaptureActive = Boolean(mediaRecorder && mediaRecorder.state !== 'inactive');
+          if (liveCaptureActive || batchCaptureActive) {
+            if (captureMode === 'live') {
+              endLiveTranscription();
+            } else {
+              endMicrophoneBatch();
+            }
             return;
           }
-          beginMicrophoneBatch();
+          if (activeIngestionMode === 'live_chunked') {
+            beginLiveTranscription();
+          } else {
+            beginMicrophoneBatch();
+          }
         });
       }
 
@@ -2271,19 +3034,27 @@
 
       if (copyStructuredLinesButton) {
         copyStructuredLinesButton.addEventListener('click', async () => {
-          const checked = [...document.querySelectorAll('[data-structured-line-checkbox]:checked')];
-          if (checked.length === 0) {
+          const checkedRows = [...document.querySelectorAll('[data-generated-structured-section] [data-structured-statement-row]')]
+            .map((row) => {
+              const checkbox = row.querySelector('[data-structured-line-checkbox]');
+              const textarea = row.querySelector('[data-structured-line-input]');
+              return {
+                checked: Boolean(checkbox?.checked),
+                label: checkbox?.dataset.sectionLabel || textarea?.dataset.sectionLabel || '',
+                text: textarea?.value?.trim() || '',
+              };
+            })
+            .filter((row) => row.checked && row.text.length > 0);
+          if (checkedRows.length === 0) {
             if (structuredCopyStatus) {
-              structuredCopyStatus.textContent = 'Select at least one line to copy.';
+              structuredCopyStatus.textContent = 'Select at least one statement to copy.';
             }
             return;
           }
           const grouped = new Map();
-          checked.forEach((checkbox) => {
-            const label = checkbox.dataset.sectionLabel || '';
-            const line = checkbox.value || '';
+          checkedRows.forEach(({ label, text }) => {
             const lines = grouped.get(label) || [];
-            lines.push(line);
+            lines.push(text);
             grouped.set(label, lines);
           });
           const textToCopy = [...grouped.entries()].map(([label, lines]) => {
@@ -2293,14 +3064,14 @@
           try {
             await navigator.clipboard.writeText(textToCopy);
             if (structuredCopyStatus) {
-              structuredCopyStatus.textContent = `Copied ${checked.length} selected line${checked.length === 1 ? '' : 's'} to the clipboard.`;
+              structuredCopyStatus.textContent = `Copied ${checkedRows.length} selected statement${checkedRows.length === 1 ? '' : 's'} to the clipboard.`;
             }
             showCopyToast();
           } catch (_) {
             if (structuredCopyStatus) {
-              structuredCopyStatus.textContent = 'Could not copy the selected lines.';
+              structuredCopyStatus.textContent = 'Could not copy the selected statements.';
             } else {
-              showFlash('Could not copy the selected lines.', 'error');
+              showFlash('Could not copy the selected statements.', 'error');
             }
           }
         });
@@ -2308,12 +3079,14 @@
 
       if (clearStructuredSelectionButton) {
         clearStructuredSelectionButton.addEventListener('click', () => {
-          document.querySelectorAll('[data-structured-line-checkbox]').forEach((checkbox) => {
+          document.querySelectorAll('[data-generated-structured-section] [data-structured-line-checkbox]').forEach((checkbox) => {
             checkbox.checked = false;
+            syncStatementRowVisualState(checkbox.closest('[data-structured-statement-row]'));
           });
           if (structuredCopyStatus) {
             structuredCopyStatus.textContent = 'Selection cleared.';
           }
+          syncGeneratedStructuredDraftFromDom();
         });
       }
 
@@ -2343,12 +3116,17 @@
       if (newSessionForm) {
         newSessionForm.addEventListener('submit', async (event) => {
           event.preventDefault();
+          const submitter = event.submitter;
+          const requestedMode = submitter?.dataset?.newSessionMode || newSessionModeInput?.value || 'whole_file';
+          if (newSessionModeInput) {
+            newSessionModeInput.value = requestedMode;
+          }
           try {
             const response = await fetch('/api/v1/transcripts/start', {
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: 'Untitled session', ingestion_mode: 'whole_file' }),
+              body: JSON.stringify({ title: 'Untitled session', ingestion_mode: requestedMode }),
             });
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not create a new session.'));
@@ -2439,6 +3217,7 @@
           if (!transcriptId || !fileInput?.files || fileInput.files.length === 0) return;
           setVisibleStatus('uploading');
           setSessionProgress('Uploading audio file to queue transcription...');
+          setRetryAvailability(false);
           try {
             await syncTranscriptTitleIfNeeded();
             const formData = new FormData();
@@ -2459,6 +3238,7 @@
             const message = error instanceof Error ? error.message : 'Could not queue file transcription.';
             showFlash(message, 'error');
             reflectBackendStatus('failed', message);
+            setRetryAvailability(false);
           }
         });
       }
@@ -2545,6 +3325,10 @@
           }
         });
       }
+
+      window.addEventListener('beforeunload', () => {
+        closeWorkspaceEventSource();
+      });
 
       window.setTimeout(fetchWorkspace, 250);
       window.setTimeout(pollWorkspace, 1200);

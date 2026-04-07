@@ -750,6 +750,7 @@
             Adapter family
             <select name="adapter_kind" data-llm-adapter-select>
               <option value="openai_chat" {% if llm_form.adapter_kind == "openai_chat" %}selected{% endif %}>openai_chat</option>
+              <option value="bedrock_chat" {% if llm_form.adapter_kind == "bedrock_chat" %}selected{% endif %}>bedrock_chat</option>
               <option value="ollama_chat" {% if llm_form.adapter_kind == "ollama_chat" %}selected{% endif %}>ollama_chat</option>
             </select>
           </label>
@@ -757,8 +758,16 @@
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url or 'http://localhost:11434' }}">
           </label>
+          <label data-show-for="bedrock_chat">
+            Region
+            <input type="text" name="bedrock_region" value="{{ llm_form.bedrock_region or 'eu-west-2' }}" placeholder="eu-west-2" data-bedrock-region-input>
+          </label>
+          <label data-show-for="bedrock_chat">
+            Base URL
+            <input type="url" name="base_url" value="{{ llm_form.base_url or 'https://bedrock-mantle.eu-west-2.api.aws/v1' }}" data-bedrock-base-url>
+          </label>
           <input type="hidden" name="base_url" value="{{ llm_form.base_url or 'https://api.openai.com/v1' }}" data-openai-llm-base-url>
-          <p><small data-llm-adapter-note>The official OpenAI chat adapter uses `https://api.openai.com/v1`. Ollama uses `/api/tags` for model discovery and `/api/chat` for generation.</small></p>
+          <p><small data-llm-adapter-note>{% if llm_form.adapter_kind == "bedrock_chat" %}Amazon Bedrock uses the OpenAI-compatible Bedrock Mantle endpoint format `https://bedrock-mantle.<region>.api.aws/v1`. Choose the region you need, and OpenScribe will derive the standard base URL for inspection and generation.{% elif llm_form.adapter_kind == "ollama_chat" %}Ollama uses `/api/tags` for model discovery and `/api/chat` for generation. Local Ollama usually runs at `http://localhost:11434`.{% else %}The official OpenAI chat adapter uses `https://api.openai.com/v1`.{% endif %}</small></p>
           <label>
             <span data-llm-token-label>API key for inspection</span>
             <input type="password" name="bearer_token">
@@ -786,6 +795,14 @@
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url }}">
           </label>
+          <label data-show-for="bedrock_chat">
+            Region
+            <input type="text" name="bedrock_region" value="{{ llm_form.bedrock_region or 'eu-west-2' }}" placeholder="eu-west-2" data-bedrock-region-input>
+          </label>
+          <label data-show-for="bedrock_chat">
+            Base URL
+            <input type="url" name="base_url" value="{{ llm_form.base_url }}" data-bedrock-base-url>
+          </label>
           <input type="hidden" name="base_url" value="{{ llm_form.base_url }}" data-openai-llm-base-url>
           <input type="hidden" name="preserved_bearer_token" value="{{ llm_form.preserved_bearer_token or '' }}">
           <label>
@@ -794,7 +811,7 @@
           </label>
           <label>
             <span data-llm-token-label>API key</span>
-            <input type="password" name="bearer_token" {% if llm_form.adapter_kind == "openai_chat" and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
+            <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
           </label>
           {% if llm_form.preserved_bearer_token %}
           <p><small>The API key from the inspect step will be reused on save unless you enter a replacement above.</small></p>
@@ -1165,9 +1182,21 @@
         const adapterField = form.querySelector('[data-llm-adapter-select], input[name="adapter_kind"]');
         if (!adapterField) return;
         const adapter = adapterField.value;
+        const buildBedrockBaseUrl = (region) => `https://bedrock-mantle.${region}.api.aws/v1`;
+        const syncBedrockBaseUrl = () => {
+          const regionInput = form.querySelector('[data-bedrock-region-input]');
+          const baseUrlInput = form.querySelector('[data-bedrock-base-url]');
+          if (!regionInput || !baseUrlInput) return;
+          const region = regionInput.value.trim().toLowerCase();
+          if (!region) return;
+          if (!baseUrlInput.value || /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value)) {
+            baseUrlInput.value = buildBedrockBaseUrl(region);
+          }
+        };
         form.querySelectorAll('[data-show-for]').forEach((el) => {
           if (!el.closest('[data-llm-inspect-form], [data-llm-save-form]')) return;
-          el.hidden = el.getAttribute('data-show-for') !== adapter;
+          const targets = (el.getAttribute('data-show-for') || '').split(/\s+/).filter(Boolean);
+          el.hidden = !targets.includes(adapter);
         });
         form.querySelectorAll('[data-show-for]').forEach((container) => {
           if (!container.closest('[data-llm-inspect-form], [data-llm-save-form]')) return;
@@ -1186,21 +1215,45 @@
           if (adapter === 'ollama_chat' && !field.value) {
             field.value = 'http://localhost:11434';
           }
+          if (adapter === 'bedrock_chat' && !field.value) {
+            field.value = 'https://bedrock-mantle.eu-west-2.api.aws/v1';
+          }
         });
+        const regionInput = form.querySelector('[data-bedrock-region-input]');
+        if (adapter === 'bedrock_chat' && regionInput && !regionInput.value.trim()) {
+          regionInput.value = 'eu-west-2';
+        }
+        if (adapter === 'bedrock_chat') {
+          syncBedrockBaseUrl();
+        }
         form.querySelectorAll('[data-llm-token-label]').forEach((el) => {
-          el.textContent = adapter === 'ollama_chat'
-            ? 'API key / bearer token (optional)'
-            : (form.matches('[data-llm-inspect-form]') ? 'API key for inspection' : 'API key');
+          if (adapter === 'ollama_chat') {
+            el.textContent = 'API key / bearer token (optional)';
+            return;
+          }
+          if (adapter === 'bedrock_chat') {
+            el.textContent = form.matches('[data-llm-inspect-form]') ? 'Bedrock API key for inspection' : 'Bedrock API key';
+            return;
+          }
+          el.textContent = form.matches('[data-llm-inspect-form]') ? 'API key for inspection' : 'API key';
         });
         const tokenInput = form.querySelector('[data-llm-token-input]');
         if (tokenInput) {
-          tokenInput.required = adapter === 'openai_chat' && !form.querySelector('input[name="config_id"]')?.value && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
+          tokenInput.required = (adapter === 'openai_chat' || adapter === 'bedrock_chat')
+            && !form.querySelector('input[name="config_id"]')?.value
+            && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
         }
         const note = form.querySelector('[data-llm-adapter-note]');
         if (note) {
-          note.textContent = adapter === 'ollama_chat'
-            ? 'Ollama uses /api/tags for model discovery and /api/chat for generation. Local Ollama usually runs at http://localhost:11434.'
-            : 'The official OpenAI chat adapter uses https://api.openai.com/v1.';
+          if (adapter === 'ollama_chat') {
+            note.textContent = 'Ollama uses /api/tags for model discovery and /api/chat for generation. Local Ollama usually runs at http://localhost:11434.';
+            return;
+          }
+          if (adapter === 'bedrock_chat') {
+            note.textContent = 'Amazon Bedrock uses the OpenAI-compatible Bedrock Mantle endpoint format https://bedrock-mantle.<region>.api.aws/v1. Choose the region you need, and OpenScribe will derive the standard base URL for inspection and generation.';
+            return;
+          }
+          note.textContent = 'The official OpenAI chat adapter uses https://api.openai.com/v1.';
         }
       }
 
@@ -1249,6 +1302,9 @@
         if (adapterField.tagName === 'SELECT') {
           adapterField.addEventListener('change', () => applyLlmAdapterState(form));
         }
+        form.querySelectorAll('[data-bedrock-region-input]').forEach((input) => {
+          input.addEventListener('input', () => applyLlmAdapterState(form));
+        });
         applyLlmAdapterState(form);
       });
 

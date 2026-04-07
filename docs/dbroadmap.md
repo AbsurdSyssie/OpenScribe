@@ -359,8 +359,9 @@ Status: `Completed`
 
 ### Implemented decisions
 
-- the implemented adapter families are `openai_chat` and `ollama_chat`
+- the implemented adapter families are `openai_chat`, `bedrock_chat`, and `ollama_chat`
 - model discovery uses the OpenAI SDK server-side rather than a generic OpenAPI executor
+- Amazon Bedrock uses its OpenAI-compatible Bedrock Mantle endpoint within the same SDK-based discovery and generation path, with a region-driven URL format of `https://bedrock-mantle.<region>.api.aws/v1`
 - Ollama model discovery uses the configured host’s `/api/tags` endpoint and chat generation uses `/api/chat`
 - multiple provisioned LLM provider rows are allowed per team
 - one team may have one active LLM selection row

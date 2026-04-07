@@ -33,6 +33,7 @@ from app.schemas import (
     UserCreate,
 )
 from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
+from app.services.transcripts import delete_retry_sources_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
 
@@ -292,7 +293,9 @@ def delete_user(db: Session, actor: User, user_id) -> None:
         db.delete(quick_action)
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
-    for transcript in transcripts:
+    transcript_rows = list(transcripts)
+    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    for transcript in transcript_rows:
         db.delete(transcript)
 
     db.flush()

@@ -245,8 +245,10 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("audio.wav"),
     ),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio-file", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
+    AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generated-documents", AccessTier.full),
     AuditCase("GET", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/redaction-debug", AccessTier.local_debug),
     AuditCase(

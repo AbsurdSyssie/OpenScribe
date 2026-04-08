@@ -1,5 +1,6 @@
 import pytest
 import pyotp
+from datetime import timedelta
 from uuid import UUID
 from sqlalchemy import func, select
 
@@ -10,6 +11,9 @@ from app.models import (
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
+    ProviderFeatureType,
+    ProviderUsageEvent,
+    ProviderUsageEventType,
     PromptTemplate,
     QuickAction,
     TeamLlmConfig,
@@ -28,6 +32,7 @@ from app.models import (
     TranscriptVersion,
     UserLlmPreference,
     UserStatus,
+    utcnow,
 )
 
 
@@ -100,7 +105,7 @@ def test_login_page_exposes_bootstrap_when_database_is_empty(client):
     page = client.get("/login")
 
     assert page.status_code == 200
-    assert "Create first system admin" in page.text
+    assert "Create the first system admin" in page.text
 
 
 def test_request_access_page_submits_public_account_request(client):
@@ -160,7 +165,7 @@ def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
 
     page = client.get("/onboarding")
     assert page.status_code == 200
-    assert "Complete onboarding before normal access." in page.text
+    assert "Finish setting up your account." in page.text
 
     start_page = client.post("/onboarding/totp/start")
     assert start_page.status_code == 200
@@ -189,8 +194,12 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
 
     home_page = client.get("/home")
     assert home_page.status_code == 200
-    assert "OpenScribe home" in home_page.text
-    assert "Open transcription workspace" in home_page.text
+    assert "Your OpenScribe home" in home_page.text
+    assert "Open consultation notes" in home_page.text
+    assert "Guide" in home_page.text
+    assert 'data-tour-overlay' in home_page.text
+    assert 'data-tour-scrim="top"' in home_page.text
+    assert "background: var(--accent);" in home_page.text
     assert "Create a new team member" in home_page.text
     assert "Account requests" in home_page.text
 
@@ -212,7 +221,7 @@ def test_user_home_shows_team_stt_selection_when_configured(client, make_team, m
 
     assert page.status_code == 200
     assert "Clinic STT" in page.text
-    assert "Current team STT: Clinic STT" in page.text
+    assert "Current speech service: Clinic STT" in page.text
     assert "No team STT selection yet" not in page.text
 
 
@@ -228,7 +237,7 @@ def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, mak
     response = client.get("/home-restyled")
 
     assert response.status_code == 200
-    assert "OpenScribe home" in response.text
+    assert "Your OpenScribe home" in response.text
     assert 'data-tab-target="team-management"' in response.text
     assert "Team management" in response.text
     assert 'name="return_view" value="restyled"' in response.text
@@ -403,8 +412,8 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Speech-to-Text" in page.text
-    assert "Provisioned endpoint" in page.text
+    assert "Speech service" in page.text
+    assert "Available speech service" in page.text
     assert "Clinic STT" in page.text
 
     save = client.post(
@@ -432,16 +441,16 @@ def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoi
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Current selection" in page.text
-    assert "Clear selection" in page.text
+    assert "Current choice" in page.text
+    assert "Remove choice" in page.text
 
     cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/home?tab=team-management"
 
     page_after = client.get("/home")
-    assert "Provisioned endpoint" in page_after.text
-    assert "Current selection" not in page_after.text
+    assert "Available speech service" in page_after.text
+    assert "Current choice" not in page_after.text
     assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
     assert db_session.get(TeamSttConfig, config.id) is not None
 
@@ -454,7 +463,7 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Language Model" in page.text
+    assert "Writing assistant" in page.text
     assert "Clinic OpenAI" in page.text
 
     save = client.post(
@@ -484,7 +493,7 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
 
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Your LLM preference" in page.text
+    assert "Your writing assistant preference" in page.text
     assert "Clinic OpenAI" in page.text
     assert "Team allows:" not in page.text
 
@@ -513,7 +522,7 @@ def test_user_home_can_clear_llm_preference(client, db_session, make_team, make_
     page = client.get("/home")
 
     assert page.status_code == 200
-    assert "Clear preference" in page.text
+    assert "Use team default" in page.text
 
     cleared = client.post("/home/llm-preference/clear", follow_redirects=False)
 
@@ -528,7 +537,7 @@ def test_leader_home_can_create_team_template(client, db_session, make_team, mak
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Templates" in page.text
+    assert "Note layouts" in page.text
 
     save = client.post(
         "/home/team-templates",
@@ -551,7 +560,7 @@ def test_user_home_can_create_personal_template(client, db_session, make_team, m
 
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Templates" in page.text
+    assert "Note layouts" in page.text
 
     save = client.post(
         "/home/personal-templates",
@@ -574,7 +583,7 @@ def test_user_home_can_create_structured_emis_personal_template(client, db_sessi
 
     client.post("/login", data={"email": "structured-user@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Structured EMIS" in page.text
+    assert "Sectioned EMIS note" in page.text
 
     save = client.post(
         "/home/personal-templates",
@@ -603,7 +612,7 @@ def test_leader_home_can_create_team_quick_action(client, db_session, make_team,
 
     client.post("/login", data={"email": "leader-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Quick actions" in page.text
+    assert "Saved instructions" in page.text
 
     save = client.post(
         "/home/team-quick-actions",
@@ -668,7 +677,7 @@ def test_user_home_can_create_personal_quick_action(client, db_session, make_tea
 
     client.post("/login", data={"email": "user-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Quick actions" in page.text
+    assert "Saved instructions" in page.text
 
     save = client.post(
         "/home/personal-quick-actions",
@@ -958,20 +967,26 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert page.status_code == 200
     assert "Ambient Scribe" in page.text
     assert 'data-new-session-button' in page.text
-    assert 'data-new-session-mode="live_chunked"' in page.text
-    assert "New Live Session" in page.text
-    assert "Upload Audio" in page.text
-    assert "Create or select a session to begin." in page.text
+    assert 'data-recording-mode-select' in page.text
+    assert "Create new consultation" in page.text
+    assert "Recording mode" in page.text
+    assert "Upload recording" in page.text
+    assert "Create or open a consultation to begin." in page.text
     assert "Selected note" in page.text
-    assert "Follow-ups" in page.text
+    assert "Messages" in page.text
+    assert "Guide" in page.text
+    assert 'data-tour-overlay' in page.text
+    assert 'data-tour-scrim="top"' in page.text
+    assert 'data-tour-scrim="right"' in page.text
+    assert "background: var(--accent);" in page.text
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
     assert 'data-route-base="/transcribe"' in page.text
     assert 'data-workspace-stream-endpoint="' in page.text
     assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js" in page.text
     assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
-    assert "new window.EventSource" in page.text
-    assert "syncWorkspaceRealtimeConnection" in page.text
+    assert 'id="transcribe-bootstrap"' in page.text
+    assert "js/transcribe/app.js" in page.text
 
 
 def test_user_transcribe_page_exposes_home_and_context_settings_controls(
@@ -1280,10 +1295,10 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert page.text.index("Selected note") < page.text.index("Generate note")
-    assert "Use the current transcript draft or structured EMIS context with the active LLM." in page.text
-    assert "const hasStructuredContextContent = () => {" in page.text
-    assert "const hasStructuredInput = selectedOutputTemplateMode() === 'structured' && hasStructuredContextContent();" in page.text
+    assert page.text.index("Selected note") < page.text.index("Create a note")
+    assert "Use the current consultation text, or the sectioned note details, with your chosen writing assistant." in page.text
+    assert 'data-generate-output-form' in page.text
+    assert 'data-structured-context-hidden' in page.text
     assert 'name="context_social_history"' in page.text
     assert 'name="context_examination"' in page.text
     assert 'name="context_comment"' in page.text
@@ -1326,7 +1341,7 @@ def test_user_transcribe_glm_2_page_shows_stt_config_label(
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "STT:" in page.text
+    assert "Speech service:" in page.text
     assert "Parakeet Local" in page.text
 
 
@@ -1468,20 +1483,61 @@ def test_user_transcribe_page_renders_live_session_controls(client, db_session, 
     page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "Switch to upload mode" in page.text
-    assert "Start live" in page.text
-    assert "Listening for speech" in page.text
-    assert "vad.MicVAD.new" in page.text
-    assert "submitUserSpeechOnPause: true" in page.text
-    assert "Thirty seconds of speech reached. Sending the current live chunk" in page.text
-    assert "liveChunkOverlapMs = 800" in page.text
-    assert "Sending the latest 30 seconds and keeping a 0.8 second overlap" in page.text
-    assert "Reinitializing live capture for the next utterance" in page.text
-    assert "liveRestartPending" in page.text
-    assert "shouldPollWhileLiveCaptureActive" in page.text
-    assert "if (!liveCaptureActive) return;" in page.text
-    assert "isLiveCaptureUiActive" in page.text
-    assert "shouldPreserveLiveMicStatus" in page.text
+    assert "Start live capture" in page.text
+    assert 'data-recording-mode-select' in page.text
+    assert "Live capture is not ready for your team yet." in page.text
+    assert 'data-record-toggle' in page.text
+    assert 'data-workspace-stream-endpoint="' in page.text
+    assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
+
+
+def test_user_transcribe_page_truncates_document_switcher_labels(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Truncation")
+    member = make_user(email="member-switch-truncate@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=member.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.followup,
+            source_template_name="Follow-up",
+            follow_up_prompt_text="Please arrange a review appointment with the duty clinician tomorrow morning",
+            status=GeneratedDocumentStatus.ready,
+            title="Follow-up v1",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="Latest follow-up",
+            edited_output_text_encrypted="Latest follow-up",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-switch-truncate@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+
+    assert page.status_code == 200
+    assert "Please arrange a review…" in page.text
+    assert "Please arrange a review appointment with the duty clinician tomorrow morning" in page.text
 
 
 def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_session, make_team, make_user):
@@ -1516,31 +1572,125 @@ def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_sessio
 
     assert page.status_code == 200
     assert "Could not reach the STT provider" in page.text
-    assert "defaultMicStatusState" in page.text
+    assert 'data-mic-status' in page.text
 
 
 def test_user_transcribe_page_can_switch_blank_live_session_to_whole_file(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
-    make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    member = make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Live session",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
-    created = client.post(
-        "/transcribe/sessions",
-        data={"ingestion_mode": "live_chunked"},
-        follow_redirects=False,
-    )
-    transcript_id = created.headers["location"].split("transcript_id=", 1)[1]
-
     switched = client.post(
-        f"/transcribe/sessions/{transcript_id}/mode",
+        f"/transcribe/sessions/{transcript.id}/mode",
         data={"ingestion_mode": "whole_file"},
         follow_redirects=False,
     )
 
     assert switched.status_code == 303
-    assert switched.headers["location"] == f"/transcribe?transcript_id={transcript_id}"
-    transcript = db_session.get(Transcript, UUID(transcript_id))
-    assert transcript is not None
+    assert switched.headers["location"] == f"/transcribe?transcript_id={transcript.id}"
+    db_session.refresh(transcript)
+    assert transcript.ingestion_mode is TranscriptIngestionMode.whole_file
+
+
+def test_user_transcribe_page_can_switch_ready_session_with_content_between_modes(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Switch Content")
+    member = make_user(email="member-switch-content@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Ready session",
+        current_draft_text_encrypted="Existing transcript text.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-switch-content@example.com", "password": "password-3"}, follow_redirects=False)
+    switched = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"ingestion_mode": "live_chunked"},
+    )
+
+    assert switched.status_code == 200
+    db_session.refresh(transcript)
+    assert transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
+
+
+def test_user_transcribe_page_cannot_switch_mode_while_actively_recording(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Switch Recording")
+    member = make_user(email="member-switch-recording@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Recording session",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-switch-recording@example.com", "password": "password-3"}, follow_redirects=False)
+    blocked = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"ingestion_mode": "whole_file"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["message"] == "Stop the active recording before switching input mode"
+    db_session.refresh(transcript)
+    assert transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
+
+
+def test_user_transcribe_page_cannot_switch_mode_while_ingestion_job_is_still_running(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Switch Pending Ingestion")
+    member = make_user(email="member-switch-pending@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Pending ingestion",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="queued.wav",
+            status=TranscriptIngestionJobStatus.queued,
+            source_audio_size_bytes=len(b"raw-file-audio"),
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-switch-pending@example.com", "password": "password-3"}, follow_redirects=False)
+    blocked = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"ingestion_mode": "live_chunked"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["message"] == "Wait for the current session transcription to finish before switching input mode"
+    db_session.refresh(transcript)
     assert transcript.ingestion_mode is TranscriptIngestionMode.whole_file
 
 
@@ -1557,13 +1707,22 @@ def test_user_transcribe_page_shows_progress_for_transcribing_session(client, db
         retention_expires_at=member.created_at,
     )
     db_session.add(queued)
+    db_session.flush()
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            queued,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="queued.wav",
+            status=TranscriptIngestionJobStatus.queued,
+        )
+    )
     db_session.commit()
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
     page = client.get(f"/transcribe?transcript_id={queued.id}")
 
     assert page.status_code == 200
-    assert "Background transcription is in progress." in page.text
+    assert "Turning the recording into text." in page.text
 
 
 def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
@@ -1601,8 +1760,9 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
     page = client.get(f"/transcribe?transcript_id={failed.id}")
 
     assert page.status_code == 200
-    assert "The last ingestion attempt failed: The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth." in page.text
-    assert "Retry transcription" in page.text
+    assert "The selected STT configuration is missing its saved credential." in page.text
+    assert "Ask a system admin to re-save the STT endpoint" in page.text
+    assert "Try transcription again" in page.text
 
 
 def test_user_transcribe_page_hides_retry_when_failed_upload_blob_is_missing(client, db_session, make_team, make_user):
@@ -1636,7 +1796,7 @@ def test_user_transcribe_page_hides_retry_when_failed_upload_blob_is_missing(cli
     page = client.get(f"/transcribe?transcript_id={failed.id}")
 
     assert page.status_code == 200
-    assert "The last ingestion attempt failed: STT provider request failed" in page.text
+    assert "STT provider request failed" in page.text
     assert 'data-retry-ingestion-form hidden' in page.text
 
 
@@ -1677,6 +1837,14 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
     monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: FakeTaskResult())
 
     client.post("/login", data={"email": "member-retry@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={failed.id}")
+
+    assert page.status_code == 200
+    assert "Try transcription again" in page.text
+    assert 'data-retry-ingestion-form hidden' not in page.text
+    assert 'data-retry-ingestion-trigger' in page.text
+    assert 'data-retry-ingestion-trigger\n                data-local-busy-protected\n                hidden disabled' not in page.text
+
     retried = client.post(
         "/transcribe/retry-file-ingestion",
         data={"transcript_id": str(failed.id)},
@@ -1771,9 +1939,9 @@ def test_user_transcribe_glm_2_page_syncs_generation_controls_after_workspace_re
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "const syncGenerationAvailability = (draftText = '') => {" in page.text
-    assert "syncGenerationAvailability(draftText);" in page.text
-    assert "syncGenerationAvailability('');" in page.text
+    assert 'id="transcribe-bootstrap"' in page.text
+    assert "js/transcribe/app.js" in page.text
+    assert 'data-generate-output-form' in page.text
 
 
 def test_user_transcribe_page_can_bulk_delete_selected_sessions(client, db_session, make_team, make_user):
@@ -1936,11 +2104,9 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
     assert page.status_code == 200
     assert 'name="context_problem"' in page.text
     assert 'data-generated-structured-section' in page.text
-    assert "event.key === 'Enter' && !event.shiftKey" in page.text
-    assert "event.key === 'Backspace' || event.key === 'Escape'" in page.text
-    assert "event.key === 'ArrowUp'" in page.text
-    assert "event.key === 'ArrowDown'" in page.text
-    assert "event.key === 'Tab'" in page.text
+    assert 'data-generated-structured-panel' in page.text
+    assert 'data-copy-structured-lines' in page.text
+    assert 'data-structured-line-input' in page.text
 
 
 def test_user_transcribe_page_hides_emis_context_for_freeform_template(
@@ -1983,8 +2149,8 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert "Freeform mode" in page.text
-    assert "No generated output yet." in page.text
+    assert "Free text note" in page.text
+    assert "No note yet." in page.text
 
 
 def test_user_transcribe_page_reloads_persisted_structured_emis_context(
@@ -2251,7 +2417,7 @@ def test_user_transcribe_page_can_queue_followup_generation(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
-    assert "Selected follow-up" in page.text
+    assert "Selected message" in page.text
     assert "Arrange blood tests and a review if symptoms persist." in page.text
     assert "queued" in page.text
 
@@ -2355,8 +2521,10 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert 'data-note-selector' in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
-    assert "Selected follow-up" in page.text
+    assert "Selected message" in page.text
     assert 'data-followup-selector' in page.text
+    assert 'data-document-kind="followup"' in page.text
+    assert 'data-followup-document-select' in page.text
     assert "Send patient-facing review advice." in page.text
     assert "Send SMS" in page.text
 
@@ -2866,3 +3034,70 @@ def test_admin_page_lists_teams_users_and_account_requests(client, make_team, ma
     assert "lead@example.com" in page.text
     assert "Account requests" in page.text
     assert "alice@example.com" in page.text
+
+
+def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Usage")
+    admin = make_user(email="admin-usage-ui@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-usage-ui@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Usage visit",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="visit.wav",
+            status=TranscriptIngestionJobStatus.applied,
+            source_audio_size_bytes=2 * 1024 * 1024,
+            source_audio_duration_seconds=1800.0,
+        )
+    )
+    db_session.add(
+        ProviderUsageEvent(
+            team_id=team.id,
+            owner_user_id=owner.id,
+            transcript_id=transcript.id,
+            feature_type=ProviderFeatureType.llm_generation,
+            event_type=ProviderUsageEventType.completed,
+            provider_adapter="ollama_chat",
+            model_name="clinic-model",
+            total_tokens=123,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?tab=usage&team_id={team.id}")
+
+    assert page.status_code == 200
+    assert "Usage overview" in page.text
+    assert "Last 24 hours" in page.text
+    assert "User activity in Clinic Usage" in page.text
+    assert "owner-usage-ui@example.com" in page.text
+    assert "123" in page.text
+    assert "2.0 MB" in page.text
+    assert "0.50" in page.text
+
+
+def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_user):
+    admin = make_user(email="admin-no-usage-rollup@example.com", password="password-1", is_system_admin=True)
+
+    def fail_usage_rollup(*args, **kwargs):
+        raise AssertionError("usage rollups should not run for non-usage admin tabs")
+
+    monkeypatch.setattr("app.web.presentation.admin_usage_overview_service", fail_usage_rollup)
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin?tab=providers")
+
+    assert page.status_code == 200
+    assert "Usage overview" in page.text

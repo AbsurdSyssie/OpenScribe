@@ -653,6 +653,65 @@
     button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
     input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }
 
+    .tour-overlay[hidden] { display: none !important; }
+    .tour-overlay {
+      position: fixed; inset: 0; z-index: 110;
+      display: block;
+    }
+    .tour-overlay__scrim-panel {
+      position: absolute;
+      background: rgba(20, 28, 32, 0.38);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    .tour-overlay__highlight {
+      position: absolute;
+      border: 2px solid rgba(224, 242, 245, 0.96);
+      border-radius: 1.25rem;
+      pointer-events: none;
+      transition: top 180ms ease, left 180ms ease, width 180ms ease, height 180ms ease;
+    }
+    .tour-overlay__card {
+      position: absolute;
+      max-width: min(24rem, calc(100vw - 2rem));
+      background: #1D4F5E;
+      border: 1px solid rgba(224, 242, 245, 0.24);
+      border-radius: 1.1rem;
+      box-shadow: 0 18px 50px rgba(20, 32, 43, 0.18);
+      padding: 1rem 1rem 0.95rem;
+      color: var(--white);
+    }
+    .tour-overlay__eyebrow {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: rgba(224, 242, 245, 0.82);
+      font-weight: 700;
+    }
+    .tour-overlay__title {
+      margin-top: 0.4rem;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--white);
+    }
+    .tour-overlay__body {
+      margin-top: 0.45rem;
+      font-size: 0.9rem;
+      color: rgba(255, 255, 255, 0.88);
+      line-height: 1.55;
+    }
+    .tour-overlay__actions {
+      margin-top: 0.95rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .tour-overlay__progress {
+      font-size: 0.78rem;
+      color: rgba(255, 255, 255, 0.72);
+    }
+
     @media (max-width: 768px) {
       body { padding: 16px; }
       .panel { padding: 20px; border-radius: var(--radius-md); }
@@ -692,9 +751,10 @@
     <section class="panel topbar">
       <div class="hero-copy">
         <div class="hero-row">
-          <h1>OpenScribe home</h1>
+          <h1>Your OpenScribe home</h1>
           <div class="actions-inline">
-            <a href="/transcribe"><button type="button" class="btn-primary">Open transcription workspace</button></a>
+            <button type="button" class="btn-secondary" data-home-guide>Guide</button>
+            <a href="/transcribe"><button type="button" class="btn-primary" data-tour-target="workspace-button">Open consultation notes</button></a>
             <form method="post" action="/logout"><button type="submit" class="btn-secondary">Sign out</button></form>
           </div>
         </div>
@@ -709,14 +769,14 @@
       <article class="panel stat-card">
         <div class="stat-card__icon">ST</div>
         <div>
-          <div class="stat-card__label">STT Status</div>
+          <div class="stat-card__label">Speech service</div>
           <div class="stat-card__value">{% if stt_selection %}{{ stt_selection.config.label }}{% else %}Not configured{% endif %}</div>
         </div>
       </article>
       <article class="panel stat-card">
         <div class="stat-card__icon stat-card__icon--llm">LL</div>
         <div>
-          <div class="stat-card__label">LLM Status</div>
+          <div class="stat-card__label">Writing assistant</div>
           <div class="stat-card__value">
             {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
           </div>
@@ -725,8 +785,8 @@
       <article class="panel stat-card">
         <div class="stat-card__icon stat-card__icon--templates">TP</div>
         <div>
-          <div class="stat-card__label">Templates</div>
-          <div class="stat-card__value">{{ (team_templates|length if is_manager else 0) + (personal_templates|length if personal_templates is defined else 0) }} available</div>
+          <div class="stat-card__label">Note layouts</div>
+          <div class="stat-card__value">{{ (team_templates|length if is_manager else 0) + (personal_templates|length if personal_templates is defined else 0) }} saved</div>
         </div>
       </article>
     </section>
@@ -737,14 +797,14 @@
 
     <div class="tab-header">
       <nav class="tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Home sections">
-        <button type="button" class="tab-shell__tab" data-tab-target="overview" role="tab" aria-selected="true">Overview</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="overview" role="tab" aria-selected="true" data-tour-target="overview-tab">Overview</button>
         {% if not current_user.is_system_admin and current_user.team_id %}
-        <button type="button" class="tab-shell__tab" data-tab-target="templates" role="tab" aria-selected="false">Templates</button>
-        <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" role="tab" aria-selected="false">Quick Actions</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="templates" role="tab" aria-selected="false" data-tour-target="templates-tab">Note layouts</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" role="tab" aria-selected="false" data-tour-target="saved-prompts-tab">Saved instructions</button>
         {% endif %}
         {% if is_manager %}
-        <button type="button" class="tab-shell__tab" data-tab-target="team-management" role="tab" aria-selected="false">Team</button>
-        <button type="button" class="tab-shell__tab" data-tab-target="account-requests" role="tab" aria-selected="false">Requests</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="team-management" role="tab" aria-selected="false" data-tour-target="team-tab">Team</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
         {% endif %}
       </nav>
     </div>
@@ -753,63 +813,63 @@
 
     {# ── OVERVIEW ── #}
     <section class="overview-grid" data-tab-panel="overview">
-      <div class="panel">
-        <div class="section-kicker">Workspace</div><h2>Start transcription</h2>
-        <p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Create a new consultation session and move into the dedicated transcript workspace.</p>
+      <div class="panel" data-tour-target="workspace-start">
+        <div class="section-kicker">Consultations</div><h2>Start a consultation</h2>
+        <p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Open a new consultation so you can capture the conversation and create notes.</p>
         {% if not is_manager and not team_leader_email %}
-        <p style="margin-top: 14px;"><small>No team leader is active for this team yet. Ask a system admin to sort STT setup first.</small></p>
+        <p style="margin-top: 14px;"><small>Your team does not have a leader set up yet. Ask a system admin to finish the speech service setup first.</small></p>
         {% elif current_user.team_role and current_user.team_role.value == "leader" and not stt_selection %}
-        <p style="margin-top: 14px;"><small>No STT is currently selected for your team. Choose one in the Team tab first.</small></p>
+        <p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Choose one in the Team tab first.</small></p>
         {% elif not stt_selection %}
-        <p style="margin-top: 14px;"><small>No STT is currently selected for your team. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to configure it.</small></p>
+        <p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to set it up.</small></p>
         {% else %}
-        <p style="margin-top: 14px;"><small>Current team STT: {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} using {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}.</small></p>
+        <p style="margin-top: 14px;"><small>Current speech service: {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} using {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}.</small></p>
         {% endif %}
-        <div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open transcription workspace</button></a></div>
+        <div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open consultation notes</button></a></div>
       </div>
       <div class="panel">
-        <div class="section-kicker">Preference</div><h2>Your LLM preference</h2>
+        <div class="section-kicker">Preference</div><h2>Your writing assistant preference</h2>
         {% if llm_selection %}
-        <p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Choose the model you want used by default for note generation.</p>
+        <p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Choose which writing assistant should be used first when notes are created.</p>
         <form method="post" action="/home/llm-preference" style="margin-top: 16px;">
           <input type="hidden" name="return_view" value="{{ home_return_view }}">
           <input type="hidden" name="return_tab" value="overview">
-          <label>Preferred model
+          <label>Preferred assistant
             <select name="preferred_model_name">
-              <option value="">Use team default</option>
+              <option value="">Use the team default</option>
               {% for model in llm_selection.allowed_models_json %}
               <option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
               {% endfor %}
             </select>
           </label>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="submit" class="btn-primary btn-sm">Save model preference</button>
+            <button type="submit" class="btn-primary btn-sm">Save preference</button>
             {% if user_llm_preference %}
-            <form method="post" action="/home/llm-preference/clear" onsubmit="return confirm('Clear your personal LLM model preference?');" style="margin: 0;">
+            <form method="post" action="/home/llm-preference/clear" onsubmit="return confirm('Clear your personal writing assistant preference?');" style="margin: 0;">
               <input type="hidden" name="return_view" value="{{ home_return_view }}">
               <input type="hidden" name="return_tab" value="overview">
-              <button type="submit" class="btn-ghost btn-sm">Clear preference</button>
+              <button type="submit" class="btn-ghost btn-sm">Use team default</button>
             </form>
             {% endif %}
           </div>
         </form>
         {% else %}
-        <p style="margin-top: 8px;"><small>No active team LLM provider is configured yet.</small></p>
+        <p style="margin-top: 8px;"><small>Your team does not have a writing assistant set up yet.</small></p>
         {% endif %}
       </div>
       <div class="panel">
-        <div class="section-kicker">Overview</div><h2>Recent setup and status</h2>
+        <div class="section-kicker">Overview</div><h2>What is ready</h2>
         <div class="activity-list" style="margin-top: 12px;">
           <div class="activity-row">
-            <div><strong>Speech to text</strong><p><small>{% if stt_selection %}{{ stt_selection.config.label }}{% else %}No team STT selection yet{% endif %}</small></p></div>
+            <div><strong>Speech service</strong><p><small>{% if stt_selection %}{{ stt_selection.config.label }}{% else %}No team speech service selected yet{% endif %}</small></p></div>
             <span class="status-chip {% if stt_selection %}status-chip--active{% else %}status-chip--pending{% endif %}">{% if stt_selection %}active{% else %}pending{% endif %}</span>
           </div>
           <div class="activity-row">
-            <div><strong>Language model</strong><p><small>{% if llm_selection %}{{ llm_selection.config.label }}{% else %}No team LLM selection yet{% endif %}</small></p></div>
+            <div><strong>Writing assistant</strong><p><small>{% if llm_selection %}{{ llm_selection.config.label }}{% else %}No team writing assistant selected yet{% endif %}</small></p></div>
             <span class="status-chip {% if llm_selection %}status-chip--active{% else %}status-chip--pending{% endif %}">{% if llm_selection %}active{% else %}pending{% endif %}</span>
           </div>
           <div class="activity-row">
-            <div><strong>Reusable templates</strong><p><small>{{ (team_templates|length if is_manager else 0) + (personal_templates|length if personal_templates is defined else 0) }} available across team and personal libraries</small></p></div>
+            <div><strong>Note layouts</strong><p><small>{{ (team_templates|length if is_manager else 0) + (personal_templates|length if personal_templates is defined else 0) }} saved across team and personal libraries</small></p></div>
             <span class="status-chip status-chip--ready">ready</span>
           </div>
         </div>
@@ -818,12 +878,12 @@
 
     {# ── TEMPLATES ── #}
     {% if not current_user.is_system_admin and current_user.team_id %}
-    <section class="tab-stack" data-tab-panel="templates">
+    <section class="tab-stack" data-tab-panel="templates" data-tour-target="templates-panel">
       <div class="section-headline">
-        <div><h2>Templates</h2><p>Manage reusable prompt templates for note generation.</p></div>
+        <div><h2>Note layouts</h2><p>Save reusable note layouts for yourself or your team.</p></div>
         <div class="section-action-group">
-          <a href="{{ home_page_route }}?tab=templates&modal=personal-template"><button type="button" class="btn-primary btn-sm">New personal template</button></a>
-          {% if is_manager %}<a href="{{ home_page_route }}?tab=templates&modal=team-template"><button type="button" class="btn-secondary btn-sm">New team template</button></a>{% endif %}
+          <a href="{{ home_page_route }}?tab=templates&modal=personal-template"><button type="button" class="btn-primary btn-sm">New personal layout</button></a>
+          {% if is_manager %}<a href="{{ home_page_route }}?tab=templates&modal=team-template"><button type="button" class="btn-secondary btn-sm">New team layout</button></a>{% endif %}
         </div>
       </div>
       <div class="card-grid">
@@ -837,7 +897,7 @@
             </div>
             <a href="{{ home_page_route }}?tab=templates&modal=personal-template&personal_template_id={{ template.id }}" aria-label="Edit {{ template.name }}" class="btn-ghost btn-sm">Edit</a>
           </div>
-          <div class="asset-card__footer">{{ "Active template" if template.is_active else "Inactive template" }}</div>
+          <div class="asset-card__footer">{{ "Available to use" if template.is_active else "Not currently in use" }}</div>
         </article>
         {% endfor %}
         {% if is_manager %}
@@ -851,7 +911,7 @@
             </div>
             <a href="{{ home_page_route }}?tab=templates&modal=team-template&team_template_id={{ template.id }}" aria-label="Edit {{ template.name }}" class="btn-ghost btn-sm">Edit</a>
           </div>
-          <div class="asset-card__footer">{{ "Active template" if template.is_active else "Inactive template" }}</div>
+          <div class="asset-card__footer">{{ "Available to use" if template.is_active else "Not currently in use" }}</div>
         </article>
         {% endfor %}
         {% endif %}
@@ -860,7 +920,7 @@
       <div class="modal-shell {% if active_home_modal == 'personal-template' %}is-open{% endif %}" id="personal-template-modal">
         <div class="panel editor-panel modal-dialog">
           <div class="modal-header">
-            <div><div class="section-kicker">Personal</div><h2>Personal template editor</h2><p>Create reusable personal note prompts for your own transcript actions.</p></div>
+            <div><div class="section-kicker">Personal</div><h2>Personal note layout</h2><p>Save a reusable note layout for your own consultations.</p></div>
             <a class="modal-close" href="{{ home_page_route }}?tab=templates" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
           </div>
           <form method="post" action="/home/personal-templates">
@@ -870,25 +930,25 @@
             <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
             <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
             <input type="hidden" name="home_modal" value="personal-template">
-            <label>Template name<input type="text" name="name" maxlength="255" required value="{{ personal_template.name if personal_template else '' }}"></label>
+            <label>Layout name<input type="text" name="name" maxlength="255" required value="{{ personal_template.name if personal_template else '' }}"></label>
             <label>Description<input type="text" name="description" value="{{ personal_template.description if personal_template else '' }}"></label>
-            <label>Template mode
+            <label>Layout style
               <select name="mode">
-                <option value="freeform" {% if not personal_template_latest_version or personal_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Freeform</option>
-                <option value="structured" {% if personal_template_latest_version and personal_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Structured EMIS</option>
+                <option value="freeform" {% if not personal_template_latest_version or personal_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
+                <option value="structured" {% if personal_template_latest_version and personal_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
               </select>
             </label>
-            <label>Global instructions<textarea name="prompt_text" rows="8" required>{{ personal_template_latest_version.prompt_text if personal_template_latest_version else '' }}</textarea></label>
+            <label>What should be written<textarea name="prompt_text" rows="8" required>{{ personal_template_latest_version.prompt_text if personal_template_latest_version else '' }}</textarea></label>
             <div class="subgrid">
               {% for section in emis_sections %}
-              <label>{{ section.label }} instructions<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Tell the LLM how to fill the {{ section.label|lower }} section.">{{ personal_template_section_prompts.get(section.key, '') }}</textarea></label>
+              <label>{{ section.label }} guidance<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ personal_template_section_prompts.get(section.key, '') }}</textarea></label>
               {% endfor %}
             </div>
             <label><input type="checkbox" name="is_active" value="true" {% if not personal_template or personal_template.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save personal template" if personal_template else "Create personal template" }}</button>
+            <button type="submit" class="btn-primary">{{ "Save personal layout" if personal_template else "Create personal layout" }}</button>
           </form>
           {% if personal_templates %}
-          <table><thead><tr><th>Name</th><th>Latest prompt</th><th>Actions</th></tr></thead><tbody>
+          <table><thead><tr><th>Name</th><th>Latest guidance</th><th>Actions</th></tr></thead><tbody>
             {% for template in personal_templates %}
             {% set latest_version = template.versions|sort(attribute='version_no')|last %}
             <tr>
@@ -896,12 +956,12 @@
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <a href="{{ home_page_route }}?tab=templates&modal=personal-template&personal_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/personal-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this personal template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+                <form method="post" action="/home/personal-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this personal note layout permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
               </div></td>
             </tr>
             {% endfor %}
           </tbody></table>
-          {% else %}<p><small>No personal templates yet.</small></p>{% endif %}
+          {% else %}<p><small>No personal note layouts yet.</small></p>{% endif %}
         </div>
       </div>
       {# Team template modal #}
@@ -909,7 +969,7 @@
       <div class="modal-shell {% if active_home_modal == 'team-template' %}is-open{% endif %}" id="team-template-modal">
         <div class="panel editor-panel modal-dialog">
           <div class="modal-header">
-            <div><div class="section-kicker">Team</div><h2>Team template editor</h2><p>Leaders can manage shared team templates available to all team members.</p></div>
+            <div><div class="section-kicker">Team</div><h2>Team note layout</h2><p>Leaders can manage shared note layouts for everyone on the team.</p></div>
             <a class="modal-close" href="{{ home_page_route }}?tab=templates" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
           </div>
           <form method="post" action="/home/team-templates">
@@ -919,25 +979,25 @@
             <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
             <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
             <input type="hidden" name="home_modal" value="team-template">
-            <label>Template name<input type="text" name="name" maxlength="255" required value="{{ team_template.name if team_template else '' }}"></label>
+            <label>Layout name<input type="text" name="name" maxlength="255" required value="{{ team_template.name if team_template else '' }}"></label>
             <label>Description<input type="text" name="description" value="{{ team_template.description if team_template else '' }}"></label>
-            <label>Template mode
+            <label>Layout style
               <select name="mode">
-                <option value="freeform" {% if not team_template_latest_version or team_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Freeform</option>
-                <option value="structured" {% if team_template_latest_version and team_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Structured EMIS</option>
+                <option value="freeform" {% if not team_template_latest_version or team_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
+                <option value="structured" {% if team_template_latest_version and team_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
               </select>
             </label>
-            <label>Global instructions<textarea name="prompt_text" rows="8" required>{{ team_template_latest_version.prompt_text if team_template_latest_version else '' }}</textarea></label>
+            <label>What should be written<textarea name="prompt_text" rows="8" required>{{ team_template_latest_version.prompt_text if team_template_latest_version else '' }}</textarea></label>
             <div class="subgrid">
               {% for section in emis_sections %}
-              <label>{{ section.label }} instructions<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Tell the LLM how to fill the {{ section.label|lower }} section.">{{ team_template_section_prompts.get(section.key, '') }}</textarea></label>
+              <label>{{ section.label }} guidance<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ team_template_section_prompts.get(section.key, '') }}</textarea></label>
               {% endfor %}
             </div>
             <label><input type="checkbox" name="is_active" value="true" {% if not team_template or team_template.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save team template" if team_template else "Create team template" }}</button>
+            <button type="submit" class="btn-primary">{{ "Save team layout" if team_template else "Create team layout" }}</button>
           </form>
           {% if team_templates %}
-          <table><thead><tr><th>Name</th><th>Latest prompt</th><th>Actions</th></tr></thead><tbody>
+          <table><thead><tr><th>Name</th><th>Latest guidance</th><th>Actions</th></tr></thead><tbody>
             {% for template in team_templates %}
             {% set latest_version = template.versions|sort(attribute='version_no')|last %}
             <tr>
@@ -945,24 +1005,24 @@
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <a href="{{ home_page_route }}?tab=templates&modal=team-template&team_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/team-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this team template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+                <form method="post" action="/home/team-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this team note layout permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
               </div></td>
             </tr>
             {% endfor %}
           </tbody></table>
-          {% else %}<p><small>No team templates yet.</small></p>{% endif %}
+          {% else %}<p><small>No team note layouts yet.</small></p>{% endif %}
         </div>
       </div>
       {% endif %}
     </section>
 
     {# ── QUICK ACTIONS ── #}
-    <section class="tab-stack" data-tab-panel="quick-actions">
+    <section class="tab-stack" data-tab-panel="quick-actions" data-tour-target="saved-prompts-panel">
       <div class="section-headline">
-        <div><h2>Quick actions</h2><p>Manage reusable prompts for follow-up and one-shot generation tasks.</p></div>
+        <div><h2>Saved instructions</h2><p>Save reusable instructions for letters, follow-up messages, and one-off tasks.</p></div>
         <div class="section-action-group">
-          <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action"><button type="button" class="btn-primary btn-sm">New personal quick action</button></a>
-          {% if is_manager %}<a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action"><button type="button" class="btn-secondary btn-sm">New team quick action</button></a>{% endif %}
+          <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action"><button type="button" class="btn-primary btn-sm">New personal instruction</button></a>
+          {% if is_manager %}<a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action"><button type="button" class="btn-secondary btn-sm">New team instruction</button></a>{% endif %}
         </div>
       </div>
       <div class="card-grid">
@@ -973,7 +1033,7 @@
             <div><div class="asset-card__title">{{ quick_action.name }}</div><div class="asset-card__meta"><span class="asset-badge scope-personal">personal</span><span class="asset-badge">freeform</span></div></div>
             <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" aria-label="Edit {{ quick_action.name }}" class="btn-ghost btn-sm">Edit</a>
           </div>
-          <div class="asset-card__footer">{{ "Active quick action" if quick_action.is_active else "Inactive quick action" }}</div>
+          <div class="asset-card__footer">{{ "Available to use" if quick_action.is_active else "Not currently in use" }}</div>
         </article>
         {% endfor %}
         {% if is_manager %}
@@ -984,7 +1044,7 @@
             <div><div class="asset-card__title">{{ quick_action.name }}</div><div class="asset-card__meta"><span class="asset-badge scope-team">team</span><span class="asset-badge">freeform</span></div></div>
             <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" aria-label="Edit {{ quick_action.name }}" class="btn-ghost btn-sm">Edit</a>
           </div>
-          <div class="asset-card__footer">{{ "Active quick action" if quick_action.is_active else "Inactive quick action" }}</div>
+          <div class="asset-card__footer">{{ "Available to use" if quick_action.is_active else "Not currently in use" }}</div>
         </article>
         {% endfor %}
         {% endif %}
@@ -993,7 +1053,7 @@
       <div class="modal-shell {% if active_home_modal == 'personal-quick-action' %}is-open{% endif %}" id="personal-quick-action-modal">
         <div class="panel editor-panel modal-dialog">
           <div class="modal-header">
-            <div><div class="section-kicker">Personal</div><h2>Personal quick action editor</h2><p>Create reusable personal quick actions for follow-up style outputs.</p></div>
+            <div><div class="section-kicker">Personal</div><h2>Personal saved instruction</h2><p>Save a reusable instruction for messages and one-off tasks.</p></div>
             <a class="modal-close" href="{{ home_page_route }}?tab=quick-actions" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
           </div>
           <form method="post" action="/home/personal-quick-actions">
@@ -1003,11 +1063,11 @@
             <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
             <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
             <input type="hidden" name="home_modal" value="personal-quick-action">
-            <label>Quick action name<input type="text" name="name" maxlength="255" required value="{{ personal_quick_action.name if personal_quick_action else '' }}"></label>
+            <label>Instruction name<input type="text" name="name" maxlength="255" required value="{{ personal_quick_action.name if personal_quick_action else '' }}"></label>
             <label>Description<input type="text" name="description" value="{{ personal_quick_action.description if personal_quick_action else '' }}"></label>
-            <label>Quick action instructions<textarea name="prompt_text" rows="8" required>{{ personal_quick_action_latest_version.prompt_text if personal_quick_action_latest_version else '' }}</textarea></label>
+            <label>Instruction text<textarea name="prompt_text" rows="8" required>{{ personal_quick_action_latest_version.prompt_text if personal_quick_action_latest_version else '' }}</textarea></label>
             <label><input type="checkbox" name="is_active" value="true" {% if not personal_quick_action or personal_quick_action.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save personal quick action" if personal_quick_action else "Create personal quick action" }}</button>
+            <button type="submit" class="btn-primary">{{ "Save personal instruction" if personal_quick_action else "Create personal instruction" }}</button>
           </form>
           {% if personal_quick_actions %}
           <table><thead><tr><th>Name</th><th>Latest instructions</th><th>Actions</th></tr></thead><tbody>
@@ -1018,12 +1078,12 @@
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal saved instruction permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
               </div></td>
             </tr>
             {% endfor %}
           </tbody></table>
-          {% else %}<p><small>No personal quick actions yet.</small></p>{% endif %}
+          {% else %}<p><small>No personal saved instructions yet.</small></p>{% endif %}
         </div>
       </div>
       {# Team quick action modal #}
@@ -1031,7 +1091,7 @@
       <div class="modal-shell {% if active_home_modal == 'team-quick-action' %}is-open{% endif %}" id="team-quick-action-modal">
         <div class="panel editor-panel modal-dialog">
           <div class="modal-header">
-            <div><div class="section-kicker">Team</div><h2>Team quick action editor</h2><p>Leaders can manage shared team quick actions for follow-up style generation.</p></div>
+            <div><div class="section-kicker">Team</div><h2>Team saved instruction</h2><p>Leaders can manage shared instructions for messages and follow-up tasks.</p></div>
             <a class="modal-close" href="{{ home_page_route }}?tab=quick-actions" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
           </div>
           <form method="post" action="/home/team-quick-actions">
@@ -1041,11 +1101,11 @@
             <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
             <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
             <input type="hidden" name="home_modal" value="team-quick-action">
-            <label>Quick action name<input type="text" name="name" maxlength="255" required value="{{ team_quick_action.name if team_quick_action else '' }}"></label>
+            <label>Instruction name<input type="text" name="name" maxlength="255" required value="{{ team_quick_action.name if team_quick_action else '' }}"></label>
             <label>Description<input type="text" name="description" value="{{ team_quick_action.description if team_quick_action else '' }}"></label>
-            <label>Quick action instructions<textarea name="prompt_text" rows="8" required>{{ team_quick_action_latest_version.prompt_text if team_quick_action_latest_version else '' }}</textarea></label>
+            <label>Instruction text<textarea name="prompt_text" rows="8" required>{{ team_quick_action_latest_version.prompt_text if team_quick_action_latest_version else '' }}</textarea></label>
             <label><input type="checkbox" name="is_active" value="true" {% if not team_quick_action or team_quick_action.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save team quick action" if team_quick_action else "Create team quick action" }}</button>
+            <button type="submit" class="btn-primary">{{ "Save team instruction" if team_quick_action else "Create team instruction" }}</button>
           </form>
           {% if team_quick_actions %}
           <table><thead><tr><th>Name</th><th>Latest instructions</th><th>Actions</th></tr></thead><tbody>
@@ -1056,12 +1116,12 @@
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team saved instruction permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
               </div></td>
             </tr>
             {% endfor %}
           </tbody></table>
-          {% else %}<p><small>No team quick actions yet.</small></p>{% endif %}
+          {% else %}<p><small>No team saved instructions yet.</small></p>{% endif %}
         </div>
       </div>
       {% endif %}
@@ -1072,7 +1132,7 @@
          TEAM MANAGEMENT  —  restructured
          ══════════════════════════════════════════════ #}
     {% if is_manager %}
-    <section class="tab-stack" data-tab-panel="team-management">
+    <section class="tab-stack" data-tab-panel="team-management" data-tour-target="team-panel">
 
       {# ── Section heading ── #}
       <div>
@@ -1173,9 +1233,9 @@
           <div class="config-section__header">
             <div class="config-section__icon config-section__icon--stt">ST</div>
             <div class="config-section__info">
-              <div class="config-section__title">Speech-to-Text</div>
+              <div class="config-section__title">Speech service</div>
               <div class="config-section__detail">
-                {% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}No endpoint configured{% endif %}
+                {% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}No speech service chosen yet{% endif %}
               </div>
             </div>
             <span class="status-chip {% if stt_selection %}status-chip--active{% else %}status-chip--pending{% endif %}">{% if stt_selection %}active{% else %}pending{% endif %}</span>
@@ -1186,27 +1246,27 @@
         <div class="config-section__body">
           {% if stt_selection %}
           <div class="config-section__current">
-            <h3>Current selection</h3>
+            <h3>Current choice</h3>
             <div class="config-section__current-pills">
               <span class="pill">{{ stt_selection.config.label }}</span>
               <span class="pill">{{ stt_selection.config.adapter_kind.value }}</span>
             </div>
             <p><small>{{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }}</small></p>
-            <p><small>Model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }} · Language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}</small></p>
-            <form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');" class="config-section__clear-form">
+            <p><small>Model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not chosen" }} · Language: {{ stt_selection.language_override or stt_selection.config.language or "not chosen" }}</small></p>
+            <form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Remove the current speech service for this team?');" class="config-section__clear-form">
               <input type="hidden" name="return_view" value="{{ home_return_view }}">
               <input type="hidden" name="return_tab" value="team-management">
-              <button type="submit" class="btn-danger btn-sm">Clear selection</button>
+              <button type="submit" class="btn-danger btn-sm">Remove choice</button>
             </form>
           </div>
           {% endif %}
 
           {% if selectable_stt_configs %}
-          {% if stt_selection %}<div class="config-divider"><span>Change endpoint</span></div>{% endif %}
+          {% if stt_selection %}<div class="config-divider"><span>Choose a different service</span></div>{% endif %}
           <form method="post" action="/home/stt-selection" data-stt-selection-form style="margin-top: {% if stt_selection %}0{% else %}0{% endif %};">
             <input type="hidden" name="return_view" value="{{ home_return_view }}">
             <input type="hidden" name="return_tab" value="team-management">
-            <label>Provisioned endpoint
+            <label>Available speech service
               <select name="stt_config_id" data-stt-config-select required>
                 {% for config in selectable_stt_configs %}
                 <option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>
@@ -1216,32 +1276,32 @@
               </select>
             </label>
             <div class="subgrid">
-              <label>Model override
+              <label>Model
                 <select name="provider_model" data-stt-model-select data-selected-value="{{ stt_selection.model_name_override if stt_selection else '' }}">
-                  <option value="">Use endpoint default</option>
+                  <option value="">Use the default model</option>
                 </select>
               </label>
-              <label>Language override
+              <label>Language
                 <input type="text" name="language" value="{{ stt_selection.language_override if stt_selection else '' }}">
               </label>
             </div>
-            <button type="submit" class="btn-primary">Save selection</button>
+            <button type="submit" class="btn-primary">Save choice</button>
           </form>
 
           <table style="margin-top: 20px;">
-            <thead><tr><th>Endpoint</th><th>Default model</th><th>Language</th></tr></thead>
+            <thead><tr><th>Speech service</th><th>Default model</th><th>Language</th></tr></thead>
             <tbody>
               {% for config in selectable_stt_configs %}
               <tr>
                 <td><strong>{{ config.label }}</strong><br><small>{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</small></td>
-                <td>{{ config.model_name or "not set" }}</td>
-                <td>{{ config.language or "not set" }}</td>
+                <td>{{ config.model_name or "not chosen" }}</td>
+                <td>{{ config.language or "not chosen" }}</td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
           {% else %}
-          <p><small>No STT endpoints have been provisioned for this team yet. Ask a system admin to add one.</small></p>
+          <p><small>No speech services are ready for this team yet. Ask a system admin to add one.</small></p>
           {% endif %}
         </div>
       </details>
@@ -1252,9 +1312,9 @@
           <div class="config-section__header">
             <div class="config-section__icon config-section__icon--llm">LL</div>
             <div class="config-section__info">
-              <div class="config-section__title">Language Model</div>
+              <div class="config-section__title">Writing assistant</div>
               <div class="config-section__detail">
-                {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}No provider configured{% endif %}
+                {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}No writing assistant chosen yet{% endif %}
               </div>
             </div>
             <span class="status-chip {% if llm_selection %}status-chip--active{% else %}status-chip--pending{% endif %}">{% if llm_selection %}active{% else %}pending{% endif %}</span>
@@ -1265,28 +1325,28 @@
         <div class="config-section__body">
           {% if llm_selection %}
           <div class="config-section__current">
-            <h3>Current selection</h3>
+            <h3>Current choice</h3>
             <div class="config-section__current-pills">
               <span class="pill">{{ llm_selection.config.label }}</span>
               <span class="pill">{{ llm_selection.config.adapter_kind.value }}</span>
             </div>
             <p><small>{{ llm_selection.config.base_url }}</small></p>
-            <p><small>Team default: {{ llm_selection.model_name_override or llm_selection.config.model_name or "not set" }}</small></p>
-            <p><small>User-visible models: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none" }}</small></p>
-            <form method="post" action="/home/llm-selection/clear" onsubmit="return confirm('Clear the active LLM selection for this team?');" class="config-section__clear-form">
+            <p><small>Team default: {{ llm_selection.model_name_override or llm_selection.config.model_name or "not chosen" }}</small></p>
+            <p><small>Models people can choose: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none yet" }}</small></p>
+            <form method="post" action="/home/llm-selection/clear" onsubmit="return confirm('Remove the current writing assistant for this team?');" class="config-section__clear-form">
               <input type="hidden" name="return_view" value="{{ home_return_view }}">
               <input type="hidden" name="return_tab" value="team-management">
-              <button type="submit" class="btn-danger btn-sm">Clear selection</button>
+              <button type="submit" class="btn-danger btn-sm">Remove choice</button>
             </form>
           </div>
           {% endif %}
 
           {% if selectable_llm_configs %}
-          {% if llm_selection %}<div class="config-divider"><span>Change provider</span></div>{% endif %}
+          {% if llm_selection %}<div class="config-divider"><span>Choose a different assistant</span></div>{% endif %}
           <form method="post" action="/home/llm-selection" data-llm-selection-form>
             <input type="hidden" name="return_view" value="{{ home_return_view }}">
             <input type="hidden" name="return_tab" value="team-management">
-            <label>Provisioned provider
+            <label>Available writing assistant
               <select name="llm_config_id" data-llm-config-select required>
                 {% for config in selectable_llm_configs %}
                 <option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>
@@ -1298,14 +1358,14 @@
             <div data-llm-model-groups>
               {% for config in selectable_llm_configs %}
               <fieldset data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
-                <legend>Visible models for users</legend>
+                <legend>Models your team can choose from</legend>
                 {% for model in config.available_models_json %}
                 {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
                 <label><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}>{{ model }}</label>
                 {% endfor %}
-                <p><small>Select which models team users can pick from.</small></p>
+                <p><small>Choose which models people on the team can use.</small></p>
                 <div style="margin-top: 8px;">
-                  <strong>Team default model</strong>
+                  <strong>Default model for the team</strong>
                   {% for model in config.available_models_json %}
                   {% set is_selected_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and (config.model_name == model)) %}
                   <label><input type="radio" name="provider_model" value="{{ model }}" {% if is_selected_default %}checked{% endif %}>{{ model }}</label>
@@ -1314,10 +1374,10 @@
               </fieldset>
               {% endfor %}
             </div>
-            <button type="submit" class="btn-primary">Save selection</button>
+            <button type="submit" class="btn-primary">Save choice</button>
           </form>
           {% else %}
-          <p><small>No LLM providers have been provisioned for this team yet. Ask a system admin to add one.</small></p>
+          <p><small>No writing assistants are ready for this team yet. Ask a system admin to add one.</small></p>
           {% endif %}
         </div>
       </details>
@@ -1327,7 +1387,7 @@
 
     {# ── ACCOUNT REQUESTS ── #}
     {% if is_manager %}
-    <section class="tab-stack" data-tab-panel="account-requests">
+    <section class="tab-stack" data-tab-panel="account-requests" data-tour-target="requests-panel">
       <div class="section-headline">
         <div><h2>Account requests</h2><p>Review and action pending access requests for your team.</p></div>
       </div>
@@ -1370,8 +1430,47 @@
 
     </div>
   </main>
+  <div class="tour-overlay" data-tour-overlay hidden>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="top" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="right" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="bottom" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="left" data-tour-close></div>
+    <div class="tour-overlay__highlight" data-tour-highlight></div>
+    <div class="tour-overlay__card" data-tour-card>
+      <div class="tour-overlay__eyebrow">Quick guide</div>
+      <div class="tour-overlay__title" data-tour-title></div>
+      <div class="tour-overlay__body" data-tour-body></div>
+      <div class="tour-overlay__actions">
+        <div class="tour-overlay__progress" data-tour-progress></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button type="button" class="btn-secondary btn-sm" data-tour-back>Back</button>
+          <button type="button" class="btn-secondary btn-sm" data-tour-close-button>Close</button>
+          <button type="button" class="btn-primary btn-sm" data-tour-next>Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     (() => {
+      const tourOverlay = document.querySelector('[data-tour-overlay]');
+      const tourScrims = {
+        top: document.querySelector('[data-tour-scrim="top"]'),
+        right: document.querySelector('[data-tour-scrim="right"]'),
+        bottom: document.querySelector('[data-tour-scrim="bottom"]'),
+        left: document.querySelector('[data-tour-scrim="left"]'),
+      };
+      const tourHighlight = document.querySelector('[data-tour-highlight]');
+      const tourCard = document.querySelector('[data-tour-card]');
+      const tourTitle = document.querySelector('[data-tour-title]');
+      const tourBody = document.querySelector('[data-tour-body]');
+      const tourProgress = document.querySelector('[data-tour-progress]');
+      const tourBackButton = document.querySelector('[data-tour-back]');
+      const tourNextButton = document.querySelector('[data-tour-next]');
+      const tourCloseButtons = [...document.querySelectorAll('[data-tour-close], [data-tour-close-button]')];
+      const guideButtons = [...document.querySelectorAll('[data-home-guide]')];
+      const homeTourStorageKey = 'openscribe:tour:home:' + {{ ('leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user')|tojson }};
+      let activeTourStepIndex = 0;
+
       /* ── Tab switching ── */
       document.querySelectorAll('[data-tab-shell]').forEach((shell) => {
         const navContainer = shell.previousElementSibling;
@@ -1389,10 +1488,163 @@
         function activateTab(name) {
           tabs.forEach((tab) => tab.setAttribute('aria-selected', tab.dataset.tabTarget === name ? 'true' : 'false'));
           panels.forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== name; });
+          shell.dataset.activeTab = name;
         }
         tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget)));
         activateTab(defaultTab);
       });
+
+      const homeTourSteps = [
+        {
+          target: '[data-tour-target="workspace-start"]',
+          title: 'Open consultation notes here',
+          body: 'Use this area when you want to jump straight into a consultation and start capturing audio or writing notes.',
+          tab: 'overview',
+        },
+        {
+          target: '[data-tour-target="templates-tab"]',
+          title: 'Note layouts live here',
+          body: 'Use Note layouts to manage reusable note formats for your own work or, if you lead the team, for everyone.',
+          tab: 'overview',
+          requires: () => Boolean(document.querySelector('[data-tour-target="templates-tab"]')),
+        },
+        {
+          target: '[data-tour-target="saved-prompts-tab"]',
+          title: 'Saved instructions cover common follow-up work',
+          body: 'Saved instructions are reusable directions for patient messages, letters, and other repeatable tasks.',
+          tab: 'overview',
+          requires: () => Boolean(document.querySelector('[data-tour-target="saved-prompts-tab"]')),
+        },
+        {
+          target: '[data-tour-target="team-panel"]',
+          title: 'Leaders manage team setup here',
+          body: 'Team lets leaders manage members and choose the team speech and writing services.',
+          tab: 'team-management',
+          requires: () => Boolean(document.querySelector('[data-tour-target="team-panel"]')),
+        },
+        {
+          target: '[data-tour-target="requests-panel"]',
+          title: 'Review access requests here',
+          body: 'Requests is where leaders approve or reject new access requests for the team.',
+          tab: 'account-requests',
+          requires: () => Boolean(document.querySelector('[data-tour-target="requests-panel"]')),
+        },
+      ].filter((step) => !step.requires || step.requires());
+
+      const activateHomeTab = (name) => {
+        if (!name) return;
+        const tab = document.querySelector(`[data-tab-target="${name}"]`);
+        tab?.click();
+      };
+
+      const closeTour = ({ remember = true } = {}) => {
+        if (tourOverlay) {
+          tourOverlay.hidden = true;
+        }
+        if (remember) {
+          window.localStorage.setItem(homeTourStorageKey, 'dismissed');
+        }
+      };
+
+      const renderTourStep = () => {
+        if (!tourOverlay || !tourHighlight || !tourCard || !homeTourSteps.length) return;
+        const step = homeTourSteps[activeTourStepIndex];
+        if (!step) {
+          closeTour();
+          return;
+        }
+        activateHomeTab(step.tab);
+        const target = document.querySelector(step.target);
+        if (!target) {
+          closeTour();
+          return;
+        }
+        const rect = target.getBoundingClientRect();
+        const highlightTop = Math.max(8, rect.top - 8);
+        const highlightLeft = Math.max(8, rect.left - 8);
+        const highlightWidth = Math.min(window.innerWidth - 16, rect.width + 16);
+        const highlightHeight = Math.min(window.innerHeight - 16, rect.height + 16);
+        const highlightRight = Math.min(window.innerWidth - 8, highlightLeft + highlightWidth);
+        const highlightBottom = Math.min(window.innerHeight - 8, highlightTop + highlightHeight);
+        tourHighlight.style.top = `${highlightTop}px`;
+        tourHighlight.style.left = `${highlightLeft}px`;
+        tourHighlight.style.width = `${highlightWidth}px`;
+        tourHighlight.style.height = `${highlightHeight}px`;
+        if (tourScrims.top) {
+          tourScrims.top.style.top = '0px';
+          tourScrims.top.style.left = '0px';
+          tourScrims.top.style.width = '100vw';
+          tourScrims.top.style.height = `${highlightTop}px`;
+        }
+        if (tourScrims.right) {
+          tourScrims.right.style.top = `${highlightTop}px`;
+          tourScrims.right.style.left = `${highlightRight}px`;
+          tourScrims.right.style.width = `${Math.max(0, window.innerWidth - highlightRight)}px`;
+          tourScrims.right.style.height = `${highlightHeight}px`;
+        }
+        if (tourScrims.bottom) {
+          tourScrims.bottom.style.top = `${highlightBottom}px`;
+          tourScrims.bottom.style.left = '0px';
+          tourScrims.bottom.style.width = '100vw';
+          tourScrims.bottom.style.height = `${Math.max(0, window.innerHeight - highlightBottom)}px`;
+        }
+        if (tourScrims.left) {
+          tourScrims.left.style.top = `${highlightTop}px`;
+          tourScrims.left.style.left = '0px';
+          tourScrims.left.style.width = `${highlightLeft}px`;
+          tourScrims.left.style.height = `${highlightHeight}px`;
+        }
+        tourTitle.textContent = step.title;
+        tourBody.textContent = step.body;
+        tourProgress.textContent = `${activeTourStepIndex + 1} of ${homeTourSteps.length}`;
+        tourBackButton.disabled = activeTourStepIndex === 0;
+        tourNextButton.textContent = activeTourStepIndex === homeTourSteps.length - 1 ? 'Finish' : 'Next';
+
+        const cardTop = Math.min(window.innerHeight - tourCard.offsetHeight - 16, highlightTop + highlightHeight + 14);
+        const cardLeft = Math.min(window.innerWidth - tourCard.offsetWidth - 16, highlightLeft);
+        tourCard.style.top = `${Math.max(16, cardTop)}px`;
+        tourCard.style.left = `${Math.max(16, cardLeft)}px`;
+      };
+
+      const startTour = () => {
+        if (!tourOverlay || !homeTourSteps.length) return;
+        activeTourStepIndex = 0;
+        tourOverlay.hidden = false;
+        renderTourStep();
+      };
+
+      guideButtons.forEach((button) => {
+        button.addEventListener('click', startTour);
+      });
+
+      tourBackButton?.addEventListener('click', () => {
+        if (activeTourStepIndex === 0) return;
+        activeTourStepIndex -= 1;
+        renderTourStep();
+      });
+
+      tourNextButton?.addEventListener('click', () => {
+        if (activeTourStepIndex >= homeTourSteps.length - 1) {
+          closeTour();
+          return;
+        }
+        activeTourStepIndex += 1;
+        renderTourStep();
+      });
+
+      tourCloseButtons.forEach((button) => {
+        button.addEventListener('click', () => closeTour());
+      });
+
+      window.addEventListener('resize', () => {
+        if (!tourOverlay?.hidden) {
+          renderTourStep();
+        }
+      });
+
+      if (!window.localStorage.getItem(homeTourStorageKey)) {
+        window.setTimeout(startTour, 500);
+      }
 
       /* ── STT adapter state (for system admin forms) ── */
       function applyAdapterState(form) {

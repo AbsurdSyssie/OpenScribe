@@ -2,6 +2,10 @@ import base64
 import hashlib
 import logging
 import secrets
+from dataclasses import dataclass
+from datetime import timedelta
+from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +16,8 @@ from app.models import (
     AccountRequest,
     AccountRequestStatus,
     PromptTemplate,
+    ProviderUsageEvent,
+    ProviderUsageEventType,
     QuickAction,
     Team,
     TeamRole,
@@ -19,6 +25,9 @@ from app.models import (
     TeamSttSelection,
     TemplateScope,
     Transcript,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     User,
     UserOnboardingState,
     UserStatus,
@@ -37,6 +46,312 @@ from app.services.content_crypto import ensure_user_dek
 from app.services.transcripts import delete_retry_sources_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
+
+
+@dataclass(slots=True)
+class AdminUsageWindowSummary:
+    label: str
+    provider_completed_count: int
+    provider_failed_count: int
+    provider_total_tokens: int
+    provider_estimated_cost_usd: float
+    ingestion_job_count: int
+    ingestion_failed_count: int
+    whole_file_count: int
+    live_chunk_count: int
+    ingested_bytes: int
+    ingested_duration_seconds: float
+
+    @property
+    def ingested_megabytes(self) -> float:
+        return round(self.ingested_bytes / (1024 * 1024), 1)
+
+    @property
+    def ingested_hours(self) -> float:
+        return round(self.ingested_duration_seconds / 3600, 2)
+
+
+@dataclass(slots=True)
+class AdminUsageTeamRow:
+    team_id: UUID
+    team_name: str
+    provider_completed_count: int = 0
+    provider_failed_count: int = 0
+    provider_total_tokens: int = 0
+    ingestion_job_count: int = 0
+    ingestion_failed_count: int = 0
+    whole_file_count: int = 0
+    live_chunk_count: int = 0
+    ingested_bytes: int = 0
+    ingested_duration_seconds: float = 0.0
+
+    @property
+    def ingested_megabytes(self) -> float:
+        return round(self.ingested_bytes / (1024 * 1024), 1)
+
+    @property
+    def ingested_hours(self) -> float:
+        return round(self.ingested_duration_seconds / 3600, 2)
+
+
+@dataclass(slots=True)
+class AdminUsageUserRow:
+    user_id: UUID
+    email: str
+    full_name: str | None
+    provider_completed_count: int = 0
+    provider_failed_count: int = 0
+    provider_total_tokens: int = 0
+    ingestion_job_count: int = 0
+    ingestion_failed_count: int = 0
+    whole_file_count: int = 0
+    live_chunk_count: int = 0
+    ingested_bytes: int = 0
+    ingested_duration_seconds: float = 0.0
+
+    @property
+    def ingested_megabytes(self) -> float:
+        return round(self.ingested_bytes / (1024 * 1024), 1)
+
+    @property
+    def ingested_hours(self) -> float:
+        return round(self.ingested_duration_seconds / 3600, 2)
+
+
+def _failure_event_clause():
+    return ProviderUsageEvent.event_type.in_(
+        (ProviderUsageEventType.failed, ProviderUsageEventType.enqueue_failed)
+    )
+
+
+def _coerce_decimal(value: Decimal | float | int | None) -> float:
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _provider_usage_window_summary(db: Session, *, since, team_id: UUID | None) -> dict[str, int | float]:
+    stmt = select(
+        func.count(ProviderUsageEvent.id)
+        .filter(ProviderUsageEvent.event_type == ProviderUsageEventType.completed)
+        .label("provider_completed_count"),
+        func.count(ProviderUsageEvent.id)
+        .filter(_failure_event_clause())
+        .label("provider_failed_count"),
+        func.coalesce(func.sum(ProviderUsageEvent.total_tokens), 0).label("provider_total_tokens"),
+        func.coalesce(func.sum(ProviderUsageEvent.estimated_cost_usd), 0).label("provider_estimated_cost_usd"),
+    ).where(ProviderUsageEvent.created_at >= since)
+    if team_id is not None:
+        stmt = stmt.where(ProviderUsageEvent.team_id == team_id)
+    row = db.execute(stmt).one()
+    return {
+        "provider_completed_count": int(row.provider_completed_count or 0),
+        "provider_failed_count": int(row.provider_failed_count or 0),
+        "provider_total_tokens": int(row.provider_total_tokens or 0),
+        "provider_estimated_cost_usd": _coerce_decimal(row.provider_estimated_cost_usd),
+    }
+
+
+def _ingestion_duration_expression():
+    return func.coalesce(
+        TranscriptIngestionJob.source_audio_duration_seconds,
+        TranscriptIngestionJob.declared_duration_seconds,
+        0.0,
+    )
+
+
+def _ingestion_window_summary(db: Session, *, since, team_id: UUID | None) -> dict[str, int | float]:
+    stmt = select(
+        func.count(TranscriptIngestionJob.id).label("ingestion_job_count"),
+        func.count(TranscriptIngestionJob.id)
+        .filter(TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed)
+        .label("ingestion_failed_count"),
+        func.count(TranscriptIngestionJob.id)
+        .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.audio_file)
+        .label("whole_file_count"),
+        func.count(TranscriptIngestionJob.id)
+        .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk)
+        .label("live_chunk_count"),
+        func.coalesce(func.sum(TranscriptIngestionJob.source_audio_size_bytes), 0).label("ingested_bytes"),
+        func.coalesce(func.sum(_ingestion_duration_expression()), 0.0).label("ingested_duration_seconds"),
+    ).where(TranscriptIngestionJob.created_at >= since)
+    if team_id is not None:
+        stmt = stmt.where(TranscriptIngestionJob.team_id == team_id)
+    row = db.execute(stmt).one()
+    return {
+        "ingestion_job_count": int(row.ingestion_job_count or 0),
+        "ingestion_failed_count": int(row.ingestion_failed_count or 0),
+        "whole_file_count": int(row.whole_file_count or 0),
+        "live_chunk_count": int(row.live_chunk_count or 0),
+        "ingested_bytes": int(row.ingested_bytes or 0),
+        "ingested_duration_seconds": float(row.ingested_duration_seconds or 0.0),
+    }
+
+
+def _team_usage_rows(db: Session, *, since, team_id: UUID | None) -> list[AdminUsageTeamRow]:
+    rows_by_team: dict[UUID, AdminUsageTeamRow] = {}
+
+    provider_stmt = (
+        select(
+            Team.id.label("team_id"),
+            Team.name.label("team_name"),
+            func.count(ProviderUsageEvent.id)
+            .filter(ProviderUsageEvent.event_type == ProviderUsageEventType.completed)
+            .label("provider_completed_count"),
+            func.count(ProviderUsageEvent.id)
+            .filter(_failure_event_clause())
+            .label("provider_failed_count"),
+            func.coalesce(func.sum(ProviderUsageEvent.total_tokens), 0).label("provider_total_tokens"),
+        )
+        .join(Team, Team.id == ProviderUsageEvent.team_id)
+        .where(ProviderUsageEvent.created_at >= since)
+        .group_by(Team.id, Team.name)
+        .order_by(Team.name.asc())
+    )
+    if team_id is not None:
+        provider_stmt = provider_stmt.where(ProviderUsageEvent.team_id == team_id)
+    for row in db.execute(provider_stmt):
+        rows_by_team[row.team_id] = AdminUsageTeamRow(
+            team_id=row.team_id,
+            team_name=row.team_name,
+            provider_completed_count=int(row.provider_completed_count or 0),
+            provider_failed_count=int(row.provider_failed_count or 0),
+            provider_total_tokens=int(row.provider_total_tokens or 0),
+        )
+
+    ingestion_stmt = (
+        select(
+            Team.id.label("team_id"),
+            Team.name.label("team_name"),
+            func.count(TranscriptIngestionJob.id).label("ingestion_job_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed)
+            .label("ingestion_failed_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.audio_file)
+            .label("whole_file_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk)
+            .label("live_chunk_count"),
+            func.coalesce(func.sum(TranscriptIngestionJob.source_audio_size_bytes), 0).label("ingested_bytes"),
+            func.coalesce(func.sum(_ingestion_duration_expression()), 0.0).label("ingested_duration_seconds"),
+        )
+        .join(Team, Team.id == TranscriptIngestionJob.team_id)
+        .where(TranscriptIngestionJob.created_at >= since)
+        .group_by(Team.id, Team.name)
+        .order_by(Team.name.asc())
+    )
+    if team_id is not None:
+        ingestion_stmt = ingestion_stmt.where(TranscriptIngestionJob.team_id == team_id)
+    for row in db.execute(ingestion_stmt):
+        usage = rows_by_team.get(row.team_id)
+        if usage is None:
+            usage = AdminUsageTeamRow(team_id=row.team_id, team_name=row.team_name)
+            rows_by_team[row.team_id] = usage
+        usage.ingestion_job_count = int(row.ingestion_job_count or 0)
+        usage.ingestion_failed_count = int(row.ingestion_failed_count or 0)
+        usage.whole_file_count = int(row.whole_file_count or 0)
+        usage.live_chunk_count = int(row.live_chunk_count or 0)
+        usage.ingested_bytes = int(row.ingested_bytes or 0)
+        usage.ingested_duration_seconds = float(row.ingested_duration_seconds or 0.0)
+
+    return sorted(rows_by_team.values(), key=lambda row: row.team_name.lower())
+
+
+def _user_usage_rows(db: Session, *, since, team_id: UUID) -> list[AdminUsageUserRow]:
+    rows_by_user: dict[UUID, AdminUsageUserRow] = {}
+
+    provider_stmt = (
+        select(
+            User.id.label("user_id"),
+            User.email.label("email"),
+            User.full_name.label("full_name"),
+            func.count(ProviderUsageEvent.id)
+            .filter(ProviderUsageEvent.event_type == ProviderUsageEventType.completed)
+            .label("provider_completed_count"),
+            func.count(ProviderUsageEvent.id)
+            .filter(_failure_event_clause())
+            .label("provider_failed_count"),
+            func.coalesce(func.sum(ProviderUsageEvent.total_tokens), 0).label("provider_total_tokens"),
+        )
+        .join(User, User.id == ProviderUsageEvent.owner_user_id)
+        .where(
+            ProviderUsageEvent.created_at >= since,
+            ProviderUsageEvent.team_id == team_id,
+        )
+        .group_by(User.id, User.email, User.full_name)
+        .order_by(User.email.asc())
+    )
+    for row in db.execute(provider_stmt):
+        rows_by_user[row.user_id] = AdminUsageUserRow(
+            user_id=row.user_id,
+            email=row.email,
+            full_name=row.full_name,
+            provider_completed_count=int(row.provider_completed_count or 0),
+            provider_failed_count=int(row.provider_failed_count or 0),
+            provider_total_tokens=int(row.provider_total_tokens or 0),
+        )
+
+    ingestion_stmt = (
+        select(
+            User.id.label("user_id"),
+            User.email.label("email"),
+            User.full_name.label("full_name"),
+            func.count(TranscriptIngestionJob.id).label("ingestion_job_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed)
+            .label("ingestion_failed_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.audio_file)
+            .label("whole_file_count"),
+            func.count(TranscriptIngestionJob.id)
+            .filter(TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk)
+            .label("live_chunk_count"),
+            func.coalesce(func.sum(TranscriptIngestionJob.source_audio_size_bytes), 0).label("ingested_bytes"),
+            func.coalesce(func.sum(_ingestion_duration_expression()), 0.0).label("ingested_duration_seconds"),
+        )
+        .join(User, User.id == TranscriptIngestionJob.owner_user_id)
+        .where(
+            TranscriptIngestionJob.created_at >= since,
+            TranscriptIngestionJob.team_id == team_id,
+        )
+        .group_by(User.id, User.email, User.full_name)
+        .order_by(User.email.asc())
+    )
+    for row in db.execute(ingestion_stmt):
+        usage = rows_by_user.get(row.user_id)
+        if usage is None:
+            usage = AdminUsageUserRow(user_id=row.user_id, email=row.email, full_name=row.full_name)
+            rows_by_user[row.user_id] = usage
+        usage.ingestion_job_count = int(row.ingestion_job_count or 0)
+        usage.ingestion_failed_count = int(row.ingestion_failed_count or 0)
+        usage.whole_file_count = int(row.whole_file_count or 0)
+        usage.live_chunk_count = int(row.live_chunk_count or 0)
+        usage.ingested_bytes = int(row.ingested_bytes or 0)
+        usage.ingested_duration_seconds = float(row.ingested_duration_seconds or 0.0)
+
+    return sorted(rows_by_user.values(), key=lambda row: row.email.lower())
+
+
+def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[str, object]:
+    windows = []
+    for label, delta in (("Last 24 hours", timedelta(hours=24)), ("Last 7 days", timedelta(days=7))):
+        since = utcnow() - delta
+        windows.append(
+            AdminUsageWindowSummary(
+                label=label,
+                **_provider_usage_window_summary(db, since=since, team_id=team_id),
+                **_ingestion_window_summary(db, since=since, team_id=team_id),
+            )
+        )
+    seven_day_since = utcnow() - timedelta(days=7)
+    selected_team = db.get(Team, team_id) if team_id is not None else None
+    return {
+        "usage_window_summaries": windows,
+        "usage_team_rows": _team_usage_rows(db, since=seven_day_since, team_id=team_id),
+        "usage_user_rows": _user_usage_rows(db, since=seven_day_since, team_id=team_id) if team_id is not None else [],
+        "usage_scope_team": selected_team,
+    }
 
 
 def hash_password(password: str) -> str:

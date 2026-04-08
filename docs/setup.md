@@ -51,6 +51,7 @@ This starts Docker services, loads `.env`, applies migrations, and runs the Fast
 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
+It also purges stale queued Celery tasks by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
 The default dev configuration keeps Postgres, Redis, and Vault on localhost while exposing FastAPI for reverse-proxied or off-box frontend access.
 Before the server starts, `./start-dev.sh` now also checks the live Docker port bindings for Postgres, Redis, and Vault and prints an error to the terminal if any of them are published beyond localhost.
 
@@ -61,6 +62,7 @@ Important:
 - `APP_HOST` now defaults to `0.0.0.0`
 - `./start-dev.sh` allows the FastAPI frontend bind off-box by default; set `APP_HOST=127.0.0.1` and `DEV_ALLOW_REMOTE_BIND=false` if you want localhost-only app access
 - `./start-dev.sh` also refuses non-local Docker port publication for Postgres, Redis, or Vault unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
+- `./start-dev.sh` now purges queued Celery tasks before the dev worker starts; set `DEV_PURGE_CELERY_QUEUE=false` only if you intentionally want to keep the existing dev queue
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
 

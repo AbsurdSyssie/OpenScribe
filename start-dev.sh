@@ -21,6 +21,7 @@ set +a
 
 : "${APP_HOST:=0.0.0.0}"
 : "${DEV_ALLOW_REMOTE_BIND:=true}"
+: "${DEV_PURGE_CELERY_QUEUE:=true}"
 
 docker compose up -d
 
@@ -117,6 +118,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
+  if [[ "${DEV_PURGE_CELERY_QUEUE}" == "true" ]]; then
+    echo "Purging stale Celery tasks from the dev queue..."
+    .venv/bin/celery -A app.celery_app:celery_app purge -f >/dev/null 2>&1 || true
+  fi
   echo "Starting Celery worker..."
   .venv/bin/celery -A app.celery_app:celery_app worker --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_WORKER_PID=$!

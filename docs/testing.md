@@ -67,6 +67,11 @@ What it does:
 - the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 
+## Main.py refactor guardrails
+
+- the first `app/main.py` refactor slice keeps route decorators in place and extracts rendering/workspace helpers into `app/web/*`
+- `tests/test_web_refactor.py` locks in the compatibility aliases used during that transition and verifies the extracted `render_transcribe(...)` helper still supports the legacy route call shape
+
 ## What the tests currently cover
 
 ### API contract
@@ -194,7 +199,7 @@ What it does:
 - owner transcription workspace sidebar session list and redesigned tabbed transcript shell
 - owner transcription workspace exposing and hydrating from `GET /api/v1/transcribe/workspace`
 - owner transcription workspace SSE updates from `GET /api/v1/transcribe/workspace/stream`
-- `/transcribe` header-only audio controls still exposing the upload form hook and the large editable session title control
+- `/transcribe` header-only audio controls still exposing the upload form hook, the large editable session title control, and the split `New consultation` mode chooser
 - owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
@@ -203,6 +208,7 @@ What it does:
 - owner transcription workspace keeping the redesigned clinical shell copy and core controls while preserving current browser hooks
 - GLM 2 transcribe route exposing the same owner-only workspace endpoint and pane controls for hide, split, and expand states
 - `live_chunked` sessions rendering live-specific controls, pinned `vad-web` runtime hooks, and Silero/VAD status copy in the transcribe workspace
+- `/transcribe` rendering user-facing copy for messages/notes plus the transcribe guide overlay and generated-document switchers for regenerated notes and follow-up outputs
 - `live_chunked` sessions surfacing the latest live-chunk STT failure message instead of immediately reverting to generic ready copy
 - GLM 2 transcribe route rendering the full EMIS section editor surface and the output/follow-up/history assistant pane against real workspace data
 - GLM 2 transcribe route keeping the restored GLM shell while wiring real session switching, title editing, and provider labels through the existing runtime
@@ -215,6 +221,8 @@ What it does:
 - owner transcription workspace output-tab note generation flow
 - owner transcription workspace follow-ups tab queueing a follow-up request into the same async generated-document pipeline
 - owner transcription workspace follow-ups tab quick-action dropdown queueing a quick action into the same async generated-document pipeline
+- system-admin usage tab rendering provider usage telemetry plus transcript ingestion bytes/duration by team and selected-team user scope
+- `/home` rendering the lighter user/leader guide overlay and the renamed `Saved prompts` navigation copy
 - localhost-only seeded dev-account access to generated-document redaction debug for manual verification that the outbound LLM path used the redacted transcript payload
 - localhost-only seeded dev-account redaction debug exposing the raw redacted failed provider output for malformed note JSON diagnosis
 - home and transcribe UI showing structured EMIS template authoring, transcript-backed EMIS context reload, and line-array context inputs

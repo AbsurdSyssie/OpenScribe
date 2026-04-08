@@ -330,6 +330,7 @@
     <div class="panel tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Admin sections">
       <button type="button" class="tab-shell__tab" data-tab-target="providers" role="tab" aria-selected="true">Providers</button>
       <button type="button" class="tab-shell__tab" data-tab-target="directory" role="tab" aria-selected="false">Directory</button>
+      <button type="button" class="tab-shell__tab" data-tab-target="usage" role="tab" aria-selected="false">Usage</button>
       <button type="button" class="tab-shell__tab" data-tab-target="requests" role="tab" aria-selected="false">Requests</button>
     </div>
 
@@ -997,6 +998,136 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
+    </section>
+
+    <section class="grid" data-tab-panel="usage">
+      <div class="panel">
+        <h2>Usage overview</h2>
+        <p>Metadata-only observability for ingestion and generation activity. No transcript or note content is shown here.</p>
+        <form method="get" action="{{ admin_page_route }}">
+          <input type="hidden" name="tab" value="usage">
+          <label>
+            Team filter
+            <select name="team_id" onchange="this.form.submit()">
+              <option value="">All teams</option>
+              {% for team in teams %}
+              <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </form>
+        {% if usage_scope_team %}
+        <p><small>Showing usage for {{ usage_scope_team.name }}.</small></p>
+        {% else %}
+        <p><small>Showing usage across all teams.</small></p>
+        {% endif %}
+        <table>
+          <thead>
+            <tr>
+              <th>Window</th>
+              <th>Generated</th>
+              <th>Generation failures</th>
+              <th>Total tokens</th>
+              <th>Ingestion jobs</th>
+              <th>Ingestion failures</th>
+              <th>Uploaded</th>
+              <th>Audio hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for summary in usage_window_summaries %}
+            <tr>
+              <td>{{ summary.label }}</td>
+              <td>{{ summary.provider_completed_count }}</td>
+              <td>{{ summary.provider_failed_count }}</td>
+              <td>{{ summary.provider_total_tokens }}</td>
+              <td>{{ summary.ingestion_job_count }}</td>
+              <td>{{ summary.ingestion_failed_count }}</td>
+              <td>{{ "%.1f"|format(summary.ingested_megabytes) }} MB</td>
+              <td>{{ "%.2f"|format(summary.ingested_hours) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Team activity, last 7 days</h2>
+        {% if usage_team_rows %}
+        <table>
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Generated</th>
+              <th>Generation failures</th>
+              <th>Total tokens</th>
+              <th>Whole-file uploads</th>
+              <th>Live chunks</th>
+              <th>Ingestion failures</th>
+              <th>Uploaded</th>
+              <th>Audio hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in usage_team_rows %}
+            <tr>
+              <td>{{ row.team_name }}</td>
+              <td>{{ row.provider_completed_count }}</td>
+              <td>{{ row.provider_failed_count }}</td>
+              <td>{{ row.provider_total_tokens }}</td>
+              <td>{{ row.whole_file_count }}</td>
+              <td>{{ row.live_chunk_count }}</td>
+              <td>{{ row.ingestion_failed_count }}</td>
+              <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB</td>
+              <td>{{ "%.2f"|format(row.ingested_hours) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No usage has been recorded in the last 7 days.</small></p>
+        {% endif %}
+      </div>
+
+      <div class="panel">
+        <h2>{% if usage_scope_team %}User activity in {{ usage_scope_team.name }}{% else %}Per-user breakdown{% endif %}</h2>
+        {% if usage_scope_team and usage_user_rows %}
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Generated</th>
+              <th>Generation failures</th>
+              <th>Total tokens</th>
+              <th>Whole-file uploads</th>
+              <th>Live chunks</th>
+              <th>Ingestion failures</th>
+              <th>Uploaded</th>
+              <th>Audio hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in usage_user_rows %}
+            <tr>
+              <td>{{ row.full_name or "-" }}<br><small>{{ row.email }}</small></td>
+              <td>{{ row.provider_completed_count }}</td>
+              <td>{{ row.provider_failed_count }}</td>
+              <td>{{ row.provider_total_tokens }}</td>
+              <td>{{ row.whole_file_count }}</td>
+              <td>{{ row.live_chunk_count }}</td>
+              <td>{{ row.ingestion_failed_count }}</td>
+              <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB</td>
+              <td>{{ "%.2f"|format(row.ingested_hours) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% elif usage_scope_team %}
+        <p><small>No usage has been recorded for this team in the last 7 days.</small></p>
+        {% else %}
+        <p><small>Select a team to see per-user usage in the last 7 days.</small></p>
+        {% endif %}
       </div>
     </section>
 

@@ -308,6 +308,51 @@ def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> 
     )
 
 
+def _has_pending_ingestion_jobs(db: Session, *, transcript_id: UUID) -> bool:
+    return db.scalar(
+        select(TranscriptIngestionJob.id)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            TranscriptIngestionJob.status.in_(
+                [
+                    TranscriptIngestionJobStatus.queued,
+                    TranscriptIngestionJobStatus.processing,
+                    TranscriptIngestionJobStatus.completed,
+                ]
+            ),
+        )
+        .limit(1)
+    ) is not None
+
+
+def _has_blocking_live_chunk_failure(db: Session, *, transcript: Transcript) -> bool:
+    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
+        return False
+    return db.scalar(
+        select(TranscriptIngestionJob.id)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+            TranscriptIngestionJob.chunk_sequence_no == transcript.next_live_chunk_sequence_no_applied,
+            TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed,
+        )
+        .limit(1)
+    ) is not None
+
+
+def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> TranscriptStatus:
+    if transcript.status is TranscriptStatus.recording:
+        return TranscriptStatus.recording
+    if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
+        return TranscriptStatus.transcribing
+    if _has_blocking_live_chunk_failure(db, transcript=transcript):
+        return TranscriptStatus.failed
+    latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
+    if latest_job is not None and latest_job.status is TranscriptIngestionJobStatus.failed:
+        return TranscriptStatus.failed
+    return TranscriptStatus.ready
+
+
 def ingestion_usage_totals_for_owner(
     db: Session,
     *,
@@ -374,6 +419,7 @@ def can_create_new_session(db: Session, owner: User) -> tuple[bool, str | None]:
     latest = _latest_owner_transcript(db, owner)
     if latest is None:
         return True, None
+    latest = reconcile_transcript_status(db, transcript=latest)
     if latest.status is TranscriptStatus.transcribing:
         return False, "Wait for the current session transcription to finish before creating a new one"
     if _transcript_has_meaningful_content(db, latest):
@@ -391,10 +437,10 @@ def can_switch_transcript_ingestion_mode(
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is target_mode:
         return transcript, True, None
-    if transcript.status is TranscriptStatus.transcribing:
+    if transcript.status is TranscriptStatus.recording:
+        return transcript, False, "Stop the active recording before switching input mode"
+    if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return transcript, False, "Wait for the current session transcription to finish before switching input mode"
-    if _transcript_has_meaningful_content(db, transcript):
-        return transcript, False, "Switch input mode before recording, uploading, or adding transcript content"
     return transcript, True, None
 
 
@@ -909,9 +955,27 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
     if not advanced_sequence:
         return
 
-    transcript.status = TranscriptStatus.transcribing
+    transcript.status = _resolved_transcript_status(db, transcript=transcript)
     db.add(transcript)
     db.commit()
+
+
+def reconcile_transcript_status(
+    db: Session,
+    *,
+    transcript: Transcript,
+) -> Transcript:
+    if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        _apply_completed_live_chunks(db, transcript)
+        db.refresh(transcript)
+    resolved_status = _resolved_transcript_status(db, transcript=transcript)
+    if transcript.status is resolved_status:
+        return transcript
+    transcript.status = resolved_status
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    return transcript
 
 
 def reconcile_live_chunk_progress(
@@ -919,14 +983,7 @@ def reconcile_live_chunk_progress(
     *,
     transcript: Transcript,
 ) -> Transcript:
-    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
-        return transcript
-    if transcript.status not in {TranscriptStatus.transcribing, TranscriptStatus.failed, TranscriptStatus.recording}:
-        return transcript
-
-    _apply_completed_live_chunks(db, transcript)
-    db.refresh(transcript)
-    return transcript
+    return reconcile_transcript_status(db, transcript=transcript)
 
 
 def process_transcript_ingestion_job(

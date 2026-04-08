@@ -331,9 +331,9 @@
       <div class="hero-copy">
         <div>
           <div class="eyebrow">OpenScribe</div>
-          <h1>Managed onboarding for teams, leaders, and account requests.</h1>
+          <h1>Secure sign-in for teams and shared setup.</h1>
           <p class="intro">
-            Users can request access, and leaders or system admins can create active accounts with temporary passwords. Managed accounts are forced through password change and TOTP setup before normal access.
+            People can ask for an account, and leaders or system admins can set one up. New accounts are guided through a password change and extra sign-in protection before normal use.
           </p>
         </div>
 
@@ -342,21 +342,21 @@
             <div class="feature-dot"></div>
             <div>
               <strong>Account requests</strong>
-              <span>Users can request managed access without manual back-and-forth.</span>
+              <span>People can ask for access without chasing the team by email.</span>
             </div>
           </div>
           <div class="feature">
             <div class="feature-dot"></div>
             <div>
-              <strong>Controlled onboarding</strong>
-              <span>Temporary credentials, password reset, and TOTP setup are enforced before normal use.</span>
+              <strong>Guided first sign-in</strong>
+              <span>New accounts are walked through a password change and an authenticator app before normal use.</span>
             </div>
           </div>
           <div class="feature">
             <div class="feature-dot"></div>
             <div>
-              <strong>Admin bootstrap</strong>
-              <span>The first system admin can be created safely when the database is empty.</span>
+              <strong>First admin setup</strong>
+              <span>The first system admin can be created safely when the system is brand new.</span>
             </div>
           </div>
         </div>
@@ -375,8 +375,8 @@
       {% if bootstrap_allowed %}
       <div class="card-top">
         <div class="section-label">System setup</div>
-        <h2>Create first system admin</h2>
-        <p class="muted">This form is only available while the database has no users.</p>
+        <h2>Create the first system admin</h2>
+        <p class="muted">This option only appears before anyone has used the system.</p>
       </div>
       <form method="post" action="/bootstrap/system-admin">
         <label>
@@ -388,15 +388,15 @@
           <input type="password" name="password" required minlength="8" autocomplete="new-password">
         </label>
         <div class="submit-row">
-          <button type="submit">Bootstrap system admin</button>
+          <button type="submit">Create system admin</button>
         </div>
       </form>
-      <p class="footer-note">Use a strong password for the first administrative account. After bootstrap, standard managed login flow applies.</p>
+      <p class="footer-note">Use a strong password. After this step, everyone signs in through the normal managed login flow.</p>
       {% else %}
       <div class="card-top">
-        <div class="section-label">Authentication</div>
-        <h2>Login</h2>
-        <p class="muted">Managed accounts may land in restricted onboarding or a TOTP challenge before they can use the app.</p>
+        <div class="section-label">Sign in</div>
+        <h2>Sign in to OpenScribe</h2>
+        <p class="muted">If this is a new account, you may be asked to finish setup or enter a code from your authenticator app.</p>
       </div>
       <form method="post" action="/login">
         <label>
@@ -411,7 +411,7 @@
           <button type="submit">Sign in</button>
         </div>
       </form>
-      <p class="footer-note">Managed users may be redirected to password change or TOTP verification before reaching the main application.</p>
+      <p class="footer-note">Some accounts will be asked to finish setup before reaching the main app.</p>
       {% endif %}
     </section>
   </main>

@@ -1,0 +1,49 @@
+  <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
+    <input type="hidden" name="ingestion_mode" value="whole_file">
+  </form>
+
+  <div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
+    Copied to clipboard
+  </div>
+
+  <div class="tour-overlay" data-tour-overlay hidden>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="top" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="right" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="bottom" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="left" data-tour-close></div>
+    <div class="tour-overlay__highlight" data-tour-highlight></div>
+    <div class="tour-overlay__card" data-tour-card>
+      <div class="tour-overlay__eyebrow">Quick guide</div>
+      <div class="tour-overlay__title" data-tour-title></div>
+      <div class="tour-overlay__body" data-tour-body></div>
+      <div class="tour-overlay__actions">
+        <div class="tour-overlay__progress" data-tour-progress></div>
+        <div class="flex items-center gap-2">
+          <button type="button" class="btn-secondary" data-tour-back>Back</button>
+          <button type="button" class="btn-secondary" data-tour-close-button>Close</button>
+          <button type="button" class="btn-primary" data-tour-next>Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="transcribe-bootstrap" type="application/json">
+    {{ {
+      "activeTranscriptId": active_transcript_id,
+      "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,
+      "nextLiveChunkSequenceNo": active_transcript_next_live_chunk_sequence_no_upload if active_transcript_next_live_chunk_sequence_no_upload is not none else 1,
+      "hasSttSelection": stt_selection is not none,
+      "hasLlmSelection": llm_selection is not none,
+      "sttAvailable": stt_available,
+      "sttStatusMessage": stt_status_message,
+      "latestIngestionJobStatus": active_transcript_latest_job.status.value if active_transcript_latest_job else none,
+      "latestIngestionErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
+      "showRedactionDebug": show_redaction_debug,
+      "initialTranscriptErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
+      "emisSections": emis_sections,
+      "activeTab": 'followups' if active_tab == 'followups' else 'output',
+      "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user'
+    } | tojson }}
+  </script>
+  <script type="module" src="{{ url_for('static', path='js/transcribe/app.js') }}"></script>
+  {% include "_csrf_script.html" %}

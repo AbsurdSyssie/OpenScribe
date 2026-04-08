@@ -92,9 +92,9 @@
 </head>
 <body>
   <main>
-    <div>Restricted onboarding for {{ current_user.email }}</div>
-    <h1>Complete onboarding before normal access.</h1>
-    <p>Managed accounts are restricted to password change, TOTP setup, recovery codes, and logout until onboarding finishes.</p>
+    <div>Account setup for {{ current_user.email }}</div>
+    <h1>Finish setting up your account.</h1>
+    <p>You only need to do this once. Until you finish, you can change your password, set up sign-in protection, save recovery codes, or sign out.</p>
 
     {% if message %}
     <div class="flash {{ message_kind }}">{{ message }}</div>
@@ -102,55 +102,55 @@
 
     {% if current_user.onboarding_state.value == "pending_password_change" %}
     <section>
-      <h2>Step 1. Change your password</h2>
+      <h2>Step 1. Choose a new password</h2>
       <form method="post" action="/onboarding/password">
         <label>
           New password
           <input type="password" name="new_password" required minlength="8">
         </label>
-        <button type="submit">Save password</button>
+        <button type="submit">Save new password</button>
       </form>
     </section>
     {% elif current_user.onboarding_state.value == "pending_totp_enrollment" %}
     <section>
-      <h2>Step 2. Enroll TOTP</h2>
+      <h2>Step 2. Set up sign-in protection</h2>
       {% if not totp_secret %}
       <form method="post" action="/onboarding/totp/start">
-        <button type="submit">Generate TOTP secret</button>
+        <button type="submit">Set up authenticator app</button>
       </form>
       {% else %}
       <div class="qr">
         <div>Scan this QR code with your authenticator app.</div>
         <img src="{{ totp_qr_svg_data_uri }}" alt="TOTP QR code">
       </div>
-      <p>Secret: <strong>{{ totp_secret }}</strong></p>
-      <p>Provisioning URI: <small>{{ totp_uri }}</small></p>
+      <p>Manual code: <strong>{{ totp_secret }}</strong></p>
+      <p>Setup link: <small>{{ totp_uri }}</small></p>
       <form method="post" action="/onboarding/totp/verify">
         <label>
-          6-digit TOTP code
+          6-digit code
           <input type="text" name="code" required minlength="6" maxlength="8">
         </label>
-        <button type="submit">Verify TOTP</button>
+        <button type="submit">Check code</button>
       </form>
       {% endif %}
     </section>
     {% elif current_user.onboarding_state.value == "pending_recovery_codes" %}
     <section>
       <h2>Step 3. Recovery codes</h2>
-      <p>You may generate one-time recovery codes now, or skip this optional step.</p>
+      <p>You can save one-time recovery codes now, or skip this optional step.</p>
       <div class="actions">
         <form method="post" action="/onboarding/recovery-codes">
-          <button type="submit">Generate recovery codes</button>
+          <button type="submit">Create recovery codes</button>
         </form>
         <form method="post" action="/onboarding/skip-recovery-codes">
-          <button type="submit">Skip recovery codes</button>
+          <button type="submit">Skip for now</button>
         </form>
       </div>
     </section>
     {% else %}
     <section>
       <h2>Onboarding complete</h2>
-      <p>Your account now has normal access.</p>
+      <p>Your account is ready to use.</p>
       <div class="actions">
         <a href="/home">Go to home</a>
       </div>
@@ -160,7 +160,7 @@
     {% if recovery_codes %}
     <section>
       <h2>Your recovery codes</h2>
-      <p>Save these now. They will not be shown again.</p>
+      <p>Save these now. They will only be shown once.</p>
       <div class="code-list">
         {% for code in recovery_codes %}
         <div>{{ code }}</div>

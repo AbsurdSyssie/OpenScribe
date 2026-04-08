@@ -5036,7 +5036,7 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     assert is_encrypted_envelope(transcript_after_one.current_draft_text_encrypted)
     assert decrypt_transcript_draft(db_session, transcript_after_one) == "draft-1\nfirst chunk\nsecond chunk"
     assert transcript_after_one.next_live_chunk_sequence_no_applied == 3
-    assert transcript_after_one.status.value == "transcribing"
+    assert transcript_after_one.status.value == "ready"
 
     refreshed_two = db_session.get(TranscriptIngestionJob, job_two_id)
     assert refreshed_two is not None
@@ -5089,9 +5089,11 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     assert detail.status_code == 200
     assert detail.json()["current_draft_text_encrypted"] == "draft-1\nsecond chunk"
     assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
+    assert detail.json()["status"] == "ready"
     refreshed_transcript = db_session.get(Transcript, transcript.id)
     assert refreshed_transcript is not None
     assert refreshed_transcript.next_live_chunk_sequence_no_applied == 3
+    assert refreshed_transcript.status is TranscriptStatus.ready
     refreshed_job = db_session.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -5100,6 +5102,48 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     )
     assert refreshed_job is not None
     assert refreshed_job.status is TranscriptIngestionJobStatus.applied
+
+
+def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-live-ready@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        current_draft_text_encrypted="draft-1",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        next_live_chunk_sequence_no_applied=2,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="chunk-1.wav",
+            status=TranscriptIngestionJobStatus.applied,
+            result_text_encrypted="first chunk",
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-ready@example.com", password="password-1")
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert workspace.status_code == 200
+    payload = workspace.json()
+    assert payload["active_transcript"]["status"] == "ready"
+    assert payload["can_create_new_session"] is True
+
+    refreshed_transcript = db_session.get(Transcript, transcript.id)
+    assert refreshed_transcript is not None
+    assert refreshed_transcript.status is TranscriptStatus.ready
 
 
 def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, db_session, make_team, make_user, monkeypatch):

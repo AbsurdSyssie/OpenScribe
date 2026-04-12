@@ -3,6 +3,9 @@ export function createDocumentNavigator({
   helpers,
   getState,
   setState,
+  clearNoteEditorDirty,
+  persistNoteEditsSilently,
+  shouldPreserveLocalNoteEdits,
 }) {
   const {
     noteSelectorWrap,
@@ -39,8 +42,8 @@ export function createDocumentNavigator({
 
   const followupDocumentLabel = (document) => (
     document?.generator_type === "quick_action"
-      ? (document?.source_quick_action_name || document?.title || "Saved instruction")
-      : (document?.follow_up_prompt_text || document?.title || "Message")
+      ? (document?.source_quick_action_name || document?.title || "Quick action")
+      : (document?.follow_up_prompt_text || document?.title || "Follow-up")
   );
 
   const truncateSwitcherLabel = (value, maxWords = 4) => {
@@ -52,6 +55,18 @@ export function createDocumentNavigator({
       return words.join(" ");
     }
     return `${words.slice(0, maxWords).join(" ")}…`;
+  };
+
+  const dispatchLegacyWorkspaceSelection = (kind, document) => {
+    if (!window.document.querySelector('[data-legacy-note-workspace]')) {
+      return;
+    }
+    window.document.dispatchEvent(new window.CustomEvent('openscribe:legacy-workspace-document-selected', {
+      detail: {
+        kind,
+        document: document || null,
+      },
+    }));
   };
 
   const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind }) => {
@@ -84,19 +99,19 @@ export function createDocumentNavigator({
       noteHistory.innerHTML = '<div class="text-sm text-slate">No note history yet.</div>';
       return;
     }
-    documents.forEach((document) => {
-      const card = document.createElement("button");
+    documents.forEach((item) => {
+      const card = window.document.createElement("button");
       card.type = "button";
-      card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${document.id === selectedId ? "bg-teal-pale/35 border border-teal-muted/35" : "hover:bg-parchment/50"}`;
-      card.dataset.documentId = document.id;
+      card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${item.id === selectedId ? "bg-teal-pale/35 border border-teal-muted/35" : "hover:bg-parchment/50"}`;
+      card.dataset.documentId = item.id;
       card.dataset.documentKind = "note";
       card.innerHTML = `
         <div class="flex items-center justify-between gap-4">
           <div class="min-w-0">
-            <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(document))}</div>
-            <div class="text-xs text-slate mt-1">${escapeHtml(document.source_template_name || "Note layout output")} · ${escapeHtml(document.model_used || "model not shown")}</div>
+            <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(item))}</div>
+            <div class="text-xs text-slate mt-1">${escapeHtml(item.source_template_name || "Note layout output")} · ${escapeHtml(item.model_used || "model not shown")}</div>
           </div>
-          <div class="text-xs text-slate text-right">${escapeHtml(document.status || "")}<br>${escapeHtml(document.created_at || "")}</div>
+          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(item.created_at || "")}</div>
         </div>
       `;
       noteHistory.appendChild(card);
@@ -107,36 +122,84 @@ export function createDocumentNavigator({
     if (!followupHistory) return;
     followupHistory.innerHTML = "";
     if (!documents.length) {
-      followupHistory.innerHTML = '<div class="text-sm text-slate">No previous messages yet.</div>';
+      followupHistory.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state__icon">
+            <svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-5l-5 5v-5z"/>
+            </svg>
+          </div>
+          <div class="empty-state__text">Select a quick action or describe what you need to create a follow-up message.</div>
+        </div>
+      `;
       return;
     }
-    documents.forEach((document) => {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${document.id === selectedId ? "bg-teal-pale/35 border border-teal-muted/35" : "hover:bg-parchment/50"}`;
-      card.dataset.documentId = document.id;
+    documents.forEach((item) => {
+      const card = window.document.createElement("div");
+      card.className = `followup-card${item.id === selectedId ? " followup-card--active" : ""}`;
+      card.role = "button";
+      card.tabIndex = 0;
+      card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
-      card.innerHTML = `
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-ink">${escapeHtml(followupDocumentLabel(document))}</div>
-            <div class="text-xs text-slate mt-1">${escapeHtml(document.model_used || "model not shown")} · ${escapeHtml((document.generator_type || "").replaceAll("_", " "))}</div>
-          </div>
-          <div class="text-xs text-slate text-right">${escapeHtml(document.status || "")}<br>${escapeHtml(document.created_at || "")}</div>
+      const body = item.status === "ready" && item.edited_output_text_encrypted
+        ? `<div class="followup-card__content" data-followup-copy-body>${escapeHtml(item.edited_output_text_encrypted)}</div>`
+        : item.status === "queued"
+          ? '<div class="followup-card__content followup-card__content--placeholder">Waiting to be written...</div>'
+          : item.status === "processing"
+            ? '<div class="followup-card__content followup-card__content--placeholder">Being written...</div>'
+            : item.status === "failed"
+              ? `<div class="followup-card__content followup-card__content--error">Failed${item.error_message ? `: ${escapeHtml(item.error_message)}` : ""}</div>`
+              : "";
+      const typeLabel = item.generator_type === "quick_action" ? "Quick action" : "Custom";
+      const title = item.generator_type === "quick_action"
+        ? (item.source_quick_action_name || item.title || "Quick action")
+        : followupDocumentLabel(item);
+      const actions = `
+        <div class="followup-card__actions">
+          ${item.status === "ready" && item.edited_output_text_encrypted ? `
+            <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2m-6 12h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2z"/>
+              </svg>
+            </button>
+          ` : ""}
+          <button type="button" class="btn-icon" data-followup-delete data-generated-document-id="${escapeHtml(item.id || "")}" title="Delete permanently">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5.75A1.75 1.75 0 0 1 10.75 4h2.5A1.75 1.75 0 0 1 15 5.75V7m-7 0 .7 10.15A1.75 1.75 0 0 0 10.45 18.8h3.1a1.75 1.75 0 0 0 1.75-1.65L16 7"/>
+            </svg>
+          </button>
         </div>
+      `;
+      card.innerHTML = `
+        <div class="followup-card__header">
+          <div class="followup-card__meta">
+            <span class="followup-card__type">${escapeHtml(typeLabel)}</span>
+            <span class="followup-card__name">${escapeHtml(title)}</span>
+          </div>
+          ${actions}
+        </div>
+        <div class="followup-card__status">
+          <span class="followup-status followup-status--${escapeHtml(item.status || "")}">${escapeHtml(item.status || "")}</span>
+          <span class="followup-card__date">${escapeHtml(item.created_at || "")}</span>
+        </div>
+        ${body}
       `;
       followupHistory.appendChild(card);
     });
   };
 
-  const renderSelectedNote = () => {
+  const renderSelectedNote = ({ preserveEditor = false } = {}) => {
     const state = getState();
     const selectedNote = selectedDocumentFromList(state.workspaceNoteDocuments, state.selectedNoteDocumentId);
     setState({ selectedNoteDocumentId: selectedNote?.id || null });
     if (latestGeneratedOutput) {
       latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
       latestGeneratedOutput.dataset.latestGeneratedId = selectedNote?.id || "";
-      renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
+      latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
+      latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
+      if (!preserveEditor && !shouldPreserveLocalNoteEdits?.()) {
+        renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
+      }
     }
     if (noteMeta) {
       noteMeta.textContent = selectedNote
@@ -153,6 +216,7 @@ export function createDocumentNavigator({
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
     renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
+    dispatchLegacyWorkspaceSelection('note', selectedNote);
   };
 
   const renderSelectedFollowup = () => {
@@ -167,7 +231,7 @@ export function createDocumentNavigator({
     if (followupMeta) {
       followupMeta.textContent = selectedFollowup
         ? `${selectedFollowup.model_used || "model not shown"} · ${selectedFollowup.status} · ${selectedFollowup.created_at}`
-        : "No messages yet";
+        : "No follow-ups yet";
     }
     renderDocumentSelector({
       wrap: followupSelectorWrap,
@@ -179,11 +243,23 @@ export function createDocumentNavigator({
     });
     renderFollowupHistory(state.workspaceFollowupDocuments, selectedFollowup?.id || null);
     renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
+    dispatchLegacyWorkspaceSelection('followup', selectedFollowup);
   };
 
-  const selectDocumentFromUi = (kind, documentId) => {
+  const selectDocumentFromUi = async (kind, documentId) => {
     if (!documentId) return;
     if (kind === "note") {
+      const state = getState();
+      if (state.selectedNoteDocumentId === documentId) {
+        return;
+      }
+      if (shouldPreserveLocalNoteEdits?.()) {
+        const savedDocument = await persistNoteEditsSilently?.();
+        if (!savedDocument) {
+          return;
+        }
+      }
+      clearNoteEditorDirty?.();
       setState({ selectedNoteDocumentId: documentId });
       renderSelectedNote();
       setTab("output");

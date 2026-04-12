@@ -13,6 +13,7 @@ from ..models import (
     SessionAuthLevel,
     SessionStatus,
     TeamRole,
+    TemplateMode,
     Transcript,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -38,6 +39,7 @@ from ..services.llm import (
     get_user_llm_preference as get_user_llm_preference_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.templates import (
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
@@ -119,15 +121,111 @@ def _document_section_lines_by_key(db: Session, document: GeneratedDocument | No
     return line_map
 
 
+def _default_emis_section_definitions() -> list[dict[str, str]]:
+    return [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS]
+
+
+def _order_assets_by_favourites(assets, favorite_ids: list[str] | None):
+    if not assets or not favorite_ids:
+        return assets
+    favorite_position = {value: index for index, value in enumerate(favorite_ids)}
+    return sorted(
+        assets,
+        key=lambda asset: (
+            0 if str(asset.id) in favorite_position else 1,
+            favorite_position.get(str(asset.id), 999),
+            str(getattr(asset, "name", "")).lower(),
+        ),
+    )
+
+
+def _latest_template_version(template):
+    versions = sorted(getattr(template, "versions", []) or [], key=lambda version: version.version_no)
+    return versions[-1] if versions else None
+
+
+def _structured_section_definitions_for_template(template) -> list[dict[str, str]]:
+    latest_version = _latest_template_version(template)
+    if latest_version is None or latest_version.mode is not TemplateMode.structured:
+        return _default_emis_section_definitions()
+    config = latest_version.config_json if isinstance(latest_version.config_json, dict) else {}
+    raw_sections = config.get("sections")
+    if not isinstance(raw_sections, list):
+        return _default_emis_section_definitions()
+    ordered_sections = sorted(
+        [section for section in raw_sections if isinstance(section, dict)],
+        key=lambda section: section.get("section_order") if isinstance(section.get("section_order"), int) else 999,
+    )
+    definitions: list[dict[str, str]] = []
+    for section in ordered_sections:
+        section_key = section.get("section_key")
+        if section_key not in EMIS_SECTION_KEYS:
+            continue
+        label = section.get("section_label")
+        definitions.append(
+            {
+                "key": section_key,
+                "label": label if isinstance(label, str) and label.strip() else EMIS_SECTION_LABELS[section_key],
+            }
+        )
+    return definitions or _default_emis_section_definitions()
+
+
+def _structured_section_definitions_for_document(document: GeneratedDocument | None) -> list[dict[str, str]]:
+    snapshot = document.structured_section_definitions_json if document is not None else None
+    if not isinstance(snapshot, dict):
+        return []
+    raw_sections = snapshot.get("sections")
+    if not isinstance(raw_sections, list):
+        return []
+    definitions: list[dict[str, str]] = []
+    ordered_sections = sorted(
+        [section for section in raw_sections if isinstance(section, dict)],
+        key=lambda section: section.get("section_order") if isinstance(section.get("section_order"), int) else 999,
+    )
+    for section in ordered_sections:
+        section_key = section.get("section_key")
+        if section_key not in EMIS_SECTION_KEYS:
+            continue
+        label = section.get("section_label")
+        definitions.append(
+            {
+                "key": section_key,
+                "label": label if isinstance(label, str) and label.strip() else EMIS_SECTION_LABELS[section_key],
+            }
+        )
+    return definitions
+
+
+def _structured_section_option_payloads(templates) -> dict[str, list[dict[str, object]]]:
+    payloads: dict[str, list[dict[str, object]]] = {}
+    for template in templates:
+        latest_version = _latest_template_version(template)
+        if latest_version is None or latest_version.mode is not TemplateMode.structured:
+            continue
+        definitions = _structured_section_definitions_for_template(template)
+        payloads[str(template.id)] = [
+            {
+                "section_key": definition["key"],
+                "section_label": definition["label"],
+                "section_order": index,
+            }
+            for index, definition in enumerate(definitions)
+        ]
+    return payloads
+
+
 def _structured_editor_sections(
     db: Session,
     *,
     generated_document: GeneratedDocument | None,
     active_structured_context: dict[str, list[str]],
+    section_definitions: list[dict[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     generated_lines = _document_section_lines_by_key(db, generated_document)
     sections: list[dict[str, object]] = []
-    for section_key in EMIS_SECTION_KEYS:
+    for definition in section_definitions or _default_emis_section_definitions():
+        section_key = definition["key"]
         visible_lines = generated_lines.get(section_key)
         if visible_lines is None:
             visible_lines = list(active_structured_context.get(section_key) or [])
@@ -136,11 +234,36 @@ def _structured_editor_sections(
         sections.append(
             {
                 "key": section_key,
-                "label": EMIS_SECTION_LABELS[section_key],
+                "label": definition.get("label") or EMIS_SECTION_LABELS[section_key],
                 "rows": rows,
             }
         )
     return sections
+
+
+def _freeform_editor_rows(
+    db: Session,
+    *,
+    generated_document: GeneratedDocument | None,
+) -> list[dict[str, object]]:
+    if generated_document is None:
+        return [{"text": "", "checked": True}]
+    if generated_document.document_mode is not TemplateMode.freeform:
+        return []
+    raw_text = generated_document_response(db, generated_document).edited_output_text_encrypted or ""
+    visible_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    rows = [{"text": line, "checked": True} for line in visible_lines]
+    rows.append({"text": "", "checked": True})
+    return rows
+
+
+def _generated_note_has_content(db: Session, document: GeneratedDocument | None) -> bool:
+    if document is None:
+        return False
+    if document.document_mode is TemplateMode.structured:
+        return any(lines for lines in _document_section_lines_by_key(db, document).values())
+    raw_text = generated_document_response(db, document).edited_output_text_encrypted or ""
+    return bool(raw_text.strip())
 
 
 def resolve_transcribe_workspace(
@@ -226,6 +349,12 @@ def resolve_transcribe_workspace(
             _, _, resolved_user_llm_model, user_llm_preference = resolve_user_llm_service(db, current_user)
         except AppError:
             user_llm_preference = get_user_llm_preference_service(db, current_user)
+    user_app_preference = (
+        get_user_app_preferences_service(db, current_user)
+        if current_user.team_id is not None and not current_user.is_system_admin
+        else None
+    )
+    user_app_preferences_json = user_app_preference.preferences_json if user_app_preference and isinstance(user_app_preference.preferences_json, dict) else {}
     can_create_new_session, new_session_block_message = can_create_new_session_service(db, current_user)
     can_switch_to_whole_file = False
     switch_mode_block_message = None
@@ -240,6 +369,8 @@ def resolve_transcribe_workspace(
             switch_mode_block_message = whole_file_message
     available_templates = list_available_templates_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_quick_actions = list_available_quick_actions_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
+    available_templates = _order_assets_by_favourites(available_templates, user_app_preferences_json.get("favorite_template_ids"))
+    available_quick_actions = _order_assets_by_favourites(available_quick_actions, user_app_preferences_json.get("favorite_quick_action_ids"))
     generated_documents = (
         list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
         if active_transcript is not None and not current_user.is_system_admin
@@ -253,6 +384,10 @@ def resolve_transcribe_workspace(
     ]
     latest_generated_document = note_documents[0] if note_documents else None
     latest_followup_document = followup_documents[0] if followup_documents else None
+    structured_section_definitions = (
+        _structured_section_definitions_for_document(latest_generated_document)
+        or (_structured_section_definitions_for_template(available_templates[0]) if available_templates else _default_emis_section_definitions())
+    )
     show_redaction_debug = bool(
         request is not None
         and local_dev_emails is not None
@@ -261,6 +396,15 @@ def resolve_transcribe_workspace(
         and request_is_localhost_only(request)
     )
     active_structured_context = _active_structured_context_map(db, active_transcript)
+    active_draft_text = transcript_draft_text_service(db, transcript=active_transcript) if active_transcript is not None else ""
+    active_note_input_available = bool(
+        active_transcript
+        and (
+            bool((active_draft_text or "").strip())
+            or bool(active_structured_context)
+            or _generated_note_has_content(db, latest_generated_document)
+        )
+    )
     return {
         "recent_transcripts": recent_transcripts,
         "active_transcript": active_transcript,
@@ -279,6 +423,7 @@ def resolve_transcribe_workspace(
         "can_switch_to_whole_file": can_switch_to_whole_file,
         "switch_mode_block_message": switch_mode_block_message,
         "available_templates": available_templates,
+        "template_section_definitions_by_id": _structured_section_option_payloads(available_templates),
         "available_quick_actions": available_quick_actions,
         "generated_documents": generated_documents,
         "note_documents": note_documents,
@@ -289,11 +434,18 @@ def resolve_transcribe_workspace(
             db,
             generated_document=latest_generated_document,
             active_structured_context=active_structured_context,
+            section_definitions=structured_section_definitions,
+        ),
+        "freeform_editor_rows": _freeform_editor_rows(
+            db,
+            generated_document=latest_generated_document,
         ),
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
+        "active_note_input_available": active_note_input_available,
         "show_redaction_debug": show_redaction_debug,
-        "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
+        "emis_sections": _default_emis_section_definitions(),
+        "structured_section_definitions": structured_section_definitions,
         "team_leader_email": team_leader_email,
     }
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, TemplateMode, TemplateScope
 
@@ -121,6 +121,7 @@ class GeneratedDocumentDetail(BaseModel):
     source_template_name: str
     source_quick_action_name: str | None = None
     follow_up_prompt_text: str | None = None
+    structured_section_definitions_json: dict | None = None
     status: GeneratedDocumentStatus
     title: str
     document_mode: TemplateMode
@@ -160,6 +161,19 @@ class GeneratedDocumentSectionDetail(BaseModel):
     model_config = {"from_attributes": True, "protected_namespaces": ()}
 
 
+class GeneratedDocumentSectionUpdate(BaseModel):
+    section_key: str = Field(min_length=1, max_length=64)
+    section_label: str = Field(min_length=1, max_length=255)
+    section_order: int
+    text: str = ""
+
+
+class GeneratedDocumentUpdateRequest(BaseModel):
+    expected_updated_at: datetime
+    edited_output_text: str = ""
+    sections: list[GeneratedDocumentSectionUpdate] = Field(default_factory=list)
+
+
 class RedactionDebugEntityDetail(BaseModel):
     entity_order: int
     entity_type: str
@@ -192,6 +206,15 @@ class GenerateFollowupRequest(BaseModel):
 
 class GenerateQuickActionRequest(BaseModel):
     quick_action_id: UUID
+    context_text: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("context_text")
+    @classmethod
+    def validate_context_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
 
 
 GeneratedDocumentDetail.model_rebuild()

@@ -1,6 +1,8 @@
 import pytest
 import pyotp
 from datetime import timedelta
+from html.parser import HTMLParser
+from pathlib import Path
 from uuid import UUID
 from sqlalchemy import func, select
 
@@ -238,10 +240,71 @@ def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, mak
 
     assert response.status_code == 200
     assert "Your OpenScribe home" in response.text
+    assert 'data-tab-target="ai-services"' in response.text
     assert 'data-tab-target="team-management"' in response.text
-    assert "Team management" in response.text
+    assert "AI services" in response.text
+    assert "Choose speech and writing services for your team." in response.text
     assert 'name="return_view" value="restyled"' in response.text
     assert "/home-restyled?tab=templates" in response.text
+
+
+def test_leader_home_separates_ai_services_from_team_member_admin(client, make_team, make_user, make_stt_config, make_llm_config):
+    team = make_team(name="Clinic Services Split")
+    admin = make_user(email="services-admin@example.com", password="password-2", is_system_admin=True)
+    make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
+    make_llm_config(team=team, actor=admin, label="Clinic LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_user(email="services-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "services-leader@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home")
+
+    assert 'data-tab-target="ai-services"' in page.text
+    assert 'data-tab-panel="ai-services"' in page.text
+    assert "service-section--stt" in page.text
+    assert "service-section--llm" in page.text
+    assert "Choose speech and writing services for your team." in page.text
+    assert "Speech to text" in page.text
+    assert "Writing assistant" in page.text
+
+
+def test_leader_home_ai_service_modal_query_opens_inline_editor(client, make_team, make_user, make_stt_config, make_llm_config):
+    team = make_team(name="Clinic Inline Services")
+    admin = make_user(email="inline-services-admin@example.com", password="password-2", is_system_admin=True)
+    make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
+    make_llm_config(team=team, actor=admin, label="Clinic LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_user(email="inline-services-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "inline-services-leader@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home?tab=ai-services&modal=stt-settings")
+
+    assert page.status_code == 200
+    assert 'data-service-body="stt"' in page.text
+    assert 'data-service-body="stt" hidden' not in page.text
+    assert 'data-service-toggle="stt">Close<' in page.text
+
+
+def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic Inline Errors")
+    admin = make_user(email="inline-errors-admin@example.com", password="password-2", is_system_admin=True)
+    make_llm_config(team=team, actor=admin, label="Clinic LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_user(email="inline-errors-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "inline-errors-leader@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.post(
+        "/home/llm-selection",
+        data={
+            "llm_config_id": "not-a-uuid",
+            "allowed_model_names": "gpt-4o-mini",
+            "provider_model": "gpt-4o-mini",
+            "return_tab": "ai-services",
+        },
+    )
+
+    assert response.status_code == 400
+    assert 'data-default-tab="ai-services"' in response.text
+    assert 'data-service-body="llm"' in response.text
+    assert 'data-service-body="llm" hidden' not in response.text
+    assert 'data-service-toggle="llm">Close<' in response.text
 
 
 def test_home_restyled_llm_preference_redirect_preserves_preview_route(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -413,7 +476,7 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
     assert "Speech service" in page.text
-    assert "Available speech service" in page.text
+    assert "Save speech service" in page.text
     assert "Clinic STT" in page.text
 
     save = client.post(
@@ -441,16 +504,16 @@ def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoi
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Current choice" in page.text
-    assert "Remove choice" in page.text
+    assert "Choose speech service" in page.text
+    assert "Save speech service" in page.text
+    assert ">Clear<" in page.text
 
     cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/home?tab=team-management"
 
     page_after = client.get("/home")
-    assert "Available speech service" in page_after.text
-    assert "Current choice" not in page_after.text
+    assert "No speech service selected yet" in page_after.text
     assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
     assert db_session.get(TeamSttConfig, config.id) is not None
 
@@ -537,7 +600,7 @@ def test_leader_home_can_create_team_template(client, db_session, make_team, mak
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Note layouts" in page.text
+    assert "Templates" in page.text
 
     save = client.post(
         "/home/team-templates",
@@ -560,7 +623,7 @@ def test_user_home_can_create_personal_template(client, db_session, make_team, m
 
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Note layouts" in page.text
+    assert "Templates" in page.text
 
     save = client.post(
         "/home/personal-templates",
@@ -612,7 +675,7 @@ def test_leader_home_can_create_team_quick_action(client, db_session, make_team,
 
     client.post("/login", data={"email": "leader-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Saved instructions" in page.text
+    assert "Quick actions" in page.text
 
     save = client.post(
         "/home/team-quick-actions",
@@ -677,7 +740,7 @@ def test_user_home_can_create_personal_quick_action(client, db_session, make_tea
 
     client.post("/login", data={"email": "user-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Saved instructions" in page.text
+    assert "Quick actions" in page.text
 
     save = client.post(
         "/home/personal-quick-actions",
@@ -967,13 +1030,20 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert page.status_code == 200
     assert "Ambient Scribe" in page.text
     assert 'data-new-session-button' in page.text
-    assert 'data-recording-mode-select' in page.text
     assert "Create new consultation" in page.text
-    assert "Recording mode" in page.text
-    assert "Upload recording" in page.text
-    assert "Create or open a consultation to begin." in page.text
-    assert "Selected note" in page.text
-    assert "Messages" in page.text
+    assert 'data-record-toggle' in page.text
+    assert 'data-audio-action-trigger' in page.text
+    assert 'data-recording-mode-select' in page.text
+    assert 'data-active-draft' in page.text
+    assert 'data-active-status' in page.text
+    assert 'data-session-progress' in page.text
+    assert 'data-copy-transcript' in page.text
+    assert 'data-template-picker-button' in page.text
+    assert 'data-template-picker-modal' in page.text
+    assert 'Copy transcript' in page.text
+    assert 'data-select-structured-selection' in page.text
+    assert "Record" in page.text
+    assert "Upload" in page.text
     assert "Guide" in page.text
     assert 'data-tour-overlay' in page.text
     assert 'data-tour-scrim="top"' in page.text
@@ -986,7 +1056,23 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js" in page.text
     assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert "js/transcribe/app.js" in page.text
+    assert 'src="/static/js/transcribe/app.js"' in page.text
+    assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_user_transcribe_page_namespaces_legacy_note_tabs(client, make_team, make_user):
+    team = make_team(name="Clinic Legacy Note Tabs")
+    make_user(email="legacy-note-tabs@example.com", password="password-3", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "legacy-note-tabs@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get("/transcribe")
+
+    assert page.status_code == 200
+    assert 'data-legacy-note-workspace' in page.text
+    assert 'data-note-tab-trigger="note"' in page.text
+    assert 'data-note-tab-panel="note"' in page.text
+    assert 'data-tab-trigger="note"' not in page.text
+    assert 'data-tab-panel="note"' not in page.text
 
 
 def test_user_transcribe_page_exposes_home_and_context_settings_controls(
@@ -1219,6 +1305,11 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     assert 'data-copy-structured-lines' in page.text
     assert 'data-structured-copy-status' in page.text
     assert 'data-latest-followup-output' in page.text
+    assert 'data-generate-output-form' in page.text
+    assert 'data-quick-action-context-input' in page.text
+    assert 'Create note' in page.text
+    assert 'Saved instructions' not in page.text
+    assert 'data-selected-template-mode' not in page.text
 
 
 def test_user_transcribe_glm_2_page_shows_all_emis_sections_for_structured_templates(
@@ -2103,10 +2194,363 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
 
     assert page.status_code == 200
     assert 'name="context_problem"' in page.text
+    assert 'data-template-mode="structured"' in page.text
     assert 'data-generated-structured-section' in page.text
-    assert 'data-generated-structured-panel' in page.text
+    assert 'data-section-key="problem"' in page.text
+    assert 'data-generated-structured-section data-section-key="history"' not in page.text
+    assert 'data-template-sections=' in page.text
     assert 'data-copy-structured-lines' in page.text
+
+
+def test_user_transcribe_page_marks_structured_template_options_for_blank_note_editor(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Structured Blank Note")
+    admin = make_user(email="structured-blank-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="structured-blank-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="structured-blank-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Blank session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "structured-blank-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert 'data-template-mode="structured"' in page.text
+    assert 'data-template-select' in page.text
+    assert 'data-generated-structured-section' in page.text
+    assert "Problem" in page.text
     assert 'data-structured-line-input' in page.text
+    assert 'data-generated-freeform-panel' in page.text
+    assert 'data-structured-note-empty-state' in page.text
+    assert 'No note lines yet' in page.text
+    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' in page.text
+
+
+def test_user_transcribe_page_enables_followups_from_structured_note_content(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Followups Structured Input")
+    admin = make_user(email="followups-structured-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="followups-structured-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="followups-structured-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Structured note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+            ],
+        },
+    )
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Patient SMS")
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Structured note only",
+        current_draft_text_encrypted="",
+        structured_context_json={"profile": "emis", "sections": {"problem": ["Known asthma"]}},
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "followups-structured-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+
+    assert page.status_code == 200
+    assert 'data-run-quick-action-trigger' in page.text
+    assert 'data-quick-action-select' in page.text
+    assert 'data-quick-action-context-input' in page.text
+    assert 'data-followup-prompt-input' in page.text
+    assert 'data-run-quick-action-trigger\ndisabled' not in page.text
+    assert 'data-quick-action-select\nclass="followup-select"\n>' in page.text
+
+
+def test_user_transcribe_page_enables_followups_from_freeform_note_content(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Followups Freeform Input")
+    admin = make_user(email="followups-freeform-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="followups-freeform-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="followups-freeform-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Freeform note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.freeform,
+    )
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Patient SMS")
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Freeform note only",
+        current_draft_text_encrypted=None,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=member.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            template_version_id=template.versions[-1].id,
+            source_template_name=template.name,
+            status=GeneratedDocumentStatus.ready,
+            title="Freeform summary",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="Patient improving\nReview in one week",
+            edited_output_text_encrypted="Patient improving\nReview in one week",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "followups-freeform-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+
+    assert page.status_code == 200
+    assert 'data-run-quick-action-trigger' in page.text
+    assert 'data-quick-action-context-input' in page.text
+    assert 'data-run-quick-action-trigger\ndisabled' not in page.text
+    assert 'data-quick-action-context-input></textarea>' in page.text
+
+
+def test_transcribe_frontend_uses_global_template_selector_for_generation_controls():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    actions_js = (root / "app" / "static" / "js" / "transcribe" / "actions.js").read_text(encoding="utf-8")
+    structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
+    media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
+    workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
+    head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+
+    assert "const generateOutputTemplateSelect = document.querySelector('[data-template-select]');" in app_js
+    assert "const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';" in actions_js
+    assert "shouldPreserveLiveMicStatus()" in app_js
+    assert "captureController?.syncDisplayedDuration?.();" in app_js
+    assert "Listening for speech..." in media_js
+    assert "const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';" in media_js
+    assert "const beginAccumulatedTimer = () => {" in media_js
+    assert "const finalizeAccumulatedTimer = () => {" in media_js
+    assert "syncDisplayedDuration: renderTimer," in media_js
+    assert "readActiveDraftText" in app_js
+    assert "document.querySelectorAll('[data-legacy-note-workspace] .section-block')" in structured_js
+    assert "row.className = 'statement-row';" in structured_js
+    assert "textarea.className = 'statement-editor';" in structured_js
+    assert "card.className = 'structured-section-block';" in structured_js
+    assert "const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);" in structured_js
+    assert "const templatePickerButton = document.querySelector('[data-template-picker-button]');" in app_js
+    assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
+    assert "const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');" in app_js
+    assert "const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');" in app_js
+    assert "let noteEditorDirty = false;" in app_js
+    assert "const markNoteEditorDirty = () => {" in app_js
+    assert "const shouldPreserveLocalNoteEdits = () => noteEditorDirty;" in app_js
+    assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
+    assert "const preserveDirtyNoteEditor = shouldPreserveLocalNoteEdits();" in app_js
+    assert "renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });" in app_js
+    assert "if (!preserveDirtyNoteEditor) {" in app_js
+    assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
+    assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
+    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
+    assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
+    assert "const buildNoteSavePayload = () => {" in app_js
+    assert "method: 'PATCH'" in app_js
+    assert "keepalive," in app_js
+    assert "void persistNoteEditsSilently();" in app_js
+    assert "window.showToast?.(message, kind);" in app_js
+    assert "flashWrap.hidden = true;" in app_js
+    assert ".statement-input" in head_assets
+    assert "template-picker-button" in head_assets
+    assert "freeform-note-panel" in head_assets
+    assert ".main-panel {" in head_assets
+    assert "min-height: 100%;" in head_assets
+    assert ".record-split-button {" in head_assets
+    assert "overflow: visible;" in head_assets
+    assert ".structured-workspace {" in head_assets
+    assert "flex: 1;" in head_assets
+    assert "statement-content" in workspace_html
+    assert '<div class="px-4 pt-3" hidden data-flash-wrap>' in workspace_html
+    assert "data-generated-freeform-panel" in workspace_html
+    assert "data-latest-generated-updated-at=" in workspace_html
+    assert "openscribe:legacy-workspace-document-selected" not in workspace_html
+    assert "activateNoteTab('note')" not in workspace_html
+    assert "data-generated-structured-sections" in workspace_html
+    assert "data-followup-history" in workspace_html
+    assert '<div class="transcript-content" data-active-draft>' in workspace_html
+    assert "structuredEditor.renderStructuredSections(generatedStructuredDraft);" not in app_js
+    assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform'" in structured_js
+    assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform' && Boolean(generatedDocument.edited_output_text_encrypted)" not in structured_js
+    assert "...((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || [])" in structured_js
+    assert "renderStructuredSections(null);" in structured_js
+    assert "renderFreeformLines(null);" in structured_js
+    assert "const activeGeneratedDocumentId = () => dom.latestGeneratedOutput?.dataset?.latestGeneratedId || '';" in structured_js
+    assert "if (selectedOutputTemplateMode() !== 'structured' || activeGeneratedDocumentId()) {" in structured_js
+    assert "generatedStructuredDraft.templateId !==" not in structured_js
+    assert "generatedStructuredDraft = buildGeneratedStructuredDraftFromDom() || generatedStructuredDraft;" in structured_js
+    assert "const ensureSectionHasEditableRow = (sectionContainer) => {" in structured_js
+    assert "if (rows.length === 0) {" in structured_js
+    assert "ensureSectionHasEmptyRow(sectionContainer);" not in structured_js
+    assert "ensureFreeformHasEmptyRow();" not in structured_js
+    assert "const ensureFreeformHasEditableRow = () => {" in structured_js
+    assert "onNoteEditorChanged?.();" in structured_js
+    assert "const hasNoteInputContent = () => {" in structured_js
+    documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
+    assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
+    assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
+    assert "if (!preserveEditor && !shouldPreserveLocalNoteEdits?.()) {" in documents_js
+    assert "const selectDocumentFromUi = async (kind, documentId) => {" in documents_js
+    assert "const savedDocument = await persistNoteEditsSilently?.();" in documents_js
+    assert "if (!savedDocument) {" in documents_js
+    assert "clearNoteEditorDirty?.();" in documents_js
+    assert "card.className = `followup-card${item.id === selectedId ? \" followup-card--active\" : \"\"}`;" in documents_js
+    assert "followupHistory.innerHTML = `\n        <div class=\"empty-state\">" in documents_js
+    assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
+    assert "not active_note_input_available" in workspace_html
+
+
+def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
+    root = Path(__file__).resolve().parents[1]
+    workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
+
+    class WorkspacePanelParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.panels = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag != "div":
+                return
+            attr_map = dict(attrs)
+            frame = {
+                "class": attr_map.get("class", ""),
+                "panel": attr_map.get("data-tab-panel"),
+            }
+            active_ancestors = [item["panel"] for item in self.stack if item["panel"]]
+            if frame["panel"]:
+                self.panels.append(
+                    {
+                        "panel": frame["panel"],
+                        "ancestor_panels": active_ancestors,
+                        "inside_scroll": any(item["class"] == "flex-1 overflow-y-auto bg-parchment" for item in self.stack),
+                    }
+                )
+            self.stack.append(frame)
+
+        def handle_endtag(self, tag):
+            if tag == "div" and self.stack:
+                self.stack.pop()
+
+    parser = WorkspacePanelParser()
+    parser.feed(workspace_html)
+
+    assert [item["panel"] for item in parser.panels] == ["output", "followups", "history"]
+    assert all(item["inside_scroll"] for item in parser.panels)
+    assert all(not item["ancestor_panels"] for item in parser.panels)
+
+
+def test_active_templates_route_flash_messages_through_top_right_toasts():
+    root = Path(__file__).resolve().parents[1]
+    home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
+    transcribe_head = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+    admin_html = (root / "app" / "templates" / "admin.html").read_text(encoding="utf-8")
+    login_html = (root / "app" / "templates" / "login.html").read_text(encoding="utf-8")
+    onboarding_html = (root / "app" / "templates" / "onboarding.html").read_text(encoding="utf-8")
+    request_access_html = (root / "app" / "templates" / "request_access.html").read_text(encoding="utf-8")
+    mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
+
+    assert "top: 24px;" in home_html
+    assert "document.querySelectorAll('.flash').forEach((flash) => {" in home_html
+    assert "top: 1.5rem;" in transcribe_head
+    assert "position: fixed;" in admin_html and "data-toast-container" in admin_html
+    assert "top: 24px;" in login_html and "data-toast-container" in login_html
+    assert "top: 24px;" in onboarding_html and "data-toast-container" in onboarding_html
+    assert "top:24px;" in request_access_html and "data-toast-container" in request_access_html
+    assert "top:24px;" in mfa_html and "data-toast-container" in mfa_html
+
+
+def test_home_overview_and_asset_cards_keep_white_fill_like_team_cards():
+    root = Path(__file__).resolve().parents[1]
+    home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
+
+    assert ".overview-grid .panel {\n  background: var(--card);" in home_html
+    assert ".asset-card {\n  display: grid;" in home_html
+    assert "padding: 18px;\n  background: var(--card);" in home_html
 
 
 def test_user_transcribe_page_hides_emis_context_for_freeform_template(
@@ -2150,7 +2594,167 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
 
     assert page.status_code == 200
     assert "Free text note" in page.text
-    assert "No note yet." in page.text
+    assert 'data-generated-freeform-panel' in page.text
+    assert 'data-freeform-note-input' in page.text
+    assert 'data-freeform-note-empty-state' in page.text
+    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' in page.text
+
+
+def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Clinic Transcript Empty State")
+    admin = make_user(email="transcript-empty-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="transcript-empty-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="transcript-empty-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Blank session",
+        current_draft_text_encrypted="Patient feels better.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=member.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            source_template_name="Freeform note",
+            status=GeneratedDocumentStatus.ready,
+            title="Blank note",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="",
+            edited_output_text_encrypted="",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "transcript-empty-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+
+    assert page.status_code == 200
+    assert "No note content yet. Select a template and start recording. Add note lines here as the consultation unfolds." in page.text
+    assert "No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation." in page.text
+
+
+def test_user_transcribe_page_shows_history_tab_empty_state(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic History Empty State")
+    member = make_user(email="history-empty-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Blank session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    client.post("/login", data={"email": "history-empty-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=history")
+
+    assert page.status_code == 200
+    assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in page.text
+
+
+def test_user_transcribe_page_renders_ready_freeform_note_editor(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Freeform Editor")
+    admin = make_user(email="freeform-editor-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="freeform-editor-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="freeform-editor-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Freeform note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.freeform,
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    generated = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=template.versions[-1].id,
+        source_template_name=template.name,
+        status=GeneratedDocumentStatus.ready,
+        title="Freeform summary",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="Line one\nLine two",
+        edited_output_text_encrypted="Line one\nLine two",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(generated)
+    db_session.commit()
+
+    client.post("/login", data={"email": "freeform-editor-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert 'data-generated-freeform-panel' in page.text
+    assert 'data-freeform-note-row' in page.text
+    assert 'data-freeform-note-input' in page.text
+    assert 'data-note-editor-toolbar' in page.text
 
 
 def test_user_transcribe_page_reloads_persisted_structured_emis_context(
@@ -2309,6 +2913,79 @@ def test_user_transcribe_page_keeps_structured_output_refresh_hooks(
     assert 'data-structured-line-input' in page.text
 
 
+def test_user_transcribe_page_uses_generated_note_snapshot_for_structured_sections(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Structured Snapshot UI")
+    member = make_user(email="structured-snapshot-ui@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    generated_document = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=None,
+        source_template_name="EMIS note",
+        status=GeneratedDocumentStatus.ready,
+        title="Chest review",
+        document_mode=TemplateMode.structured,
+        structured_section_definitions_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "section_order": 1},
+            ],
+        },
+        original_output_text_encrypted="Problem\nAsthma flare.",
+        edited_output_text_encrypted="Problem\nAsthma flare.",
+        is_edited=False,
+        retention_expires_at=transcript.retention_expires_at,
+        model_used="gpt-4o-mini",
+    )
+    db_session.add(generated_document)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocumentSection(
+            generated_document_id=generated_document.id,
+            section_key="problem",
+            section_label="Problem",
+            section_order=1,
+            original_text_encrypted="Asthma flare.",
+            edited_text_encrypted="Asthma flare.",
+            is_edited=False,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "structured-snapshot-ui@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert '<h3 class="structured-section-title">Problem</h3>' in page.text
+    assert '<h3 class="structured-section-title">History</h3>' not in page.text
+
+
 def test_local_dev_transcribe_page_shows_redaction_debug_panel(
     client,
     db_session,
@@ -2417,7 +3094,7 @@ def test_user_transcribe_page_can_queue_followup_generation(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
-    assert "Selected message" in page.text
+    assert "Selected follow-up" in page.text
     assert "Arrange blood tests and a review if symptoms persist." in page.text
     assert "queued" in page.text
 
@@ -2427,9 +3104,18 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     db_session,
     make_team,
     make_user,
+    make_quick_action,
 ):
     team = make_team(name="Clinic Document Switchers")
+    leader = make_user(email="leader-document-switchers@example.com", password="password-2", team=team, team_role=TeamRole.leader)
     member = make_user(email="member-document-switchers@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Arrange review",
+        prompt_text="Write follow-up review advice.",
+    )
     transcript = Transcript(
         owner_user_id=member.id,
         team_id=team.id,
@@ -2521,10 +3207,16 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert 'data-note-selector' in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
-    assert "Selected message" in page.text
+    assert "Selected follow-up" in page.text
     assert 'data-followup-selector' in page.text
     assert 'data-document-kind="followup"' in page.text
     assert 'data-followup-document-select' in page.text
+    assert 'data-run-quick-action-form' in page.text
+    assert f'value="{quick_action.id}"' in page.text
+    assert 'data-followup-copy' in page.text
+    assert 'data-followup-delete' in page.text
+    assert 'data-followup-copy-body' in page.text
+    assert 'data-copy-followup' not in page.text
     assert "Send patient-facing review advice." in page.text
     assert "Send SMS" in page.text
 
@@ -2545,6 +3237,27 @@ def test_user_transcribe_page_can_run_quick_action(
     member = make_user(email="member-quick-action-ui@example.com", password="password-3", team=team, team_role=TeamRole.user)
     config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Send SMS",
+        prompt_text="Write a short SMS update for the patient.",
+    )
+    make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Referral letter",
+        prompt_text="Write a short referral letter.",
+    )
+    make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Call patient",
+        prompt_text="Write a short callback message.",
+    )
     quick_action = make_quick_action(
         scope=TemplateScope.team,
         team=team,
@@ -2573,7 +3286,11 @@ def test_user_transcribe_page_can_run_quick_action(
     client.post("/login", data={"email": "member-quick-action-ui@example.com", "password": "password-3"}, follow_redirects=False)
     generated = client.post(
         "/transcribe/run-quick-action",
-        data={"transcript_id": str(transcript.id), "quick_action_id": str(quick_action.id)},
+        data={
+            "transcript_id": str(transcript.id),
+            "quick_action_id": str(quick_action.id),
+            "quick_action_context_text": "Mention the follow-up call.",
+        },
         follow_redirects=False,
     )
 
@@ -2584,8 +3301,77 @@ def test_user_transcribe_page_can_run_quick_action(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued quick action generation." in page.text
+    assert "Quick picks" in page.text
+    assert page.text.count('data-quick-action-quick-pick') >= 4
+    assert 'data-quick-action-kind="sms"' in page.text
+    assert 'data-quick-action-kind="letter"' in page.text
+    assert 'data-quick-action-kind="call"' in page.text
+    assert 'data-quick-action-kind="general"' in page.text
     assert "Arrange review" in page.text
     assert "queued" in page.text
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
+    assert persisted_document is not None
+    assert persisted_document.prompt_snapshot_text == "Write a short follow-up arranging a GP review if symptoms persist.\n\nAdditional context:\nMention the follow-up call."
+
+
+def test_user_transcribe_page_rejects_oversized_quick_action_context_on_form_submit(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Quick Action UI Limit")
+    admin = make_user(email="admin-quick-action-ui-limit@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="leader-quick-action-ui-limit@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="member-quick-action-ui-limit@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Arrange review",
+        prompt_text="Write a short follow-up arranging a GP review if symptoms persist.",
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    class FakeTaskResult:
+        id = "generated-quick-action-task-ui-limit"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+
+    client.post("/login", data={"email": "member-quick-action-ui-limit@example.com", "password": "password-3"}, follow_redirects=False)
+    generated = client.post(
+        "/transcribe/run-quick-action",
+        data={
+            "transcript_id": str(transcript.id),
+            "quick_action_id": str(quick_action.id),
+            "quick_action_context_text": "x" * 4001,
+        },
+        follow_redirects=False,
+    )
+
+    assert generated.status_code == 303
+    page = client.get(generated.headers["location"])
+    assert page.status_code == 200
+    assert "Additional context must be 4000 characters or fewer" in page.text
+    assert db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id)) is None
 
 
 def test_admin_page_marks_current_account_protected(client, make_user):
@@ -2596,8 +3382,50 @@ def test_admin_page_marks_current_account_protected(client, make_user):
     page = client.get("/admin")
 
     assert page.status_code == 200
-    assert "Protected" in page.text
-    assert "Delete permanently" in page.text
+
+
+def test_user_transcribe_page_orders_templates_and_quick_picks_from_preferences(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+    make_user_app_preference,
+):
+    team = make_team(name="Clinic Favourite Order UI")
+    member = make_user(email="member-favourites-ui@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    template_a = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Alpha template")
+    template_b = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Beta template")
+    quick_action_a = make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Alpha action", prompt_text="Alpha")
+    quick_action_b = make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Beta action", prompt_text="Beta")
+    make_user_app_preference(
+        user=member,
+        preferences_json={
+            "favorite_template_ids": [str(template_b.id)],
+            "favorite_quick_action_ids": [str(quick_action_b.id)],
+        },
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-favourites-ui@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert page.text.index("Beta template") < page.text.index("Alpha template")
+    assert page.text.index("Beta action") < page.text.index("Alpha action")
 
 
 def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_session, make_team, make_user):

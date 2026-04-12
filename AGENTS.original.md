@@ -2,37 +2,37 @@
 
 ## Purpose
 
-Ambient Scribing system repo.
+This repository implements the Ambient Scribing system.
 
-All coding agents follow architecture + process rules here. Project is privacy-sensitive and architecture-sensitive. Do not improvise around ownership, content access, deletion semantics, or encryption.
+All coding agents must follow the architecture and process rules in this file. This project is privacy-sensitive and architecture-sensitive. Do not improvise around ownership, content access, deletion semantics, or encryption.
 
 ---
 
 ## Core architecture rules
 
 ### Privacy and content visibility
-- All transcript-derived content private, non-shareable.
-- Only owning user may access transcript-derived content.
-- Team leaders + system admins may manage accounts, providers, templates, metadata, but may not read transcript/note content by default.
+- All transcript-derived content is private and non-shareable.
+- Only the owning user may access transcript-derived content.
+- Team leaders and system admins may manage accounts, providers, templates, and metadata, but may not read transcript/note content by default.
 - Metadata access is not content access.
-- Security paramount. Never allow user entered data in SQL queries.
+- Security is paramount. Never allow user entered data to be used in SQL queries
 
 ### Team and role model
 - Each normal user belongs to exactly one team.
 - `users.team_id` and `users.team_role` define team scope.
 - `users.is_system_admin` is separate from `team_role`.
-- System admin accounts are admin-only in MVP, do not own transcript-derived content.
+- System admin accounts are admin-only in MVP and do not own transcript-derived content.
 
 ### Transcript model
-- Create transcript row when recording starts.
+- Transcript row is created when recording starts.
 - Realtime partial transcript updates write into `transcripts.current_draft_text_encrypted`.
-- Create committed transcript versions only on blur, explicit save, or action execution.
-- Redaction is lazy. Only run when action requires it.
-- Transcript root is retention root.
+- Committed transcript versions are created only on blur, explicit save, or action execution.
+- Redaction is lazy and only occurs when an action requires it.
+- Transcript root is the retention root.
 
 ### Generated documents
-- Allow multiple outputs for same transcript version/template/action.
-- Owner user may edit generated documents.
+- Multiple outputs are allowed for the same transcript version/template/action.
+- Generated documents are editable by the owner user.
 - Generated documents support:
   - full document text
   - optional structured sections
@@ -52,16 +52,16 @@ All coding agents follow architecture + process rules here. Project is privacy-s
   - `investigations`
 - EMIS templates may remove/reorder allowed sections.
 - Structured templates support global + per-section instructions.
-- Omit empty sections.
+- Empty sections are omitted.
 
 ### Asset sharing model
-- Templates and quick actions are normal config unless they intentionally contain transcript-derived text.
-- Team assets available in team scope; not auto-added to user libraries.
-- Personal user-shared assets are same-team only, discoverable, must be explicitly watched.
-- Watching is live reference.
+- Templates and quick actions are normal configuration unless they intentionally contain transcript-derived text.
+- Team assets are available in team scope; not auto-added to user libraries.
+- Personal user-shared assets are same-team only, discoverable, and must be explicitly watched.
+- Watching is a live reference.
 - Forking creates ownership.
-- Renaming/customizing shared assets requires fork.
-- Deleting watched original removes watcher access immediately; existing forks survive.
+- Renaming/customization of shared assets requires a fork.
+- Deleting a watched original removes watcher access immediately; existing forks survive.
 
 ### Deletion rules
 - Deletion means deletion.
@@ -71,31 +71,31 @@ All coding agents follow architecture + process rules here. Project is privacy-s
   - own generated documents
   - own transcript roots
 - Transcript-root deletion cascades to all transcript-derived children.
-- Retention expiry fixed once, does not extend on later edits.
-- Expired transcript-derived content hard-delete immediately.
+- Retention expiry is fixed once and does not extend on later edits.
+- Expired transcript-derived content is hard-deleted immediately.
 - Team leaders can lock/deactivate users but cannot fully delete them.
-- Locking revokes sessions immediately, does not alter content state.
+- Locking revokes sessions immediately but does not alter content state.
 - System-level user deletion immediately deletes:
   - transcript-derived content
   - personal templates/actions
-- Team deletion blocked until cleanup is explicit.
+- Team deletion is blocked until cleanup is explicit.
 
 ### Encryption and secrets
-- HashiCorp Vault is KEK/master-key layer.
+- HashiCorp Vault is the KEK/master-key layer.
 - One DEK per user, created at account creation.
-- Encrypt user-owned confidential content with user DEK.
-- Store provider credentials as Vault references in DB, not raw secrets.
+- User-owned confidential content is encrypted with the user DEK.
+- Provider credentials are stored as Vault references in DB, not raw secrets.
 - Do not log or expose confidential fields.
 
 ### Provider rules
 - System admin provisions provider credentials per team.
-- For STT in MVP, system admins provision available team STT endpoints + credentials.
-- Team leaders may choose active admin-provisioned STT service/model for team and may clear team-level selection, but may not view or recover raw provider secrets.
+- For STT in MVP, system admins provision the available team STT endpoints and their credentials.
+- Team leaders may choose which admin-provisioned STT service/model is active for their team and may clear that team-level selection, but they may not view or recover raw provider secrets.
 - Multiple LLM providers/models may be allowed per team.
 - User chooses one active LLM for all LLM actions until changed.
-- If invalid, fallback is team default.
-- Transcription provider fixed per team in MVP, but active team policy may be selected from admin-provisioned STT options for that team.
-- Pseudonymisation provider fixed globally in MVP.
+- If invalid, fallback is the team default.
+- Transcription provider is fixed per team in MVP, but the active team policy may be selected from the admin-provisioned STT options for that team.
+- Pseudonymisation provider is fixed globally in MVP.
 
 ---
 
@@ -122,13 +122,13 @@ Every change must include:
    - docs added/updated
    - open issues noted
 
-Do not skip checklist/checkpoint workflow.
+Do not skip the checklist/checkpoint workflow.
 
 ---
 
 ## Mandatory tests for every change
 
-Every meaningful change needs relevant tests.
+Every meaningful change must include relevant tests.
 
 ### Add/update as applicable
 - unit tests
@@ -140,7 +140,7 @@ Every meaningful change needs relevant tests.
 - provider-resolution tests
 
 ### Especially important
-Changes affecting any item below need targeted tests:
+Changes affecting any of the following require targeted tests:
 - ownership filtering
 - transcript deletion
 - user deletion
@@ -154,7 +154,7 @@ Changes affecting any item below need targeted tests:
 
 ## Mandatory documentation for every change
 
-Every change must update docs as needed.
+Every change must update documentation as needed.
 
 Update one or more of:
 - README
@@ -164,14 +164,14 @@ Update one or more of:
 - developer setup docs
 - feature-specific docs/checklists
 
-No feature complete without docs.
+No feature is complete without docs.
 
 ---
 
 ## Database and schema guidance
 
 ### Prefer database constraints for structural truths
-Use DB to enforce:
+Use the DB to enforce:
 - foreign keys
 - uniqueness
 - scope invariants
@@ -224,7 +224,7 @@ Forbidden in logs:
 
 ## Change review expectations
 
-Final change summary must include:
+Your final change summary must include:
 
 ### 1. Scope
 What was implemented.
@@ -245,19 +245,19 @@ What was added/updated.
 Anything needing architect review.
 
 ### 7. Architecture checkpoint summary
-Explain how implementation preserved:
+Explain how the implementation preserved:
 - privacy boundaries
 - ownership rules
 - deletion semantics
 - provider rules
 - structured-note contract
 
-Add this to daily note in docs/progress.
+Add this to the daily note in docs/progress
 ---
 
 ## Escalation rule
 
-If requested change would alter any item below, do not silently redesign it:
+If a requested change would alter any of these, do not silently redesign it:
 - ownership model
 - privacy model
 - deletion model
@@ -267,9 +267,9 @@ If requested change would alter any item below, do not silently redesign it:
 - shareability of transcript-derived content
 
 Instead:
-- implement only safe portion if possible
-- clearly note blocker
-- ask for architectural direction in change summary
+- implement only the safe portion if possible
+- clearly note the blocker
+- ask for architectural direction in the change summary
 
 ---
 
@@ -278,13 +278,13 @@ Instead:
 Prefer:
 - small vertical slices
 - explicit code over clever code
-- reusable code over novel code
+- Reusable code vs novel code
 - stable interfaces
 - deterministic behavior
 - synthetic test data
-- easy-to-review migrations
+- migrations that are easy to review
 - strict validation on structured LLM output
-- keep code modular, ideally files no longer than 1k lines
+- Keep code modular, ideally files no longer than 1k lines
 
 Avoid:
 - speculative abstraction
@@ -292,4 +292,4 @@ Avoid:
 - broad refactors without tests
 - content-bearing debug logs
 - weakening constraints for convenience
-- long monolithic files/modules
+- Long monolithic files / modules

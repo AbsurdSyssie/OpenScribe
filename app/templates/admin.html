@@ -235,6 +235,54 @@
       border-color: rgba(197, 48, 48, 0.2);
       background: rgba(197, 48, 48, 0.06);
     }
+    .toast-container {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      z-index: 120;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 0.9rem;
+      font-weight: 500;
+      box-shadow: 0 18px 32px rgba(15, 23, 42, 0.12);
+      animation: toastSlideIn 0.25s ease;
+      max-width: 360px;
+    }
+    .toast.success {
+      color: var(--success);
+      border-color: rgba(47, 133, 90, 0.2);
+      background: rgba(47, 133, 90, 0.06);
+    }
+    .toast.error {
+      color: var(--error);
+      border-color: rgba(197, 48, 48, 0.2);
+      background: rgba(197, 48, 48, 0.06);
+    }
+    .toast.warning {
+      color: #b7791f;
+      border-color: rgba(196, 138, 26, 0.25);
+      background: rgba(196, 138, 26, 0.06);
+    }
+    @keyframes toastSlideIn {
+      from { opacity: 0; transform: translateY(-12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toastSlideOut {
+      from { opacity: 1; transform: translateY(0); }
+      to { opacity: 0; transform: translateY(-12px); }
+    }
+    .toast.hiding {
+      animation: toastSlideOut 0.2s ease forwards;
+    }
 
     .tips { display: grid; gap: 10px; margin: 14px 0; }
     .tip {
@@ -1197,6 +1245,31 @@
     </section>
     </div>
   </main>
+  <div class="toast-container" data-toast-container></div>
+  <script>
+    (() => {
+      const toastContainer = document.querySelector('[data-toast-container]');
+      const showToast = (message, kind = 'success', duration = 4000) => {
+        if (!toastContainer || !message) return;
+        const toast = document.createElement('div');
+        toast.className = `toast ${kind}`;
+        toast.textContent = message;
+        toastContainer.appendChild(toast);
+        window.setTimeout(() => {
+          toast.classList.add('hiding');
+          window.setTimeout(() => toast.remove(), 200);
+        }, duration);
+      };
+      window.showToast = showToast;
+      document.querySelectorAll('.flash').forEach((flash) => {
+        const message = flash.textContent.trim();
+        if (!message) return;
+        const kind = flash.classList.contains('error') ? 'error' : (flash.classList.contains('warning') ? 'warning' : 'success');
+        showToast(message, kind);
+        flash.hidden = true;
+      });
+    })();
+  </script>
   <script>
     (() => {
       document.querySelectorAll('[data-tab-shell]').forEach((shell) => {

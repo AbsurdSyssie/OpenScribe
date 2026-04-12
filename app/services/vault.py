@@ -1,5 +1,6 @@
 import base64
 import os
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -15,12 +16,26 @@ VAULT_TOKEN_FILE = os.getenv("VAULT_TOKEN_FILE")
 VAULT_KV_MOUNT = os.getenv("VAULT_KV_MOUNT", "secret")
 VAULT_TRANSIT_MOUNT = os.getenv("VAULT_TRANSIT_MOUNT", "transit")
 VAULT_USER_CONTENT_KEK_KEY_NAME = os.getenv("VAULT_USER_CONTENT_KEK_KEY_NAME", "openscribe-user-content-kek")
+DEFAULT_LOCAL_VAULT_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".local" / "vault" / "root-token"
+
+
+def _default_local_vault_token_file() -> Path | None:
+    if not DEFAULT_LOCAL_VAULT_TOKEN_FILE.exists():
+        return None
+    if VAULT_ADDR.rstrip("/") != "http://127.0.0.1:8200":
+        return None
+    if VAULT_TOKEN_FILE:
+        return None
+    if VAULT_TOKEN and VAULT_TOKEN != "root":
+        return None
+    return DEFAULT_LOCAL_VAULT_TOKEN_FILE
 
 
 def _resolve_vault_token() -> str | None:
-    if VAULT_TOKEN_FILE:
+    token_file = Path(VAULT_TOKEN_FILE) if VAULT_TOKEN_FILE else _default_local_vault_token_file()
+    if token_file:
         try:
-            with open(VAULT_TOKEN_FILE, "r", encoding="utf-8") as handle:
+            with open(token_file, "r", encoding="utf-8") as handle:
                 token = handle.read().strip()
         except OSError as exc:
             raise AppError(502, "vault_unavailable", "Vault token file is unavailable") from exc
@@ -78,6 +93,32 @@ def ensure_user_content_transit_ready() -> None:
             raise AppError(502, "vault_bootstrap_failed", "Vault KEK key could not be created") from exc
     except Exception as exc:
         raise AppError(502, "vault_bootstrap_failed", "Vault KEK key could not be checked") from exc
+
+
+def ensure_vault_kv_ready() -> None:
+    client = vault_client()
+    mount_path = f"{VAULT_KV_MOUNT.strip('/')}/"
+    try:
+        mounts_response = client.sys.list_mounted_secrets_engines()
+    except Exception as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    mounts = (mounts_response or {}).get("data") or {}
+    existing = mounts.get(mount_path)
+    if existing is None:
+        try:
+            client.sys.enable_secrets_engine(
+                backend_type="kv",
+                path=VAULT_KV_MOUNT.strip("/"),
+                options={"version": "2"},
+            )
+        except hvac_exceptions.InvalidRequest:
+            pass
+        except Exception as exc:
+            raise AppError(502, "vault_bootstrap_failed", "Vault KV mount could not be created") from exc
+        return
+    options = (existing.get("options") or {}) if isinstance(existing, dict) else {}
+    if str(options.get("version") or "1") != "2":
+        raise AppError(502, "vault_bootstrap_failed", "Vault KV mount must use version 2")
 
 
 def _transit_key_version_from_ciphertext(ciphertext: str) -> int:

@@ -1,12 +1,188 @@
-  <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
-    <input type="hidden" name="ingestion_mode" value="whole_file">
-  </form>
+<form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
+<input type="hidden" name="ingestion_mode" value="whole_file">
+</form>
 
-  <div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
-    Copied to clipboard
-  </div>
+<div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
+Copied to clipboard
+</div>
 
-  <div class="tour-overlay" data-tour-overlay hidden>
+<script>
+(function() {
+var toastContainer = document.querySelector('[data-toast-container]');
+window.showToast = function(message, kind, duration) {
+if (!toastContainer) return;
+kind = kind || 'success';
+duration = duration || 4000;
+var toast = document.createElement('div');
+toast.className = 'toast ' + kind;
+toast.textContent = message;
+toastContainer.appendChild(toast);
+setTimeout(function() {
+toast.classList.add('hiding');
+setTimeout(function() { toast.remove(); }, 200);
+}, duration);
+};
+var flashWrap = document.querySelector('[data-flash-wrap]');
+var flashBanner = document.querySelector('[data-flash]');
+function syncQuickActionQuickPicks() {
+var quickActionSelect = document.querySelector('[data-quick-action-select]');
+var quickActionIdInput = document.querySelector('[data-quick-action-id-input]');
+var quickPickButtons = document.querySelectorAll('[data-quick-action-quick-pick]');
+var selectedId = quickActionSelect ? quickActionSelect.value : '';
+quickPickButtons.forEach(function(button) {
+button.setAttribute('aria-pressed', button.getAttribute('data-quick-action-id') === selectedId ? 'true' : 'false');
+});
+if (quickActionIdInput) {
+quickActionIdInput.value = selectedId;
+}
+}
+if (flashWrap && flashBanner) {
+var flashKind = flashBanner.classList.contains('error') ? 'error' : 'success';
+var flashMessage = (flashBanner.textContent || '').trim();
+if (flashMessage) {
+showToast(flashMessage, flashKind);
+flashWrap.hidden = true;
+}
+}
+syncQuickActionQuickPicks();
+
+document.addEventListener('change', function(e) {
+if (e.target && e.target.matches('[data-quick-action-select]')) {
+syncQuickActionQuickPicks();
+}
+});
+
+document.addEventListener('click', function(e) {
+var recordModeDropdown = e.target.closest('[data-record-mode-dropdown]');
+if (recordModeDropdown) {
+e.preventDefault();
+e.stopPropagation();
+var menu = document.querySelector('[data-record-mode-menu]');
+if (menu) {
+var isHidden = menu.hasAttribute('hidden');
+if (isHidden) {
+menu.removeAttribute('hidden');
+} else {
+menu.setAttribute('hidden', '');
+}
+recordModeDropdown.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+}
+return;
+}
+
+var recordModeOption = e.target.closest('[data-mode]');
+if (recordModeOption) {
+e.preventDefault();
+var mode = recordModeOption.getAttribute('data-mode');
+var modeSelect = document.querySelector('[data-recording-mode-select]');
+var menu = document.querySelector('[data-record-mode-menu]');
+var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
+if (modeSelect && mode) {
+modeSelect.value = mode;
+modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+}
+if (menu) menu.hidden = true;
+if (dropdownBtn) dropdownBtn.setAttribute('aria-expanded', 'false');
+syncRecordButtonLabel();
+return;
+}
+
+var menu = document.querySelector('[data-record-mode-menu]');
+var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
+if (menu && !menu.hidden && !e.target.closest('[data-record-split-button]')) {
+menu.hidden = true;
+if (dropdownBtn) dropdownBtn.setAttribute('aria-expanded', 'false');
+}
+
+var quickPickButton = e.target.closest('[data-quick-action-quick-pick]');
+if (quickPickButton) {
+e.preventDefault();
+if (quickPickButton.disabled) return;
+var quickActionSelect = document.querySelector('[data-quick-action-select]');
+var quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+if (quickActionSelect) {
+quickActionSelect.value = quickPickButton.getAttribute('data-quick-action-id') || '';
+syncQuickActionQuickPicks();
+}
+if (quickActionContextInput) {
+quickActionContextInput.focus();
+}
+return;
+}
+
+var runQuickActionButton = e.target.closest('[data-run-quick-action-trigger]');
+if (runQuickActionButton) {
+e.preventDefault();
+var quickActionSelect = document.querySelector('[data-quick-action-select]');
+var quickActionIdInput = document.querySelector('[data-quick-action-id-input]');
+var quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+var quickActionContextHidden = document.querySelector('[data-quick-action-context-hidden]');
+var runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
+if (quickActionSelect && quickActionIdInput && quickActionContextHidden && runQuickActionForm) {
+var selectedId = quickActionSelect.value;
+if (selectedId) {
+quickActionIdInput.value = selectedId;
+quickActionContextHidden.value = quickActionContextInput ? quickActionContextInput.value.trim() : '';
+runQuickActionForm.submit();
+}
+}
+return;
+}
+
+var generateFollowupButton = e.target.closest('[data-generate-followup-trigger]');
+if (generateFollowupButton) {
+e.preventDefault();
+var promptInput = document.querySelector('[data-followup-prompt-input]');
+var promptHidden = document.querySelector('[data-followup-prompt-hidden]');
+var generateFollowupForm = document.querySelector('[data-generate-followup-form]');
+if (promptInput && promptHidden && generateFollowupForm) {
+var promptText = promptInput.value.trim();
+if (promptText) {
+promptHidden.value = promptText;
+generateFollowupForm.submit();
+}
+}
+return;
+}
+
+var copyFollowupButton = e.target.closest('[data-copy-followup]');
+if (copyFollowupButton) {
+e.preventDefault();
+e.stopPropagation();
+var card = copyFollowupButton.closest('.followup-card');
+var content = card ? card.querySelector('.followup-card__content') : null;
+var text = content ? content.textContent.trim() : '';
+if (text) {
+navigator.clipboard.writeText(text).then(function() {
+showToast('Copied to clipboard', 'success');
+}).catch(function() {
+showToast('Could not copy', 'error');
+});
+}
+return;
+}
+});
+function syncRecordButtonLabel() {
+var modeSelect = document.querySelector('[data-recording-mode-select]');
+var labelEl = document.querySelector('[data-record-toggle-label]');
+var options = document.querySelectorAll('[data-record-mode-menu] [data-mode]');
+if (!modeSelect || !labelEl) return;
+var mode = modeSelect.value;
+labelEl.textContent = mode === 'live_chunked' ? 'Start live' : 'Start recording';
+options.forEach(function(opt) {
+opt.classList.toggle('active', opt.getAttribute('data-mode') === mode);
+});
+}
+syncRecordButtonLabel();
+document.addEventListener('change', function(e) {
+if (e.target && e.target.matches('[data-recording-mode-select]')) {
+syncRecordButtonLabel();
+}
+});
+})();
+</script>
+
+<div class="tour-overlay" data-tour-overlay hidden>
     <div class="tour-overlay__scrim-panel" data-tour-scrim="top" data-tour-close></div>
     <div class="tour-overlay__scrim-panel" data-tour-scrim="right" data-tour-close></div>
     <div class="tour-overlay__scrim-panel" data-tour-scrim="bottom" data-tour-close></div>
@@ -40,10 +216,10 @@
       "latestIngestionErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
       "showRedactionDebug": show_redaction_debug,
       "initialTranscriptErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
-      "emisSections": emis_sections,
+      "emisSections": structured_section_definitions,
       "activeTab": 'followups' if active_tab == 'followups' else 'output',
       "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user'
     } | tojson }}
   </script>
-  <script type="module" src="{{ url_for('static', path='js/transcribe/app.js') }}"></script>
+  <script type="module" src="/static/js/transcribe/app.js"></script>
   {% include "_csrf_script.html" %}

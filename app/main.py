@@ -95,18 +95,22 @@ from .schemas import (
     TranscriptUpdate,
     TrustedDeviceStatusResponse,
     UserCreate,
+    UserAppPreferencesDetail,
+    UserAppPreferencesUpsert,
     UserDetail,
     UserLlmPreferenceDetail,
     UserLlmPreferenceUpsert,
     UserListItem,
     GeneratedDocumentDetail,
     GeneratedDocumentSectionDetail,
+    GeneratedDocumentUpdateRequest,
     GeneratedDocumentRedactionDebugDetail,
     TranscribeWorkspaceDetail,
 )
 from .schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from .services.templates import (
     attach_generated_document_task_id as attach_generated_document_task_id_service,
+    delete_generated_document as delete_generated_document_service,
     delete_personal_quick_action as delete_personal_quick_action_service,
     delete_personal_template as delete_personal_template_service,
     delete_team_quick_action as delete_team_quick_action_service,
@@ -114,6 +118,7 @@ from .services.templates import (
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
+    update_generated_document_content as update_generated_document_content_service,
     list_personal_quick_actions as list_personal_quick_actions_service,
     list_personal_templates as list_personal_templates_service,
     list_team_quick_actions as list_team_quick_actions_service,
@@ -143,6 +148,11 @@ from .services.llm import (
     set_team_llm_selection as set_team_llm_selection_service,
     set_user_llm_preference as set_user_llm_preference_service,
     upsert_llm_config as upsert_llm_config_service,
+)
+from .services.preferences import (
+    clear_user_app_preferences as clear_user_app_preferences_service,
+    get_user_app_preferences as get_user_app_preferences_service,
+    set_user_app_preferences as set_user_app_preferences_service,
 )
 from .services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
@@ -250,6 +260,7 @@ from .web.presentation import (
     stt_selection_response,
     template_response,
     transcribe_redirect,
+    user_app_preferences_response,
     user_llm_preference_response,
 )
 from .web.templates import templates

@@ -1,199 +1,189 @@
-# Transcribe UI Brief
+# Transcribe Brief
 
 ## Purpose
 
-Design and implement a polished `/transcribe` screen for a clinical ambient voice scribing app.
+This document inventories what `/transcribe` contains today, without tying future design work to the current arrangement of panes, tabs, controls, or sections.
 
-This is the main clinician workspace for:
-- capturing or uploading consultation audio
-- reviewing the transcript
-- generating notes from templates
-- generating follow-ups
-- running quick actions
+Goal:
+- describe what information exists
+- describe what can be changed
+- describe who can change it
+- describe what behavior must survive redesign
 
-The UI should feel calm, efficient, trustworthy, and clinically appropriate. It should feel like a serious working screen for a clinician, not a generic dashboard or admin page.
+This page is owner-only. Team leaders and system admins do not gain transcript readability from role alone.
 
-You have freedom over:
-- layout
-- structure
-- visual language
-- component hierarchy
-- interaction patterns
+## Audience and access
 
-But the screen must support the data, workflows, and constraints below.
+### Primary user
 
-## Product framing
+- the owning clinician
+- this may be a normal user or a leader acting as a normal content owner
 
-- This is a clinician-facing ambient voice documentation workspace.
-- It should be desktop-first.
-- It should support long transcript and note content comfortably.
-- It should reduce the feeling of page refreshes and broken flow.
-- It should keep the user oriented around one active transcript session.
-- It should feel modern and product-quality without becoming noisy or playful.
+### Not granted access here by default
 
-## Backend data the screen receives
+- other normal users
+- team leaders looking at someone else’s content
+- system admins
 
-The transcribe screen is driven by an owner-only workspace payload and related API responses.
+## Information Inventory
 
-### Active transcript/session
+### Consultation/session context
 
-- `id`
-- `title`
-- `status`
-- `ingestion_mode`
-- `current_draft_text_encrypted`
-- latest ingestion error message if present
+Contained information:
+- current active consultation identity
+- consultation title
+- consultation status
+- consultation ingestion mode
+- recent consultation list
+- created timestamps
+- consultation readiness or failure messaging
 
-### Recent transcript/session list
+User can change:
+- create a consultation
+- switch active consultation
+- rename consultation
+- delete consultation
 
-For each session:
-- `id`
-- `title`
-- created timestamp
-- `status`
-- `ingestion_mode`
+How:
+- start/open another consultation
+- edit title inline
+- remove one or more consultations
 
-### Available note templates
+Access:
+- owner only
 
-For each template:
-- `id`
-- `name`
-- `scope`
-- latest version mode:
-  - `freeform`
-  - `structured`
+### Audio capture and ingestion state
 
-Structured templates may also carry EMIS section configuration.
+Contained information:
+- whether speech-to-text is configured and available
+- current recording mode
+- upload availability
+- microphone/live capture availability
+- ingestion progress and retry status
+- duration timer
+- ingest failure messages
 
-### Available quick actions
+User can change:
+- choose recording mode
+- upload audio file
+- record audio
+- retry failed file ingestion when retry audio still exists
 
-For each quick action:
-- `id`
-- `name`
-- `scope`
+How:
+- choose available recording mode
+- start/stop recording
+- upload file
+- trigger retry
 
-### Active structured context for the transcript
+Access:
+- owner only
 
-Transcript-backed EMIS context already saved on the session, keyed by section.
+### Transcript draft content
 
-### Generated documents for the transcript
+Contained information:
+- current draft transcript text
+- live updates from polling/SSE
+- empty-state guidance when no transcript exists
 
-This includes:
-- note outputs
-- follow-up outputs
-- quick-action outputs
+User can change:
+- indirectly, by recording or uploading audio
 
-Available fields can include:
-- `id`
-- `title`
-- `status`
-- `generator_type`
-- `document_mode`
-- `model_used`
-- `created_at`
-- full generated text
-- structured sections, if applicable
-- error message, if failed
+How:
+- capture or submit audio and wait for transcript updates
 
-### Provider/model state
+Access:
+- owner only
 
-- active STT selection
-- active LLM selection
-- resolved user LLM model
+Notes:
+- transcript text is not directly editable here
+- transcript content is private and non-shareable
 
-### Dev-only debug metadata
+### Note generation context
 
-For localhost seeded dev accounts only, a dev redaction debug view may be available.
+Contained information:
+- available note templates
+- template names
+- template scope visibility
+- note mode per template
+  - freeform
+  - structured
+- current selected template
+- latest note output state
+- note generation status
+- note history
 
-## User inputs into the screen
+User can change:
+- choose template
+- generate note
+- switch between available outputs/history
 
-The user must be able to:
+How:
+- select template
+- trigger generation against current consultation content
 
-- create a new session
-- select an existing session
-- delete one or more sessions
-- edit the active session title
-- upload an audio file for transcription
-- record a microphone batch for transcription
-- choose a note template
-- enter structured EMIS context when the selected template is structured
-- generate a note
-- type a freeform follow-up request
-- generate a follow-up
-- choose and run a quick action
-- select and deselect structured output lines before copying
+Access:
+- owner only
 
-## What the screen sends back to the backend
+### Editable note content
 
-The UI must support these backend mutations:
+Contained information:
+- empty editable note state before generation
+- structured note sections when template mode is structured
+- freeform note lines when template mode is freeform
+- saved generated note content
+- per-note autosave/conflict state
 
-### Session mutations
+User can change:
+- type note content directly
+- add/remove/revise structured statements
+- add/remove/revise freeform lines
+- continue editing generated notes after creation
 
-- create session
-- delete session(s)
-- update transcript/session title
-- update transcript structured EMIS context
+How:
+- edit note lines in place
+- autosave on debounce/blur
+- explicit note switching changes which note is being edited
 
-### Transcription mutations
+Access:
+- owner only
 
-- queue audio-file transcription
-- queue microphone-batch transcription
+Notes:
+- structured templates use EMIS section keys only
+- freeform notes must not show structured headings
+- changing template while editing an existing structured note must not silently drop saved sections
 
-### Note generation mutation
+### Structured-note selection and copy state
 
-Send:
-- `transcript_id`
-- `template_id`
-- `structured_context` only when the selected template is `structured`
+Contained information:
+- selected vs unselected structured lines
+- copy-ready structured output subset
 
-Do not send structured context for freeform templates.
+User can change:
+- select or deselect structured note statements for copy
 
-### Follow-up generation mutation
+How:
+- toggle line selection in structured output
 
-Send:
-- `transcript_id`
-- follow-up prompt text
+Access:
+- owner only
 
-### Quick action mutation
+### Structured EMIS context
 
-Send:
-- `transcript_id`
-- `quick_action_id`
+Contained information:
+- transcript-backed structured context keyed by allowed EMIS section keys
+- saved section guidance for the active consultation
 
-## What the user needs to get out of the screen
+User can change:
+- structured context content for the active consultation
 
-The screen should make these things clear and usable:
+How:
+- edit structured context lines while working
+- autosave context back to the consultation
 
-- what the active session is
-- whether transcription is idle, queued, transcribing, ready, or failed
-- what transcript text currently exists
-- whether note generation is queued, processing, ready, or failed
-- the latest note output
-- the latest follow-up or quick-action output
-- history of generated notes
-- history of follow-up and quick-action outputs
-- visible error states and useful failure messages
-- which lines of a structured note are selected for copy
+Access:
+- owner only
 
-## Required functional distinctions
-
-### Template mode matters
-
-#### Freeform template
-
-- no EMIS section context editor should be shown
-- generation should be freeform
-- output should render as freeform text
-
-#### Structured template
-
-- show EMIS section context editor
-- generation uses structured note JSON
-- output should render as EMIS-style structured sections
-
-### Structured EMIS section keys
-
-Allowed EMIS sections:
+Allowed EMIS section keys:
 - `problem`
 - `history`
 - `family_history`
@@ -203,125 +193,148 @@ Allowed EMIS sections:
 - `tasks`
 - `investigations`
 
-Templates may remove or reorder sections.
+### Follow-up generation
 
-## Current client-side behavior that should be understood
+Contained information:
+- current follow-up prompt text
+- quick-action guidance text
+- latest follow-up output
+- follow-up generation status
+- follow-up history
+- empty-state guidance when nothing exists yet
 
-These behaviors exist in the current HTML transcriber and should be preserved or consciously redesigned rather than accidentally dropped.
+User can change:
+- enter a custom follow-up request
+- generate follow-up output
+- review historical follow-up outputs
 
-### Workspace/session behavior
+How:
+- type request text
+- trigger follow-up generation
 
-- The UI is centered around one active transcript session.
-- Session switching refreshes the active workspace without relying entirely on a full reload.
-- The main session title in the workspace is editable.
-- Title save currently happens on:
-  - blur
-  - Enter
+Access:
+- owner only
 
-### Transcription behavior
+### Quick actions
 
-- Whole-file upload is supported.
-- Microphone batch recording is supported.
-- Upload/mic controls live in the header bar in the current HTML version.
-- Transcription status is surfaced to the user.
-- Ingestion failures can be shown as owner-visible error messages.
+Contained information:
+- available quick actions
+- quick-action scope visibility
+- quick-pick favourites
+- optional one-off guidance text
+- latest quick-action output
+- quick-action history mixed into follow-up-type output history
 
-### Note-generation behavior
+User can change:
+- choose which quick action to run
+- use quick-pick favourites
+- add one-off extra guidance
+- trigger quick action generation
 
-- Template selection drives whether the output is freeform or structured.
-- Structured EMIS context is transcript-backed and can persist between generations.
-- EMIS context is autosaved to the transcript session.
-- Freeform templates should not show the EMIS editor or send structured context.
+How:
+- select quick action
+- use quick-pick
+- add optional guidance
+- run generation
 
-### Structured note behavior
+Access:
+- owner only
 
-- Structured notes render by section.
-- Individual structured lines can be selected or deselected.
-- Copy action should copy only the selected lines.
+Notes:
+- quick actions and follow-ups should unlock when transcript text or note content exists
+- visible follow-up/quick-action content must refresh when switching consultations
 
-### Follow-up and quick action behavior
+### Service/model context
 
-- Follow-up generation uses freeform user prompt text.
-- Quick actions run from a dropdown of configured actions.
-- Both are tied to the active transcript.
+Contained information:
+- active team STT selection
+- active team LLM selection
+- resolved user LLM model
 
-### Refresh/progress behavior
+User can change:
+- nothing directly from this page except following links back to broader settings/configuration pages
 
-- The workspace refreshes/polls to keep transcript and generated-document state current.
-- The UI should minimize the feeling of disruptive refreshes.
+Access:
+- owner only for visibility of resolved state
 
-## UX expectations
+### Debug and developer metadata
 
-- The user should always know which session they are in.
-- The active session title should be editable in the main workspace.
-- The title should not be redundantly repeated throughout the main canvas.
-- Transcript, note generation, and follow-up work should be easy to understand as related but distinct activities.
-- Long text should remain readable and scannable.
-- Queued/processing/failed states should be obvious.
-- Structured notes should be especially easy to review line by line.
+Contained information:
+- dev-only redaction/debug details in local development contexts
 
-## Clinical design expectations
+User can change:
+- nothing meaningful in normal workflow
 
-- The screen should feel suitable for clinical work.
-- It should feel focused, efficient, and low-friction.
-- It should not feel like a chat app, social feed, or consumer content tool.
-- The output area should support close reading and copying into a clinical record system.
+Access:
+- owner only, and only in development/debug conditions
 
-## Constraints
+## Capability Summary
 
-- Desktop-first
-- Long text support
-- Must support both freeform and structured templates cleanly
-- Must preserve session switching, upload, microphone batch, generation, history, and copy behavior
-- Must preserve the distinction between structured and freeform note generation
+### Owner can
 
-## Design freedom
+- create, switch, rename, and delete consultations
+- upload audio
+- record audio
+- choose recording mode
+- retry failed transcription when retry source exists
+- review live transcript updates
+- choose note template
+- edit note content before and after generation
+- edit structured context for structured workflows
+- generate note
+- select structured lines for copy
+- write custom follow-up requests
+- run quick actions
+- review note/follow-up/quick-action history
 
-You can choose:
-- overall information architecture
-- whether transcript/output/follow-ups are tabs, panes, or another pattern
-- session rail design
-- action placement
-- visual hierarchy
-- spacing and typography
-- color system
-- status presentation
-- history presentation
+### Owner cannot
 
-You do not need to keep the current HTML structure if you can produce a better screen.
+- view another user’s transcript-derived content
+- use this page to alter team provider policy directly
+- use this page to expose transcript content to leaders or admins
 
-## Must-not-lose capabilities
+### Leader role does not add here
 
-- session switching
-- session creation
-- session deletion
-- editable session title
-- file upload transcription
-- microphone batch transcription
-- transcript display
-- note template selection
-- freeform vs structured template distinction
-- EMIS context editor only for structured templates
-- note generation
+- no extra readability into other users’ consultations
+- no implicit access to transcript/note content just because the owner is on the same team
+
+## Redesign constraints
+
+The redesign must preserve:
+- owner-only access
+- active-consultation orientation
+- consultation switching
+- consultation creation and deletion
+- editable consultation title
+- upload and recording flows
+- transcript live updates without manual refresh
+- freeform vs structured note distinction
+- EMIS context only for structured workflows
+- editable empty note state
+- note autosave with conflict safety
 - follow-up generation
-- quick action execution
-- structured line selection and copy
-- generated output history
-- visible and useful error states
+- quick action generation
+- output history
+- visible error and retry states
 
-## Success criteria
+## Design implications
 
-A successful transcribe UI should make it easy for a clinician to:
-- understand which consultation/session they are working in
-- capture or upload audio
-- review the transcript
-- generate a note
-- distinguish structured and freeform workflows
-- review structured notes line by line
-- copy the right output into an external record system
+- this is a long-duration working screen, not a simple dashboard
+- it needs to hold:
+  - live capture state
+  - transcript state
+  - editable note state
+  - generated-output state
+  - historical output state
+- some information is transient and live
+- some is editable draft state
+- some is generated artifact history
+- the UI should make those differences obvious without losing flow
 
-The end result should feel meaningfully more polished and product-quality than a basic CRUD/admin interface.
+## Recommended use of this brief
 
-## Instruction to the implementing agent
+Use this document as a capability map:
+- not “what current layout looks like”
+- but “what `/transcribe` must contain and protect”
 
-Use the product, data, and behavior requirements above, but choose the UI structure and appearance yourself.
+That should let the UI evolve more freely without dropping core behavior or privacy boundaries.

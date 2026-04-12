@@ -444,15 +444,28 @@ def transcribe_run_quick_action(
     request: Request,
     transcript_id: UUID = Form(...),
     quick_action_id: UUID = Form(...),
+    context_text: str = Form("", alias="quick_action_context_text"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
+    clean_context_text = (context_text or "").strip()
+    if len(clean_context_text) > 4000:
+        return RedirectResponse(
+            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Additional context must be 4000 characters or fewer', 'message_kind': 'error'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     document = None
     try:
-        document = queue_quick_action_generation_service(db, context.user, transcript_id=transcript_id, quick_action_id=quick_action_id)
+        document = queue_quick_action_generation_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            quick_action_id=quick_action_id,
+            context_text=clean_context_text,
+        )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:

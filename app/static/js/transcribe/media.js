@@ -19,6 +19,7 @@ export function createAudioCaptureController({
   showFlash,
   reflectBackendStatus,
 }) {
+  const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   let mediaRecorder = null;
   let mediaStream = null;
   let mediaChunks = [];
@@ -33,17 +34,73 @@ export function createAudioCaptureController({
   let liveChunkProcessing = Promise.resolve();
   let startedAt = null;
   let timerId = null;
+  let recordingTranscriptId = null;
+  let accumulatedBeforeCurrentSegmentMs = 0;
 
-  const renderTimer = () => {
-    if (!dom.micTimer) return;
-    if (!startedAt) {
-      dom.micTimer.textContent = '00:00';
-      return;
+  const readStoredDurations = () => {
+    try {
+      const raw = window.localStorage.getItem(RECORDING_DURATION_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
     }
-    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  };
+
+  const writeStoredDurations = (durations) => {
+    try {
+      window.localStorage.setItem(RECORDING_DURATION_STORAGE_KEY, JSON.stringify(durations));
+    } catch (_) {}
+  };
+
+  const storedDurationMsForTranscript = (transcriptId) => {
+    if (!transcriptId) return 0;
+    const value = readStoredDurations()[transcriptId];
+    const numeric = typeof value === 'number' ? value : Number(value || 0);
+    return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+  };
+
+  const persistStoredDurationMsForTranscript = (transcriptId, durationMs) => {
+    if (!transcriptId) return;
+    const durations = readStoredDurations();
+    durations[transcriptId] = Math.max(0, Math.floor(durationMs));
+    writeStoredDurations(durations);
+  };
+
+  const renderDurationMs = (durationMs) => {
+    if (!dom.micTimer) return;
+    const elapsedSeconds = Math.max(0, Math.floor(durationMs / 1000));
     const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
     const seconds = String(elapsedSeconds % 60).padStart(2, '0');
     dom.micTimer.textContent = `${minutes}:${seconds}`;
+  };
+
+  const renderTimer = () => {
+    const transcriptId = getState().transcriptId || '';
+    if (!transcriptId) {
+      renderDurationMs(0);
+      return;
+    }
+    if (startedAt && recordingTranscriptId && transcriptId === recordingTranscriptId) {
+      renderDurationMs(accumulatedBeforeCurrentSegmentMs + Math.max(0, Date.now() - startedAt));
+      return;
+    }
+    renderDurationMs(storedDurationMsForTranscript(transcriptId));
+  };
+
+  const beginAccumulatedTimer = () => {
+    recordingTranscriptId = getState().transcriptId || null;
+    accumulatedBeforeCurrentSegmentMs = storedDurationMsForTranscript(recordingTranscriptId);
+    startedAt = Date.now();
+    renderTimer();
+  };
+
+  const finalizeAccumulatedTimer = () => {
+    if (!startedAt || !recordingTranscriptId) return;
+    const nextDurationMs = accumulatedBeforeCurrentSegmentMs + Math.max(0, Date.now() - startedAt);
+    persistStoredDurationMsForTranscript(recordingTranscriptId, nextDurationMs);
+    accumulatedBeforeCurrentSegmentMs = nextDurationMs;
   };
 
   const stopStreamTracks = () => {
@@ -73,12 +130,15 @@ export function createAudioCaptureController({
   };
 
   const resetRecordingState = () => {
+    finalizeAccumulatedTimer();
     if (timerId) {
       window.clearInterval(timerId);
       timerId = null;
     }
     clearLiveChunkTimeout();
     startedAt = null;
+    recordingTranscriptId = null;
+    accumulatedBeforeCurrentSegmentMs = 0;
     renderTimer();
     mediaRecorder = null;
     mediaChunks = [];
@@ -428,8 +488,7 @@ export function createAudioCaptureController({
       liveRestartPending = false;
       liveChunkProcessing = Promise.resolve();
       liveVadInstance = await buildLiveVadInstance();
-      startedAt = Date.now();
-      renderTimer();
+      beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
       startLiveListeningLoop();
@@ -496,8 +555,7 @@ export function createAudioCaptureController({
         await uploadMicrophoneBatch(blob);
       });
       mediaRecorder.start();
-      startedAt = Date.now();
-      renderTimer();
+      beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
       setMicStatus('Recording from the microphone...');
@@ -557,10 +615,12 @@ export function createAudioCaptureController({
         dom.uploadForm.requestSubmit();
       });
     }
+    renderTimer();
   };
 
   return {
     attachDomListeners,
+    syncDisplayedDuration: renderTimer,
     isLiveCaptureUiActive: () => (
       getState().activeIngestionMode === 'live_chunked'
       && captureMode === 'live'

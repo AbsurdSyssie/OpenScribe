@@ -6,9 +6,13 @@ from uuid import UUID, uuid4
 import wave
 
 import httpx
+import pytest
 import pyotp
 from fastapi.routing import APIRoute
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from scripts.seed_dev_accounts import repair_dev_user_content_key_if_needed
+from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
 from app.main import app as fastapi_app, get_db, require_full_context
@@ -44,6 +48,7 @@ from app.models import (
     TemplateMode,
     User,
     UserEncryptionKey,
+    UserAppPreference,
     UserLlmPreference,
     UserRecoveryCode,
     UserSession,
@@ -53,7 +58,7 @@ from app.models import (
     utcnow,
 )
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, run_saved_stt_config_test
-from app.schemas.templates import GenerateFollowupRequest
+from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.services.audio import NormalizedAudio
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -69,15 +74,19 @@ from app.services.stt import transcribe_with_team_stt
 from app.services.templates import (
     _generate_freeform_output_ollama,
     _parse_generated_note_json,
+    delete_personal_template,
     process_generated_document,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation,
     queue_quick_action_generation,
+    upsert_personal_quick_action,
+    upsert_personal_template,
 )
 from app.services.transcripts import (
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
 )
+from app.services import vault as vault_service
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
 
 
@@ -1359,6 +1368,188 @@ def test_user_can_set_llm_preference_and_falls_back_to_team_default(client, db_s
     )
 
 
+def test_user_can_set_get_and_clear_app_preferences(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Preferences")
+    leader = make_user(email="leader-preferences@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    user = make_user(email="user-preferences@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    team_template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Team note",
+        prompt_text="Write a concise note.",
+    )
+    personal_template = make_template(
+        scope=TemplateScope.user,
+        owner=user,
+        actor=user,
+        name="Personal note",
+        prompt_text="Write a personal note.",
+    )
+    team_quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Team SMS",
+        prompt_text="Write a text message.",
+    )
+    personal_quick_action = make_quick_action(
+        scope=TemplateScope.user,
+        owner=user,
+        actor=user,
+        name="Personal callback",
+        prompt_text="Write a callback note.",
+    )
+
+    login(client, email="user-preferences@example.com", password="password-2")
+    saved = client.post(
+        "/api/v1/app-preferences",
+        json={
+            "favorite_quick_action_ids": [str(team_quick_action.id), str(personal_quick_action.id)],
+            "favorite_template_ids": [str(team_template.id), str(personal_template.id)],
+            "default_quick_action_id": str(team_quick_action.id),
+            "default_template_id": str(personal_template.id),
+            "llm_detail_level": "detailed",
+            "preferred_recording_mode": "live_chunked",
+            "preferred_transcribe_tab": "followups",
+        },
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["favorite_quick_action_ids"] == [str(team_quick_action.id), str(personal_quick_action.id)]
+    assert body["favorite_template_ids"] == [str(team_template.id), str(personal_template.id)]
+    assert body["default_quick_action_id"] == str(team_quick_action.id)
+    assert body["default_template_id"] == str(personal_template.id)
+    assert body["llm_detail_level"] == "detailed"
+    assert body["preferred_recording_mode"] == "live_chunked"
+    assert body["preferred_transcribe_tab"] == "followups"
+
+    persisted = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert persisted is not None
+    assert persisted.preferences_json == {
+        "favorite_quick_action_ids": [str(team_quick_action.id), str(personal_quick_action.id)],
+        "favorite_template_ids": [str(team_template.id), str(personal_template.id)],
+        "default_quick_action_id": str(team_quick_action.id),
+        "default_template_id": str(personal_template.id),
+        "llm_detail_level": "detailed",
+        "preferred_recording_mode": "live_chunked",
+        "preferred_transcribe_tab": "followups",
+    }
+
+    fetched = client.get("/api/v1/app-preferences")
+    assert fetched.status_code == 200
+    assert fetched.json()["id"] == str(persisted.id)
+    assert fetched.json()["favorite_quick_action_ids"] == [str(team_quick_action.id), str(personal_quick_action.id)]
+
+    cleared = client.delete("/api/v1/app-preferences")
+    assert cleared.status_code == 204
+    assert db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id)) is None
+
+
+def test_user_app_preferences_reject_unavailable_assets_and_system_admin(
+    client,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team_one = make_team(name="Clinic Preferences One")
+    team_two = make_team(name="Clinic Preferences Two")
+    leader_one = make_user(email="leader-preferences-one@example.com", password="password-1", team=team_one, team_role=TeamRole.leader)
+    leader_two = make_user(email="leader-preferences-two@example.com", password="password-2", team=team_two, team_role=TeamRole.leader)
+    user = make_user(email="user-preferences-two@example.com", password="password-3", team=team_one, team_role=TeamRole.user)
+    admin = make_user(email="admin-app-preferences@example.com", password="password-4", is_system_admin=True)
+    foreign_template = make_template(scope=TemplateScope.team, team=team_two, actor=leader_two, name="Foreign note", prompt_text="Write a note.")
+    foreign_quick_action = make_quick_action(scope=TemplateScope.team, team=team_two, actor=leader_two, name="Foreign SMS", prompt_text="Write a text.")
+
+    login(client, email="user-preferences-two@example.com", password="password-3")
+    rejected = client.post(
+        "/api/v1/app-preferences",
+        json={
+            "favorite_quick_action_ids": [str(foreign_quick_action.id)],
+            "default_template_id": str(foreign_template.id),
+        },
+    )
+    assert_error(
+        rejected,
+        status_code=422,
+        code="business_rule_violation",
+        message="Selected quick action favourites are not available for this user",
+    )
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="admin-app-preferences@example.com", password="password-4")
+    forbidden = client.get("/api/v1/app-preferences")
+    assert_error(
+        forbidden,
+        status_code=403,
+        code="forbidden",
+        message="User app preferences are restricted to normal team users",
+    )
+
+
+def test_get_app_preferences_drops_deleted_or_hidden_asset_refs(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+    make_user_app_preference,
+):
+    team = make_team(name="Clinic Preference Cleanup")
+    leader = make_user(email="leader-preferences-cleanup@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    user = make_user(email="user-preferences-cleanup@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=user,
+        actor=user,
+        name="Cleanup note",
+        prompt_text="Write a note.",
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Cleanup SMS",
+        prompt_text="Write a text.",
+    )
+    preference = make_user_app_preference(
+        user=user,
+        preferences_json={
+            "favorite_quick_action_ids": [str(quick_action.id)],
+            "favorite_template_ids": [str(template.id)],
+            "default_quick_action_id": str(quick_action.id),
+            "default_template_id": str(template.id),
+            "llm_detail_level": "balanced",
+        },
+    )
+
+    db_session.delete(template)
+    db_session.delete(quick_action)
+    db_session.commit()
+
+    login(client, email="user-preferences-cleanup@example.com", password="password-2")
+    fetched = client.get("/api/v1/app-preferences")
+    assert fetched.status_code == 200
+    assert fetched.json()["favorite_quick_action_ids"] == []
+    assert fetched.json()["favorite_template_ids"] == []
+    assert fetched.json()["default_quick_action_id"] is None
+    assert fetched.json()["default_template_id"] is None
+    assert fetched.json()["llm_detail_level"] == "balanced"
+
+    refreshed = db_session.get(UserAppPreference, preference.id)
+    assert refreshed is not None
+    assert refreshed.preferences_json == {"llm_detail_level": "balanced"}
+
+
 def test_leader_cannot_allow_non_provider_llm_models(client, make_team, make_user, make_llm_config):
     team = make_team(name="Clinic LLM")
     admin = make_user(email="admin-llm-model@example.com", password="password-1", is_system_admin=True)
@@ -1733,6 +1924,76 @@ def test_structured_emis_template_generation_persists_sections(
     }
 
 
+def test_structured_emis_generation_allows_blank_transcript_when_structured_context_is_present(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    team = make_team(name="Clinic Structured Blank Draft")
+    admin = make_user(email="admin-structured-blank@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-structured-blank@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="Blank EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "tasks", "section_label": "Tasks", "instruction": "List the tasks.", "section_order": 2},
+            ],
+        },
+    )
+
+    class FakeTaskResult:
+        id = "generated-task-structured-blank"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+
+    login(client, email="owner-structured-blank@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Blank structured visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    transcript_id = started.json()["id"]
+
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript_id}/generate-output",
+        json={"template_id": str(template.id), "structured_context": {"problem": "Patient reports headache"}},
+    )
+    assert generated.status_code == 202
+
+    persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert persisted_document is not None
+    persisted_version = db_session.get(TranscriptVersion, persisted_document.transcript_version_id)
+    assert persisted_version is not None
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=persisted_version.id,
+        stored_value=persisted_version.text_encrypted,
+    ) == ""
+    persisted_transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert decrypt_transcript_structured_context(db_session, persisted_transcript) == {
+        "profile": "emis",
+        "sections": {
+            "problem": ["Patient reports headache"],
+        },
+    }
+
+
 def test_structured_emis_generation_reuses_transcript_persisted_context_when_request_omits_it(
     client,
     monkeypatch,
@@ -1902,6 +2163,46 @@ def test_template_api_returns_structured_config_json(
             {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
         ],
     }
+
+
+def test_personal_template_api_rejects_duplicate_name_for_same_user(client, make_team, make_user, make_template):
+    team = make_team(name="Clinic Template Duplicate")
+    owner = make_user(email="template-dup-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Clinic Letter", prompt_text="Write note.")
+
+    login(client, email="template-dup-owner@example.com", password="password-1")
+    duplicate = client.post(
+        "/api/v1/templates/personal",
+        json={
+            "scope": "user",
+            "name": " clinic letter ",
+            "description": "Duplicate by case/space",
+            "prompt_text": "Write another note.",
+            "is_active": True,
+        },
+    )
+
+    assert_error(duplicate, status_code=409, code="conflict", message="Template name already exists")
+
+
+def test_personal_quick_action_api_rejects_duplicate_name_for_same_user(client, make_team, make_user, make_quick_action):
+    team = make_team(name="Clinic Quick Action Duplicate")
+    owner = make_user(email="quick-action-dup-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="Patient SMS")
+
+    login(client, email="quick-action-dup-owner@example.com", password="password-1")
+    duplicate = client.post(
+        "/api/v1/quick-actions/personal",
+        json={
+            "scope": "user",
+            "name": " patient sms ",
+            "description": "Duplicate by case/space",
+            "prompt_text": "Write quick action.",
+            "is_active": True,
+        },
+    )
+
+    assert_error(duplicate, status_code=409, code="conflict", message="Quick action name already exists")
 
 
 def test_generate_freeform_output_ollama_streams_chunks_and_collects_usage(monkeypatch):
@@ -2590,6 +2891,467 @@ def test_local_dev_account_redaction_debug_includes_failed_provider_output(
     assert body["failed_provider_output_redacted_text"] == '{"title":"Broken"'
 
 
+def test_owner_can_delete_generated_document_and_sections_cascade(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Generated Document Delete")
+    owner = make_user(email="owner-generated-delete@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-generated-delete@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Delete document session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Patient is improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    document = GeneratedDocument(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="Problem\nImproving.",
+        edited_output_text_encrypted="Problem\nImproving.",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.flush()
+    section = GeneratedDocumentSection(
+        generated_document_id=document.id,
+        section_key="problem",
+        section_label="Problem",
+        section_order=1,
+        original_text_encrypted="Improving.",
+        edited_text_encrypted="Improving.",
+    )
+    db_session.add(section)
+    db_session.commit()
+
+    login(client, email="other-generated-delete@example.com", password="password-2")
+    forbidden = client.delete(f"/api/v1/generated-documents/{document.id}")
+    assert_error(forbidden, status_code=403, code="forbidden", message="Generated document access is restricted to the owning user")
+    assert db_session.get(GeneratedDocument, document.id) is not None
+
+    login(client, email="owner-generated-delete@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/generated-documents/{document.id}")
+    assert deleted.status_code == 204
+    assert db_session.get(GeneratedDocument, document.id) is None
+    assert db_session.get(GeneratedDocumentSection, section.id) is None
+    assert db_session.get(Transcript, transcript.id) is not None
+
+
+def test_generated_document_update_saves_note_content_and_detects_revision_conflicts(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Note Save API")
+    owner = make_user(email="owner-note-save@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-note-save@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        current_draft_text_encrypted="Patient improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=uuid4(),
+            plaintext="Patient improving.",
+        ),
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    transcript_version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=transcript_version.id,
+        plaintext="Patient improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=None,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.flush()
+    document.original_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="original_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    document.edited_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="edited_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    db_session.add(document)
+    db_session.flush()
+    section = GeneratedDocumentSection(
+        id=uuid4(),
+        generated_document_id=document.id,
+        section_key="problem",
+        section_label="Problem",
+        section_order=0,
+        original_text_encrypted="",
+        edited_text_encrypted="",
+        is_edited=False,
+    )
+    db_session.add(section)
+    db_session.flush()
+    section.original_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_document_sections",
+        field="original_text_encrypted",
+        record_id=section.id,
+        plaintext="Improving.",
+    )
+    section.edited_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_document_sections",
+        field="edited_text_encrypted",
+        record_id=section.id,
+        plaintext="Improving.",
+    )
+    db_session.add(section)
+    db_session.commit()
+
+    login(client, email="owner-note-save@example.com", password="password-1")
+    saved = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "edited_output_text": "",
+            "sections": [
+                {
+                    "section_key": "problem",
+                    "section_label": "Problem",
+                    "section_order": 0,
+                    "text": "Improving more",
+                },
+                {
+                    "section_key": "tasks",
+                    "section_label": "Tasks",
+                    "section_order": 1,
+                    "text": "Review in two weeks",
+                },
+            ],
+        },
+    )
+
+    assert saved.status_code == 200
+    db_session.refresh(document)
+    persisted_sections = {item.section_key: item for item in document.sections}
+    assert decrypt_generated_document_field(db_session, document, "edited_output_text_encrypted") == "Problem\nImproving more\n\nTasks\nReview in two weeks"
+    assert decrypt_generated_document_section_field(db_session, owner_user_id=owner.id, section=persisted_sections["problem"], field="edited_text_encrypted") == "Improving more"
+    assert decrypt_generated_document_section_field(db_session, owner_user_id=owner.id, section=persisted_sections["tasks"], field="edited_text_encrypted") == "Review in two weeks"
+    assert document.is_edited is True
+    assert document.last_edited_at is not None
+
+    stale = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": "2000-01-01T00:00:00+00:00",
+            "edited_output_text": "",
+            "sections": [],
+        },
+    )
+    assert_error(stale, status_code=409, code="conflict", message="Generated document has changed. Reload note before saving again.")
+
+    login(client, email="other-note-save@example.com", password="password-2")
+    forbidden = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "edited_output_text": "",
+            "sections": [],
+        },
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="Generated document access is restricted to the owning user")
+
+
+def test_generated_document_update_rejects_duplicate_structured_section_keys(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Structured Duplicate Team")
+    owner = make_user(email="owner-note-duplicate@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        current_draft_text_encrypted="Patient improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=uuid4(),
+            plaintext="Patient improving.",
+        ),
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    transcript_version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=transcript_version.id,
+        plaintext="Patient improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=None,
+        source_template_name="Clinic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.flush()
+    document.original_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="original_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    document.edited_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="edited_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    login(client, email="owner-note-duplicate@example.com", password="password-1")
+    duplicate = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "edited_output_text": "",
+            "sections": [
+                {
+                    "section_key": "problem",
+                    "section_label": "Problem",
+                    "section_order": 0,
+                    "text": "Improving more",
+                },
+                {
+                    "section_key": "problem",
+                    "section_label": "Problem again",
+                    "section_order": 1,
+                    "text": "Duplicated section",
+                },
+            ],
+        },
+    )
+
+    assert_error(duplicate, status_code=422, code="business_rule_violation", message="Structured note sections must not repeat keys")
+    db_session.refresh(document)
+    assert decrypt_generated_document_field(db_session, document, "edited_output_text_encrypted") == "Problem\nImproving."
+
+
+def test_generated_document_update_rejects_sections_removed_by_template(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Structured Restricted Team")
+    owner = make_user(email="owner-note-restricted@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="Restricted EMIS note",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise history.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        current_draft_text_encrypted="Patient improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=uuid4(),
+            plaintext="Patient improving.",
+        ),
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    transcript_version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=transcript_version.id,
+        plaintext="Patient improving.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=template.versions[-1].id,
+        source_template_name="Restricted EMIS note",
+        status=GeneratedDocumentStatus.ready,
+        title="Clinic note",
+        document_mode=TemplateMode.structured,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.flush()
+    document.original_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="original_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    document.edited_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="edited_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Problem\nImproving.",
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    login(client, email="owner-note-restricted@example.com", password="password-1")
+    invalid = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "edited_output_text": "",
+            "sections": [
+                {
+                    "section_key": "problem",
+                    "section_label": "Problem",
+                    "section_order": 0,
+                    "text": "Improving more",
+                },
+                {
+                    "section_key": "tasks",
+                    "section_label": "Tasks",
+                    "section_order": 1,
+                    "text": "Should not be allowed",
+                },
+            ],
+        },
+    )
+
+    assert_error(invalid, status_code=422, code="business_rule_violation", message="Structured note section is invalid")
+
+
 def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generation(
     client,
     db_session,
@@ -2691,6 +3453,44 @@ def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generatio
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
+def test_run_quick_action_rejects_oversized_context_text(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Quick Action Limits")
+    admin = make_user(email="admin-quick-limit@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-quick-limit@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="SMS", prompt_text="Write SMS.")
+
+    class FakeTaskResult:
+        id = "generated-task-quick-limit"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+
+    login(client, email="owner-quick-limit@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Quick action visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript draft."},
+    )
+    transcript_id = started.json()["id"]
+
+    oversized = client.post(
+        f"/api/v1/transcripts/{transcript_id}/run-quick-action",
+        json={"quick_action_id": str(quick_action.id), "context_text": "x" * 4001},
+    )
+
+    assert oversized.status_code == 422
+    assert db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id))) is None
+
+
 def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     db_session,
     monkeypatch,
@@ -2741,6 +3541,84 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
 
 
+def test_structured_generated_document_keeps_allowed_sections_after_template_delete(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Structured Snapshot")
+    admin = make_user(email="admin-template-structured-snapshot@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-template-structured-snapshot@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="Restricted template",
+        prompt_text="Use British English.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise problem.", "section_order": 1},
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise history.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Snapshot session",
+        current_draft_text_encrypted="Patient reports mild improvement.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    refreshed = db_session.get(GeneratedDocument, document.id)
+    assert refreshed is not None
+    refreshed.status = GeneratedDocumentStatus.ready
+    db_session.add(refreshed)
+    db_session.commit()
+    db_session.refresh(refreshed)
+    assert refreshed.structured_section_definitions_json == {
+        "profile": "emis",
+        "sections": [
+            {"section_key": "problem", "section_label": "Problem", "section_order": 1},
+            {"section_key": "history", "section_label": "History", "section_order": 2},
+        ],
+    }
+
+    delete_personal_template(db_session, owner, template_id=template.id)
+    db_session.refresh(refreshed)
+    assert refreshed.template_version_id is None
+
+    login(client, email="owner-template-structured-snapshot@example.com", password="password-2")
+    invalid = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": refreshed.updated_at.isoformat(),
+            "edited_output_text": "",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "section_order": 0, "text": "Improving"},
+                {"section_key": "tasks", "section_label": "Tasks", "section_order": 1, "text": "Should stay blocked"},
+            ],
+        },
+    )
+
+    assert_error(invalid, status_code=422, code="business_rule_violation", message="Structured note section is invalid")
+
+
 def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     db_session,
     monkeypatch,
@@ -2783,6 +3661,143 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     assert refreshed is not None
     assert refreshed.quick_action_version_id is None
     assert refreshed.prompt_snapshot_text == "Write a short SMS update."
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
+
+
+def test_upsert_personal_template_translates_raced_integrity_error_to_conflict(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Template Race")
+    owner = make_user(email="template-race-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    monkeypatch.setattr("app.services.templates._ensure_unique_template_name", lambda *args, **kwargs: None)
+
+    class FakeDiag:
+        constraint_name = "uq_template_version_number"
+
+    class FakeOrig(Exception):
+        diag = FakeDiag()
+
+    original_commit = db_session.commit
+
+    def fake_commit():
+        db_session.commit = original_commit
+        raise IntegrityError("INSERT", {}, FakeOrig())
+
+    db_session.commit = fake_commit
+
+    with pytest.raises(AppError) as exc_info:
+        upsert_personal_template(
+            db_session,
+            owner,
+            PromptTemplateUpsert(
+                scope=TemplateScope.user,
+                template_id=None,
+                name="Clinic Letter",
+                description=None,
+                prompt_text="Write note.",
+                mode=TemplateMode.freeform,
+                config_json=None,
+                is_active=True,
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "Template changed during save. Retry."
+
+
+def test_upsert_personal_quick_action_translates_raced_integrity_error_to_conflict(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Quick Action Race")
+    owner = make_user(email="quick-race-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    monkeypatch.setattr("app.services.templates._ensure_unique_quick_action_name", lambda *args, **kwargs: None)
+
+    class FakeDiag:
+        constraint_name = "uq_quick_action_version_number"
+
+    class FakeOrig(Exception):
+        diag = FakeDiag()
+
+    original_commit = db_session.commit
+
+    def fake_commit():
+        db_session.commit = original_commit
+        raise IntegrityError("INSERT", {}, FakeOrig())
+
+    db_session.commit = fake_commit
+
+    with pytest.raises(AppError) as exc_info:
+        upsert_personal_quick_action(
+            db_session,
+            owner,
+            QuickActionUpsert(
+                scope=TemplateScope.user,
+                quick_action_id=None,
+                name="Patient SMS",
+                description=None,
+                prompt_text="Write quick action.",
+                is_active=True,
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "Quick action changed during save. Retry."
+
+
+def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Quick Context")
+    admin = make_user(email="admin-quick-context@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-quick-context@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="SMS", prompt_text="Write a short SMS update.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Quick action session",
+        current_draft_text_encrypted="Patient asks for a text update.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    document = queue_quick_action_generation(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        quick_action_id=quick_action.id,
+        context_text="Mention the agreed follow-up call.",
+    )
+    assert document.prompt_snapshot_text == "Write a short SMS update.\n\nAdditional context:\nMention the agreed follow-up call."
+
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: ("SMS body", {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
+    )
 
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
@@ -3863,6 +4878,179 @@ def test_generate_user_content_data_key_does_not_attempt_transit_bootstrap(monke
     assert plaintext == b"ABCD"
     assert wrapped_dek == "vault:v1:wrapped-1"
     assert key_version == 1
+
+
+def test_resolve_vault_token_prefers_local_token_file_when_env_token_is_dev_default(monkeypatch, tmp_path):
+    token_file = tmp_path / "root-token"
+    token_file.write_text("local-token\n", encoding="utf-8")
+
+    monkeypatch.setattr(vault_service, "VAULT_ADDR", "http://127.0.0.1:8200")
+    monkeypatch.setattr(vault_service, "VAULT_TOKEN", "root")
+    monkeypatch.setattr(vault_service, "VAULT_TOKEN_FILE", None)
+    monkeypatch.setattr(vault_service, "DEFAULT_LOCAL_VAULT_TOKEN_FILE", token_file)
+
+    assert vault_service._resolve_vault_token() == "local-token"
+
+
+def test_ensure_vault_kv_ready_enables_v2_mount(monkeypatch):
+    calls: list[tuple[str, str, dict[str, str]]] = []
+
+    class FakeSys:
+        @staticmethod
+        def list_mounted_secrets_engines():
+            return {"data": {}}
+
+        @staticmethod
+        def enable_secrets_engine(*, backend_type, path, options):
+            calls.append((backend_type, path, options))
+
+    class FakeClient:
+        sys = FakeSys()
+
+    monkeypatch.setattr("app.services.vault.vault_client", lambda: FakeClient())
+    monkeypatch.setattr("app.services.vault.VAULT_KV_MOUNT", "secret")
+
+    vault_service.ensure_vault_kv_ready()
+
+    assert calls == [("kv", "secret", {"version": "2"})]
+
+
+def test_ensure_vault_kv_ready_rejects_non_v2_mount(monkeypatch):
+    class FakeSys:
+        @staticmethod
+        def list_mounted_secrets_engines():
+            return {"data": {"secret/": {"options": {"version": "1"}}}}
+
+    class FakeClient:
+        sys = FakeSys()
+
+    monkeypatch.setattr("app.services.vault.vault_client", lambda: FakeClient())
+    monkeypatch.setattr("app.services.vault.VAULT_KV_MOUNT", "secret")
+
+    with pytest.raises(AppError) as exc_info:
+        vault_service.ensure_vault_kv_ready()
+
+    assert exc_info.value.code == "vault_bootstrap_failed"
+    assert exc_info.value.message == "Vault KV mount must use version 2"
+
+
+def test_dev_seed_repair_resets_transcript_content_when_active_key_cannot_be_unwrapped(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Dev Seed Repair Team")
+    user = make_user(email="dev.user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    key_row = ensure_user_dek(db_session, user=user)
+    transcript = Transcript(
+        owner_user_id=user.id,
+        team_id=team.id,
+        title="Broken dev transcript",
+        current_draft_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=user.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=uuid4(),
+            plaintext="Sensitive transcript draft",
+        ),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=user.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    old_wrapped_dek = key_row.wrapped_dek
+
+    def fail_unwrap(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
+        if wrapped_dek == old_wrapped_dek:
+            raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+        return b"healthy-key"
+
+    monkeypatch.setattr("scripts.seed_dev_accounts.unwrap_user_content_data_key", fail_unwrap)
+
+    repair_dev_user_content_key_if_needed(db_session, user=user)
+
+    assert db_session.get(Transcript, transcript.id) is None
+    repaired_key = db_session.query(UserEncryptionKey).filter(UserEncryptionKey.user_id == user.id, UserEncryptionKey.is_active.is_(True)).one()
+    assert repaired_key.wrapped_dek != old_wrapped_dek
+
+
+def test_reset_unreadable_owner_content_dry_run_and_apply(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Unreadable Owner Reset Team")
+    broken_user = make_user(email="broken-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    healthy_user = make_user(email="healthy-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    broken_key = ensure_user_dek(db_session, user=broken_user)
+    ensure_user_dek(db_session, user=healthy_user)
+
+    broken_transcript = Transcript(
+        owner_user_id=broken_user.id,
+        team_id=team.id,
+        title="Broken owner transcript",
+        current_draft_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=broken_user.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=uuid4(),
+            plaintext="Sensitive transcript draft",
+        ),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=broken_user.created_at,
+    )
+    healthy_transcript = Transcript(
+        owner_user_id=healthy_user.id,
+        team_id=team.id,
+        title="Healthy owner transcript",
+        current_draft_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=healthy_user.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=uuid4(),
+            plaintext="Safe transcript draft",
+        ),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=healthy_user.created_at,
+    )
+    db_session.add_all([broken_transcript, healthy_transcript])
+    db_session.commit()
+    old_wrapped_dek = broken_key.wrapped_dek
+
+    def fail_unwrap(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
+        if wrapped_dek == old_wrapped_dek:
+            raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+        return b"healthy-key"
+
+    monkeypatch.setattr("scripts.reset_unreadable_owner_content.unwrap_user_content_data_key", fail_unwrap)
+
+    dry_run = reset_unreadable_owner_content(db_session, apply=False)
+    assert dry_run == ["broken-owner@example.com"]
+    assert db_session.get(Transcript, broken_transcript.id) is not None
+
+    applied = reset_unreadable_owner_content(db_session, apply=True)
+    assert applied == ["broken-owner@example.com"]
+    assert db_session.get(Transcript, broken_transcript.id) is None
+    assert db_session.get(Transcript, healthy_transcript.id) is not None
+
+    repaired_key = (
+        db_session.query(UserEncryptionKey)
+        .filter(UserEncryptionKey.user_id == broken_user.id, UserEncryptionKey.is_active.is_(True))
+        .one()
+    )
+    assert repaired_key.wrapped_dek != old_wrapped_dek
 
 
 def test_transcript_detail_route_is_owner_only(client, make_team, make_user):

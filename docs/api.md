@@ -62,6 +62,7 @@ Browser navigation behavior:
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
+- `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
 - `POST /api/v1/transcripts/{transcript_id}/generate-output`
 - `GET /api/v1/users/{user_id}/transcripts`
@@ -106,6 +107,9 @@ Browser navigation behavior:
 - `GET /api/v1/llm-preference`
 - `POST /api/v1/llm-preference`
 - `DELETE /api/v1/llm-preference`
+- `GET /api/v1/app-preferences`
+- `POST /api/v1/app-preferences`
+- `DELETE /api/v1/app-preferences`
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ## Error envelope
@@ -275,6 +279,16 @@ Current LLM-configuration behavior:
   - an allowed-model subset that controls which models normal users can see and choose
 - normal users may not access provisioning or team-selection routes
 - normal users may set or clear only their own preferred default model through `/api/v1/llm-preference`
+- normal team users may read, write, and clear only their own `/api/v1/app-preferences` row
+- `user_app_preferences` currently stores validated workflow metadata only:
+  - favourite quick action ids
+  - favourite template ids
+  - default quick action/template ids
+  - `llm_detail_level`
+  - preferred recording mode
+  - preferred transcribe tab
+- `user_app_preferences` rejects template/quick-action ids outside the caller's currently visible owner/team scope
+- when referenced templates or quick actions are later deleted or hidden, `/api/v1/app-preferences` drops those stale ids lazily on read
 - if the user's preferred model is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
 - the implemented LLM adapter families are `openai_chat`, `bedrock_chat`, and `ollama_chat`
 - `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
@@ -288,6 +302,8 @@ Current LLM-configuration behavior:
 - remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
 - the API never returns the bearer token
 - the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
+- normal team users may patch only their own ready note documents through `/api/v1/generated-documents/{generated_document_id}`
+- note save requests must include `expected_updated_at`; stale revisions return `409 conflict`
 - one team may have multiple provisioned LLM config rows
 - one team may have only one active LLM selection row
 
@@ -533,8 +549,12 @@ Current whole-file ingestion behavior:
   - queues whole-file upload directly through `POST /api/v1/transcripts/{transcript_id}/audio-file`
   - offers retry through the same workspace when `active_transcript.latest_ingestion_retry_available` is true
   - queues note/follow-up/quick-action generation directly through the corresponding `/api/v1/transcripts/{transcript_id}/...` JSON routes
+  - enforces the same 4000-character limit for quick-action additional context on the API path as the browser textarea, trimming blank-only values to null server-side
+  - the non-JS `/transcribe/run-quick-action` form path now enforces that same quick-action additional-context limit before queueing work
   - shows recent owner transcripts and current draft text on refresh or poll completion
   - preserves structured EMIS note section rendering and copy-selected-lines behavior during workspace refreshes by rebuilding the section view from generated-document section data
+  - includes each structured generated note's snapshotted allowed section definitions in workspace/API note payloads so deleted template provenance does not expand the editable section set on refresh
+  - silently saves dirty owner note edits before switching note-history versions; if save fails or conflicts, the browser keeps the current editor state selected
   - now shows explicit session progress copy in the header and active rail row for local recording, uploading, queued, transcribing, ready, and failed states
 - if no active team STT selection exists, the browser flow fails early with:
   - `No STT configured, please ask your team leader {email}`

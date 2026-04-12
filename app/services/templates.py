@@ -1,11 +1,13 @@
 import json
 import logging
 import time
+from datetime import timezone
 from uuid import UUID, uuid4
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -35,6 +37,7 @@ from app.models import (
 from app.schemas.templates import (
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
+    GeneratedDocumentUpdateRequest,
     PromptTemplateUpsert,
     QuickActionUpsert,
     StructuredTemplateConfig,
@@ -54,6 +57,75 @@ from app.services.vault import read_team_llm_bearer_token
 
 
 usage_logger = logging.getLogger("openscribe.usage")
+
+TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner_name_lower"}
+QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
+
+
+def _structured_section_definitions_snapshot(template_config: StructuredTemplateConfig | None) -> dict | None:
+    if template_config is None:
+        return None
+    return {
+        "profile": template_config.profile,
+        "sections": [
+            {
+                "section_key": section.section_key,
+                "section_label": section.section_label,
+                "section_order": section.section_order,
+            }
+            for section in sorted(template_config.sections, key=lambda item: item.section_order)
+        ],
+    }
+
+
+def _allowed_structured_section_keys(document: GeneratedDocument, db: Session) -> set[str]:
+    snapshot = document.structured_section_definitions_json
+    if isinstance(snapshot, dict):
+        sections = snapshot.get("sections")
+        if isinstance(sections, list):
+            keys = {
+                str(section.get("section_key", "")).strip()
+                for section in sections
+                if isinstance(section, dict) and str(section.get("section_key", "")).strip()
+            }
+            if keys:
+                return keys
+    if document.template_version_id:
+        template_version = db.get(PromptTemplateVersion, document.template_version_id)
+        template_config = _template_version_config(template_version) if template_version else None
+        if template_config is not None:
+            return {section.section_key for section in template_config.sections}
+    return set(EMIS_SECTION_KEYS)
+
+
+def _raise_template_name_conflict(exc: IntegrityError) -> None:
+    raise AppError(409, "conflict", "Template name already exists", {"resource": "template", "field": "name"}) from exc
+
+
+def _raise_quick_action_name_conflict(exc: IntegrityError) -> None:
+    raise AppError(409, "conflict", "Quick action name already exists", {"resource": "quick_action", "field": "name"}) from exc
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str | None:
+    return getattr(getattr(getattr(exc, "orig", None), "diag", None), "constraint_name", None)
+
+
+def _translate_template_integrity_error(exc: IntegrityError) -> None:
+    constraint_name = _integrity_constraint_name(exc)
+    if constraint_name in TEMPLATE_NAME_CONSTRAINTS:
+        _raise_template_name_conflict(exc)
+    if constraint_name == "uq_template_version_number":
+        raise AppError(409, "conflict", "Template changed during save. Retry.", {"resource": "template"}) from exc
+    raise exc
+
+
+def _translate_quick_action_integrity_error(exc: IntegrityError) -> None:
+    constraint_name = _integrity_constraint_name(exc)
+    if constraint_name in QUICK_ACTION_NAME_CONSTRAINTS:
+        _raise_quick_action_name_conflict(exc)
+    if constraint_name == "uq_quick_action_version_number":
+        raise AppError(409, "conflict", "Quick action changed during save. Retry.", {"resource": "quick_action"}) from exc
+    raise exc
 
 
 def _require_team_member(actor: User) -> None:
@@ -201,6 +273,65 @@ def _serialize_prompt_text(raw_prompt_text: str) -> str:
     if not prompt_text:
         raise AppError(422, "business_rule_violation", "Template prompt text is required", {"field": "prompt_text"})
     return prompt_text
+
+
+def _serialize_asset_name(raw_name: str, *, field: str = "name") -> str:
+    name = raw_name.strip()
+    if not name:
+        raise AppError(422, "business_rule_violation", "Name is required", {"field": field})
+    return name
+
+
+def _ensure_unique_template_name(db: Session, actor: User, *, scope: TemplateScope, name: str, current_template_id: UUID | None = None) -> None:
+    normalized_name = name.strip().lower()
+    if scope is TemplateScope.team:
+        duplicate = db.scalar(
+            select(PromptTemplate).where(
+                PromptTemplate.scope == TemplateScope.team,
+                PromptTemplate.team_id == actor.team_id,
+                func.lower(PromptTemplate.name) == normalized_name,
+                PromptTemplate.id != current_template_id if current_template_id is not None else True,
+            )
+        )
+        if duplicate is not None:
+            raise AppError(409, "conflict", "Template name already exists", {"resource": "template", "field": "name"})
+        return
+    duplicate = db.scalar(
+        select(PromptTemplate).where(
+            PromptTemplate.scope == TemplateScope.user,
+            PromptTemplate.owner_user_id == actor.id,
+            func.lower(PromptTemplate.name) == normalized_name,
+            PromptTemplate.id != current_template_id if current_template_id is not None else True,
+        )
+    )
+    if duplicate is not None:
+        raise AppError(409, "conflict", "Template name already exists", {"resource": "template", "field": "name"})
+
+
+def _ensure_unique_quick_action_name(db: Session, actor: User, *, scope: TemplateScope, name: str, current_quick_action_id: UUID | None = None) -> None:
+    normalized_name = name.strip().lower()
+    if scope is TemplateScope.team:
+        duplicate = db.scalar(
+            select(QuickAction).where(
+                QuickAction.scope == TemplateScope.team,
+                QuickAction.team_id == actor.team_id,
+                func.lower(QuickAction.name) == normalized_name,
+                QuickAction.id != current_quick_action_id if current_quick_action_id is not None else True,
+            )
+        )
+        if duplicate is not None:
+            raise AppError(409, "conflict", "Quick action name already exists", {"resource": "quick_action", "field": "name"})
+        return
+    duplicate = db.scalar(
+        select(QuickAction).where(
+            QuickAction.scope == TemplateScope.user,
+            QuickAction.owner_user_id == actor.id,
+            func.lower(QuickAction.name) == normalized_name,
+            QuickAction.id != current_quick_action_id if current_quick_action_id is not None else True,
+        )
+    )
+    if duplicate is not None:
+        raise AppError(409, "conflict", "Quick action name already exists", {"resource": "quick_action", "field": "name"})
 
 
 def _serialize_template_config(payload: PromptTemplateUpsert) -> dict | None:
@@ -356,15 +487,17 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
     if payload.scope is not TemplateScope.team:
         raise AppError(422, "business_rule_violation", "Team template payload must use team scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    template_name = _serialize_asset_name(payload.name)
     config_json = _serialize_template_config(payload)
     template = _resolve_team_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
+    _ensure_unique_template_name(db, actor, scope=TemplateScope.team, name=template_name, current_template_id=template.id if template is not None else None)
     if template is None:
         template = PromptTemplate(
             id=uuid4(),
             scope=TemplateScope.team,
             owner_user_id=None,
             team_id=actor.team_id,
-            name=payload.name.strip(),
+            name=template_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -372,7 +505,7 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
         db.add(template)
         db.flush()
     else:
-        template.name = payload.name.strip()
+        template.name = template_name
         template.description = (payload.description or "").strip() or None
         template.is_active = payload.is_active
         db.add(template)
@@ -387,7 +520,14 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
         created_by_user_id=actor.id,
     )
     db.add(version)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _translate_template_integrity_error(exc)
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(template)
     return template
 
@@ -397,15 +537,17 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
     if payload.scope is not TemplateScope.user:
         raise AppError(422, "business_rule_violation", "Personal template payload must use user scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    template_name = _serialize_asset_name(payload.name)
     config_json = _serialize_template_config(payload)
     template = _resolve_personal_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
+    _ensure_unique_template_name(db, actor, scope=TemplateScope.user, name=template_name, current_template_id=template.id if template is not None else None)
     if template is None:
         template = PromptTemplate(
             id=uuid4(),
             scope=TemplateScope.user,
             owner_user_id=actor.id,
             team_id=None,
-            name=payload.name.strip(),
+            name=template_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -413,7 +555,7 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
         db.add(template)
         db.flush()
     else:
-        template.name = payload.name.strip()
+        template.name = template_name
         template.description = (payload.description or "").strip() or None
         template.is_active = payload.is_active
         db.add(template)
@@ -428,7 +570,14 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
         created_by_user_id=actor.id,
     )
     db.add(version)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _translate_template_integrity_error(exc)
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(template)
     return template
 
@@ -438,14 +587,22 @@ def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpser
     if payload.scope is not TemplateScope.team:
         raise AppError(422, "business_rule_violation", "Team quick action payload must use team scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    quick_action_name = _serialize_asset_name(payload.name)
     quick_action = _resolve_team_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
+    _ensure_unique_quick_action_name(
+        db,
+        actor,
+        scope=TemplateScope.team,
+        name=quick_action_name,
+        current_quick_action_id=quick_action.id if quick_action is not None else None,
+    )
     if quick_action is None:
         quick_action = QuickAction(
             id=uuid4(),
             scope=TemplateScope.team,
             owner_user_id=None,
             team_id=actor.team_id,
-            name=payload.name.strip(),
+            name=quick_action_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -453,7 +610,7 @@ def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpser
         db.add(quick_action)
         db.flush()
     else:
-        quick_action.name = payload.name.strip()
+        quick_action.name = quick_action_name
         quick_action.description = (payload.description or "").strip() or None
         quick_action.is_active = payload.is_active
         db.add(quick_action)
@@ -467,7 +624,14 @@ def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpser
         created_by_user_id=actor.id,
     )
     db.add(version)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _translate_quick_action_integrity_error(exc)
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(quick_action)
     return quick_action
 
@@ -477,14 +641,22 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
     if payload.scope is not TemplateScope.user:
         raise AppError(422, "business_rule_violation", "Personal quick action payload must use user scope", {"field": "scope"})
     prompt_text = _serialize_prompt_text(payload.prompt_text)
+    quick_action_name = _serialize_asset_name(payload.name)
     quick_action = _resolve_personal_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
+    _ensure_unique_quick_action_name(
+        db,
+        actor,
+        scope=TemplateScope.user,
+        name=quick_action_name,
+        current_quick_action_id=quick_action.id if quick_action is not None else None,
+    )
     if quick_action is None:
         quick_action = QuickAction(
             id=uuid4(),
             scope=TemplateScope.user,
             owner_user_id=actor.id,
             team_id=None,
-            name=payload.name.strip(),
+            name=quick_action_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -492,7 +664,7 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
         db.add(quick_action)
         db.flush()
     else:
-        quick_action.name = payload.name.strip()
+        quick_action.name = quick_action_name
         quick_action.description = (payload.description or "").strip() or None
         quick_action.is_active = payload.is_active
         db.add(quick_action)
@@ -506,7 +678,14 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
         created_by_user_id=actor.id,
     )
     db.add(version)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _translate_quick_action_integrity_error(exc)
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(quick_action)
     return quick_action
 
@@ -575,7 +754,125 @@ def list_generated_documents_for_transcript(db: Session, actor: User, *, transcr
     )
 
 
-def _snapshot_transcript_version(db: Session, *, transcript: Transcript) -> TranscriptVersion:
+def delete_generated_document(db: Session, actor: User, *, generated_document_id: UUID) -> None:
+    _require_team_member(actor)
+    document = db.get(GeneratedDocument, generated_document_id)
+    if document is None:
+        raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
+    if document.owner_user_id != actor.id:
+        raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    for event in document.provider_usage_events:
+        event.generated_document_id = None
+        db.add(event)
+    db.delete(document)
+    db.commit()
+
+
+def _normalize_note_text(value: str | None) -> str:
+    return "\n".join(
+        line.strip()
+        for line in str(value or "").splitlines()
+        if line.strip()
+    ).strip()
+
+
+def update_generated_document_content(
+    db: Session,
+    actor: User,
+    *,
+    generated_document_id: UUID,
+    payload: GeneratedDocumentUpdateRequest,
+) -> GeneratedDocument:
+    _require_team_member(actor)
+    document = db.get(GeneratedDocument, generated_document_id)
+    if document is None:
+        raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
+    if document.owner_user_id != actor.id:
+        raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    if document.generator_type is not GeneratedDocumentGeneratorType.template:
+        raise AppError(422, "business_rule_violation", "Only note documents support direct editing")
+    if document.status is not GeneratedDocumentStatus.ready:
+        raise AppError(409, "conflict", "Generated document is not ready for editing")
+
+    expected_updated_at = payload.expected_updated_at
+    if expected_updated_at.tzinfo is None:
+        expected_updated_at = expected_updated_at.replace(tzinfo=timezone.utc)
+    if document.updated_at != expected_updated_at:
+        raise AppError(409, "conflict", "Generated document has changed. Reload note before saving again.")
+
+    if document.document_mode is TemplateMode.structured:
+        incoming_sections = sorted(payload.sections, key=lambda section: section.section_order)
+        existing_sections = {section.section_key: section for section in document.sections}
+        allowed_section_keys = _allowed_structured_section_keys(document, db)
+        rendered_sections: list[dict[str, str | int]] = []
+        any_section_edited = False
+        seen_keys: set[str] = set()
+        for incoming in incoming_sections:
+            section_key = incoming.section_key.strip()
+            if section_key not in allowed_section_keys:
+                raise AppError(422, "business_rule_violation", "Structured note section is invalid", {"field": "sections", "section_key": section_key})
+            if section_key in seen_keys:
+                raise AppError(422, "business_rule_violation", "Structured note sections must not repeat keys", {"field": "sections", "section_key": section_key})
+            seen_keys.add(section_key)
+            section_record = existing_sections.get(section_key)
+            if section_record is None:
+                section_record = GeneratedDocumentSection(
+                    id=uuid4(),
+                    generated_document_id=document.id,
+                    section_key=section_key,
+                    section_label=(incoming.section_label or EMIS_SECTION_LABELS[section_key]).strip()[:255],
+                    section_order=incoming.section_order,
+                    original_text_encrypted="",
+                    edited_text_encrypted="",
+                    is_edited=False,
+                )
+            section_record.section_label = (incoming.section_label or EMIS_SECTION_LABELS[section_key]).strip()[:255]
+            section_record.section_order = incoming.section_order
+            normalized_text = _normalize_note_text(incoming.text)
+            set_generated_document_section_text(
+                db,
+                section=section_record,
+                field="edited_text_encrypted",
+                owner_user_id=document.owner_user_id,
+                plaintext=normalized_text,
+            )
+            original_text = _normalize_note_text(
+                generated_document_section_text(db, section=section_record, field="original_text_encrypted")
+                if section_key in existing_sections
+                else ""
+            )
+            section_record.is_edited = normalized_text != original_text
+            any_section_edited = any_section_edited or section_record.is_edited
+            db.add(section_record)
+            rendered_sections.append(
+                {
+                    "section_key": section_key,
+                    "section_label": section_record.section_label,
+                    "section_order": section_record.section_order,
+                    "text": normalized_text,
+                }
+            )
+        for section_key, section_record in existing_sections.items():
+            if section_key not in seen_keys:
+                db.delete(section_record)
+        edited_output_text = _render_structured_sections_text(rendered_sections)
+    else:
+        edited_output_text = _normalize_note_text(payload.edited_output_text)
+
+    original_output_text = _normalize_note_text(generated_document_text(db, document=document, field="original_output_text_encrypted"))
+    set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=edited_output_text)
+    if document.document_mode is TemplateMode.structured:
+        document.is_edited = any_section_edited or edited_output_text != original_output_text
+    else:
+        document.is_edited = edited_output_text != original_output_text
+    document.last_edited_at = utcnow()
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return document
+
+
+def _snapshot_transcript_version(db: Session, *, transcript: Transcript, allow_empty: bool = False) -> TranscriptVersion:
     current_text = (
         decrypt_text_for_owner(
             db,
@@ -587,7 +884,7 @@ def _snapshot_transcript_version(db: Session, *, transcript: Transcript) -> Tran
         )
         or ""
     ).strip()
-    if not current_text:
+    if not current_text and not allow_empty:
         raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
     version_id = uuid4()
     current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
@@ -1424,7 +1721,11 @@ def queue_document_generation_from_template(
             },
         )
         db.add(transcript)
-    transcript_version = _snapshot_transcript_version(db, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(
+        db,
+        transcript=transcript,
+        allow_empty=latest_version.mode is TemplateMode.structured and bool(serialized_structured_context),
+    )
 
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
@@ -1443,6 +1744,7 @@ def queue_document_generation_from_template(
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
         structured_context_json=None,
+        structured_section_definitions_json=_structured_section_definitions_snapshot(template_config),
         status=GeneratedDocumentStatus.queued,
         title=f"{template.name} output",
         document_mode=latest_version.mode,
@@ -1527,6 +1829,7 @@ def queue_quick_action_generation(
     *,
     transcript_id: UUID,
     quick_action_id: UUID,
+    context_text: str | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -1541,6 +1844,10 @@ def queue_quick_action_generation(
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
         raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
+    clean_context_text = (context_text or "").strip()
+    prompt_snapshot_text = latest_version.prompt_text.strip()
+    if clean_context_text:
+        prompt_snapshot_text = f"{prompt_snapshot_text}\n\nAdditional context:\n{clean_context_text}"
 
     generated_document = GeneratedDocument(
         id=uuid4(),
@@ -1555,7 +1862,7 @@ def queue_quick_action_generation(
         llm_config_id=config.id,
         source_template_name="Quick action",
         source_quick_action_name=quick_action.name,
-        prompt_snapshot_text=latest_version.prompt_text,
+        prompt_snapshot_text=prompt_snapshot_text,
         status=GeneratedDocumentStatus.queued,
         title=f"Quick action: {quick_action.name}",
         document_mode=TemplateMode.freeform,

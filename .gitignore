@@ -1,4 +1,5 @@
 .env
+.local/
 .venv/
 .pytest_cache/
 __pycache__/
@@ -21,3 +22,4 @@ tests/oscar.mp3
 .tmp_parakeet_both.json
 .tmp_parakeet_segment.json
 .tmp_parakeet_word.json
+.playwright-mcp/ 

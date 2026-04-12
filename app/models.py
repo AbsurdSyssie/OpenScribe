@@ -218,6 +218,11 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    app_preferences: Mapped["UserAppPreference | None"] = relationship(
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     owned_templates: Mapped[list["PromptTemplate"]] = relationship(
         back_populates="owner",
         foreign_keys="PromptTemplate.owner_user_id",
@@ -449,6 +454,18 @@ class UserLlmPreference(Base):
     user: Mapped[User] = relationship(back_populates="llm_preference")
 
 
+class UserAppPreference(Base):
+    __tablename__ = "user_app_preferences"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
+    preferences_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="app_preferences")
+
+
 class PromptTemplate(Base):
     __tablename__ = "templates"
     __table_args__ = (
@@ -456,6 +473,20 @@ class PromptTemplate(Base):
             "(scope = 'user' AND owner_user_id IS NOT NULL AND team_id IS NULL) "
             "OR (scope = 'team' AND team_id IS NOT NULL AND owner_user_id IS NULL)",
             name="ck_templates_scope_owner_team",
+        ),
+        Index(
+            "uq_templates_team_name_lower",
+            "team_id",
+            text("lower(btrim(name))"),
+            unique=True,
+            postgresql_where=text("scope = 'team'"),
+        ),
+        Index(
+            "uq_templates_owner_name_lower",
+            "owner_user_id",
+            text("lower(btrim(name))"),
+            unique=True,
+            postgresql_where=text("scope = 'user'"),
         ),
     )
 
@@ -500,6 +531,20 @@ class QuickAction(Base):
             "(scope = 'user' AND owner_user_id IS NOT NULL AND team_id IS NULL) "
             "OR (scope = 'team' AND team_id IS NOT NULL AND owner_user_id IS NULL)",
             name="ck_quick_actions_scope_owner_team",
+        ),
+        Index(
+            "uq_quick_actions_team_name_lower",
+            "team_id",
+            text("lower(btrim(name))"),
+            unique=True,
+            postgresql_where=text("scope = 'team'"),
+        ),
+        Index(
+            "uq_quick_actions_owner_name_lower",
+            "owner_user_id",
+            text("lower(btrim(name))"),
+            unique=True,
+            postgresql_where=text("scope = 'user'"),
         ),
     )
 
@@ -713,6 +758,7 @@ class GeneratedDocument(Base):
     follow_up_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    structured_section_definitions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[GeneratedDocumentStatus] = mapped_column(
         Enum(GeneratedDocumentStatus),
         default=GeneratedDocumentStatus.queued,

@@ -294,6 +294,38 @@ Expected:
 - cross-team leader access fails with `403`
 - invalid remote `http://` endpoint fails with `422`
 
+### User app preferences
+
+Behavior in plain language:
+
+- only normal team users may manage `user_app_preferences`
+- the row stores workflow metadata only, not transcript-derived content
+- favourite/default template and quick-action ids must remain inside the caller's visible owner/team scope
+- stale favourite/default ids are removed lazily if the referenced asset is later deleted or hidden
+- clearing preferences removes only the `user_app_preferences` row
+
+Brief test shape:
+
+```python
+saved = client.post(
+    "/api/v1/app-preferences",
+    json={
+        "favorite_quick_action_ids": [str(team_quick_action.id)],
+        "favorite_template_ids": [str(team_template.id)],
+        "default_quick_action_id": str(team_quick_action.id),
+        "llm_detail_level": "detailed",
+        "preferred_recording_mode": "live_chunked",
+    },
+)
+```
+
+Expected:
+
+- save/get/clear succeed for the authenticated owner only
+- cross-team or hidden asset ids fail with `422`
+- system-admin access fails with `403`
+- deleting a favourited template/quick action causes later reads to return the row without the stale ids
+
 ### Transcript start and ingestion mode
 
 Behavior in plain language:

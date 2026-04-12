@@ -311,6 +311,25 @@ def clear_llm_preference(context: AuthenticatedContext = Depends(require_full_co
     clear_user_llm_preference_service(db, context.user)
 
 
+@api.get("/app-preferences", response_model=UserAppPreferencesDetail | None, responses=error_responses)
+def get_app_preferences(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    preference = get_user_app_preferences_service(db, context.user)
+    if preference is None:
+        return None
+    return user_app_preferences_response(preference)
+
+
+@api.post("/app-preferences", response_model=UserAppPreferencesDetail, responses=error_responses)
+def set_app_preferences(payload: UserAppPreferencesUpsert, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    preference = set_user_app_preferences_service(db, context.user, payload)
+    return user_app_preferences_response(preference)
+
+
+@api.delete("/app-preferences", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_app_preferences(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    clear_user_app_preferences_service(db, context.user)
+
+
 @api.get("/templates/available", response_model=list[PromptTemplateDetail], responses=error_responses)
 def list_available_templates(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [template_response(template) for template in list_available_templates_for_user_service(db, context.user)]
@@ -636,6 +655,27 @@ def get_generated_document_redaction_debug(
     return generated_document_redaction_debug_response(db, document)
 
 
+@api.patch("/generated-documents/{generated_document_id}", response_model=GeneratedDocumentDetail, responses=error_responses)
+def update_generated_document(
+    generated_document_id: UUID,
+    payload: GeneratedDocumentUpdateRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    document = update_generated_document_content_service(db, context.user, generated_document_id=generated_document_id, payload=payload)
+    return generated_document_response(db, document)
+
+
+@api.delete("/generated-documents/{generated_document_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_generated_document(
+    generated_document_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    delete_generated_document_service(db, context.user, generated_document_id=generated_document_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @api.post("/transcripts/{transcript_id}/generate-output", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 @LLM_GENERATION_DAILY_RATE_LIMIT
 @LLM_GENERATION_BURST_RATE_LIMIT
@@ -702,7 +742,13 @@ def run_transcript_quick_action(
 ):
     document = None
     try:
-        document = queue_quick_action_generation_service(db, context.user, transcript_id=transcript_id, quick_action_id=payload.quick_action_id)
+        document = queue_quick_action_generation_service(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            quick_action_id=payload.quick_action_id,
+            context_text=payload.context_text,
+        )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError:

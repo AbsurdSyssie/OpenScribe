@@ -1,598 +1,710 @@
-    <main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
-      <header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
-        <div class="flex items-start justify-between gap-4">
-          <div class="min-w-0 flex-1">
-            {% if active_transcript %}
-            <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" data-transcript-title-form>
-              <label class="sr-only" for="glm-session-title">Session title</label>
-              <input
-                id="glm-session-title"
-                type="text"
-                name="title"
-                maxlength="255"
-                value="{{ active_transcript.title or '' }}"
-                placeholder="Untitled consultation"
-                class="font-display text-[1.95rem] font-medium bg-transparent border-none focus:bg-parchment focus:px-3 focus:py-2 focus:rounded-lg focus:border focus:border-teal-muted/30 transition-all w-full min-w-0"
-                aria-label="Session title"
-                data-session-title-display
-                data-transcript-title-input>
-            </form>
-            {% else %}
-            <div class="font-display text-2xl font-medium text-ink" data-session-title-display>New consultation</div>
-            {% endif %}
-          </div>
-          <div></div>
-        </div>
+<main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
+<header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
+<div class="flex items-start justify-between gap-4">
+<div class="min-w-0 flex-1">
+{% if active_transcript %}
+<form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" data-transcript-title-form>
+<label class="sr-only" for="glm-session-title">Session title</label>
+<input
+id="glm-session-title"
+type="text"
+name="title"
+maxlength="255"
+value="{{ active_transcript.title or '' }}"
+placeholder="Untitled consultation"
+class="font-display text-[1.95rem] font-medium bg-transparent border-none focus:bg-parchment focus:px-3 focus:py-2 focus:rounded-lg focus:border focus:border-teal-muted/30 transition-all w-full min-w-0"
+aria-label="Session title"
+data-session-title-display
+data-transcript-title-input>
+</form>
+{% else %}
+<div class="font-display text-2xl font-medium text-ink" data-session-title-display>New consultation</div>
+{% endif %}
+</div>
+<div></div>
+</div>
 
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="flex flex-wrap items-center gap-2" data-tour-target="record-controls">
-            {% set active_status_display = active_transcript.status.value if active_transcript else 'idle' %}
-            {% if active_transcript and active_status_display == 'recording' %}
-              {% set active_status_display = 'idle' %}
-            {% endif %}
-            {% if active_status_display == 'ready' %}
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-teal-pale rounded-full">
-              <span class="w-2 h-2 bg-teal-deep rounded-full status-pulse"></span>
-              <span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
-            </div>
-            {% elif active_status_display == 'failed' %}
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-coral/15 rounded-full">
-              <span class="w-2 h-2 bg-coral rounded-full"></span>
-              <span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
-            </div>
-            {% else %}
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone rounded-full">
-              <span class="w-2 h-2 bg-slate rounded-full"></span>
-              <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
-            </div>
-            {% endif %}
-            <button
-              type="button"
-              class="btn-primary px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition flex items-center gap-2"
-              data-audio-action-trigger
-              data-local-busy-protected
-              {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
-              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
-              Upload recording
-            </button>
-            <label class="record-mode-control">
-              <span class="record-mode-control__label">Recording mode</span>
-              <select
-                class="record-mode-control__select"
-                data-recording-mode-select
-                {% if not active_transcript %}disabled{% endif %}>
-                <option value="whole_file" {% if not active_transcript or active_transcript.ingestion_mode.value == 'whole_file' %}selected{% endif %}>Recorded upload</option>
-                <option value="live_chunked" {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}selected{% endif %}>Live capture</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              class="px-4 py-2 bg-coral text-white rounded-lg text-sm font-medium hover:bg-coral/90 transition flex items-center gap-2 shadow-sm disabled:opacity-50"
-              data-record-toggle
-              {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) or (active_transcript and active_transcript.ingestion_mode.value == 'whole_file' and not stt_available) or (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and not stt_available) %}disabled title="{{ stt_status_message or 'Speech capture is unavailable for this consultation.' }}"{% endif %}>
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" data-record-toggle-icon>
-                <circle cx="12" cy="12" r="6"/>
-              </svg>
-              <span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live capture{% else %}Start recording{% endif %}</span>
-            </button>
-            <form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
-              <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>
-              <button
-                type="submit"
-                class="px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition disabled:opacity-50"
-                data-retry-ingestion-trigger
-                data-local-busy-protected
-                {% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
-                Try transcription again
-              </button>
-            </form>
-          </div>
-          <div class="flex flex-wrap items-center gap-2 text-sm text-slate">
-            <div class="px-3 py-2 bg-parchment rounded-lg">Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
-          </div>
-        </div>
+<div class="flex flex-wrap items-center justify-between gap-3">
+<div class="flex flex-wrap items-center gap-2" data-tour-target="record-controls">
+{% set active_status_display = active_transcript.status.value if active_transcript else 'idle' %}
+{% if active_transcript and active_status_display == 'recording' %}
+{% set active_status_display = 'idle' %}
+{% endif %}
+{% if active_status_display == 'ready' %}
+<div class="flex items-center gap-2 px-3 py-1.5 bg-teal-pale rounded-full">
+<span class="w-2 h-2 bg-teal-deep rounded-full status-pulse"></span>
+<span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
+</div>
+{% elif active_status_display == 'failed' %}
+<div class="flex items-center gap-2 px-3 py-1.5 bg-coral/15 rounded-full">
+<span class="w-2 h-2 bg-coral rounded-full"></span>
+<span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
+</div>
+{% else %}
+<div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone rounded-full">
+<span class="w-2 h-2 bg-slate rounded-full"></span>
+<span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
+</div>
+{% endif %}
+<button
+type="button"
+class="btn-upload"
+data-audio-action-trigger
+data-local-busy-protected
+{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
+{% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+</svg>
+Upload
+</button>
+<div class="record-split-button"
+data-record-split-button
+{% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) %}data-disabled{% endif %}>
+<button
+type="button"
+class="record-split-button__main"
+data-record-toggle
+{% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
+<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" data-record-toggle-icon>
+<circle cx="12" cy="12" r="6"/>
+</svg>
+<span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Start recording{% endif %}</span>
+</button>
+<button
+type="button"
+class="record-split-button__dropdown"
+data-record-mode-dropdown
+aria-haspopup="true"
+aria-expanded="false"
+{% if not active_transcript %}disabled{% endif %}>
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+</svg>
+</button>
+<div class="record-split-button__menu" data-record-mode-menu hidden>
+<button type="button" class="record-split-button__option{% if not active_transcript or active_transcript.ingestion_mode.value == 'whole_file' %} active{% endif %}" data-mode="whole_file">
+<span class="record-split-button__option-label">Recorded upload</span>
+<span class="record-split-button__option-hint">Upload audio file</span>
+</button>
+<button type="button" class="record-split-button__option{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %} active{% endif %}" data-mode="live_chunked">
+<span class="record-split-button__option-label">Live capture</span>
+<span class="record-split-button__option-hint">Record in real-time</span>
+</button>
+</div>
+</div>
+<select
+class="sr-only"
+data-recording-mode-select
+{% if not active_transcript %}disabled{% endif %}>
+<option value="whole_file" {% if not active_transcript or active_transcript.ingestion_mode.value == 'whole_file' %}selected{% endif %}>Recorded upload</option>
+<option value="live_chunked" {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}selected{% endif %}>Live capture</option>
+</select>
+<form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
+<input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>
+<button
+type="submit"
+class="px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition disabled:opacity-50"
+data-retry-ingestion-trigger
+data-local-busy-protected
+{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
+Try transcription again
+</button>
+</form>
+</div>
+<div class="flex flex-wrap items-center gap-2 text-sm text-slate">
+<div class="px-3 py-2 bg-parchment rounded-lg">Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
+</div>
+</div>
 
-        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink" data-active-ingestion-mode>
-          {% if active_transcript %}
-          {{ 'Uploaded recording' if active_transcript.ingestion_mode.value == 'whole_file' else 'Live capture' }}
-          {% endif %}
-        </div>
-        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink">
-          Speech service:
-          {% if stt_selection %}
-          {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}
-          {% else %}
-          Not configured
-          {% endif %}
-        </div>
-        <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink">
-          Writing assistant:
-          {% if llm_selection %}
-          {{ llm_selection.config.label }} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default" }}
-          {% else %}
-          Not configured
-          {% endif %}
-        </div>
+<div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink" data-active-ingestion-mode>
+{% if active_transcript %}
+{{ 'Uploaded recording' if active_transcript.ingestion_mode.value == 'whole_file' else 'Live capture' }}
+{% endif %}
+</div>
 
-        <form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form hidden>
-          {% if active_transcript %}
-          <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-          {% endif %}
-          <input type="file" name="audio" accept="audio/*" data-audio-file-input {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
-        </form>
+<form method="post" action="/transcribe/upload" enctype="multipart/form-data" data-upload-form hidden>
+{% if active_transcript %}
+<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+{% endif %}
+<input type="file" name="audio" accept="audio/*" data-audio-file-input {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled{% endif %}>
+</form>
 
-        <div class="hidden text-sm text-slate" data-session-progress>
-          {% if active_transcript %}
-            {% if active_transcript.status.value == "queued" %}
-            Waiting to be turned into text.
-            {% elif active_transcript.status.value == "transcribing" %}
-            Turning the recording into text.
-            {% elif active_transcript.status.value == "ready" %}
-            Ready to review.
-            {% elif active_transcript.status.value == "failed" %}
-            The last attempt to turn this into text failed{% if active_transcript_latest_job and active_transcript_latest_job.error_message %}: {{ active_transcript_latest_job.error_message }}{% endif %}.
-            {% else %}
-            Ready when you are.
-            {% endif %}
-          {% else %}
-          Create or open a consultation to begin.
-          {% endif %}
-        </div>
-        <div class="text-sm {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and active_transcript_latest_job and active_transcript_latest_job.status.value == 'failed' and active_transcript_latest_job.error_message) or (stt_selection and not stt_available) %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
-          {% if not active_transcript %}
-          Create or open a consultation to begin.
-          {% elif active_transcript.ingestion_mode.value == "live_chunked" %}
-          {% if active_transcript_latest_job and active_transcript_latest_job.status.value == "failed" and active_transcript_latest_job.error_message %}
-          {{ active_transcript_latest_job.error_message }}
-          {% elif not stt_selection %}
-          Live capture is not ready for your team yet.
-          {% elif not stt_available %}
-          {{ stt_status_message }}
-          {% else %}
-          Ready for live capture. Press Start live capture when you are ready.
-          {% endif %}
-          {% elif active_transcript.ingestion_mode.value != "whole_file" %}
-          This consultation is in {{ active_transcript.ingestion_mode.value }} mode.
-          {% elif not stt_selection %}
-          Uploading a recording is not ready for your team yet.
-          {% elif not stt_available %}
-          {{ stt_status_message }}
-          {% else %}
-          Ready to upload a recording or capture one from your microphone.
-          {% endif %}
-        </div>
-      </header>
+<div class="hidden text-sm text-slate" data-session-progress>
+{% if active_transcript %}
+{% if active_transcript.status.value == "queued" %}
+Waiting to be turned into text.
+{% elif active_transcript.status.value == "transcribing" %}
+Turning the recording into text.
+{% elif active_transcript.status.value == "ready" %}
+Ready to review.
+{% elif active_transcript.status.value == "failed" %}
+The last attempt to turn this into text failed{% if active_transcript_latest_job and active_transcript_latest_job.error_message %}: {{ active_transcript_latest_job.error_message }}{% endif %}.
+{% else %}
+Ready when you are.
+{% endif %}
+{% else %}
+Create or open a consultation to begin.
+{% endif %}
+</div>
+<div class="text-sm {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and active_transcript_latest_job and active_transcript_latest_job.status.value == 'failed' and active_transcript_latest_job.error_message) or (stt_selection and not stt_available) %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
+{% if not active_transcript %}
+Create or open a consultation to begin.
+{% elif active_transcript.ingestion_mode.value == "live_chunked" %}
+{% if active_transcript_latest_job and active_transcript_latest_job.status.value == "failed" and active_transcript_latest_job.error_message %}
+{{ active_transcript_latest_job.error_message }}
+{% elif not stt_selection %}
+Live capture is not ready for your team yet.
+{% elif not stt_available %}
+{{ stt_status_message }}
+{% else %}
+Ready for live capture. Press Start live capture when you are ready.
+{% endif %}
+{% elif active_transcript.ingestion_mode.value != "whole_file" %}
+This consultation is in {{ active_transcript.ingestion_mode.value }} mode.
+{% elif not stt_selection %}
+Uploading a recording is not ready for your team yet.
+{% elif not stt_available %}
+{{ stt_status_message }}
+{% else %}
+Ready to upload a recording or capture one from your microphone.
+{% endif %}
+</div>
+</header>
 
-      <div class="px-4{% if message %} pt-3{% endif %}"{% if not message %} hidden{% endif %} data-flash-wrap>
-        <div class="flash-banner border rounded-xl px-4 py-3 text-sm font-medium {{ message_kind }}"{% if not message %} hidden{% endif %} data-flash>{{ message or '' }}</div>
-      </div>
+<div class="px-4 pt-3" hidden data-flash-wrap>
+<div class="flash-banner border rounded-xl px-4 py-3 text-sm font-medium {{ message_kind }}" hidden data-flash>{{ message or '' }}</div>
+</div>
 
-      <div class="flex-1 flex min-h-0 pl-0 pr-2 pb-2 pt-0 gap-0 relative" data-split-workspace>
-        <section class="bg-white overflow-hidden flex flex-col min-w-0" data-transcript-pane>
-          <div class="px-4 py-2 border-b border-stone/70 bg-transparent flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <h2 class="font-display text-xl text-ink">Conversation text</h2>
-              
-            </div>
-            <button type="button" class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-white rounded-lg transition" data-copy-transcript>Copy transcript</button>
-          </div>
-          <div class="flex-1 overflow-y-auto px-4 pt-2 pb-3">
-            <div class="min-h-full whitespace-pre-wrap text-[15px] leading-7 text-ink" data-active-draft>
-              {% if active_transcript and active_transcript.current_draft_text_encrypted %}
-              {{ active_transcript.current_draft_text_encrypted }}
-              {% else %}
-              <span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin.</span>
-              {% endif %}
-            </div>
-          </div>
-          <div class="px-4 py-2 border-t border-stone/60 bg-transparent flex items-center justify-between gap-4 text-xs text-slate">
-            <span data-transcript-stats>
-              {% if active_transcript and active_transcript.current_draft_text_encrypted %}
-              {{ active_transcript.current_draft_text_encrypted.split('\n')|length }} blocks - {{ active_transcript.current_draft_text_encrypted.split()|length }} words
-              {% else %}
-              0 blocks - 0 words
-              {% endif %}
-            </span>
-            <span>Your consultation text stays private to you.</span>
-          </div>
-        </section>
+<div class="flex-1 flex flex-col min-h-0 overflow-hidden" data-split-workspace>
+<div class="flex items-center justify-between border-b border-stone bg-white px-4 gap-3">
+<div class="flex gap-1 min-w-0">
+<button type="button" class="main-tab active" data-tab-trigger="output" data-tour-target="note-tab">Clinical Note</button>
+<button type="button" class="main-tab" data-tab-trigger="followups" data-tour-target="messages-tab">Follow Ups</button>
+<button type="button" class="main-tab" data-tab-trigger="history">Transcript</button>
+</div>
+<a
+href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
+class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-lg border border-stone bg-white text-slate hover:text-ink hover:border-teal-muted transition"
+data-workspace-settings-link
+aria-label="Open related settings"
+title="Open related settings">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317a1 1 0 011.35-.936l.833.353a1 1 0 00.95-.07l.75-.5a1 1 0 011.45.348l.436.786a1 1 0 00.84.51l.902.06a1 1 0 01.95 1.146l-.128.895a1 1 0 00.288.88l.642.642a1 1 0 010 1.414l-.642.642a1 1 0 00-.288.88l.128.895a1 1 0 01-.95 1.146l-.901.06a1 1 0 00-.841.51l-.436.786a1 1 0 01-1.45.348l-.75-.5a1 1 0 00-.95-.07l-.833.353a1 1 0 01-1.35-.936l-.06-.902a1 1 0 00-.51-.84l-.786-.436a1 1 0 01-.348-1.45l.5-.75a1 1 0 00.07-.95l-.353-.833a1 1 0 01.936-1.35l.902-.06a1 1 0 00.84-.51l.436-.786z"/>
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
+</svg>
+</a>
+</div>
 
-        <div class="divider-widget">
-          <button type="button" class="divider-btn btn-expand" data-pane-toggle="expanded" aria-label="Expand clinical note pane" title="Expand note">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-            </svg>
-          </button>
-          <button type="button" class="divider-btn btn-split" data-pane-toggle="normal" data-divider-grip aria-label="Split view" title="Split view">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"/>
-            </svg>
-          </button>
-          <button type="button" class="divider-btn btn-collapse" data-pane-toggle="collapsed" aria-label="Hide clinical note pane" title="Hide note">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-            </svg>
-          </button>
-        </div>
+<div class="flex-1 overflow-y-auto bg-parchment">
+<div class="main-panel" data-tab-panel="output">
+<div class="structured-workspace">
+<div class="structured-workspace__header">
+{% set latest_template = available_templates[0] if available_templates else none %}
+{% set latest_template_version = latest_template.versions|sort(attribute='version_no')|last if latest_template else none %}
+<div class="note-header-row">
+<div class="note-header-left">
+<button
+type="button"
+class="template-picker-button--compact"
+data-template-picker-button
+{% if not active_transcript or not available_templates or not llm_selection %}disabled{% endif %}
+aria-haspopup="dialog"
+aria-expanded="false">
+<span class="template-picker-button__text" data-template-picker-label>{% if latest_template %}{{ latest_template.name }}{% else %}Choose template{% endif %}</span>
+<span class="template-picker-button__mode" data-template-picker-mode>{% if latest_template_version %}{{ 'Sectioned' if latest_template_version.mode.value == 'structured' else 'Free text' }}{% endif %}</span>
+</button>
+{% if not latest_generated_document or latest_generated_document.status.value != "ready" %}
+<span class="note-header-hint">Start recording, then add lines as consultation unfolds.</span>
+{% endif %}
+</div>
+<div class="note-header-right">
+<form method="post" action="/transcribe/generate-output" data-generate-output-form class="inline-form">
+{% if active_transcript %}
+<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+{% endif %}
+{% for section in emis_sections %}
+<input type="hidden" name="context_{{ section.key }}" data-structured-context-hidden data-section-key="{{ section.key }}">
+{% endfor %}
+<button
+type="submit"
+class="btn-primary btn-primary--compact"
+{% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text_encrypted and not active_structured_context) %}disabled{% endif %}>
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+</svg>
+Create
+</button>
+</form>
+<a
+href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
+class="btn-icon"
+data-workspace-settings-link
+aria-label="Open templates"
+title="Manage templates">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+</svg>
+</a>
+</div>
+<select
+name="template_id"
+data-template-select
+class="sr-only"
+{% if not active_transcript or not available_templates or not llm_selection %}disabled{% endif %}
+required>
+{% if not available_templates %}
+<option value="">No templates available</option>
+{% else %}
+{% for template in available_templates %}
+{% set latest_version = template.versions|sort(attribute='version_no')|last %}
+{% set template_sections = template_section_definitions_by_id.get(template.id|string) if template_section_definitions_by_id is defined else none %}
+<option
+value="{{ template.id }}"
+data-template-name="{{ template.name }}"
+data-template-mode="{{ latest_version.mode.value }}"
+{% if latest_version.mode.value == "structured" and template_sections %}data-template-sections='{{ template_sections | tojson }}'{% endif %}
+data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
+{{ template.name }} ({{ latest_version.mode.value }})
+</option>
+{% endfor %}
+{% endif %}
+</select>
+</div>
+</div>
+<div class="structured-workspace__body">
+<div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not note_documents %} hidden{% endif %}>
+<div class="flex items-center justify-between gap-4">
+<span class="text-xs font-medium uppercase tracking-[0.12em] text-slate">Note versions</span>
+<span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length }}</span>
+</div>
+<div class="document-switcher" data-note-selector>
+{% for document in note_documents %}
+<button
+type="button"
+class="document-switcher-button{% if latest_generated_document and document.id == latest_generated_document.id %} active{% endif %}"
+data-note-document-select
+data-document-id="{{ document.id }}"
+data-document-kind="note"
+title="{{ document.title }}">
+{% set note_words = document.title.split() %}
+<span class="document-switcher-label">{{ note_words[:4]|join(' ') }}{% if note_words|length > 4 %}…{% endif %}</span>
+<span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at }}</span>
+</button>
+{% endfor %}
+</div>
+</div>
 
-        <section class="border-l border-stone bg-white overflow-hidden flex flex-col min-w-0" data-assistant-pane>
-          <div class="px-4 py-3 border-b border-stone bg-parchment/55 flex items-center justify-between gap-4">
-            <div class="min-w-0">
-              <h2 class="font-display text-xl text-ink">Notes and messages</h2>
-            </div>
-            <div class="hidden">
-              <button type="button" data-pane-toggle="collapsed">Hide</button>
-              <button type="button" data-pane-toggle="normal">Split</button>
-              <button type="button" data-pane-toggle="expanded">Expand</button>
-            </div>
-          </div>
+<div
+class="assistant-flat-output"
+data-latest-generated-output
+data-latest-generated-status="{{ latest_generated_document.status.value if latest_generated_document else '' }}"
+data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
+data-latest-generated-mode="{{ latest_generated_document.document_mode.value if latest_generated_document else '' }}"
+data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isoformat() if latest_generated_document else '' }}"
+{% if latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted) %}hidden{% endif %}>
+{% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
+{{ latest_generated_document.edited_output_text_encrypted }}
+{% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
+<span class="text-slate">Your note is waiting to be written.</span>
+{% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
+<span class="text-slate">Your note is being written.</span>
+{% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
+<span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
+{% elif latest_generated_document %}
+<span class="text-slate">No note content yet.</span>
+{% else %}
+<div class="empty-state">
+<div class="empty-state__icon">
+<svg class="w-10 h-10 text-slate/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+</svg>
+</div>
+<div class="empty-state__text">Add note lines here as the consultation unfolds.</div>
+</div>
+{% endif %}
+</div>
 
-          <div class="flex items-center justify-between border-b border-stone bg-white px-4 gap-3">
-            <div class="flex gap-2 min-w-0">
-              <button type="button" class="active px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="output">Clinical Note</button>
-              <button type="button" class="px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="followups">Messages</button>
-              <button type="button" class="px-4 py-3 text-sm font-medium border-b-2 border-transparent transition-colors" data-tab-trigger="history">History</button>
-            </div>
-            <a
-              href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
-              class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-lg border border-stone bg-white text-slate hover:text-ink hover:border-teal-muted transition"
-              data-workspace-settings-link
-              aria-label="Open related settings"
-              title="Open related settings">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317a1 1 0 011.35-.936l.833.353a1 1 0 00.95-.07l.75-.5a1 1 0 011.45.348l.436.786a1 1 0 00.84.51l.902.06a1 1 0 01.95 1.146l-.128.895a1 1 0 00.288.88l.642.642a1 1 0 010 1.414l-.642.642a1 1 0 00-.288.88l.128.895a1 1 0 01-.95 1.146l-.901.06a1 1 0 00-.841.51l-.436.786a1 1 0 01-1.45.348l-.75-.5a1 1 0 00-.95-.07l-.833.353a1 1 0 01-1.35-.936l-.06-.902a1 1 0 00-.51-.84l-.786-.436a1 1 0 01-.348-1.45l.5-.75a1 1 0 00.07-.95l-.353-.833a1 1 0 01.936-1.35l.902-.06a1 1 0 00.84-.51l.436-.786z"/>
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
-              </svg>
-            </a>
-          </div>
+<div
+class="note-editor-toolbar"
+data-note-editor-toolbar
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted)) %}hidden{% endif %}>
+<span class="text-sm text-slate" data-structured-copy-status>Select the note lines you want to copy.</span>
+<div class="flex items-center gap-2">
+<button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
+<button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
+<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy Selected</button>
+</div>
+</div>
 
-          <div class="flex-1 overflow-y-auto bg-white">
-            <div class="hidden-panel" data-tab-panel="output">
-              <div class="assistant-section space-y-3">
-                <div class="flex items-center justify-between gap-4">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 bg-success rounded-full"></span>
-                    <span class="text-sm font-medium text-ink">Selected note</span>
-                  </div>
-                  <span class="text-xs text-slate" data-note-meta>
-                    {% if latest_generated_document %}
-                    {{ latest_generated_document.title }} · {{ latest_generated_document.model_used or "model not shown" }} · {{ latest_generated_document.status.value }} · {{ latest_generated_document.created_at }}
-                    {% else %}
-                    No note generated yet
-                    {% endif %}
-                  </span>
-                </div>
+<div class="template-picker-modal" data-template-picker-modal hidden>
+<div class="template-picker-modal__backdrop" data-template-picker-close></div>
+<div class="template-picker-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="template-picker-title">
+<div class="template-picker-modal__header">
+<div>
+<div class="section-kicker">Saved templates</div>
+<h2 id="template-picker-title">Choose a template</h2>
+<p>Select from your saved note templates.</p>
+</div>
+<button type="button" class="template-picker-modal__close" data-template-picker-close aria-label="Close template picker">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>
+</button>
+</div>
+<div class="template-picker-list">
+{% if not available_templates %}
+<div class="template-picker-empty">No templates available.</div>
+{% else %}
+{% for template in available_templates %}
+{% set latest_version = template.versions|sort(attribute='version_no')|last %}
+<button
+type="button"
+class="template-picker-option{% if latest_template and template.id == latest_template.id %} active{% endif %}"
+data-template-picker-option
+data-template-id="{{ template.id }}"
+data-template-name="{{ template.name }}"
+data-template-mode="{{ latest_version.mode.value }}"
+data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
+<span class="template-picker-option__title">{{ template.name }}</span>
+<span class="template-picker-option__meta">{{ 'Sectioned note' if latest_version.mode.value == 'structured' else 'Free text note' }}{% if template.scope.value == 'team' %} · Team{% else %} · Personal{% endif %}</span>
+</button>
+{% endfor %}
+{% endif %}
+</div>
+</div>
+</div>
 
-                <div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not note_documents %} hidden{% endif %}>
-                  <div class="flex items-center justify-between gap-4">
-                    <span class="text-xs font-medium uppercase tracking-[0.16em] text-slate">Versions</span>
-                    <span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length }} items</span>
-                  </div>
-                  <div class="document-switcher" data-note-selector>
-                    {% for document in note_documents %}
-                    <button
-                      type="button"
-                      class="document-switcher-button{% if latest_generated_document and document.id == latest_generated_document.id %} active{% endif %}"
-                      data-note-document-select
-                      data-document-id="{{ document.id }}"
-                      data-document-kind="note"
-                      title="{{ document.title }}">
-                      {% set note_words = document.title.split() %}
-                      <span class="document-switcher-label">{{ note_words[:4]|join(' ') }}{% if note_words|length > 4 %}…{% endif %}</span>
-                      <span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at }}</span>
-                    </button>
-                    {% endfor %}
-                  </div>
-                </div>
+<div
+class="structured-sections-panel"
+data-generated-structured-panel
+{% set selected_template_version = (latest_template.versions|sort(attribute='version_no')|last) if latest_template else none %}
+{% if not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured") %}hidden{% endif %}>
+<div class="note-editor-empty-state" data-structured-note-empty-state>
+<div class="note-editor-empty-state__title">No note lines yet</div>
+<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
+</div>
+<div class="structured-sections-list" data-generated-structured-sections>
+{% for section in structured_editor_sections %}
+<div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
+<div class="structured-section-header">
+<h3 class="structured-section-title">{{ section.label }}</h3>
+</div>
+<div class="structured-statement-list" data-generated-structured-section-rows>
+{% for row in section.rows %}
+<div class="statement-row" data-structured-statement-row>
+<div class="statement-checkbox">
+<input type="checkbox" data-structured-line-checkbox data-section-key="{{ section.key }}" data-section-label="{{ section.label }}" aria-label="Select {{ section.label }} statement" {% if row.checked %}checked{% endif %}>
+</div>
+<div class="statement-content">
+<textarea class="statement-editor" rows="1" data-structured-line-input data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">{{ row.text }}</textarea>
+</div>
+</div>
+{% endfor %}
+</div>
+</div>
+{% endfor %}
+</div>
+</div>
 
-                <div
-                  class="assistant-flat-output"
-                  data-latest-generated-output
-                  data-latest-generated-status="{{ latest_generated_document.status.value if latest_generated_document else '' }}"
-                  data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
-                  {% if latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections %}hidden{% endif %}>
-                  {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
-                  {{ latest_generated_document.edited_output_text_encrypted }}
-                  {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
-                  <span class="text-slate">Your note is waiting to be written.</span>
-                  {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
-                  <span class="text-slate">Your note is being written.</span>
-                  {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
-                  <span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
-                  {% else %}
-                  <span class="text-slate">No note yet.</span>
-                  {% endif %}
-                </div>
+<div
+class="freeform-note-panel"
+data-generated-freeform-panel
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
+<div class="note-editor-empty-state" data-freeform-note-empty-state>
+<div class="note-editor-empty-state__title">No note lines yet</div>
+<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
+</div>
+<div class="freeform-note-list" data-generated-freeform-rows>
+{% for row in freeform_editor_rows %}
+<div class="statement-row freeform-note-row" data-freeform-note-row>
+<div class="statement-checkbox">
+<input type="checkbox" data-freeform-note-checkbox aria-label="Select note line" {% if row.checked %}checked{% endif %}>
+</div>
+<div class="statement-content">
+<textarea class="statement-editor freeform-note-editor" rows="1" data-freeform-note-input aria-label="Freeform note line">{{ row.text }}</textarea>
+</div>
+</div>
+{% endfor %}
+</div>
+</div>
 
-                <div
-                  class="space-y-4"
-                  data-generated-structured-panel
-                  {% if template_state.default_mode != "structured" and (not latest_generated_document or latest_generated_document.document_mode.value != "structured") %}hidden{% endif %}>
-                  <div class="assistant-meta-row flex items-center justify-between gap-4">
-                    <div class="text-sm text-slate" data-structured-copy-status>Select the statements you want to copy.</div>
-                    <div class="flex items-center gap-2">
-                      <button type="button" class="px-3 py-2 text-sm text-slate hover:text-ink hover:bg-parchment rounded-lg transition" data-clear-structured-selection>Clear Selection</button>
-                      <button type="button" class="px-4 py-2 bg-teal-deep text-white rounded-lg text-sm font-medium hover:bg-teal-muted transition" data-copy-structured-lines>Copy Selected</button>
-                    </div>
-                  </div>
-                  <div class="space-y-4" data-generated-structured-sections>
-                    {% for section in structured_editor_sections %}
-                      <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
-                        <h3 class="structured-section-title">{{ section.label }}</h3>
-                        <div class="structured-statement-list" data-generated-structured-section-rows>
-                          {% for row in section.rows %}
-                          <div class="statement-row" data-structured-statement-row>
-                            <label class="statement-checkbox" aria-label="Select statement">
-                              <input type="checkbox" data-structured-line-checkbox data-section-key="{{ section.key }}" data-section-label="{{ section.label }}" {% if row.checked %}checked{% endif %}>
-                            </label>
-                            <textarea class="statement-editor" rows="1" data-structured-line-input data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">{{ row.text }}</textarea>
-                          </div>
-                          {% endfor %}
-                        </div>
-                      </div>
-                    {% endfor %}
-                  </div>
-                </div>
+<div data-output-redaction-debug-slot>
+{% if show_redaction_debug and latest_generated_document %}
+<details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
+<summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
+<div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
+<pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
+</details>
+{% endif %}
+</div>
+</div>
+</div>
+</div>
 
-                <div data-output-redaction-debug-slot>
-                  {% if show_redaction_debug and latest_generated_document %}
-                  <details class="border border-stone bg-parchment/40 p-3" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
-                    <summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
-                    <div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
-                    <pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
-                  </details>
-                  {% endif %}
-                </div>
-              </div>
+<div class="main-panel" data-tab-panel="followups" hidden>
+<div class="structured-workspace">
+<div class="structured-workspace__header">
+<div class="followup-controls">
+{% if available_quick_actions %}
+<div class="followup-quick-picks" data-quick-action-quick-picks>
+<div class="followup-quick-picks__header">
+<span class="followup-label__text">Quick picks</span>
+<span class="followup-quick-picks__hint">Fast-launch common actions, then add optional guidance below.</span>
+</div>
+<div class="followup-quick-picks__list">
+{% for quick_action in available_quick_actions[:4] %}
+{% set quick_action_name = quick_action.name|lower %}
+{% if "sms" in quick_action_name or "text" in quick_action_name or "message" in quick_action_name %}
+{% set quick_action_kind = "sms" %}
+{% elif "referral" in quick_action_name or "letter" in quick_action_name %}
+{% set quick_action_kind = "letter" %}
+{% elif "call" in quick_action_name or "phone" in quick_action_name %}
+{% set quick_action_kind = "call" %}
+{% elif "result" in quick_action_name or "blood" in quick_action_name or "test" in quick_action_name %}
+{% set quick_action_kind = "results" %}
+{% else %}
+{% set quick_action_kind = "general" %}
+{% endif %}
+<button
+type="button"
+class="followup-quick-pick"
+data-quick-action-quick-pick
+data-quick-action-id="{{ quick_action.id }}"
+data-quick-action-kind="{{ quick_action_kind }}"
+aria-pressed="false"
+{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+<span class="followup-quick-pick__icon" aria-hidden="true">
+{% if quick_action_kind == "sms" %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v6A2.5 2.5 0 0 1 16.5 16H10l-4 3v-3.5A2.5 2.5 0 0 1 5 13.5z"/>
+</svg>
+{% elif quick_action_kind == "letter" %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M8 4.75h6.5L19 9.25V19a1.75 1.75 0 0 1-1.75 1.75h-9.5A1.75 1.75 0 0 1 6 19V6.5A1.75 1.75 0 0 1 7.75 4.75z"/>
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M14 4.75V9h4.25M9 12h6M9 15h6"/>
+</svg>
+{% elif quick_action_kind == "call" %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7.75 5.75h2.2a1 1 0 0 1 .98.79l.56 2.62a1 1 0 0 1-.29.93l-1.37 1.33a11.25 11.25 0 0 0 4.78 4.78l1.33-1.37a1 1 0 0 1 .93-.29l2.62.56a1 1 0 0 1 .79.98v2.2A1.75 1.75 0 0 1 18.53 20C11.07 20 5 13.93 5 6.47A1.75 1.75 0 0 1 6.75 4.72z"/>
+</svg>
+{% elif quick_action_kind == "results" %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 18.25h10M9.5 18.25V9.5M14.5 18.25v-5m-2.5 5v-8.5"/>
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M6.75 5.75h10.5A1.75 1.75 0 0 1 19 7.5v9.75A1.75 1.75 0 0 1 17.25 19h-10.5A1.75 1.75 0 0 1 5 17.25V7.5a1.75 1.75 0 0 1 1.75-1.75z"/>
+</svg>
+{% else %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M12 4.75 13.9 8.6l4.25.62-3.08 3 .73 4.23L12 14.45l-3.8 2 .73-4.23-3.08-3 4.25-.62z"/>
+</svg>
+{% endif %}
+</span>
+<span class="followup-quick-pick__copy">
+<span class="followup-quick-pick__title">{{ quick_action.name }}</span>
+{% if quick_action.description %}
+<span class="followup-quick-pick__meta">{{ quick_action.description }}</span>
+{% endif %}
+</span>
+</button>
+{% endfor %}
+</div>
+</div>
+{% endif %}
+<div class="followup-controls__row">
+<label class="followup-label">
+<span class="followup-label__text">Quick action</span>
+<select
+name="quick_action_id"
+data-quick-action-select
+class="followup-select"
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+{% if not available_quick_actions %}
+<option value="">None available</option>
+{% else %}
+<option value="">Select a quick action...</option>
+{% for quick_action in available_quick_actions %}
+<option
+value="{{ quick_action.id }}"
+data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value == 'team' %}team-quick-action&team_quick_action_id{% else %}personal-quick-action&personal_quick_action_id{% endif %}={{ quick_action.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=followups">
+{{ quick_action.name }}
+</option>
+{% endfor %}
+{% endif %}
+</select>
+</label>
+<button
+type="button"
+class="btn-ghost-sm"
+data-run-quick-action-trigger
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+Run quick action
+</button>
+</div>
+<div class="followup-controls__row">
+<label class="followup-label flex-1">
+<span class="followup-label__text">Add context to the quick action</span>
+<textarea
+name="quick_action_context_text"
+rows="2"
+maxlength="4000"
+placeholder="Add context to the quick action"
+class="followup-textarea followup-textarea--compact"
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}
+data-quick-action-context-input></textarea>
+</label>
+</div>
+<div class="followup-controls__divider">or</div>
+<div class="followup-controls__row">
+<label class="followup-label flex-1">
+<span class="followup-label__text">Custom request</span>
+<textarea
+name="prompt_text"
+rows="1"
+maxlength="4000"
+placeholder="Describe what you need..."
+class="followup-textarea"
+{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}
+data-followup-prompt-input></textarea>
+</label>
+<button
+type="button"
+class="btn-primary-sm"
+data-generate-followup-trigger
+{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+Create
+</button>
+</div>
+</div>
+</div>
 
-              <div class="assistant-section space-y-3">
-                <div class="flex items-center justify-between gap-4">
-                  <div>
-                    <div class="text-sm font-medium text-ink">Create a note</div>
-                    <div class="text-xs text-slate mt-1">Use the current consultation text, or the sectioned note details, with your chosen writing assistant.</div>
-                  </div>
-                  <div class="text-xs font-medium uppercase tracking-wider text-slate" data-selected-template-mode>{% if template_state.default_mode == "structured" %}Sectioned note{% else %}Free text note{% endif %}</div>
-                </div>
-                <form method="post" action="/transcribe/generate-output" data-generate-output-form class="space-y-4">
-                  {% if active_transcript %}
-                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-                  {% endif %}
-                  <label class="block">
-                    <span class="block text-sm font-medium text-ink mb-2">Note layout</span>
-                    <select
-                      name="template_id"
-                      class="w-full px-3 py-2 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
-                      {% if not active_transcript or not available_templates or not llm_selection %}disabled{% endif %}
-                      required>
-                      {% if not available_templates %}
-                      <option value="">No note layouts available</option>
-                      {% else %}
-                        {% for template in available_templates %}
-                        {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-                        <option
-                          value="{{ template.id }}"
-                          data-template-mode="{{ latest_version.mode.value }}"
-                          data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
-                          {{ template.name }} ({{ template.scope.value }} · {{ latest_version.mode.value }})
-                        </option>
-                        {% endfor %}
-                      {% endif %}
-                    </select>
-                  </label>
-                  {% for section in emis_sections %}
-                  <input type="hidden" name="context_{{ section.key }}" data-structured-context-hidden data-section-key="{{ section.key }}">
-                  {% endfor %}
+<div class="structured-workspace__body">
+<div class="followup-list" data-tour-target="messages-panel" data-followup-history>
+{% if not followup_documents %}
+<div class="empty-state">
+<div class="empty-state__icon">
+<svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+</svg>
+</div>
+<div class="empty-state__text">No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation.</div>
+</div>
+{% endif %}
+{% if followup_documents %}
+{% for document in followup_documents %}
+<div class="followup-card{% if latest_followup_document and document.id == latest_followup_document.id %} followup-card--active{% endif %}" data-followup-document-select data-document-id="{{ document.id }}" data-document-kind="followup">
+<div class="followup-card__header">
+<div class="followup-card__meta">
+{% if document.generator_type.value == "quick_action" %}
+<span class="followup-card__type">Quick action</span>
+<span class="followup-card__name">{{ document.source_quick_action_name or document.title }}</span>
+{% else %}
+<span class="followup-card__type">Custom</span>
+<span class="followup-card__name">{{ (document.follow_up_prompt_text or document.title)[:50] }}{% if (document.follow_up_prompt_text or document.title)|length > 50 %}…{% endif %}</span>
+{% endif %}
+</div>
+<div class="followup-card__actions">
+{% if document.status.value == "ready" and document.edited_output_text_encrypted %}
+<button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+</svg>
+</button>
+{% endif %}
+<button type="button" class="btn-icon" data-followup-delete data-generated-document-id="{{ document.id }}" title="Delete permanently">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5.75A1.75 1.75 0 0110.75 4h2.5A1.75 1.75 0 0115 5.75V7m-7 0 .7 10.15A1.75 1.75 0 0010.45 18.8h3.1a1.75 1.75 0 001.75-1.65L16 7"/>
+</svg>
+</button>
+</div>
+</div>
+<div class="followup-card__status">
+<span class="followup-status followup-status--{{ document.status.value }}">{{ document.status.value }}</span>
+<span class="followup-card__date">{{ document.created_at }}</span>
+</div>
+{% if document.status.value == "ready" and document.edited_output_text_encrypted %}
+<div class="followup-card__content" data-followup-copy-body>{{ document.edited_output_text_encrypted }}</div>
+{% elif document.status.value == "queued" %}
+<div class="followup-card__content followup-card__content--placeholder">Waiting to be written...</div>
+{% elif document.status.value == "processing" %}
+<div class="followup-card__content followup-card__content--placeholder">Being written...</div>
+{% elif document.status.value == "failed" %}
+<div class="followup-card__content followup-card__content--error">Failed{% if document.error_message %}: {{ document.error_message }}{% endif %}</div>
+{% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="empty-state">
+<div class="empty-state__icon">
+<svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+</svg>
+</div>
+<div class="empty-state__text">Select a quick action or describe what you need to create a follow-up message.</div>
+</div>
+{% endif %}
+</div>
 
-                  <button
-                    type="submit"
-                    class="w-full btn-primary bg-teal-deep text-white px-4 py-3 font-medium text-sm flex items-center justify-center gap-2 disabled:opacity-50"
-                    {% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text_encrypted and not active_structured_context) %}disabled{% endif %}>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                    </svg>
-                    Create note
-                  </button>
-                </form>
-              </div>
-            </div>
+<div data-followup-redaction-debug-slot>
+{% if show_redaction_debug and latest_followup_document %}
+<details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">
+<summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
+<div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
+<pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
+</details>
+{% endif %}
+</div>
+</div>
+</div>
 
-            <div class="hidden-panel" data-tab-panel="followups" hidden>
-              <div class="assistant-section space-y-4">
-                <div>
-                  <div class="text-sm font-medium text-ink">Saved instructions</div>
-                  <div class="text-xs text-slate mt-1">Use the current consultation text with your chosen writing assistant.</div>
-                </div>
-                <form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form class="space-y-4">
-                  {% if active_transcript %}
-                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-                  {% endif %}
-                  <label class="block">
-                    <span class="block text-sm font-medium text-ink mb-2">Saved instruction</span>
-                    <select
-                      name="quick_action_id"
-                      class="w-full px-3 py-2 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
-                      {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}
-                      required>
-                      {% if not available_quick_actions %}
-                      <option value="">No saved instructions available</option>
-                      {% else %}
-                        {% for quick_action in available_quick_actions %}
-                        <option
-                          value="{{ quick_action.id }}"
-                          data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value == 'team' %}team-quick-action&team_quick_action_id{% else %}personal-quick-action&personal_quick_action_id{% endif %}={{ quick_action.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=followups">
-                          {{ quick_action.name }} ({{ quick_action.scope.value }})
-                        </option>
-                        {% endfor %}
-                      {% endif %}
-                    </select>
-                  </label>
-                  <button
-                    type="submit"
-                    class="w-full bg-white border border-stone px-4 py-3 font-medium text-sm text-ink hover:border-teal-muted hover:bg-teal-pale/20 transition disabled:opacity-50"
-                    {% if not active_transcript or not available_quick_actions or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>
-                    Use saved instruction
-                  </button>
-                </form>
-              </div>
+<form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form hidden>
+{% if active_transcript %}
+<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+{% endif %}
+<input type="hidden" name="quick_action_id" data-quick-action-id-input>
+<input type="hidden" name="quick_action_context_text" data-quick-action-context-hidden>
+</form>
 
-              <div class="assistant-section space-y-4">
-                <div>
-                  <div class="text-sm font-medium text-ink">Ask for a message</div>
-                  <div class="text-xs text-slate mt-1">Describe the message you want written from this consultation.</div>
-                </div>
-                <form method="post" action="/transcribe/generate-followup" data-generate-followup-form class="space-y-4">
-                  {% if active_transcript %}
-                  <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
-                  {% endif %}
-                  <label class="block">
-                    <span class="sr-only">Message request</span>
-                    <textarea
-                      name="prompt_text"
-                      rows="4"
-                      maxlength="4000"
-                      placeholder="e.g. Write a patient message with next steps and booking advice..."
-                      class="w-full px-3 py-3 bg-parchment border border-stone text-sm text-ink focus:border-teal-muted transition-colors"
-                      {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}
-                      required></textarea>
-                  </label>
-                  <button
-                    type="submit"
-                    class="w-full bg-teal-deep text-white px-4 py-3 font-medium text-sm hover:bg-teal-muted transition disabled:opacity-50"
-                    {% if not active_transcript or not llm_selection or not active_transcript.current_draft_text_encrypted %}disabled{% endif %}>
-                    Create message
-                  </button>
-                </form>
-              </div>
+<form method="post" action="/transcribe/generate-followup" data-generate-followup-form hidden>
+{% if active_transcript %}
+<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
+{% endif %}
+<input type="hidden" name="prompt_text" data-followup-prompt-hidden>
+</form>
+</div>
 
-              <div class="assistant-section space-y-3" data-tour-target="messages-panel">
-                <div class="flex items-center justify-between gap-4">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 bg-success rounded-full"></span>
-                    <span class="text-sm font-medium text-ink">Selected message</span>
-                  </div>
-                  <span class="text-xs text-slate" data-followup-meta>
-                    {% if latest_followup_document %}
-                    {{ latest_followup_document.model_used or "model not shown" }} · {{ latest_followup_document.status.value }} · {{ latest_followup_document.created_at }}
-                    {% else %}
-                    No messages yet
-                    {% endif %}
-                  </span>
-                </div>
-                <div class="assistant-subsection space-y-2" data-followup-selector-wrap{% if not followup_documents %} hidden{% endif %}>
-                  <div class="flex items-center justify-between gap-4">
-                    <span class="text-xs font-medium uppercase tracking-[0.16em] text-slate">Choices</span>
-                    <span class="text-xs text-slate" data-followup-selector-count>{{ followup_documents|length }} items</span>
-                  </div>
-                  <div class="document-switcher" data-followup-selector>
-                    {% for document in followup_documents %}
-                    <button
-                      type="button"
-                      class="document-switcher-button{% if latest_followup_document and document.id == latest_followup_document.id %} active{% endif %}"
-                      data-followup-document-select
-                      data-document-id="{{ document.id }}"
-                      data-document-kind="followup"
-                      title="{% if document.generator_type.value == 'quick_action' %}{{ document.source_quick_action_name or document.title }}{% else %}{{ document.follow_up_prompt_text or document.title }}{% endif %}">
-                      <span class="document-switcher-label">
-                        {% if document.generator_type.value == "quick_action" %}
-                        {% set followup_label = document.source_quick_action_name or document.title %}
-                        {% set followup_words = followup_label.split() %}
-                        {{ followup_words[:4]|join(' ') }}{% if followup_words|length > 4 %}…{% endif %}
-                        {% else %}
-                        {% set followup_label = document.follow_up_prompt_text or document.title %}
-                        {% set followup_words = followup_label.split() %}
-                        {{ followup_words[:4]|join(' ') }}{% if followup_words|length > 4 %}…{% endif %}
-                        {% endif %}
-                      </span>
-                      <span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at }}</span>
-                    </button>
-                    {% endfor %}
-                  </div>
-                </div>
-                <div
-                  class="assistant-flat-output"
-                  data-latest-followup-output
-                  data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
-                  data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}">
-                  {% if latest_followup_document and latest_followup_document.status.value == "ready" and latest_followup_document.edited_output_text_encrypted %}
-                  {{ latest_followup_document.edited_output_text_encrypted }}
-                  {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
-                  <span class="text-slate">Your message is waiting to be written.</span>
-                  {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
-                  <span class="text-slate">Your message is being written.</span>
-                  {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
-                  <span class="text-slate">The latest message could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
-                  {% else %}
-                  <span class="text-slate">No messages yet.</span>
-                  {% endif %}
-                </div>
-                <div data-followup-redaction-debug-slot>
-                  {% if show_redaction_debug and latest_followup_document %}
-                  <details class="border border-stone bg-parchment/40 p-3" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">
-                    <summary class="cursor-pointer text-sm font-medium text-ink">Dev redaction debug</summary>
-                    <div class="text-xs text-slate mt-3" data-redaction-debug-meta>Open to load debug data.</div>
-                    <pre class="mt-3 text-xs whitespace-pre-wrap text-slate overflow-x-auto" data-redaction-debug-text>Redaction debug not loaded yet.</pre>
-                  </details>
-                  {% endif %}
-                </div>
-              </div>
-            </div>
-
-            <div class="hidden-panel" data-tab-panel="history" hidden>
-              <div class="assistant-section space-y-4">
-                <div class="flex items-center justify-between gap-4">
-                  <h3 class="text-sm font-semibold text-ink">Note history</h3>
-                  <span class="text-xs text-slate">{{ note_documents|length }} items</span>
-                </div>
-                <div class="space-y-3" data-note-history>
-                  {% if note_documents %}
-                    {% for document in note_documents %}
-                    <div class="assistant-subsection">
-                      <div class="flex items-center justify-between gap-4">
-                        <div class="min-w-0">
-                          <div class="text-sm font-medium text-ink">{{ document.title }}</div>
-                          <div class="text-xs text-slate mt-1">{{ document.source_template_name }} · {{ document.model_used or "model not shown" }}</div>
-                        </div>
-                        <div class="text-xs text-slate text-right">{{ document.status.value }}<br>{{ document.created_at }}</div>
-                      </div>
-                    </div>
-                    {% endfor %}
-                  {% else %}
-                  <div class="text-sm text-slate">No note history yet.</div>
-                  {% endif %}
-                </div>
-              </div>
-
-              <div class="assistant-section space-y-4">
-                <div class="flex items-center justify-between gap-4">
-                  <h3 class="text-sm font-semibold text-ink">Previous messages</h3>
-                  <span class="text-xs text-slate">{{ followup_documents|length }} items</span>
-                </div>
-                <div class="space-y-3" data-followup-history>
-                  {% if followup_documents %}
-                    {% for document in followup_documents %}
-                    <div class="assistant-subsection">
-                      <div class="flex items-center justify-between gap-4">
-                        <div class="min-w-0">
-                          <div class="text-sm font-medium text-ink">
-                            {% if document.generator_type.value == "quick_action" %}
-                            {{ document.source_quick_action_name or document.title }}
-                            {% else %}
-                            {{ document.follow_up_prompt_text or document.title }}
-                            {% endif %}
-                          </div>
-                          <div class="text-xs text-slate mt-1">{{ document.model_used or "model not shown" }} · {{ document.generator_type.value|replace('_', ' ') }}</div>
-                        </div>
-                        <div class="text-xs text-slate text-right">{{ document.status.value }}<br>{{ document.created_at }}</div>
-                      </div>
-                    </div>
-                    {% endfor %}
-                  {% else %}
-                  <div class="text-sm text-slate">No previous messages yet.</div>
-                  {% endif %}
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </main>
+<div class="main-panel" data-tab-panel="history" hidden>
+<div class="structured-workspace">
+<div class="structured-workspace__header">
+<div class="flex items-center justify-between gap-4">
+<div class="min-w-0">
+<span class="text-sm font-medium text-ink">Conversation text</span>
+<p class="text-xs text-slate mt-1">The full transcript from your consultation recording.</p>
+</div>
+<button type="button" class="btn-ghost-sm" data-copy-transcript>Copy transcript</button>
+</div>
+</div>
+<div class="structured-workspace__body">
+<div class="transcript-content" data-active-draft>
+{% if active_transcript and active_transcript.current_draft_text_encrypted %}
+{{ active_transcript.current_draft_text_encrypted }}
+{% else %}
+<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>
+{% endif %}
+</div>
+</div>
+<div class="structured-workspace__footer">
+<div class="flex items-center justify-between gap-4 text-xs text-slate">
+<span data-transcript-stats>
+{% if active_transcript and active_transcript.current_draft_text_encrypted %}
+{{ active_transcript.current_draft_text_encrypted.split('\n')|length }} blocks · {{ active_transcript.current_draft_text_encrypted.split()|length }} words
+{% else %}
+0 blocks · 0 words
+{% endif %}
+</span>
+<span>Your consultation text stays private to you.</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="toast-container" data-toast-container></div>
+</main>

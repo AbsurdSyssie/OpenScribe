@@ -11,9 +11,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.models import Team, TeamRole, TeamStatus, User, UserOnboardingState, UserStatus, UserTrustedDevice
+from app.errors import AppError
+from app.models import Team, TeamRole, TeamStatus, Transcript, User, UserEncryptionKey, UserOnboardingState, UserStatus, UserTrustedDevice
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
+from app.services.content_crypto import ensure_user_dek, get_active_user_key
+from app.services.transcripts import delete_retry_sources_for_transcripts
+from app.services.vault import unwrap_user_content_data_key
 
 
 def _env(name: str, default: str) -> str:
@@ -96,7 +100,47 @@ def ensure_dev_user(
         db.delete(session)
     db.commit()
     db.refresh(user)
+    repair_dev_user_content_key_if_needed(db, user=user)
     return user
+
+
+def repair_dev_user_content_key_if_needed(db: Session, *, user: User) -> None:
+    key_record = get_active_user_key(db, user_id=user.id)
+    if key_record is None:
+        if _user_has_transcript_content(db, user=user):
+            _reset_dev_user_transcript_content(db, user=user)
+        ensure_user_dek(db, user=user)
+        db.commit()
+        db.refresh(user)
+        return
+
+    try:
+        unwrap_user_content_data_key(
+            wrapped_dek=key_record.wrapped_dek,
+            mount_point=key_record.kek_mount,
+            key_name=key_record.kek_key_name,
+        )
+    except AppError as exc:
+        if exc.code != "vault_read_failed":
+            raise
+        _reset_dev_user_transcript_content(db, user=user)
+        ensure_user_dek(db, user=user)
+        db.commit()
+        db.refresh(user)
+
+
+def _user_has_transcript_content(db: Session, *, user: User) -> bool:
+    return db.scalar(select(Transcript.id).where(Transcript.owner_user_id == user.id).limit(1)) is not None
+
+
+def _reset_dev_user_transcript_content(db: Session, *, user: User) -> None:
+    transcript_rows = list(db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id)))
+    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    for transcript in transcript_rows:
+        db.delete(transcript)
+    for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
+        db.delete(key_record)
+    db.commit()
 
 
 def main() -> None:

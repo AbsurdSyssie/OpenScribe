@@ -34,6 +34,13 @@ import { createGuidedTour } from './tour.js';
       let workspaceStructuredContext = {};
       let selectedNoteDocumentId = null;
       let selectedFollowupDocumentId = null;
+      let noteEditorDirty = false;
+      let dirtyNoteDocumentId = null;
+      let noteEditVersion = 0;
+      let noteSaveTimer = null;
+      let noteSaveInFlight = null;
+      let noteSaveQueued = false;
+      let noteSaveConflictShown = false;
       const showRedactionDebug = bootstrap.showRedactionDebug;
       const initialTranscriptErrorMessage = bootstrap.initialTranscriptErrorMessage;
 
@@ -49,6 +56,11 @@ import { createGuidedTour } from './tour.js';
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
+      const noteEditorToolbar = document.querySelector('[data-note-editor-toolbar]');
+      const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');
+      const generatedFreeformRows = document.querySelector('[data-generated-freeform-rows]');
+      const structuredNoteEmptyState = document.querySelector('[data-structured-note-empty-state]');
+      const freeformNoteEmptyState = document.querySelector('[data-freeform-note-empty-state]');
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
@@ -66,8 +78,10 @@ import { createGuidedTour } from './tour.js';
       const followupRedactionSlot = document.querySelector('[data-followup-redaction-debug-slot]');
       const copyStructuredLinesButton = document.querySelector('[data-copy-structured-lines]');
       const clearStructuredSelectionButton = document.querySelector('[data-clear-structured-selection]');
+      const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');
       const structuredCopyStatus = document.querySelector('[data-structured-copy-status]');
       const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
+      const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
       const structuredContextHiddenInputs = [...document.querySelectorAll('[data-structured-context-hidden]')];
       const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
@@ -85,10 +99,21 @@ import { createGuidedTour } from './tour.js';
       const titleForm = document.querySelector('[data-transcript-title-form]');
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
       const generateOutputForm = document.querySelector('[data-generate-output-form]');
-      const generateOutputTemplateSelect = generateOutputForm?.querySelector('select[name="template_id"]') || null;
+      const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
+      const templatePickerButton = document.querySelector('[data-template-picker-button]');
+      const templatePickerLabel = document.querySelector('[data-template-picker-label]');
+      const templatePickerMode = document.querySelector('[data-template-picker-mode]');
+      const templatePickerModal = document.querySelector('[data-template-picker-modal]');
+      const templatePickerOptions = [...document.querySelectorAll('[data-template-picker-option]')];
+      const templatePickerCloseButtons = [...document.querySelectorAll('[data-template-picker-close]')];
       const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
+      const generateFollowupPromptInput = document.querySelector('[data-followup-prompt-input]');
+      const generateFollowupTrigger = document.querySelector('[data-generate-followup-trigger]');
       const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
-      const runQuickActionSelect = runQuickActionForm?.querySelector('select[name="quick_action_id"]') || null;
+      const runQuickActionSelect = document.querySelector('[data-quick-action-select]');
+      const runQuickActionTrigger = document.querySelector('[data-run-quick-action-trigger]');
+      const quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+      const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
       const recordingModeSelect = document.querySelector('[data-recording-mode-select]');
@@ -146,6 +171,60 @@ import { createGuidedTour } from './tour.js';
 
       const friendlyModeLabel = (mode) => mode === 'live_chunked' ? 'live capture' : 'recorded upload';
 
+      const markNoteEditorDirty = () => {
+        noteEditorDirty = true;
+        dirtyNoteDocumentId = latestGeneratedOutput?.dataset.latestGeneratedId || selectedNoteDocumentId || '';
+        noteEditVersion += 1;
+        scheduleNoteAutosave();
+      };
+
+      const clearNoteEditorDirty = () => {
+        noteEditorDirty = false;
+        dirtyNoteDocumentId = null;
+        noteSaveConflictShown = false;
+      };
+
+      const shouldPreserveLocalNoteEdits = () => noteEditorDirty;
+      const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
+
+      const buildNoteSavePayload = () => {
+        const generatedDocumentId = latestGeneratedOutput?.dataset?.latestGeneratedId || selectedNoteDocumentId || '';
+        const mode = latestGeneratedOutput?.dataset?.latestGeneratedMode || '';
+        const expectedUpdatedAt = currentNoteUpdatedAt();
+        if (!generatedDocumentId || !expectedUpdatedAt || (mode !== 'structured' && mode !== 'freeform')) {
+          return null;
+        }
+        if (mode === 'structured') {
+          return {
+            generatedDocumentId,
+            payload: {
+              expected_updated_at: expectedUpdatedAt,
+              edited_output_text: '',
+              sections: [...document.querySelectorAll('[data-generated-structured-section]')].map((section, index) => ({
+                section_key: section.dataset.sectionKey || '',
+                section_label: section.dataset.sectionLabel || 'Section',
+                section_order: index,
+                text: [...section.querySelectorAll('[data-structured-line-input]')]
+                  .map((input) => String(input.value || '').trim())
+                  .filter((value) => value.length > 0)
+                  .join('\n'),
+              })),
+            },
+          };
+        }
+        return {
+          generatedDocumentId,
+          payload: {
+            expected_updated_at: expectedUpdatedAt,
+            edited_output_text: [...document.querySelectorAll('[data-freeform-note-input]')]
+              .map((input) => String(input.value || '').trim())
+              .filter((value) => value.length > 0)
+              .join('\n'),
+            sections: [],
+          },
+        };
+      };
+
       const syncRecordingModeControl = (mode = activeIngestionMode) => {
         if (!recordingModeSelect) return;
         recordingModeSelect.value = mode === 'live_chunked' ? 'live_chunked' : 'whole_file';
@@ -160,6 +239,7 @@ import { createGuidedTour } from './tour.js';
           runQuickActionSelect,
           shell,
           splitWorkspace,
+          tabActions,
           triggers,
           workspaceSettingsLink,
         },
@@ -176,14 +256,18 @@ import { createGuidedTour } from './tour.js';
       const setTab = layoutController.setTab;
 
       const showFlash = (message, kind = 'success') => {
-        if (!flashBanner) return;
         if (flashWrap) {
-          flashWrap.hidden = !message;
+          flashWrap.hidden = true;
         }
-        flashBanner.hidden = !message;
-        flashBanner.textContent = message || '';
-        flashBanner.classList.remove('success', 'error');
-        flashBanner.classList.add(kind === 'error' ? 'error' : 'success');
+        if (flashBanner) {
+          flashBanner.hidden = true;
+          flashBanner.textContent = message || '';
+          flashBanner.classList.remove('success', 'error');
+          flashBanner.classList.add(kind === 'error' ? 'error' : 'success');
+        }
+        if (message) {
+          window.showToast?.(message, kind);
+        }
       };
 
       const parseErrorMessage = async (response, fallback) => {
@@ -203,6 +287,79 @@ import { createGuidedTour } from './tour.js';
           copyToast.classList.remove('show');
         }, 1400);
       };
+
+      const persistNoteEditsSilently = async ({ keepalive = false } = {}) => {
+        if (noteSaveInFlight) {
+          noteSaveQueued = true;
+          return noteSaveInFlight;
+        }
+        const saveRequest = buildNoteSavePayload();
+        if (!saveRequest) {
+          return null;
+        }
+        const requestVersion = noteEditVersion;
+        noteSaveInFlight = (async () => {
+          try {
+            const response = await fetch(`/api/v1/generated-documents/${saveRequest.generatedDocumentId}`, {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              keepalive,
+              body: JSON.stringify(saveRequest.payload),
+            });
+            if (response.status === 409) {
+              noteSaveQueued = false;
+              if (!noteSaveConflictShown) {
+                noteSaveConflictShown = true;
+                showFlash('Note changed elsewhere. Reload note before saving again.', 'error');
+              }
+              return null;
+            }
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not save note edits.'));
+            }
+            const savedDocument = await response.json();
+            workspaceNoteDocuments = workspaceNoteDocuments.map((document) => (
+              document.id === savedDocument.id ? savedDocument : document
+            ));
+            if (latestGeneratedOutput && savedDocument.id === (selectedNoteDocumentId || latestGeneratedOutput.dataset.latestGeneratedId || '')) {
+              latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = savedDocument.updated_at || '';
+              latestGeneratedOutput.dataset.latestGeneratedStatus = savedDocument.status || '';
+              latestGeneratedOutput.dataset.latestGeneratedMode = savedDocument.document_mode || '';
+              latestGeneratedOutput.dataset.latestGeneratedId = savedDocument.id || '';
+            }
+            noteSaveConflictShown = false;
+            if (requestVersion === noteEditVersion) {
+              clearNoteEditorDirty();
+            }
+            return savedDocument;
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not save note edits.', 'error');
+            return null;
+          } finally {
+            noteSaveInFlight = null;
+            if (noteSaveQueued) {
+              noteSaveQueued = false;
+              scheduleNoteAutosave({ immediate: true });
+            }
+          }
+        })();
+        return noteSaveInFlight;
+      };
+
+      function scheduleNoteAutosave({ immediate = false } = {}) {
+        if (noteSaveTimer) {
+          window.clearTimeout(noteSaveTimer);
+          noteSaveTimer = null;
+        }
+        if (!noteEditorDirty) {
+          return;
+        }
+        noteSaveTimer = window.setTimeout(() => {
+          noteSaveTimer = null;
+          void persistNoteEditsSilently();
+        }, immediate ? 0 : 700);
+      }
 
       const setVisibleStatus = (label) => {
         if (activeStatus) activeStatus.textContent = label;
@@ -284,17 +441,80 @@ import { createGuidedTour } from './tour.js';
         transcriptStats.textContent = `${blocks} blocks - ${words} words`;
       };
 
+      const readActiveDraftText = () => {
+        if (!activeDraft) return '';
+        if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
+          return activeDraft.value || '';
+        }
+        return activeDraft.textContent || '';
+      };
+
       const renderDraft = (text) => {
         if (!activeDraft) return;
-        if (text && text.trim()) {
-          activeDraft.textContent = text;
-        } else {
-          activeDraft.innerHTML = '<span class="text-slate">No transcript text yet. Upload a recording or use the microphone to begin.</span>';
+        const nextText = text || '';
+        if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
+          activeDraft.value = nextText;
+          activeDraft.placeholder = 'No transcript text yet. Upload a recording or use the microphone to begin.';
+          renderTranscriptStats(nextText);
+          return;
         }
-        renderTranscriptStats(text || '');
+        if (nextText.trim()) {
+          activeDraft.textContent = nextText;
+        } else {
+          activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
+        }
+        renderTranscriptStats(nextText);
       };
 
       const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && sttAvailable && activeIngestionMode === 'whole_file');
+
+      const selectedTemplateOption = () => generateOutputTemplateSelect?.selectedOptions?.[0] || null;
+
+      const syncTemplatePickerUi = () => {
+        const option = selectedTemplateOption();
+        const isEnabled = templatePickerOptions.length > 0;
+        if (templatePickerButton) {
+          templatePickerButton.disabled = !isEnabled;
+          templatePickerButton.title = !isEnabled ? 'Choose a template for this consultation.' : '';
+        }
+        if (templatePickerLabel) {
+          templatePickerLabel.textContent = option?.dataset?.templateName || option?.textContent?.trim() || 'Choose a template';
+        }
+        if (templatePickerMode) {
+          templatePickerMode.textContent = option?.dataset?.templateMode === 'structured' ? 'Sectioned note' : 'Free text note';
+        }
+        templatePickerOptions.forEach((button) => {
+          button.classList.toggle('active', button.dataset.templateId === option?.value);
+        });
+      };
+
+      const closeTemplatePicker = () => {
+        if (!templatePickerModal) return;
+        templatePickerModal.hidden = true;
+        templatePickerButton?.setAttribute('aria-expanded', 'false');
+      };
+
+      const openTemplatePicker = () => {
+        if (!templatePickerModal || templatePickerButton?.disabled) return;
+        templatePickerModal.hidden = false;
+        templatePickerButton?.setAttribute('aria-expanded', 'true');
+        const activeOption = templatePickerOptions.find((button) => button.classList.contains('active')) || templatePickerOptions[0] || null;
+        window.requestAnimationFrame(() => {
+          activeOption?.focus();
+        });
+      };
+
+      const chooseTemplateFromPicker = (templateId) => {
+        if (!generateOutputTemplateSelect || !templateId) return;
+        if (generateOutputTemplateSelect.value === templateId) {
+          closeTemplatePicker();
+          return;
+        }
+        generateOutputTemplateSelect.value = templateId;
+        generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        syncTemplatePickerUi();
+        closeTemplatePicker();
+      };
 
       const setRetryAvailability = (canRetry) => {
         if (retryIngestionForm) {
@@ -349,34 +569,39 @@ import { createGuidedTour } from './tour.js';
       const syncGenerationAvailability = (draftText = '') => {
         const hasDraft = Boolean(draftText && draftText.trim());
         const hasStructuredInput = structuredEditor?.selectedOutputTemplateMode() === 'structured' && hasStructuredContextContent();
-        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect) && (hasDraft || hasStructuredInput));
-        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasDraft && hasSelectableOptions(runQuickActionForm?.querySelector('select[name="quick_action_id"]')));
-        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && hasDraft);
+        const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;
+        const selectedTemplateId = generateOutputTemplateSelect?.value || '';
+        const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
+        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasStructuredInput));
+        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));
+        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));
 
         if (generateOutputTemplateSelect) {
-          generateOutputTemplateSelect.disabled = !canGenerateNote;
+          generateOutputTemplateSelect.disabled = !canChooseTemplate;
         }
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
           generateOutputButton.disabled = !canGenerateNote;
         }
 
-        const quickActionSelect = runQuickActionForm?.querySelector('select[name="quick_action_id"]');
-        if (quickActionSelect) {
-          quickActionSelect.disabled = !canRunQuickAction;
+        if (runQuickActionSelect) {
+          runQuickActionSelect.disabled = !canRunQuickAction;
         }
-        const quickActionButton = runQuickActionForm?.querySelector('button[type="submit"]');
-        if (quickActionButton) {
-          quickActionButton.disabled = !canRunQuickAction;
+        if (runQuickActionTrigger) {
+          runQuickActionTrigger.disabled = !canRunQuickAction;
         }
+        if (quickActionContextInput) {
+          quickActionContextInput.disabled = !canRunQuickAction;
+        }
+        quickActionQuickPicks.forEach((button) => {
+          button.disabled = !canRunQuickAction;
+        });
 
-        const followupTextarea = generateFollowupForm?.querySelector('textarea[name="prompt_text"]');
-        if (followupTextarea) {
-          followupTextarea.disabled = !canGenerateFollowup;
+        if (generateFollowupPromptInput) {
+          generateFollowupPromptInput.disabled = !canGenerateFollowup;
         }
-        const followupButton = generateFollowupForm?.querySelector('button[type="submit"]');
-        if (followupButton) {
-          followupButton.disabled = !canGenerateFollowup;
+        if (generateFollowupTrigger) {
+          generateFollowupTrigger.disabled = !canGenerateFollowup;
         }
       };
 
@@ -428,6 +653,7 @@ import { createGuidedTour } from './tour.js';
         if (fileInput) {
           fileInput.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
         }
+        captureController?.syncDisplayedDuration?.();
       };
 
       const setNewSessionAvailability = (canCreate, message) => {
@@ -525,25 +751,66 @@ import { createGuidedTour } from './tour.js';
       structuredEditor = createStructuredEditor({
         dom: {
           generateOutputTemplateSelect,
+          generatedFreeformPanel,
+          generatedFreeformRows,
+          structuredNoteEmptyState,
           generatedStructuredPanel,
+          freeformNoteEmptyState,
           generatedStructuredSections,
           latestGeneratedOutput,
+          noteEditorToolbar,
           structuredContextHiddenInputs,
           structuredCopyStatus,
           templateModeBadge,
         },
         structuredSectionDefinitions,
         getTranscriptId: () => transcriptId,
-        getDraftText: () => activeDraft?.textContent?.trim() || '',
+        getDraftText: () => readActiveDraftText().trim(),
         syncGenerationAvailability,
+        onNoteEditorChanged: markNoteEditorDirty,
         persistStructuredContextSilently: async () => saveStructuredContext({ silent: true }),
       });
       structuredEditor.bootstrapFromDom();
+      generatedStructuredPanel?.addEventListener('focusout', (event) => {
+        if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute('data-structured-line-input')) {
+          scheduleNoteAutosave({ immediate: true });
+        }
+      });
+      generatedFreeformPanel?.addEventListener('focusout', (event) => {
+        if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute('data-freeform-note-input')) {
+          scheduleNoteAutosave({ immediate: true });
+        }
+      });
+
+      if (templatePickerButton) {
+        templatePickerButton.addEventListener('click', () => {
+          openTemplatePicker();
+        });
+      }
+      templatePickerCloseButtons.forEach((button) => {
+        button.addEventListener('click', closeTemplatePicker);
+      });
+      templatePickerOptions.forEach((button) => {
+        button.addEventListener('click', () => {
+          chooseTemplateFromPicker(button.dataset.templateId || '');
+        });
+      });
+      templatePickerModal?.addEventListener('click', (event) => {
+        if (event.target instanceof HTMLElement && event.target.hasAttribute('data-template-picker-close')) {
+          closeTemplatePicker();
+        }
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && templatePickerModal && !templatePickerModal.hidden) {
+          closeTemplatePicker();
+        }
+      });
+      syncTemplatePickerUi();
 
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
         if (!document) {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">No messages yet.</span>';
+          latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-ups yet.</span>';
           return;
         }
         if (document.status === 'ready' && document.edited_output_text_encrypted) {
@@ -551,18 +818,18 @@ import { createGuidedTour } from './tour.js';
           return;
         }
         if (document.status === 'queued') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">Your message is waiting to be written.</span>';
+          latestFollowupOutput.innerHTML = '<span class="text-slate">Your follow-up is waiting to be written.</span>';
           return;
         }
         if (document.status === 'processing') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">Your message is being written.</span>';
+          latestFollowupOutput.innerHTML = '<span class="text-slate">Your follow-up is being written.</span>';
           return;
         }
         if (document.status === 'failed') {
-          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest message could not be created${document.error_message ? `: ${document.error_message}` : ''}.</span>`;
+          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest follow-up could not be created${document.error_message ? `: ${document.error_message}` : ''}.</span>`;
           return;
         }
-        latestFollowupOutput.innerHTML = '<span class="text-slate">No messages yet.</span>';
+        latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-ups yet.</span>';
       };
 
       const renderRedactionDebugPanel = (slot, document) => {
@@ -639,6 +906,9 @@ import { createGuidedTour } from './tour.js';
             selectedFollowupDocumentId = nextState.selectedFollowupDocumentId;
           }
         },
+        clearNoteEditorDirty,
+        persistNoteEditsSilently,
+        shouldPreserveLocalNoteEdits,
       });
 
       const saveStructuredContext = async ({ silent = false } = {}) => {
@@ -815,8 +1085,10 @@ import { createGuidedTour } from './tour.js';
           setRetryAvailability(false);
           setSessionProgress('Create or open a consultation to begin.');
         }
-        const micStatusState = defaultMicStatusState();
-        setMicStatus(micStatusState.message, micStatusState.kind);
+        if (!(shouldPreserveLiveMicStatus() && !(latestIngestionJobStatus === 'failed' && latestIngestionErrorMessage))) {
+          const micStatusState = defaultMicStatusState();
+          setMicStatus(micStatusState.message, micStatusState.kind);
+        }
 
         const structuredContext = workspace.active_structured_context || {};
         workspaceNoteDocuments = noteDocuments;
@@ -824,19 +1096,17 @@ import { createGuidedTour } from './tour.js';
         workspaceStructuredContext = structuredContext;
         selectedNoteDocumentId = selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || null;
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
-        renderSelectedNote();
+        const preserveDirtyNoteEditor = shouldPreserveLocalNoteEdits();
+        renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });
         renderSelectedFollowup();
         structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));
-        const generatedStructuredDraft = structuredEditor.buildGeneratedStructuredDraft(
-          selectedDocumentFromList(noteDocuments, selectedNoteDocumentId),
-          structuredContext,
-        );
-        structuredEditor.setGeneratedStructuredDraft(generatedStructuredDraft);
-        structuredEditor.renderStructuredSections(generatedStructuredDraft);
         structuredEditor.syncStructuredContextHiddenInputs();
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isLiveCaptureUiActive());
-        structuredEditor.syncStructuredTemplateUi();
+        if (!preserveDirtyNoteEditor) {
+          structuredEditor.syncStructuredTemplateUi();
+        }
+        syncTemplatePickerUi();
         if (
           latestIngestionJobStatus === 'queued'
           || latestIngestionJobStatus === 'processing'
@@ -880,7 +1150,7 @@ import { createGuidedTour } from './tour.js';
 
       async function pollWorkspace() {
         if (!shouldUseWorkspacePollingFallback()) return;
-        if (!transcriptId || !activeStatus) return;
+        if (!transcriptId) return;
         const liveCaptureActive = shouldPollWhileLiveCaptureActive();
         if (!liveCaptureActive) return;
         const workspace = await fetchWorkspace();
@@ -893,9 +1163,13 @@ import { createGuidedTour } from './tour.js';
       if (activeStatus) {
         reflectBackendStatus(activeStatus.textContent.trim(), initialTranscriptErrorMessage);
       }
-      renderDraft(activeDraft?.textContent?.trim() || '');
-      syncGenerationAvailability(activeDraft?.textContent?.trim() || '');
+      renderDraft(readActiveDraftText().trim());
+      syncGenerationAvailability(readActiveDraftText().trim());
       structuredEditor.syncStructuredTemplateUi();
+      syncTemplatePickerUi();
+      document.addEventListener('openscribe:legacy-structured-context-changed', () => {
+        syncGenerationAvailability(readActiveDraftText().trim());
+      });
       layoutController.attach();
       setMicButtons(false);
       {
@@ -912,6 +1186,7 @@ import { createGuidedTour } from './tour.js';
       }
 
       syncRecordingModeControl(activeIngestionMode || 'whole_file');
+      generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi);
 
       captureController.attachDomListeners();
       attachTranscribeActions({
@@ -923,14 +1198,22 @@ import { createGuidedTour } from './tour.js';
           copyTranscriptButton,
           fileInput,
           followupSelector,
+          followupHistory,
           generateFollowupForm,
+          generateFollowupPromptInput,
+          generateFollowupTrigger,
           generateOutputForm,
           generateOutputTemplateSelect,
           newSessionForm,
           noteSelector,
+          quickActionContextInput,
+          quickActionQuickPicks,
           recordingModeSelect,
           renameTitleInput,
           runQuickActionForm,
+          runQuickActionSelect,
+          runQuickActionTrigger,
+          selectStructuredSelectionButton,
           selectionBoxes,
           sessionLinks,
           structuredCopyStatus,
@@ -996,16 +1279,21 @@ import { createGuidedTour } from './tour.js';
             body: 'Generated notes appear here. If you regenerate a note, you can switch between versions.',
           },
           {
-            target: '[data-tour-target="messages-panel"]',
-            title: 'Review messages',
-            body: 'Messages, follow-ups, and saved instruction outputs appear here. You can switch between earlier versions any time.',
+            target: '[data-tour-target="followups-panel"]',
+            title: 'Review follow-ups',
+            body: 'Follow-ups and quick action outputs appear here. You can switch between earlier versions any time.',
           },
         ],
       }).attach();
 
-      window.addEventListener('beforeunload', () => {
+      window.addEventListener('pagehide', () => {
         clearWorkspaceRefreshBurst();
         closeWorkspaceEventSource();
+        if (noteSaveTimer) {
+          window.clearTimeout(noteSaveTimer);
+          noteSaveTimer = null;
+        }
+        void persistNoteEditsSilently({ keepalive: true });
       });
 
       window.setTimeout(fetchWorkspace, 250);

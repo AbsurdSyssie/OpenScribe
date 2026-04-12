@@ -35,6 +35,7 @@ from ..schemas import (
     SttConfigDetail,
     SttInspectResult,
     SttSelectionDetail,
+    UserAppPreferencesDetail,
     UserLlmPreferenceDetail,
 )
 from ..schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
@@ -176,6 +177,23 @@ def user_llm_preference_response(preference, *, resolved_model_name: str | None,
     )
 
 
+def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
+    payload = preference.preferences_json or {}
+    return UserAppPreferencesDetail(
+        id=preference.id,
+        user_id=preference.user_id,
+        favorite_quick_action_ids=list(payload.get("favorite_quick_action_ids") or []),
+        favorite_template_ids=list(payload.get("favorite_template_ids") or []),
+        default_quick_action_id=payload.get("default_quick_action_id"),
+        default_template_id=payload.get("default_template_id"),
+        llm_detail_level=payload.get("llm_detail_level"),
+        preferred_recording_mode=payload.get("preferred_recording_mode"),
+        preferred_transcribe_tab=payload.get("preferred_transcribe_tab"),
+        created_at=preference.created_at,
+        updated_at=preference.updated_at,
+    )
+
+
 def _latest_template_version(template: PromptTemplate):
     return max(template.versions, key=lambda version: version.version_no)
 
@@ -238,6 +256,7 @@ def generated_document_response(db: Session, document: GeneratedDocument) -> Gen
     payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
     payload["original_output_text_encrypted"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
     payload["edited_output_text_encrypted"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
+    payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
     payload["sections"] = [
         GeneratedDocumentSectionDetail.model_validate(
             {
@@ -608,7 +627,7 @@ def render_home(
     if not current_user.is_system_admin and current_user.team_id is not None:
         available_home_tabs.extend(["templates", "quick-actions"])
     if is_manager:
-        available_home_tabs.extend(["team-management", "account-requests"])
+        available_home_tabs.extend(["ai-services", "team-management", "account-requests"])
 
     if active_home_tab in available_home_tabs:
         resolved_home_tab = active_home_tab
@@ -624,6 +643,8 @@ def render_home(
         "team-template",
         "personal-quick-action",
         "team-quick-action",
+        "stt-settings",
+        "llm-settings",
     }
     resolved_home_modal = active_home_modal if active_home_modal in allowed_home_modals else None
 

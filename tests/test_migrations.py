@@ -61,6 +61,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "users",
         "user_llm_preferences",
         "user_encryption_keys",
+        "user_app_preferences",
         "user_trusted_devices",
         "user_sessions",
         "user_mfa_methods",
@@ -149,8 +150,11 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     llm_columns = {column["name"] for column in inspector.get_columns("team_llm_configs")}
     llm_selection_columns = {column["name"] for column in inspector.get_columns("team_llm_selections")}
     user_llm_preference_columns = {column["name"] for column in inspector.get_columns("user_llm_preferences")}
+    user_app_preference_columns = {column["name"] for column in inspector.get_columns("user_app_preferences")}
+    template_indexes = inspector.get_indexes("templates")
     template_columns = {column["name"] for column in inspector.get_columns("templates")}
     template_version_columns = {column["name"] for column in inspector.get_columns("template_versions")}
+    quick_action_indexes = inspector.get_indexes("quick_actions")
     quick_action_columns = {column["name"] for column in inspector.get_columns("quick_actions")}
     quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
     generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
@@ -171,8 +175,13 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
+    assert {"user_id", "preferences_json"} <= user_app_preference_columns
+    assert any(item["name"] == "uq_templates_team_name_lower" for item in template_indexes)
+    assert any(item["name"] == "uq_templates_owner_name_lower" for item in template_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns
     assert {"template_id", "version_no", "mode", "prompt_text", "config_json"} <= template_version_columns
+    assert any(item["name"] == "uq_quick_actions_team_name_lower" for item in quick_action_indexes)
+    assert any(item["name"] == "uq_quick_actions_owner_name_lower" for item in quick_action_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= quick_action_columns
     assert {"quick_action_id", "version_no", "mode", "prompt_text"} <= quick_action_version_columns
     assert {
@@ -189,6 +198,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "follow_up_prompt_text",
         "prompt_snapshot_text",
         "structured_context_json",
+        "structured_section_definitions_json",
         "original_output_text_encrypted",
         "llm_adapter_kind",
         "llm_base_url",
@@ -300,6 +310,362 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "created_at",
         "rotated_at",
     } <= user_encryption_key_columns
+
+
+@pytest.mark.migration
+def test_unique_asset_name_migration_dedupes_existing_rows_before_indexes():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "aa7c8d9e0f1a")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000101',
+                    'Clinic Dedupe',
+                    'clinic dedupe',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000102',
+                    'Dedupe User',
+                    'dedupe@example.com',
+                    'hash',
+                    '00000000-0000-0000-0000-000000000101',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    true,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO templates (id, scope, owner_user_id, team_id, name, description, is_active, created_by_user_id, created_at, updated_at)
+                VALUES
+                ('00000000-0000-0000-0000-000000000111', 'user', '00000000-0000-0000-0000-000000000102', NULL, 'Test Name', NULL, true, '00000000-0000-0000-0000-000000000102', NOW(), NOW()),
+                ('00000000-0000-0000-0000-000000000112', 'user', '00000000-0000-0000-0000-000000000102', NULL, ' test name ', NULL, true, '00000000-0000-0000-0000-000000000102', NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO quick_actions (id, scope, owner_user_id, team_id, name, description, is_active, created_by_user_id, created_at, updated_at)
+                VALUES
+                ('00000000-0000-0000-0000-000000000121', 'user', '00000000-0000-0000-0000-000000000102', NULL, 'Test Action', NULL, true, '00000000-0000-0000-0000-000000000102', NOW(), NOW()),
+                ('00000000-0000-0000-0000-000000000122', 'user', '00000000-0000-0000-0000-000000000102', NULL, 'test action', NULL, true, '00000000-0000-0000-0000-000000000102', NOW(), NOW())
+                """
+            )
+        )
+
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        template_names = connection.execute(
+            text(
+                """
+                SELECT name
+                FROM templates
+                WHERE owner_user_id = '00000000-0000-0000-0000-000000000102'
+                ORDER BY name
+                """
+            )
+        ).scalars().all()
+        quick_action_names = connection.execute(
+            text(
+                """
+                SELECT name
+                FROM quick_actions
+                WHERE owner_user_id = '00000000-0000-0000-0000-000000000102'
+                ORDER BY name
+                """
+            )
+        ).scalars().all()
+
+    assert template_names == ["Test Name", "test name copy 2"]
+    assert quick_action_names == ["Test Action", "test action copy 2"]
+
+
+@pytest.mark.migration
+def test_alembic_upgrade_dedupes_existing_asset_names_without_copy_name_collisions():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "aa7c8d9e0f1a")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000201',
+                    'Clinic Dedupe',
+                    'clinic dedupe',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000202',
+                    'Collision User',
+                    'collision@example.com',
+                    'hash',
+                    '00000000-0000-0000-0000-000000000201',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    true,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO templates (id, scope, owner_user_id, team_id, name, description, is_active, created_by_user_id, created_at, updated_at)
+                VALUES
+                ('00000000-0000-0000-0000-000000000211', 'user', '00000000-0000-0000-0000-000000000202', NULL, 'Clinic Letter', NULL, true, '00000000-0000-0000-0000-000000000202', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '2 minutes'),
+                ('00000000-0000-0000-0000-000000000212', 'user', '00000000-0000-0000-0000-000000000202', NULL, 'clinic letter', NULL, true, '00000000-0000-0000-0000-000000000202', NOW() - INTERVAL '1 minute', NOW() - INTERVAL '1 minute'),
+                ('00000000-0000-0000-0000-000000000213', 'user', '00000000-0000-0000-0000-000000000202', NULL, 'Clinic Letter copy 2', NULL, true, '00000000-0000-0000-0000-000000000202', NOW(), NOW())
+                """
+            )
+        )
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        template_names = connection.execute(
+            text(
+                """
+                SELECT name
+                FROM templates
+                WHERE owner_user_id = '00000000-0000-0000-0000-000000000202'
+                ORDER BY name
+                """
+            )
+        ).scalars().all()
+
+    assert template_names == ["Clinic Letter", "Clinic Letter copy 2", "clinic letter copy 3"]
+
+
+@pytest.mark.migration
+def test_alembic_upgrade_backfills_structured_section_snapshots_for_existing_documents():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "bb8d9e0f1a2b")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000301',
+                    'Clinic Snapshot',
+                    'clinic snapshot',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000302',
+                    'Snapshot User',
+                    'snapshot-migration@example.com',
+                    'hash',
+                    '00000000-0000-0000-0000-000000000301',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    true,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, title, current_draft_text_encrypted, ingestion_mode, status,
+                    retention_days_applied, retention_expires_at, created_at, next_live_chunk_sequence_no_applied
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000303',
+                    '00000000-0000-0000-0000-000000000302',
+                    '00000000-0000-0000-0000-000000000301',
+                    'Visit',
+                    'draft',
+                    'whole_file',
+                    'ready',
+                    30,
+                    NOW() + INTERVAL '30 days',
+                    NOW(),
+                    1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcript_versions (id, transcript_id, version_no, text_encrypted, created_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000304',
+                    '00000000-0000-0000-0000-000000000303',
+                    1,
+                    'draft',
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO generated_documents (
+                    id, owner_user_id, team_id, transcript_id, transcript_version_id, generator_type,
+                    source_template_name, prompt_snapshot_text, status, title, document_mode,
+                    original_output_text_encrypted, edited_output_text_encrypted, is_edited,
+                    retention_expires_at, created_at, updated_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000305',
+                    '00000000-0000-0000-0000-000000000302',
+                    '00000000-0000-0000-0000-000000000301',
+                    '00000000-0000-0000-0000-000000000303',
+                    '00000000-0000-0000-0000-000000000304',
+                    'template',
+                    'EMIS note',
+                    'prompt',
+                    'ready',
+                    'Structured note',
+                    'structured',
+                    'Problem\nPain',
+                    'Problem\nPain',
+                    false,
+                    NOW() + INTERVAL '30 days',
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO generated_document_sections (
+                    id, generated_document_id, section_key, section_label, section_order,
+                    original_text_encrypted, edited_text_encrypted, is_edited, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000306',
+                    '00000000-0000-0000-0000-000000000305',
+                    'problem',
+                    'Problem',
+                    1,
+                    'Pain',
+                    'Pain',
+                    false,
+                    NOW(),
+                    NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000307',
+                    '00000000-0000-0000-0000-000000000305',
+                    'history',
+                    'History',
+                    2,
+                    'Started yesterday',
+                    'Started yesterday',
+                    false,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        snapshot = connection.execute(
+            text(
+                """
+                SELECT structured_section_definitions_json
+                FROM generated_documents
+                WHERE id = '00000000-0000-0000-0000-000000000305'
+                """
+            )
+        ).scalar_one()
+
+    assert snapshot == {
+        "profile": "emis",
+        "sections": [
+            {"section_key": "problem", "section_label": "Problem", "section_order": 1},
+            {"section_key": "history", "section_label": "History", "section_order": 2},
+        ],
+    }
 
 
 @pytest.mark.migration

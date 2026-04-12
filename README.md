@@ -41,6 +41,7 @@ Preview note:
 Quick start:
 
 - run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker, and launch the dev server
+- `./start-dev.sh` now bootstraps a persistent local Vault, stores the local root token and unseal key under `.local/vault/`, and keeps Postgres/Vault state aligned across restarts
 - by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly
 - the default dev bind exposes FastAPI on `0.0.0.0` so a reverse proxy or another machine can reach the frontend
 - Postgres, Redis, and Vault still stay localhost-only unless you explicitly change their Docker port bindings and opt into `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`

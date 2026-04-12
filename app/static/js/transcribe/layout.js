@@ -21,16 +21,16 @@ export function createTranscribeLayout({
       const selectedOption = dom.runQuickActionSelect?.selectedOptions?.[0] || null;
       const transcriptId = getTranscriptId() || '';
       dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=quick-actions&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId)}&transcribe_tab=followups`;
-      dom.workspaceSettingsLink.title = 'Edit saved instructions';
-      dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit saved instructions');
+      dom.workspaceSettingsLink.title = 'Edit quick actions';
+      dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit quick actions');
       return;
     }
 
     const selectedOption = dom.generateOutputTemplateSelect?.selectedOptions?.[0] || null;
     const transcriptId = getTranscriptId() || '';
     dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=templates&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId)}&transcribe_tab=output`;
-    dom.workspaceSettingsLink.title = 'Edit note layouts';
-    dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit note layouts');
+    dom.workspaceSettingsLink.title = 'Edit templates';
+    dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit templates');
   };
 
   const clampSplitRatio = (value) => {
@@ -52,6 +52,9 @@ export function createTranscribeLayout({
     });
     dom.panels.forEach((panel) => {
       panel.hidden = panel.dataset.tabPanel !== target;
+    });
+    dom.tabActions?.forEach((action) => {
+      action.hidden = action.dataset.tabAction !== target;
     });
     updateWorkspaceSettingsLink();
   };

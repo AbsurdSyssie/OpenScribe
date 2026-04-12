@@ -39,6 +39,7 @@ from app.models import (
     Transcript,
     TranscriptVersion,
     User,
+    UserAppPreference,
     UserLlmPreference,
     UserOnboardingState,
     UserStatus,
@@ -602,6 +603,18 @@ def make_redaction_run(db_session: Session) -> Callable[..., RedactionRun]:
 def make_user_llm_preference(db_session: Session) -> Callable[..., UserLlmPreference]:
     def factory(*, user: User, preferred_model_name: str | None = None) -> UserLlmPreference:
         preference = UserLlmPreference(user_id=user.id, preferred_model_name=preferred_model_name)
+        db_session.add(preference)
+        db_session.commit()
+        db_session.refresh(preference)
+        return preference
+
+    return factory
+
+
+@pytest.fixture
+def make_user_app_preference(db_session: Session) -> Callable[..., UserAppPreference]:
+    def factory(*, user: User, preferences_json: dict | None = None) -> UserAppPreference:
+        preference = UserAppPreference(user_id=user.id, preferences_json=preferences_json or {})
         db_session.add(preference)
         db_session.commit()
         db_session.refresh(preference)

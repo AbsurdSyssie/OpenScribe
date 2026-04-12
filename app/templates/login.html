@@ -262,6 +262,40 @@
       color: var(--error);
       background: rgba(197, 48, 48, 0.06);
     }
+    .toast-container {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      z-index: 120;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(197, 48, 48, 0.2);
+      color: var(--error);
+      background: #fff3f1;
+      font-size: 0.9rem;
+      font-weight: 500;
+      box-shadow: 0 18px 32px rgba(15, 23, 42, 0.12);
+      animation: toastSlideIn 0.25s ease;
+      max-width: 360px;
+    }
+    @keyframes toastSlideIn {
+      from { opacity: 0; transform: translateY(-12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toastSlideOut {
+      from { opacity: 1; transform: translateY(0); }
+      to { opacity: 0; transform: translateY(-12px); }
+    }
+    .toast.hiding {
+      animation: toastSlideOut 0.2s ease forwards;
+    }
 
     .login-card {
       align-self: center;
@@ -415,6 +449,26 @@
       {% endif %}
     </section>
   </main>
+  <div class="toast-container" data-toast-container></div>
+  <script>
+    (() => {
+      const toastContainer = document.querySelector('[data-toast-container]');
+      if (!toastContainer) return;
+      document.querySelectorAll('.flash').forEach((flash) => {
+        const message = flash.textContent.trim();
+        if (!message) return;
+        const toast = document.createElement('div');
+        toast.className = 'toast error';
+        toast.textContent = message;
+        toastContainer.appendChild(toast);
+        window.setTimeout(() => {
+          toast.classList.add('hiding');
+          window.setTimeout(() => toast.remove(), 200);
+        }, 4000);
+        flash.hidden = true;
+      });
+    })();
+  </script>
   {% include "_csrf_script.html" %}
 </body>
 </html>

@@ -29,8 +29,8 @@ The app and tests use separate databases by default:
 - app rate-limit store: `redis://localhost:6379/0`
 - test rate-limit store: `redis://localhost:6379/15`
 - Celery broker/result backend: `redis://localhost:6379/2`
-- Vault dev address: `http://127.0.0.1:8200`
-- Vault dev token: `root`
+- local Vault address: `http://127.0.0.1:8200`
+- local Vault token file: `.local/vault/root-token`
 - cookie security mode: `auto`
 
 ## Apply database migrations
@@ -47,7 +47,7 @@ alembic upgrade head
 ./start-dev.sh
 ```
 
-This starts Docker services, loads `.env`, applies migrations, and runs the FastAPI dev server.
+This starts Docker services, initializes or unseals the persistent local Vault, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
@@ -62,6 +62,7 @@ Important:
 - `APP_HOST` now defaults to `0.0.0.0`
 - `./start-dev.sh` allows the FastAPI frontend bind off-box by default; set `APP_HOST=127.0.0.1` and `DEV_ALLOW_REMOTE_BIND=false` if you want localhost-only app access
 - `./start-dev.sh` also refuses non-local Docker port publication for Postgres, Redis, or Vault unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
+- `./start-dev.sh` stores the local Vault root token and unseal key in `.local/vault/`; that directory is ignored by git and should be treated as local secret material
 - `./start-dev.sh` now purges queued Celery tasks before the dev worker starts; set `DEV_PURGE_CELERY_QUEUE=false` only if you intentionally want to keep the existing dev queue
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
@@ -104,7 +105,7 @@ The current STT-config slice writes bearer tokens into Vault through:
 - `VAULT_TRANSIT_MOUNT`
 - `VAULT_USER_CONTENT_KEK_KEY_NAME`
 
-The default local values in `.env.example` match the Docker dev Vault container.
+The default local values in `.env.example` now match the persistent local Vault bootstrap flow. `VAULT_TOKEN_FILE` points at `.local/vault/root-token`, and `VAULT_TOKEN` is intentionally left blank for local development.
 
 The current transcript-at-rest encryption slice also depends on:
 
@@ -121,8 +122,10 @@ Current owner-content behavior:
 
 Vault bootstrap behavior:
 
-- normal owner-content reads and writes assume the configured Transit mount and `VAULT_USER_CONTENT_KEK_KEY_NAME` key already exist
-- `./start-dev.sh` explicitly bootstraps the Transit mount and KEK for local dev before FastAPI and Celery start
+- normal owner-content reads and writes assume the configured KV mount, Transit mount, and `VAULT_USER_CONTENT_KEK_KEY_NAME` key already exist
+- `./start-dev.sh` now initializes or unseals a persistent local Vault, restores the saved local root token/unseal key, and bootstraps the `secret/` KV-v2 mount plus the Transit KEK before FastAPI and Celery start
+- if you change local Vault storage or intentionally wipe the Vault volume, expect any previously wrapped DEKs to become unreadable unless you also preserved the old Vault state
+- use `python scripts/reset_unreadable_owner_content.py` to audit local content-owning accounts after a Vault reset, and rerun with `--apply` only if you explicitly want to delete unreadable transcript-derived content and issue fresh DEKs
 - in production, pre-provision the Transit mount and KEK during infrastructure bootstrap and give the runtime app and worker only the Transit permissions they actually need (`datakey`, `decrypt`, `rewrap` as appropriate)
 - least-privilege runtime tokens should not need `sys/mounts` or Transit key-management permissions just to read transcript-derived content
 

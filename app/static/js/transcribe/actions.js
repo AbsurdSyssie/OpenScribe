@@ -21,6 +21,18 @@ export function attachTranscribeActions({
   setTab,
   structuredEditor,
 }) {
+  const syncQuickActionQuickPickState = () => {
+    const selectedId = dom.runQuickActionSelect?.value || '';
+    dom.quickActionQuickPicks?.forEach((button) => {
+      const isSelected = (button.dataset.quickActionId || '') === selectedId;
+      button.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+    });
+    const hiddenIdInput = dom.runQuickActionForm?.querySelector('[data-quick-action-id-input]');
+    if (hiddenIdInput) {
+      hiddenIdInput.value = selectedId;
+    }
+  };
+
   dom.noteSelector?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-document-id]');
     if (!button) return;
@@ -33,9 +45,60 @@ export function attachTranscribeActions({
     selectDocumentFromUi('followup', button.dataset.documentId || '');
   });
 
+  dom.followupHistory?.addEventListener('click', async (event) => {
+    const copyButton = event.target.closest('[data-followup-copy]');
+    if (copyButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const card = copyButton.closest('[data-document-id]');
+      const text = card?.querySelector('[data-followup-copy-body]')?.textContent?.trim() || '';
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        showCopyToast();
+      } catch (_) {
+        showFlash('Could not copy the follow-up.', 'error');
+      }
+      return;
+    }
+
+    const deleteButton = event.target.closest('[data-followup-delete]');
+    if (deleteButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const generatedDocumentId = deleteButton.dataset.generatedDocumentId || '';
+      if (!generatedDocumentId) return;
+      if (!window.confirm('Delete this follow-up permanently?')) {
+        return;
+      }
+      try {
+        const response = await fetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not delete the follow-up.'));
+        }
+        showFlash('Follow-up deleted.', 'success');
+        await fetchWorkspace();
+      } catch (error) {
+        showFlash(error instanceof Error ? error.message : 'Could not delete the follow-up.', 'error');
+      }
+      return;
+    }
+
+    const button = event.target.closest('[data-document-id]');
+    if (!button) return;
+    selectDocumentFromUi('followup', button.dataset.documentId || '');
+  });
+
   if (dom.copyTranscriptButton) {
     dom.copyTranscriptButton.addEventListener('click', async () => {
-      const text = dom.activeDraft?.textContent?.trim() || '';
+      const text = (
+        dom.activeDraft instanceof HTMLTextAreaElement || dom.activeDraft instanceof HTMLInputElement
+          ? dom.activeDraft.value
+          : dom.activeDraft?.textContent
+      )?.trim() || '';
       if (!text) return;
       try {
         await navigator.clipboard.writeText(text);
@@ -48,20 +111,10 @@ export function attachTranscribeActions({
 
   if (dom.copyStructuredLinesButton) {
     dom.copyStructuredLinesButton.addEventListener('click', async () => {
-      const checkedRows = [...document.querySelectorAll('[data-generated-structured-section] [data-structured-statement-row]')]
-        .map((row) => {
-          const checkbox = row.querySelector('[data-structured-line-checkbox]');
-          const textarea = row.querySelector('[data-structured-line-input]');
-          return {
-            checked: Boolean(checkbox?.checked),
-            label: checkbox?.dataset.sectionLabel || textarea?.dataset.sectionLabel || '',
-            text: textarea?.value?.trim() || '',
-          };
-        })
-        .filter((row) => row.checked && row.text.length > 0);
+      const checkedRows = structuredEditor.collectSelectedNoteLines();
       if (checkedRows.length === 0) {
         if (dom.structuredCopyStatus) {
-          dom.structuredCopyStatus.textContent = 'Select at least one statement to copy.';
+          dom.structuredCopyStatus.textContent = 'Select at least one note line to copy.';
         }
         return;
       }
@@ -97,12 +150,21 @@ export function attachTranscribeActions({
     });
   }
 
+  if (dom.selectStructuredSelectionButton) {
+    dom.selectStructuredSelectionButton.addEventListener('click', () => {
+      structuredEditor.selectStructuredSelection();
+    });
+  }
+
   if (dom.generateOutputTemplateSelect) {
     dom.generateOutputTemplateSelect.addEventListener('change', () => structuredEditor.syncStructuredTemplateUi());
   }
 
   dom.sessionLinks.forEach((link) => {
     link.addEventListener('click', async (event) => {
+      if (window.document.querySelector('[data-legacy-note-workspace][data-inline-controller="true"]')) {
+        return;
+      }
       event.preventDefault();
       const nextTranscriptId = link.dataset.transcriptId;
       if (!nextTranscriptId || nextTranscriptId === getTranscriptId()) {
@@ -262,7 +324,7 @@ export function attachTranscribeActions({
       event.preventDefault();
       const transcriptId = getTranscriptId();
       if (!transcriptId) return;
-      const templateId = dom.generateOutputForm.querySelector('select[name="template_id"]')?.value || '';
+      const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';
       if (!templateId) return;
       try {
         await saveStructuredContext({ silent: true });
@@ -294,7 +356,9 @@ export function attachTranscribeActions({
       event.preventDefault();
       const transcriptId = getTranscriptId();
       if (!transcriptId) return;
-      const promptText = dom.generateFollowupForm.querySelector('textarea[name="prompt_text"]')?.value?.trim() || '';
+      const promptText = dom.generateFollowupPromptInput?.value?.trim()
+        || dom.generateFollowupForm.querySelector('[data-followup-prompt-hidden]')?.value?.trim()
+        || '';
       if (!promptText) return;
       try {
         const response = await fetch(`/api/v1/transcripts/${transcriptId}/generate-followup`, {
@@ -304,41 +368,72 @@ export function attachTranscribeActions({
           body: JSON.stringify({ prompt_text: promptText }),
         });
         if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not create the message.'));
+          throw new Error(await parseErrorMessage(response, 'Could not create the follow-up.'));
         }
         setTab('followups');
-        showFlash('Message request sent.', 'success');
+        showFlash('Follow-up request sent.', 'success');
         await fetchWorkspace();
         scheduleWorkspaceRefreshBurst();
       } catch (error) {
-        showFlash(error instanceof Error ? error.message : 'Could not create the message.', 'error');
+        showFlash(error instanceof Error ? error.message : 'Could not create the follow-up.', 'error');
       }
     });
   }
 
+  if (dom.runQuickActionSelect) {
+    dom.runQuickActionSelect.addEventListener('change', () => {
+      syncQuickActionQuickPickState();
+    });
+  }
+
+  if (dom.quickActionQuickPicks?.length) {
+    dom.quickActionQuickPicks.forEach((button) => {
+      button.addEventListener('click', () => {
+        if (!dom.runQuickActionSelect || button.disabled) return;
+        dom.runQuickActionSelect.value = button.dataset.quickActionId || '';
+        syncQuickActionQuickPickState();
+        dom.quickActionContextInput?.focus();
+      });
+    });
+  }
+
   if (dom.runQuickActionForm) {
+    syncQuickActionQuickPickState();
     dom.runQuickActionForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const transcriptId = getTranscriptId();
       if (!transcriptId) return;
-      const quickActionId = dom.runQuickActionForm.querySelector('select[name="quick_action_id"]')?.value || '';
+      const quickActionId = dom.runQuickActionSelect?.value
+        || dom.runQuickActionForm.querySelector('[data-quick-action-id-input]')?.value
+        || '';
+      const quickActionContextText = dom.quickActionContextInput?.value?.trim()
+        || dom.runQuickActionForm.querySelector('[data-quick-action-context-hidden]')?.value?.trim()
+        || '';
       if (!quickActionId) return;
+      const hiddenIdInput = dom.runQuickActionForm.querySelector('[data-quick-action-id-input]');
+      if (hiddenIdInput) {
+        hiddenIdInput.value = quickActionId;
+      }
+      const hiddenContextInput = dom.runQuickActionForm.querySelector('[data-quick-action-context-hidden]');
+      if (hiddenContextInput) {
+        hiddenContextInput.value = quickActionContextText;
+      }
       try {
         const response = await fetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quick_action_id: quickActionId }),
+          body: JSON.stringify({ quick_action_id: quickActionId, context_text: quickActionContextText || null }),
         });
         if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not run the saved instruction.'));
+          throw new Error(await parseErrorMessage(response, 'Could not run the quick action.'));
         }
         setTab('followups');
-        showFlash('Saved instruction started.', 'success');
+        showFlash('Quick action started.', 'success');
         await fetchWorkspace();
         scheduleWorkspaceRefreshBurst();
       } catch (error) {
-        showFlash(error instanceof Error ? error.message : 'Could not run the saved instruction.', 'error');
+        showFlash(error instanceof Error ? error.message : 'Could not run the quick action.', 'error');
       }
     });
   }

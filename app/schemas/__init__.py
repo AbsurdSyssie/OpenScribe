@@ -28,6 +28,7 @@ from .llm import (
     UserLlmPreferenceDetail,
     UserLlmPreferenceUpsert,
 )
+from .preferences import LlmDetailLevel, UserAppPreferencesDetail, UserAppPreferencesUpsert
 from .stt import (
     SttConfigDetail,
     SttConfigUpsert,
@@ -48,6 +49,8 @@ from .templates import (
     GeneratedDocumentDetail,
     GeneratedDocumentRedactionDebugDetail,
     GeneratedDocumentSectionDetail,
+    GeneratedDocumentSectionUpdate,
+    GeneratedDocumentUpdateRequest,
     PromptTemplateDetail,
     PromptTemplateUpsert,
     PromptTemplateVersionDetail,
@@ -92,6 +95,7 @@ __all__ = [
     "LlmModelOption",
     "LlmSelectionDetail",
     "LlmSelectionUpsert",
+    "LlmDetailLevel",
     "SttConfigDetail",
     "SttConfigUpsert",
     "SttInspectFieldTip",
@@ -111,6 +115,8 @@ __all__ = [
     "GeneratedDocumentDetail",
     "GeneratedDocumentRedactionDebugDetail",
     "GeneratedDocumentSectionDetail",
+    "GeneratedDocumentSectionUpdate",
+    "GeneratedDocumentUpdateRequest",
     "PromptTemplateDetail",
     "PromptTemplateUpsert",
     "PromptTemplateVersionDetail",
@@ -126,6 +132,8 @@ __all__ = [
     "TranscriptStart",
     "TranscriptUpdate",
     "UserCreate",
+    "UserAppPreferencesDetail",
+    "UserAppPreferencesUpsert",
     "UserDetail",
     "UserLlmPreferenceDetail",
     "UserLlmPreferenceUpsert",

@@ -265,6 +265,7 @@ Implemented now for manual browser testing:
 - when the session title is still blank or the default `Untitled session`, the first successful note title also fills the transcript session title
 - the Follow-ups tab now supports freeform follow-up generation from the active session
 - the Follow-ups tab now also supports running a selected team/personal quick action from a dropdown in the active session
+- the Follow-ups tab now also exposes up to four quick-pick buttons for common quick actions so repeat actions can start without opening the dropdown first
 - follow-up generation sends:
   - a fixed system instruction that the model is acting as a medical secretary in British English
   - the current transcript draft
@@ -272,6 +273,7 @@ Implemented now for manual browser testing:
 - quick action generation sends:
   - a fixed system instruction that the model is acting as a medical secretary in British English and writing from the doctor's perspective
   - the current transcript draft
+  - optional user-entered quick-action guidance text
   - the saved quick action instruction text from the selected quick action version
 - generation now queues work asynchronously instead of blocking the browser request:
   - the browser route returns immediately after creating a queued `generated_documents` row
@@ -288,9 +290,14 @@ Implemented now for manual browser testing:
 - when a selected EMIS template omits some sections, transcript-persisted context for those omitted sections is ignored instead of blocking generation
 - when a structured EMIS note returns successfully:
   - the backend validates the returned section keys
+  - the generated document now snapshots its allowed structured section definitions so later owner edits still honor the original template section set even if that template version is deleted
+  - the snapshot migration also backfills existing structured generated notes from either the linked template version or persisted section rows so older notes keep the same edit guardrails
+  - generated-note edits are also constrained to the source template's allowed section keys when the template version still exists, so removed sections cannot be reintroduced through the edit API
+  - the owner edit API also rejects duplicate structured `section_key` values in one save payload so rendered note text and persisted section rows cannot diverge
   - renders the full note text onto the generated document
   - persists individual section rows for section-by-section display
   - the workspace shows line-selectable EMIS section output with clearer row separation and a copy-selected-lines action, including after workspace API refreshes and polling
+- when the owner edits a generated note in the browser and switches to another note version before autosave fires, the UI now saves the dirty note first and only switches versions if that save succeeds
 - before the worker sends transcript-derived text to an external LLM:
   - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row
   - it sends the redacted transcript text, not the raw transcript text
@@ -306,6 +313,8 @@ Implemented now for manual browser testing:
 - successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab
 - successful follow-up generation persists a second `generated_documents` type under the same transcript root and renders it back into the Follow-ups tab
 - successful quick action generation persists a third `generated_documents` type under the same transcript root and also renders it back into the Follow-ups tab/history
+- the initial server-rendered follow-up history now uses the same copy/delete action hooks as the JS-refreshed cards, so those controls still work before the first workspace refresh
+- template and quick-action save paths now translate raced unique-index collisions back into targeted 409 conflict responses, including concurrent version-number races during save
 - generation routes are rate-limited per authenticated user:
   - `1 per 5 seconds`
   - `100 per day`

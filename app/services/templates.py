@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from datetime import timezone
 from uuid import UUID, uuid4
@@ -280,6 +281,71 @@ def _serialize_asset_name(raw_name: str, *, field: str = "name") -> str:
     if not name:
         raise AppError(422, "business_rule_violation", "Name is required", {"field": field})
     return name
+
+
+def _split_duplicate_asset_name(name: str) -> tuple[str, int | None]:
+    match = re.match(r"^(.*?)(?:\s+(\d+))?$", name.strip())
+    if not match:
+        return name.strip(), None
+    base_name = (match.group(1) or "").strip()
+    suffix = match.group(2)
+    return base_name or name.strip(), int(suffix) if suffix else None
+
+
+def _next_duplicate_template_name(db: Session, actor: User, *, scope: TemplateScope, source_name: str) -> str:
+    base_name, parsed_suffix = _split_duplicate_asset_name(source_name)
+    candidate_base = base_name if parsed_suffix else source_name.strip()
+    if scope is TemplateScope.team:
+        existing_names = list(
+            db.scalars(
+                select(PromptTemplate.name).where(
+                    PromptTemplate.scope == TemplateScope.team,
+                    PromptTemplate.team_id == actor.team_id,
+                )
+            )
+        )
+    else:
+        existing_names = list(
+            db.scalars(
+                select(PromptTemplate.name).where(
+                    PromptTemplate.scope == TemplateScope.user,
+                    PromptTemplate.owner_user_id == actor.id,
+                )
+            )
+        )
+    normalized_existing = {str(name or "").strip().lower() for name in existing_names}
+    next_index = 2
+    while f"{candidate_base} {next_index}".strip().lower() in normalized_existing:
+        next_index += 1
+    return f"{candidate_base} {next_index}"
+
+
+def _next_duplicate_quick_action_name(db: Session, actor: User, *, scope: TemplateScope, source_name: str) -> str:
+    base_name, parsed_suffix = _split_duplicate_asset_name(source_name)
+    candidate_base = base_name if parsed_suffix else source_name.strip()
+    if scope is TemplateScope.team:
+        existing_names = list(
+            db.scalars(
+                select(QuickAction.name).where(
+                    QuickAction.scope == TemplateScope.team,
+                    QuickAction.team_id == actor.team_id,
+                )
+            )
+        )
+    else:
+        existing_names = list(
+            db.scalars(
+                select(QuickAction.name).where(
+                    QuickAction.scope == TemplateScope.user,
+                    QuickAction.owner_user_id == actor.id,
+                )
+            )
+        )
+    normalized_existing = {str(name or "").strip().lower() for name in existing_names}
+    next_index = 2
+    while f"{candidate_base} {next_index}".strip().lower() in normalized_existing:
+        next_index += 1
+    return f"{candidate_base} {next_index}"
 
 
 def _ensure_unique_template_name(db: Session, actor: User, *, scope: TemplateScope, name: str, current_template_id: UUID | None = None) -> None:
@@ -714,6 +780,42 @@ def delete_personal_template(db: Session, actor: User, *, template_id: UUID) -> 
     db.commit()
 
 
+def duplicate_team_template(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
+    template = _resolve_team_template_for_management(db, actor, template_id=template_id)
+    latest_version = _latest_template_version(db, template_id=template.id)
+    return upsert_team_template(
+        db,
+        actor,
+        PromptTemplateUpsert(
+            scope=TemplateScope.team,
+            name=_next_duplicate_template_name(db, actor, scope=TemplateScope.team, source_name=template.name),
+            description=template.description,
+            prompt_text=latest_version.prompt_text,
+            mode=latest_version.mode,
+            config_json=_template_version_config(latest_version),
+            is_active=template.is_active,
+        ),
+    )
+
+
+def duplicate_personal_template(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
+    template = _resolve_personal_template_for_management(db, actor, template_id=template_id)
+    latest_version = _latest_template_version(db, template_id=template.id)
+    return upsert_personal_template(
+        db,
+        actor,
+        PromptTemplateUpsert(
+            scope=TemplateScope.user,
+            name=_next_duplicate_template_name(db, actor, scope=TemplateScope.user, source_name=template.name),
+            description=template.description,
+            prompt_text=latest_version.prompt_text,
+            mode=latest_version.mode,
+            config_json=_template_version_config(latest_version),
+            is_active=template.is_active,
+        ),
+    )
+
+
 def delete_team_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> None:
     quick_action = _resolve_team_quick_action_for_management(db, actor, quick_action_id=quick_action_id)
     version_ids = list(db.scalars(select(QuickActionVersion.id).where(QuickActionVersion.quick_action_id == quick_action.id)))
@@ -736,6 +838,38 @@ def delete_personal_quick_action(db: Session, actor: User, *, quick_action_id: U
         db.flush()
     db.delete(quick_action)
     db.commit()
+
+
+def duplicate_team_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
+    quick_action = _resolve_team_quick_action_for_management(db, actor, quick_action_id=quick_action_id)
+    latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
+    return upsert_team_quick_action(
+        db,
+        actor,
+        QuickActionUpsert(
+            scope=TemplateScope.team,
+            name=_next_duplicate_quick_action_name(db, actor, scope=TemplateScope.team, source_name=quick_action.name),
+            description=quick_action.description,
+            prompt_text=latest_version.prompt_text,
+            is_active=quick_action.is_active,
+        ),
+    )
+
+
+def duplicate_personal_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
+    quick_action = _resolve_personal_quick_action_for_management(db, actor, quick_action_id=quick_action_id)
+    latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
+    return upsert_personal_quick_action(
+        db,
+        actor,
+        QuickActionUpsert(
+            scope=TemplateScope.user,
+            name=_next_duplicate_quick_action_name(db, actor, scope=TemplateScope.user, source_name=quick_action.name),
+            description=quick_action.description,
+            prompt_text=latest_version.prompt_text,
+            is_active=quick_action.is_active,
+        ),
+    )
 
 
 def list_generated_documents_for_transcript(db: Session, actor: User, *, transcript_id: UUID) -> list[GeneratedDocument]:

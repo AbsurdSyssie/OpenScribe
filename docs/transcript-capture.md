@@ -174,7 +174,7 @@ This step applies only to `live_chunked`.
 For the other planned modes:
 
 - `whole_file` with file-upload source: the client uploads one file without live chunking
-- `whole_file` with microphone-batch source: the client records locally and uploads one batch at the end
+- `whole_file` with microphone-batch source: the client keeps local voice-only segments with VAD pre/post buffer and uploads one batch at the end
 
 ### 5. User uploads a chunk
 
@@ -485,7 +485,7 @@ Implemented now for `whole_file`:
 - whole-file retry remains available when the failed job still has stored retry audio, either through the legacy blob column or the Vault-backed source-audio ref
 - transcript-root deletion and user deletion attempt best-effort cleanup of any Vault-backed retry audio before the owning transcript rows are deleted, without blocking the delete path on a transient Vault outage
 - applied whole-file jobs keep byte and duration telemetry so rolling hourly budgets continue to count recently completed uploads
-- the browser microphone-batch UX uses `MediaRecorder` locally, then posts the captured blob into the same file-ingestion route rather than introducing a separate STT processing path
+- the browser microphone-batch UX now uses browser `MicVAD` locally to keep voiced segments plus short buffer, then posts one captured WAV blob into the same file-ingestion route rather than introducing a separate STT processing path
 
 ### Backend audio normalization
 

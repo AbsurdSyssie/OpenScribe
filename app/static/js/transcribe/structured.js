@@ -11,6 +11,7 @@ export function createStructuredEditor({
   let generatedFreeformDraft = null;
   let emisSaveTimer = null;
   let lastSavedStructuredContext = null;
+  const rowSelectionState = new Map();
 
   const noteCopyStatusDefault = 'Select the note lines you want to copy.';
 
@@ -32,6 +33,79 @@ export function createStructuredEditor({
     const checkbox = row.querySelector('input[type="checkbox"]');
     row.classList.toggle('is-unchecked', Boolean(checkbox && !checkbox.checked));
     row.classList.toggle('unchecked', Boolean(checkbox && !checkbox.checked));
+  };
+
+  const currentDraftSelectionKey = (mode = selectedOutputTemplateMode()) => {
+    const generatedDocumentId = activeGeneratedDocumentId();
+    if (generatedDocumentId) {
+      return `${mode}:document:${generatedDocumentId}`;
+    }
+    return `${mode}:draft:${getTranscriptId() || 'none'}:${dom.generateOutputTemplateSelect?.value || 'none'}`;
+  };
+
+  const rowSelectionCacheKey = ({ mode, sectionKey = '', lineIndex = 0 }) => `${currentDraftSelectionKey(mode)}:${sectionKey}:${lineIndex}`;
+
+  const rememberRowSelectionState = ({ mode, sectionKey = '', lineIndex = 0, checked = true }) => {
+    rowSelectionState.set(rowSelectionCacheKey({ mode, sectionKey, lineIndex }), Boolean(checked));
+  };
+
+  const readRememberedRowSelectionState = ({ mode, sectionKey = '', lineIndex = 0, fallback = true }) => {
+    const cacheKey = rowSelectionCacheKey({ mode, sectionKey, lineIndex });
+    return rowSelectionState.has(cacheKey) ? rowSelectionState.get(cacheKey) : fallback;
+  };
+
+  const captureEditorFocusState = () => {
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+    if (activeElement.hasAttribute('data-structured-line-input')) {
+      const row = activeElement.closest('[data-structured-statement-row]');
+      const section = activeElement.closest('[data-generated-structured-section]');
+      if (!(row instanceof HTMLElement) || !(section instanceof HTMLElement)) {
+        return null;
+      }
+      const rows = [...section.querySelectorAll('[data-structured-statement-row]')];
+      return {
+        mode: 'structured',
+        sectionKey: section.dataset.sectionKey || '',
+        lineIndex: Math.max(0, rows.indexOf(row)),
+        selectionStart: activeElement.selectionStart ?? activeElement.value.length,
+        selectionEnd: activeElement.selectionEnd ?? activeElement.value.length,
+      };
+    }
+    if (activeElement.hasAttribute('data-freeform-note-input')) {
+      const row = activeElement.closest('[data-freeform-note-row]');
+      if (!(row instanceof HTMLElement) || !dom.generatedFreeformRows) {
+        return null;
+      }
+      const rows = [...dom.generatedFreeformRows.querySelectorAll('[data-freeform-note-row]')];
+      return {
+        mode: 'freeform',
+        sectionKey: '',
+        lineIndex: Math.max(0, rows.indexOf(row)),
+        selectionStart: activeElement.selectionStart ?? activeElement.value.length,
+        selectionEnd: activeElement.selectionEnd ?? activeElement.value.length,
+      };
+    }
+    return null;
+  };
+
+  const restoreEditorFocusState = (focusState) => {
+    if (!focusState) return;
+    const selector = focusState.mode === 'structured'
+      ? `[data-generated-structured-section][data-section-key="${window.CSS?.escape ? window.CSS.escape(focusState.sectionKey || '') : (focusState.sectionKey || '')}"] [data-structured-statement-row] [data-structured-line-input]`
+      : '[data-generated-freeform-rows] [data-freeform-note-row] [data-freeform-note-input]';
+    const inputs = [...document.querySelectorAll(selector)];
+    const target = inputs[focusState.lineIndex];
+    if (!(target instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      target.focus();
+      const max = target.value.length;
+      target.setSelectionRange(Math.min(focusState.selectionStart, max), Math.min(focusState.selectionEnd, max));
+    });
   };
 
   const selectedOutputTemplateMode = () => {
@@ -290,8 +364,7 @@ export function createStructuredEditor({
       if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
         return;
       }
-      checkbox.checked = !checkbox.checked;
-      emitChange();
+      focusStatementEditor(textarea);
     });
     checkbox.addEventListener('change', emitChange);
     textarea.addEventListener('input', emitChange);
@@ -390,6 +463,9 @@ export function createStructuredEditor({
   };
 
   const buildGeneratedStructuredDraft = (generatedDocument, structuredContext = {}) => {
+    const sourceSections = (structuredSectionDefinitionsFromDocument(generatedDocument).length
+      ? structuredSectionDefinitionsFromDocument(generatedDocument)
+      : selectedStructuredSectionDefinitions());
     const generatedSectionMap = (
       generatedDocument
       && generatedDocument.status === 'ready'
@@ -406,16 +482,14 @@ export function createStructuredEditor({
     return {
       documentId: generatedDocument?.id || '',
       templateId: dom.generateOutputTemplateSelect?.value || '',
-      sections: (structuredSectionDefinitionsFromDocument(generatedDocument).length
-        ? structuredSectionDefinitionsFromDocument(generatedDocument)
-        : selectedStructuredSectionDefinitions()).map((section) => ({
+      sections: sourceSections.map((section) => ({
         sectionKey: section.key,
         sectionLabel: section.label,
         lines: [
           ...((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || [])
             .filter((line) => typeof line === 'string' && line.trim().length > 0)
-            .map((line) => ({ text: line, checked: true })),
-          { text: '', checked: true },
+            .map((line, lineIndex) => ({ text: line, checked: readRememberedRowSelectionState({ mode: 'structured', sectionKey: section.key, lineIndex, fallback: true }) })),
+          { text: '', checked: readRememberedRowSelectionState({ mode: 'structured', sectionKey: section.key, lineIndex: (((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || []).filter((line) => typeof line === 'string' && line.trim().length > 0).length), fallback: true }) },
         ],
       })),
     };
@@ -456,9 +530,10 @@ export function createStructuredEditor({
     generatedStructuredDraft.sections = sections.map((section) => ({
       sectionKey: section.dataset.sectionKey || '',
       sectionLabel: section.dataset.sectionLabel || 'Section',
-      lines: [...section.querySelectorAll('[data-structured-statement-row]')].map((row) => {
+      lines: [...section.querySelectorAll('[data-structured-statement-row]')].map((row, lineIndex) => {
         const checkbox = row.querySelector('[data-structured-line-checkbox]');
         const textarea = row.querySelector('[data-structured-line-input]');
+        rememberRowSelectionState({ mode: 'structured', sectionKey: section.dataset.sectionKey || '', lineIndex, checked: Boolean(checkbox?.checked) });
         return {
           text: textarea?.value || '',
           checked: Boolean(checkbox?.checked),
@@ -469,9 +544,10 @@ export function createStructuredEditor({
 
   const syncGeneratedFreeformDraftFromDom = () => {
     if (!generatedFreeformDraft || !dom.generatedFreeformRows) return;
-    generatedFreeformDraft.lines = [...dom.generatedFreeformRows.querySelectorAll('[data-freeform-note-row]')].map((row) => {
+    generatedFreeformDraft.lines = [...dom.generatedFreeformRows.querySelectorAll('[data-freeform-note-row]')].map((row, lineIndex) => {
       const checkbox = row.querySelector('[data-freeform-note-checkbox]');
       const textarea = row.querySelector('[data-freeform-note-input]');
+      rememberRowSelectionState({ mode: 'freeform', lineIndex, checked: Boolean(checkbox?.checked) });
       return {
         text: textarea?.value || '',
         checked: Boolean(checkbox?.checked),
@@ -603,6 +679,7 @@ export function createStructuredEditor({
 
   const renderStructuredSections = (draft) => {
     if (!dom.generatedStructuredSections || !dom.generatedStructuredPanel) return;
+    const focusState = captureEditorFocusState();
     dom.generatedStructuredSections.innerHTML = '';
     if (!draft || !Array.isArray(draft.sections) || draft.sections.length === 0) {
       dom.generatedStructuredPanel.hidden = true;
@@ -643,21 +720,24 @@ export function createStructuredEditor({
     syncStructuredContextHiddenInputs();
     syncStructuredEditorAvailability();
     dom.generatedStructuredPanel.hidden = false;
+    restoreEditorFocusState(focusState?.mode === 'structured' ? focusState : null);
   };
 
   const renderFreeformLines = (draft) => {
     if (!dom.generatedFreeformRows || !dom.generatedFreeformPanel) return;
+    const focusState = captureEditorFocusState();
     dom.generatedFreeformRows.innerHTML = '';
     if (!draft || !Array.isArray(draft.lines) || draft.lines.length === 0) {
       dom.generatedFreeformPanel.hidden = true;
       return;
     }
-    draft.lines.forEach((line) => {
-      addGeneratedFreeformLine(line.text || '', null, line.checked !== false);
+    draft.lines.forEach((line, lineIndex) => {
+      addGeneratedFreeformLine(line.text || '', null, readRememberedRowSelectionState({ mode: 'freeform', lineIndex, fallback: line.checked !== false }));
     });
     syncGeneratedFreeformDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedFreeformPanel.hidden = false;
+    restoreEditorFocusState(focusState?.mode === 'freeform' ? focusState : null);
   };
 
   const syncNoteEditorToolbar = () => {

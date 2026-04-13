@@ -333,6 +333,8 @@ a > button { text-decoration: none; }
     }
     tbody tr { transition: background var(--transition); }
     tbody tr:hover td { background: rgba(49, 88, 101, 0.02); }
+    .modal-dialog table { margin-top: 8px; border-top: 1px solid var(--border); }
+    .modal-dialog tbody tr:last-child td { border-bottom: none; }
 
 .flash {
   padding: 12px 16px;
@@ -656,6 +658,93 @@ flex-shrink: 0;
 display: flex;
 gap: 0.5rem;
 flex-shrink: 0;
+}
+
+.asset-status-pill {
+display: inline-flex;
+align-items: center;
+gap: 0.45rem;
+padding: 0.38rem 0.65rem;
+border-radius: 999px;
+border: 1px solid var(--border);
+font-size: 0.78rem;
+font-weight: 600;
+line-height: 1;
+}
+
+.asset-status-pill::before {
+content: "";
+width: 0.5rem;
+height: 0.5rem;
+border-radius: 0.2rem;
+background: currentColor;
+opacity: 0.9;
+}
+
+.asset-status-pill--enabled {
+background: rgba(45, 138, 94, 0.08);
+color: var(--success);
+border-color: rgba(45, 138, 94, 0.18);
+}
+
+.asset-status-pill--disabled {
+background: rgba(183, 58, 58, 0.08);
+color: #B73A3A;
+border-color: rgba(183, 58, 58, 0.18);
+}
+
+.asset-action-button {
+width: 2rem;
+height: 2rem;
+display: inline-flex;
+align-items: center;
+justify-content: center;
+border-radius: 0.55rem;
+border: 1px solid var(--border);
+background: #fff;
+color: var(--muted);
+transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+padding: 0;
+}
+
+.asset-action-button svg,
+.asset-action-button i {
+width: 0.95rem;
+height: 0.95rem;
+stroke-width: 1.9;
+}
+
+.asset-action-button:hover,
+.asset-action-button:focus-visible {
+background: rgba(49, 88, 101, 0.06);
+border-color: rgba(49, 88, 101, 0.18);
+color: var(--ink);
+outline: none;
+}
+
+.asset-action-button--danger:hover,
+.asset-action-button--danger:focus-visible {
+background: rgba(183, 58, 58, 0.08);
+border-color: rgba(183, 58, 58, 0.18);
+color: #B73A3A;
+}
+
+.asset-table-meta {
+display: flex;
+gap: 0.45rem;
+flex-wrap: wrap;
+margin-top: 0.35rem;
+}
+
+.asset-table-status {
+margin-top: 0.45rem;
+}
+
+.asset-table-actions {
+display: flex;
+gap: 0.45rem;
+justify-content: flex-end;
+flex-wrap: wrap;
 }
 
 .asset-row__body {
@@ -1422,8 +1511,8 @@ padding: 1rem 0;
 <span class="settings-header__hint">Save reusable templates for yourself or your team.</span>
 </div>
 <div class="section-action-group" style="margin-bottom:1rem;">
-<a href="{{ home_page_route }}?tab=templates&modal=personal-template"><button type="button" class="btn-primary btn-sm">New personal template</button></a>
-{% if is_manager %}<a href="{{ home_page_route }}?tab=templates&modal=team-template"><button type="button" class="btn-secondary btn-sm">New team template</button></a>{% endif %}
+<a href="/home/templates/editor?scope=personal{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-primary btn-sm">New personal template</button></a>
+{% if is_manager %}<a href="/home/templates/editor?scope=team{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-secondary btn-sm">New team template</button></a>{% endif %}
 </div>
 <div class="settings-stack">
 {% for template in personal_templates %}
@@ -1431,11 +1520,13 @@ padding: 1rem 0;
 <div class="asset-row">
 <div class="asset-row__info">
 <div class="asset-row__title">{{ template.name }}</div>
-<div class="asset-row__meta"><span class="asset-badge scope-personal">personal</span><span class="asset-badge">{{ latest_version.mode.value }}</span></div>
+<div class="asset-row__meta"><span class="asset-badge scope-personal">Personal</span><span class="asset-badge">{{ latest_version.mode.value }}</span></div>
 </div>
-<div class="asset-row__status">{{ "Available" if template.is_active else "Not in use" }}</div>
+<div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if template.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if template.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
-<a href="{{ home_page_route }}?tab=templates&modal=personal-template&personal_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
+<a href="/home/templates/editor?scope=personal&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
+<form method="post" action="/home/personal-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
+<form method="post" action="/home/personal-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this personal template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1445,114 +1536,18 @@ padding: 1rem 0;
 <div class="asset-row">
 <div class="asset-row__info">
 <div class="asset-row__title">{{ template.name }}</div>
-<div class="asset-row__meta"><span class="asset-badge scope-team">team</span><span class="asset-badge">{{ latest_version.mode.value }}</span></div>
+<div class="asset-row__meta"><span class="asset-badge scope-team">Team</span><span class="asset-badge">{{ latest_version.mode.value }}</span></div>
 </div>
-<div class="asset-row__status">{{ "Available" if template.is_active else "Not in use" }}</div>
+<div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if template.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if template.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
-<a href="{{ home_page_route }}?tab=templates&modal=team-template&team_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
+<a href="/home/templates/editor?scope=team&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
+<form method="post" action="/home/team-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
+<form method="post" action="/home/team-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this team template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
 {% endif %}
 </div>
-      {# Personal template modal #}
-      <div class="modal-shell {% if active_home_modal == 'personal-template' %}is-open{% endif %}" id="personal-template-modal">
-        <div class="panel editor-panel modal-dialog">
-          <div class="modal-header">
-            <div><div class="section-kicker">Personal</div><h2>Personal template</h2><p>Save a reusable template for your own consultations.</p></div>
-            <a class="modal-close" href="{{ home_page_route }}?tab=templates" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
-          </div>
-          <form method="post" action="/home/personal-templates">
-            <input type="hidden" name="template_id" value="{{ personal_template.id if personal_template else '' }}">
-            <input type="hidden" name="return_view" value="{{ home_return_view }}">
-            <input type="hidden" name="return_tab" value="templates">
-            <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
-            <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
-            <input type="hidden" name="home_modal" value="personal-template">
-            <label>Template name<input type="text" name="name" maxlength="255" required value="{{ personal_template.name if personal_template else '' }}"></label>
-            <label>Description<input type="text" name="description" value="{{ personal_template.description if personal_template else '' }}"></label>
-            <label>Template style
-              <select name="mode">
-                <option value="freeform" {% if not personal_template_latest_version or personal_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
-                <option value="structured" {% if personal_template_latest_version and personal_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
-              </select>
-            </label>
-            <label>What should be written<textarea name="prompt_text" rows="8" required>{{ personal_template_latest_version.prompt_text if personal_template_latest_version else '' }}</textarea></label>
-            <div class="subgrid">
-              {% for section in emis_sections %}
-              <label>{{ section.label }} guidance<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ personal_template_section_prompts.get(section.key, '') }}</textarea></label>
-              {% endfor %}
-            </div>
-            <label><input type="checkbox" name="is_active" value="true" {% if not personal_template or personal_template.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save personal template" if personal_template else "Create personal template" }}</button>
-          </form>
-          {% if personal_templates %}
-          <table><thead><tr><th>Name</th><th>Latest guidance</th><th>Actions</th></tr></thead><tbody>
-            {% for template in personal_templates %}
-            {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-            <tr>
-              <td><strong>{{ template.name }}</strong><br><small>{{ template.description or "" }}</small><br><small>{{ latest_version.mode.value }}</small><br><small>{{ "active" if template.is_active else "inactive" }}</small></td>
-              <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
-              <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a href="{{ home_page_route }}?tab=templates&modal=personal-template&personal_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/personal-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this personal template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
-              </div></td>
-            </tr>
-            {% endfor %}
-          </tbody></table>
-          {% else %}<p><small>No personal templates yet.</small></p>{% endif %}
-        </div>
-      </div>
-      {# Team template modal #}
-      {% if is_manager %}
-      <div class="modal-shell {% if active_home_modal == 'team-template' %}is-open{% endif %}" id="team-template-modal">
-        <div class="panel editor-panel modal-dialog">
-          <div class="modal-header">
-            <div><div class="section-kicker">Team</div><h2>Team template</h2><p>Leaders can manage shared templates for everyone on the team.</p></div>
-            <a class="modal-close" href="{{ home_page_route }}?tab=templates" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></a>
-          </div>
-          <form method="post" action="/home/team-templates">
-            <input type="hidden" name="template_id" value="{{ team_template.id if team_template else '' }}">
-            <input type="hidden" name="return_view" value="{{ home_return_view }}">
-            <input type="hidden" name="return_tab" value="templates">
-            <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
-            <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
-            <input type="hidden" name="home_modal" value="team-template">
-            <label>Template name<input type="text" name="name" maxlength="255" required value="{{ team_template.name if team_template else '' }}"></label>
-            <label>Description<input type="text" name="description" value="{{ team_template.description if team_template else '' }}"></label>
-            <label>Template style
-              <select name="mode">
-                <option value="freeform" {% if not team_template_latest_version or team_template_latest_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
-                <option value="structured" {% if team_template_latest_version and team_template_latest_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
-              </select>
-            </label>
-            <label>What should be written<textarea name="prompt_text" rows="8" required>{{ team_template_latest_version.prompt_text if team_template_latest_version else '' }}</textarea></label>
-            <div class="subgrid">
-              {% for section in emis_sections %}
-              <label>{{ section.label }} guidance<textarea name="section_prompt_{{ section.key }}" rows="4" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ team_template_section_prompts.get(section.key, '') }}</textarea></label>
-              {% endfor %}
-            </div>
-            <label><input type="checkbox" name="is_active" value="true" {% if not team_template or team_template.is_active %}checked{% endif %}>Active</label>
-            <button type="submit" class="btn-primary">{{ "Save team template" if team_template else "Create team template" }}</button>
-          </form>
-          {% if team_templates %}
-          <table><thead><tr><th>Name</th><th>Latest guidance</th><th>Actions</th></tr></thead><tbody>
-            {% for template in team_templates %}
-            {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-            <tr>
-              <td><strong>{{ template.name }}</strong><br><small>{{ template.description or "" }}</small><br><small>{{ latest_version.mode.value }}</small><br><small>{{ "active" if template.is_active else "inactive" }}</small></td>
-              <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
-              <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a href="{{ home_page_route }}?tab=templates&modal=team-template&team_template_id={{ template.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/team-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this team template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
-              </div></td>
-            </tr>
-            {% endfor %}
-          </tbody></table>
-          {% else %}<p><small>No team templates yet.</small></p>{% endif %}
-        </div>
-      </div>
-      {% endif %}
     </section>
 
 {# ── QUICK ACTIONS ── #}
@@ -1570,11 +1565,13 @@ padding: 1rem 0;
 <div class="asset-row">
 <div class="asset-row__info">
 <div class="asset-row__title">{{ quick_action.name }}</div>
-<div class="asset-row__meta"><span class="asset-badge scope-personal">personal</span></div>
+<div class="asset-row__meta"><span class="asset-badge scope-personal">Personal</span></div>
 </div>
-<div class="asset-row__status">{{ "Available" if quick_action.is_active else "Not in use" }}</div>
+<div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
-<a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
+<a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
+<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1583,11 +1580,13 @@ padding: 1rem 0;
 <div class="asset-row">
 <div class="asset-row__info">
 <div class="asset-row__title">{{ quick_action.name }}</div>
-<div class="asset-row__meta"><span class="asset-badge scope-team">team</span></div>
+<div class="asset-row__meta"><span class="asset-badge scope-team">Team</span></div>
 </div>
-<div class="asset-row__status">{{ "Available" if quick_action.is_active else "Not in use" }}</div>
+<div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
-<a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
+<a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
+<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1618,11 +1617,12 @@ padding: 1rem 0;
             {% for quick_action in personal_quick_actions %}
             {% set latest_version = quick_action.versions|sort(attribute='version_no')|last %}
             <tr>
-              <td><strong>{{ quick_action.name }}</strong><br><small>{{ quick_action.description or "" }}</small><br><small>{{ "active" if quick_action.is_active else "inactive" }}</small></td>
+              <td><strong>{{ quick_action.name }}</strong><br><small>{{ quick_action.description or "" }}</small><div class="asset-table-meta"><span class="asset-badge scope-personal">Personal</span></div><div class="asset-table-status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div></td>
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
-              <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+              <td><div class="asset-table-actions">
+                <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
+                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -1656,11 +1656,12 @@ padding: 1rem 0;
             {% for quick_action in team_quick_actions %}
             {% set latest_version = quick_action.versions|sort(attribute='version_no')|last %}
             <tr>
-              <td><strong>{{ quick_action.name }}</strong><br><small>{{ quick_action.description or "" }}</small><br><small>{{ "active" if quick_action.is_active else "inactive" }}</small></td>
+              <td><strong>{{ quick_action.name }}</strong><br><small>{{ quick_action.description or "" }}</small><div class="asset-table-meta"><span class="asset-badge scope-team">Team</span></div><div class="asset-table-status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div></td>
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
-              <td><div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="btn-ghost btn-sm">Edit</a>
-                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="btn-danger btn-sm">Delete</button></form>
+              <td><div class="asset-table-actions">
+                <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
+                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -1984,6 +1985,7 @@ Add member
   </div>
 </div>
 <div class="toast-container" data-toast-container></div>
+<script src="https://unpkg.com/lucide@latest"></script>
 <script>
 (() => {
 /* ── Toast notifications ── */
@@ -2008,6 +2010,7 @@ showToast(message, kind);
 flash.hidden = true;
 }
 });
+window.lucide?.createIcons();
 
 document.querySelectorAll('[data-service-toggle]').forEach((btn) => {
 btn.addEventListener('click', () => {

@@ -560,6 +560,7 @@ def render_home(
     home_page_route: str = "/home",
     home_return_view: str = "",
     transcribe_return_tab: str | None = None,
+    template_editor_scope: str | None = None,
 ):
     def _structured_section_prompt_map(version) -> dict[str, str]:
         if version is None or not version.config_json or not isinstance(version.config_json, dict):
@@ -673,6 +674,7 @@ def render_home(
         "active_home_modal": resolved_home_modal,
         "home_page_route": home_page_route,
         "home_return_view": home_return_view,
+        "template_editor_scope": template_editor_scope,
         "team_template": selected_team_template,
         "personal_template": selected_personal_template,
         "team_quick_action": selected_team_quick_action,
@@ -698,6 +700,26 @@ def home_template_name_from_return_view(return_view: str | None) -> str:
 
 def home_page_route_from_return_view(return_view: str | None) -> str:
     return "/home-restyled" if return_view == "restyled" else "/home"
+
+
+def home_template_editor_url(
+    *,
+    scope: str,
+    template_id: str | None = None,
+    return_view: str | None = None,
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+) -> str:
+    params: dict[str, str] = {"scope": scope}
+    if template_id:
+        params["template_id"] = template_id
+    if return_view:
+        params["return_view"] = return_view
+    if queued_transcript_id:
+        params["queued_transcript_id"] = queued_transcript_id
+    if transcribe_tab:
+        params["transcribe_tab"] = transcribe_tab
+    return f"/home/templates/editor?{urlencode(params)}"
 
 
 def home_return_view_value(return_view: str | None) -> str:

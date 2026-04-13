@@ -6801,7 +6801,7 @@ def test_audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing
     assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == UUID(transcript_id))) is None
     transcript = db_session.get(Transcript, UUID(transcript_id))
     assert transcript is not None
-    assert transcript.status is TranscriptStatus.recording
+    assert transcript.status is TranscriptStatus.ready
 
 
 def test_audio_file_upload_does_not_preflight_stt_health_before_queueing(

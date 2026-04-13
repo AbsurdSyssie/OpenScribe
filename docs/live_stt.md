@@ -167,11 +167,13 @@ The transcribe workspace should expose:
 
 For `whole_file` sessions:
 
-- the existing microphone batch flow remains available
+- file upload remains available
+- microphone batch capture now uses local `MicVAD` gating so browser keeps voiced segments with short pre/post buffer, then uploads one WAV batch on stop
 
 For `live_chunked` sessions:
 
 - the same primary record control becomes live capture
+- mic activity visualizer beside record control uses current `MicVAD` frame stream for bar motion and flips red/green from current VAD speech state
 - the workspace keeps polling while live capture is active so newly applied transcript text appears without a manual refresh
 - status copy changes to live-specific text:
   - `Listening for speech...`

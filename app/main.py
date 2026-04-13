@@ -115,6 +115,10 @@ from .services.templates import (
     delete_personal_template as delete_personal_template_service,
     delete_team_quick_action as delete_team_quick_action_service,
     delete_team_template as delete_team_template_service,
+    duplicate_personal_quick_action as duplicate_personal_quick_action_service,
+    duplicate_personal_template as duplicate_personal_template_service,
+    duplicate_team_quick_action as duplicate_team_quick_action_service,
+    duplicate_team_template as duplicate_team_template_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
@@ -241,6 +245,7 @@ from .web.presentation import (
     generated_document_redaction_debug_response,
     generated_document_response,
     home_page_route_from_return_view,
+    home_template_editor_url,
     home_redirect_url,
     home_return_view_value,
     home_template_name_from_return_view,
@@ -282,6 +287,7 @@ _serialize_sse_event = serialize_sse_event
 _home_redirect_url = home_redirect_url
 _home_return_view_value = home_return_view_value
 _home_page_route_from_return_view = home_page_route_from_return_view
+_home_template_editor_url = home_template_editor_url
 _home_template_name_from_return_view = home_template_name_from_return_view
 _admin_redirect_url = admin_redirect_url
 _admin_return_view_value = admin_return_view_value

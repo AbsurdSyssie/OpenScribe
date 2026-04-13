@@ -155,7 +155,7 @@ def _create_transcript_row(
             else None
         ),
         ingestion_mode=ingestion_mode,
-        status=TranscriptStatus.recording,
+        status=TranscriptStatus.ready,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=retention_days,
         retention_expires_at=transcript_expiry(retention_days),

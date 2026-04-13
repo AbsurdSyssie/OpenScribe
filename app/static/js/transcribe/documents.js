@@ -4,8 +4,9 @@ export function createDocumentNavigator({
   getState,
   setState,
   clearNoteEditorDirty,
+  hasPendingGeneratedNoteEdits,
   persistNoteEditsSilently,
-  shouldPreserveLocalNoteEdits,
+  shouldPreserveNoteEditorRender,
 }) {
   const {
     noteSelectorWrap,
@@ -197,7 +198,7 @@ export function createDocumentNavigator({
       latestGeneratedOutput.dataset.latestGeneratedId = selectedNote?.id || "";
       latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
       latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
-      if (!preserveEditor && !shouldPreserveLocalNoteEdits?.()) {
+      if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {
         renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
       }
     }
@@ -253,7 +254,7 @@ export function createDocumentNavigator({
       if (state.selectedNoteDocumentId === documentId) {
         return;
       }
-      if (shouldPreserveLocalNoteEdits?.()) {
+      if (hasPendingGeneratedNoteEdits?.()) {
         const savedDocument = await persistNoteEditsSilently?.();
         if (!savedDocument) {
           return;

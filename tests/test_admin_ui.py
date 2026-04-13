@@ -17,7 +17,9 @@ from app.models import (
     ProviderUsageEvent,
     ProviderUsageEventType,
     PromptTemplate,
+    PromptTemplateVersion,
     QuickAction,
+    QuickActionVersion,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -617,6 +619,131 @@ def test_leader_home_can_create_team_template(client, db_session, make_team, mak
     assert template is not None
 
 
+def test_home_asset_rows_show_icon_actions_and_enabled_disabled_status(client, db_session, make_team, make_user, make_template, make_quick_action):
+    team = make_team(name="Clinic Home Asset Row UI")
+    member = make_user(email="home-asset-ui@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    make_template(scope=TemplateScope.user, owner=member, actor=member, name="My template", is_active=True)
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="My quick", is_active=False)
+
+    client.post("/login", data={"email": "home-asset-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home?tab=templates")
+
+    assert page.status_code == 200
+    assert "Personal" in page.text
+    assert "Enabled" in page.text
+    assert 'title="Edit template"' in page.text
+    assert 'title="Copy template"' in page.text
+    assert 'title="Delete template"' in page.text
+    assert '/home/personal-templates/' in page.text
+    assert '/duplicate' in page.text
+    assert '/delete' in page.text
+
+    quick_actions_page = client.get("/home?tab=quick-actions")
+
+    assert quick_actions_page.status_code == 200
+    assert "Disabled" in quick_actions_page.text
+    assert 'title="Edit quick action"' in quick_actions_page.text
+    assert 'title="Copy quick action"' in quick_actions_page.text
+    assert 'title="Delete quick action"' in quick_actions_page.text
+
+
+def test_template_editor_page_uses_dedicated_full_page_layout(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Template Editor Layout")
+    make_user(email="template-editor-layout@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "template-editor-layout@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home/templates/editor?scope=personal")
+
+    assert page.status_code == 200
+    assert 'class="app-shell"' in page.text
+    assert 'class="sidebar"' in page.text
+    assert 'class="editor-pane"' in page.text
+    assert 'class="template-form"' in page.text
+    assert 'class="action-bar"' in page.text
+    assert 'class="section-list"' in page.text
+    assert 'class="section-row"' in page.text
+    assert 'const COOKIE_NAME = "openscribe_csrf"' in page.text
+    assert 'Problem guidance' not in page.text
+    assert '>Open<' not in page.text
+    assert 'Personal template' in page.text
+
+
+def test_team_template_editor_page_keeps_team_scope_for_new_template(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Team Template Editor Layout")
+    make_user(email="team-template-editor-layout@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "team-template-editor-layout@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home/templates/editor?scope=team")
+
+    assert page.status_code == 200
+    assert 'New team template' in page.text
+    assert 'action="/home/team-templates"' in page.text
+
+
+def test_user_home_can_duplicate_personal_template_with_incremented_name(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Personal Template Copy")
+    user = make_user(email="personal-template-copy@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    template = PromptTemplate(
+        owner_user_id=user.id,
+        scope=TemplateScope.user,
+        name="My note",
+        description="Personal prompt",
+        is_active=True,
+        created_by_user_id=user.id,
+    )
+    db_session.add(template)
+    db_session.flush()
+    db_session.add(PromptTemplateVersion(template_id=template.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Write note", created_by_user_id=user.id))
+    db_session.commit()
+
+    client.post("/login", data={"email": "personal-template-copy@example.com", "password": "password-1"}, follow_redirects=False)
+    duplicated = client.post(f"/home/personal-templates/{template.id}/duplicate", data={"return_tab": "templates"}, follow_redirects=False)
+
+    assert duplicated.status_code == 303
+    copy = db_session.scalar(select(PromptTemplate).where(PromptTemplate.owner_user_id == user.id, PromptTemplate.name == "My note 2"))
+    assert copy is not None
+    latest_version = copy.versions[-1]
+    assert latest_version.prompt_text == "Write note"
+    assert duplicated.headers["location"].startswith("/home/templates/editor?scope=personal")
+    assert f"template_id={copy.id}" in duplicated.headers["location"]
+
+
+def test_leader_home_can_duplicate_team_template_with_next_suffix(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Team Template Copy")
+    leader = make_user(email="team-template-copy@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    template = PromptTemplate(
+        team_id=team.id,
+        scope=TemplateScope.team,
+        name="Team SOAP",
+        description="Shared prompt",
+        is_active=True,
+        created_by_user_id=leader.id,
+    )
+    existing_copy = PromptTemplate(
+        team_id=team.id,
+        scope=TemplateScope.team,
+        name="Team SOAP 2",
+        description="Existing copy",
+        is_active=True,
+        created_by_user_id=leader.id,
+    )
+    db_session.add_all([template, existing_copy])
+    db_session.flush()
+    db_session.add(PromptTemplateVersion(template_id=template.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Write SOAP", created_by_user_id=leader.id))
+    db_session.add(PromptTemplateVersion(template_id=existing_copy.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Older copy", created_by_user_id=leader.id))
+    db_session.commit()
+
+    client.post("/login", data={"email": "team-template-copy@example.com", "password": "password-1"}, follow_redirects=False)
+    duplicated = client.post(f"/home/team-templates/{template.id}/duplicate", data={"return_tab": "templates"}, follow_redirects=False)
+
+    assert duplicated.status_code == 303
+    copy = db_session.scalar(select(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == "Team SOAP 3"))
+    assert copy is not None
+    assert duplicated.headers["location"].startswith("/home/templates/editor?scope=team")
+    assert f"template_id={copy.id}" in duplicated.headers["location"]
+
+
+
 def test_user_home_can_create_personal_template(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
     user = make_user(email="user@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -690,6 +817,66 @@ def test_leader_home_can_create_team_quick_action(client, db_session, make_team,
     assert save.status_code == 303
     quick_action = db_session.scalar(select(QuickAction).where(QuickAction.team_id == team.id, QuickAction.name == "Arrange review"))
     assert quick_action is not None
+
+
+def test_user_home_can_duplicate_personal_quick_action_with_incremented_name(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Personal Quick Copy")
+    user = make_user(email="personal-quick-copy@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    quick_action = QuickAction(
+        owner_user_id=user.id,
+        scope=TemplateScope.user,
+        name="Arrange review",
+        description="Personal quick action",
+        is_active=True,
+        created_by_user_id=user.id,
+    )
+    db_session.add(quick_action)
+    db_session.flush()
+    db_session.add(QuickActionVersion(quick_action_id=quick_action.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Write review message", created_by_user_id=user.id))
+    db_session.commit()
+
+    client.post("/login", data={"email": "personal-quick-copy@example.com", "password": "password-1"}, follow_redirects=False)
+    duplicated = client.post(f"/home/personal-quick-actions/{quick_action.id}/duplicate", data={"return_tab": "quick-actions"}, follow_redirects=False)
+
+    assert duplicated.status_code == 303
+    copy = db_session.scalar(select(QuickAction).where(QuickAction.owner_user_id == user.id, QuickAction.name == "Arrange review 2"))
+    assert copy is not None
+    latest_version = copy.versions[-1]
+    assert latest_version.prompt_text == "Write review message"
+    assert f"personal_quick_action_id={copy.id}" in duplicated.headers["location"]
+
+
+def test_leader_home_can_duplicate_team_quick_action_with_next_suffix(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Team Quick Copy")
+    leader = make_user(email="team-quick-copy@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    quick_action = QuickAction(
+        team_id=team.id,
+        scope=TemplateScope.team,
+        name="Book bloods",
+        description="Shared quick action",
+        is_active=True,
+        created_by_user_id=leader.id,
+    )
+    existing_copy = QuickAction(
+        team_id=team.id,
+        scope=TemplateScope.team,
+        name="Book bloods 2",
+        description="Existing copy",
+        is_active=True,
+        created_by_user_id=leader.id,
+    )
+    db_session.add_all([quick_action, existing_copy])
+    db_session.flush()
+    db_session.add(QuickActionVersion(quick_action_id=quick_action.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Book tests", created_by_user_id=leader.id))
+    db_session.add(QuickActionVersion(quick_action_id=existing_copy.id, version_no=1, mode=TemplateMode.freeform, prompt_text="Older copy", created_by_user_id=leader.id))
+    db_session.commit()
+
+    client.post("/login", data={"email": "team-quick-copy@example.com", "password": "password-1"}, follow_redirects=False)
+    duplicated = client.post(f"/home/team-quick-actions/{quick_action.id}/duplicate", data={"return_tab": "quick-actions"}, follow_redirects=False)
+
+    assert duplicated.status_code == 303
+    copy = db_session.scalar(select(QuickAction).where(QuickAction.team_id == team.id, QuickAction.name == "Book bloods 3"))
+    assert copy is not None
 
 
 def test_leader_home_team_quick_action_can_return_to_restyled_preview(client, db_session, make_team, make_user, make_quick_action):
@@ -1107,7 +1294,7 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     assert 'href="/home"' in page.text
     assert 'data-workspace-settings-link' in page.text
     assert 'justify-between border-b border-stone bg-white px-4 gap-3' in page.text
-    assert f'data-settings-url="/home?tab=templates&modal=personal-template&personal_template_id=' in page.text
+    assert f'data-settings-url="/home/templates/editor?scope=personal&template_id=' in page.text
     assert 'return_view=transcribe' in page.text
     assert f'queued_transcript_id={transcript.id}' in page.text
     assert 'transcribe_tab=output' in page.text
@@ -2403,6 +2590,11 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "shouldPreserveLiveMicStatus()" in app_js
     assert "captureController?.syncDisplayedDuration?.();" in app_js
     assert "Listening for speech..." in media_js
+    assert "const micVisualizer = document.querySelector('[data-mic-visualizer]');" in app_js
+    assert "batchVadInstance = await buildBatchVadInstance();" in media_js
+    assert "Speech detected. Voice-only batch capture is running..." in media_js
+    assert "microphone-batch.wav" in media_js
+    assert 'data-mic-visualizer' in workspace_html
     assert "const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';" in media_js
     assert "const beginAccumulatedTimer = () => {" in media_js
     assert "const finalizeAccumulatedTimer = () => {" in media_js

@@ -71,6 +71,7 @@ data-record-toggle
 </svg>
 <span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Start recording{% endif %}</span>
 </button>
+<div class="mic-visualizer" data-mic-visualizer data-vad-active="false" aria-hidden="true"></div>
 <button
 type="button"
 class="record-split-button__dropdown"
@@ -264,7 +265,7 @@ value="{{ template.id }}"
 data-template-name="{{ template.name }}"
 data-template-mode="{{ latest_version.mode.value }}"
 {% if latest_version.mode.value == "structured" and template_sections %}data-template-sections='{{ template_sections | tojson }}'{% endif %}
-data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
+data-settings-url="/home/templates/editor?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
 {{ template.name }} ({{ latest_version.mode.value }})
 </option>
 {% endfor %}
@@ -363,7 +364,7 @@ data-template-picker-option
 data-template-id="{{ template.id }}"
 data-template-name="{{ template.name }}"
 data-template-mode="{{ latest_version.mode.value }}"
-data-settings-url="/home?tab=templates&modal={% if template.scope.value == 'team' %}team-template&team_template_id{% else %}personal-template&personal_template_id{% endif %}={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
+data-settings-url="/home/templates/editor?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
 <span class="template-picker-option__title">{{ template.name }}</span>
 <span class="template-picker-option__meta">{{ 'Sectioned note' if latest_version.mode.value == 'structured' else 'Free text note' }}{% if template.scope.value == 'team' %} · Team{% else %} · Personal{% endif %}</span>
 </button>

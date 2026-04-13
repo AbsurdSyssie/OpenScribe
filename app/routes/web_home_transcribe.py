@@ -5,6 +5,7 @@ from ..main import (
     _home_page_route_from_return_view,
     _home_redirect_url,
     _home_return_view_value,
+    _home_template_editor_url,
     _home_template_name_from_return_view,
     _page_context_or_redirect,
     _structured_template_config_from_form,
@@ -32,6 +33,19 @@ def home_page(
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if modal in {"personal-template", "team-template"}:
+        scope = "team" if modal == "team-template" else "personal"
+        selected_template_id = team_template_id if scope == "team" else personal_template_id
+        return RedirectResponse(
+            url=_home_template_editor_url(
+                scope=scope,
+                template_id=selected_template_id,
+                return_view=return_view,
+                queued_transcript_id=queued_transcript_id,
+                transcribe_tab=transcribe_tab,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
     return render_home(
         request,
@@ -73,6 +87,19 @@ def home_restyled_page(
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if modal in {"personal-template", "team-template"}:
+        scope = "team" if modal == "team-template" else "personal"
+        selected_template_id = team_template_id if scope == "team" else personal_template_id
+        return RedirectResponse(
+            url=_home_template_editor_url(
+                scope=scope,
+                template_id=selected_template_id,
+                return_view=return_view or "restyled",
+                queued_transcript_id=queued_transcript_id,
+                transcribe_tab=transcribe_tab,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
     return render_home(
         request,
@@ -91,6 +118,46 @@ def home_restyled_page(
         home_page_route="/home-restyled",
         home_return_view=_home_return_view_value(return_view or "restyled"),
         transcribe_return_tab=transcribe_tab,
+    )
+
+
+@app.get("/home/templates/editor", response_class=HTMLResponse)
+def home_template_editor_page(
+    request: Request,
+    scope: str,
+    template_id: str | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
+    return_view: str = "",
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if scope not in {"personal", "team"}:
+        return RedirectResponse(url=_home_redirect_url(return_view=return_view, return_tab="templates"), status_code=status.HTTP_303_SEE_OTHER)
+    if scope == "team" and context.user.team_role is not TeamRole.leader:
+        return RedirectResponse(url=_home_redirect_url(return_view=return_view, return_tab="templates"), status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_template_id=template_id if scope == "team" else None,
+        selected_personal_template_id=template_id if scope == "personal" else None,
+        message=message,
+        message_kind=safe_message_kind,
+        queued_transcript_id=queued_transcript_id,
+        active_home_tab="templates",
+        template_name="template_editor.html",
+        home_page_route=_home_page_route_from_return_view(return_view),
+        home_return_view=_home_return_view_value(return_view),
+        transcribe_return_tab=transcribe_tab,
+        template_editor_scope=scope,
     )
 
 
@@ -309,13 +376,13 @@ def home_upsert_team_template(
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "templates",
-            active_home_modal=home_modal or "team-template",
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name=_home_template_name_from_return_view(return_view),
+            template_name="template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
+            template_editor_scope="team",
         )
     return RedirectResponse(
         url=_home_redirect_url(
@@ -363,6 +430,51 @@ def home_delete_team_template(
         url=_home_redirect_url(
             return_view=return_view,
             return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/team-templates/{template_id}/duplicate", response_class=HTMLResponse)
+def home_duplicate_team_template(
+    request: Request,
+    template_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        duplicated = duplicate_team_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_template_id=str(template_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "templates",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name="template_editor.html",
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+            template_editor_scope="team",
+        )
+    return RedirectResponse(
+        url=_home_template_editor_url(
+            scope="team",
+            template_id=str(duplicated.id),
+            return_view=return_view,
             queued_transcript_id=queued_transcript_id or None,
             transcribe_tab=transcribe_tab or None,
         ),
@@ -435,18 +547,63 @@ def home_upsert_personal_template(
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "templates",
-            active_home_modal=home_modal or "personal-template",
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name=_home_template_name_from_return_view(return_view),
+            template_name="template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
+            template_editor_scope="personal",
         )
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,
             return_tab=return_tab or "templates",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/personal-templates/{template_id}/duplicate", response_class=HTMLResponse)
+def home_duplicate_personal_template(
+    request: Request,
+    template_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        duplicated = duplicate_personal_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_personal_template_id=str(template_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "templates",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name="template_editor.html",
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+            template_editor_scope="personal",
+        )
+    return RedirectResponse(
+        url=_home_template_editor_url(
+            scope="personal",
+            template_id=str(duplicated.id),
+            return_view=return_view,
             queued_transcript_id=queued_transcript_id or None,
             transcribe_tab=transcribe_tab or None,
         ),
@@ -600,6 +757,50 @@ def home_delete_team_quick_action(
     )
 
 
+@app.post("/home/team-quick-actions/{quick_action_id}/duplicate", response_class=HTMLResponse)
+def home_duplicate_team_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        duplicated = duplicate_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_quick_action_id=str(quick_action_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            active_home_modal="team-quick-action",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ) + f"&modal=team-quick-action&team_quick_action_id={duplicated.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/home/personal-quick-actions", response_class=HTMLResponse)
 def home_upsert_personal_quick_action(
     request: Request,
@@ -658,6 +859,50 @@ def home_upsert_personal_quick_action(
             queued_transcript_id=queued_transcript_id or None,
             transcribe_tab=transcribe_tab or None,
         ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/personal-quick-actions/{quick_action_id}/duplicate", response_class=HTMLResponse)
+def home_duplicate_personal_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        duplicated = duplicate_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_personal_quick_action_id=str(quick_action_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            active_home_modal="personal-quick-action",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ) + f"&modal=personal-quick-action&personal_quick_action_id={duplicated.id}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

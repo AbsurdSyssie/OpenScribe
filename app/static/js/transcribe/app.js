@@ -53,6 +53,7 @@ import { createGuidedTour } from './tour.js';
       const activeProgress = document.querySelector('[data-session-progress]');
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
+      const micVisualizer = document.querySelector('[data-mic-visualizer]');
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
@@ -160,6 +161,9 @@ import { createGuidedTour } from './tour.js';
       const liveMinChunkMs = 400;
       const liveChunkOverlapMs = 800;
       const liveRestartDelayMs = 150;
+      const batchVadPreRollMs = 800;
+      const batchVadSilenceThresholdMs = 1200;
+      const batchVadTrailingBufferMs = 350;
       const structuredSectionDefinitions = bootstrap.emisSections;
 
       let currentAssistantTab = bootstrap.activeTab;
@@ -184,7 +188,27 @@ import { createGuidedTour } from './tour.js';
         noteSaveConflictShown = false;
       };
 
-      const shouldPreserveLocalNoteEdits = () => noteEditorDirty;
+      const currentRenderedNoteDocumentId = () => latestGeneratedOutput?.dataset?.latestGeneratedId || '';
+
+      const isNoteEditorFocused = () => {
+        const activeElement = document.activeElement;
+        return activeElement instanceof HTMLElement
+          && Boolean(activeElement.closest('[data-generated-structured-panel], [data-generated-freeform-panel]'));
+      };
+
+      const hasPendingGeneratedNoteEdits = () => {
+        const currentDocumentId = currentRenderedNoteDocumentId();
+        return Boolean(noteEditorDirty && currentDocumentId && dirtyNoteDocumentId === currentDocumentId);
+      };
+
+      const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteDocumentId()) => {
+        const currentDocumentId = currentRenderedNoteDocumentId();
+        const targetDocumentId = nextSelectedNoteDocumentId || '';
+        if (noteEditorDirty) {
+          return dirtyNoteDocumentId === targetDocumentId;
+        }
+        return Boolean(isNoteEditorFocused() && currentDocumentId === targetDocumentId);
+      };
       const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
 
       const buildNoteSavePayload = () => {
@@ -553,7 +577,7 @@ import { createGuidedTour } from './tour.js';
         if (!sttAvailable) {
           return { message: sttStatusMessage || 'Uploading recordings is not available right now.', kind: 'error' };
         }
-        return { message: 'Ready to upload a recording or capture one from your microphone.', kind: '' };
+        return { message: 'Ready to upload a recording or capture voice-only audio from your microphone.', kind: '' };
       };
 
       const hasSelectableOptions = (select) => {
@@ -609,6 +633,9 @@ import { createGuidedTour } from './tour.js';
         const liveMode = activeIngestionMode === 'live_chunked';
         const canUseRecorder = liveMode ? canUseLiveInput() : canUseWholeFileInput();
         localBusyProtected.forEach((button) => {
+          if (newSessionControls.includes(button)) {
+            return;
+          }
           const initiallyDisabled = protectedInitialDisabled.get(button) ?? false;
           if (button === retryIngestionTrigger) {
             const retryAvailable = button.dataset.retryAvailable === 'true';
@@ -693,10 +720,14 @@ import { createGuidedTour } from './tour.js';
           audioActionTrigger,
           fileInput,
           micTimer,
+          micVisualizer,
           recordToggleButton,
           uploadForm,
         },
         config: {
+          batchVadPreRollMs,
+          batchVadSilenceThresholdMs,
+          batchVadTrailingBufferMs,
           liveChunkOverlapMs,
           liveMaxChunkMs,
           liveMinChunkMs,
@@ -908,7 +939,8 @@ import { createGuidedTour } from './tour.js';
         },
         clearNoteEditorDirty,
         persistNoteEditsSilently,
-        shouldPreserveLocalNoteEdits,
+        hasPendingGeneratedNoteEdits,
+        shouldPreserveNoteEditorRender,
       });
 
       const saveStructuredContext = async ({ silent = false } = {}) => {
@@ -1096,7 +1128,7 @@ import { createGuidedTour } from './tour.js';
         workspaceStructuredContext = structuredContext;
         selectedNoteDocumentId = selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || null;
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
-        const preserveDirtyNoteEditor = shouldPreserveLocalNoteEdits();
+        const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');
         renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });
         renderSelectedFollowup();
         structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));

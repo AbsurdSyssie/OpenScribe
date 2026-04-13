@@ -536,7 +536,7 @@ Current whole-file ingestion behavior:
   - requires an active selected session before upload
   - uses a single whole-file session type in the browser and lets the user choose file upload or microphone batch inside the session
   - queues file ingestion into the selected transcript root
-  - records microphone batches locally in the browser and submits the captured blob through the same `/transcribe/upload` file-ingestion path
+  - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates

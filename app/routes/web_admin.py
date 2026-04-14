@@ -390,6 +390,7 @@ def admin_set_stt_selection(
     request: Request,
     team_id: str = Form(...),
     stt_config_id: str = Form(...),
+    purpose: str = Form("conversation"),
     provider_model: str = Form(""),
     language: str = Form(""),
     return_view: str = Form(""),
@@ -408,6 +409,7 @@ def admin_set_stt_selection(
             context.user,
             SttSelectionUpsert(
                 team_id=UUID(team_id),
+                purpose=SttSelectionPurpose(purpose),
                 stt_config_id=UUID(stt_config_id),
                 model_name_override=provider_model or None,
                 language_override=language or None,
@@ -438,6 +440,7 @@ def admin_set_stt_selection(
 def admin_clear_stt_selection(
     request: Request,
     team_id: str = Form(...),
+    purpose: str = Form("conversation"),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -449,7 +452,7 @@ def admin_clear_stt_selection(
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        clear_team_stt_selection_service(db, context.user, team_id=UUID(team_id))
+        clear_team_stt_selection_service(db, context.user, team_id=UUID(team_id), purpose=SttSelectionPurpose(purpose))
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection clear request"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST

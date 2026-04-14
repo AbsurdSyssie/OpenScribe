@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models import SttAdapterKind, SttAuthMode
+from app.models import SttAdapterKind, SttAuthMode, SttSelectionPurpose
 
 
 def _validate_stt_base_url(value: str) -> str:
@@ -145,6 +145,7 @@ class SttConfigDetail(BaseModel):
 class SttSelectionUpsert(BaseModel):
     model_config = {"protected_namespaces": ()}
     team_id: UUID | None = None
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation
     stt_config_id: UUID
     model_name_override: str | None = Field(default=None, max_length=255)
     language_override: str | None = Field(default=None, max_length=32)
@@ -154,6 +155,7 @@ class SttSelectionDetail(BaseModel):
     model_config = {"protected_namespaces": ()}
     id: UUID
     team_id: UUID
+    purpose: SttSelectionPurpose
     stt_config_id: UUID
     selected_by_user_id: UUID
     selected_config_label: str

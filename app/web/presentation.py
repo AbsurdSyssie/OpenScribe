@@ -12,6 +12,7 @@ from ..models import (
     PromptTemplate,
     QuickAction,
     SttAdapterKind,
+    SttSelectionPurpose,
     TeamRole,
     TeamStatus,
     TemplateMode,
@@ -107,6 +108,7 @@ def stt_selection_response(selection) -> SttSelectionDetail:
     return SttSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,
+        purpose=selection.purpose,
         stt_config_id=selection.stt_config_id,
         selected_by_user_id=selection.selected_by_user_id,
         selected_config_label=config.label,
@@ -463,6 +465,16 @@ def render_admin(
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
     stt_selection = get_team_stt_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    stt_dictation_selection = (
+        get_team_stt_selection_service(
+            db,
+            current_user,
+            team_id=selected_uuid,
+            purpose=SttSelectionPurpose.post_consultation_dictation,
+        )
+        if selected_uuid
+        else None
+    )
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
@@ -487,6 +499,7 @@ def render_admin(
         "stt_configs": stt_configs,
         "stt_config": edit_stt_config,
         "stt_selection": stt_selection,
+        "stt_dictation_selection": stt_dictation_selection,
         "stt_inspection": stt_inspection,
         "stt_form": stt_form_override or stt_form_defaults(edit_stt_config, None),
         "stt_test_result": stt_test_result,
@@ -580,11 +593,28 @@ def render_home(
 
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
     stt_selection = None
+    stt_dictation_selection = None
     if current_user.team_id is not None:
         try:
             stt_selection = active_team_stt_selection_service(db, team_id=current_user.team_id)
         except AppError:
             stt_selection = get_team_stt_selection_service(db, current_user) if is_manager else None
+        try:
+            stt_dictation_selection = active_team_stt_selection_service(
+                db,
+                team_id=current_user.team_id,
+                purpose=SttSelectionPurpose.post_consultation_dictation,
+            )
+        except AppError:
+            stt_dictation_selection = (
+                get_team_stt_selection_service(
+                    db,
+                    current_user,
+                    purpose=SttSelectionPurpose.post_consultation_dictation,
+                )
+                if is_manager
+                else None
+            )
     selectable_stt_configs = list_selectable_stt_configs_service(db, current_user) if is_manager else []
     llm_selection = None
     if current_user.team_id is not None:
@@ -656,6 +686,7 @@ def render_home(
         "manageable_users": list_manageable_users_service(db, current_user) if is_manager else [],
         "account_requests": list_manageable_account_requests_service(db, current_user) if is_manager else [],
         "stt_selection": stt_selection,
+        "stt_dictation_selection": stt_dictation_selection,
         "selectable_stt_configs": selectable_stt_configs,
         "llm_selection": llm_selection,
         "selectable_llm_configs": selectable_llm_configs,

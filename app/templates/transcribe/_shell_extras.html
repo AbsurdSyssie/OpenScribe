@@ -1,5 +1,5 @@
 <form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
-<input type="hidden" name="ingestion_mode" value="whole_file">
+<input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}">
 </form>
 
 <div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
@@ -209,16 +209,20 @@ syncRecordButtonLabel();
       "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,
       "nextLiveChunkSequenceNo": active_transcript_next_live_chunk_sequence_no_upload if active_transcript_next_live_chunk_sequence_no_upload is not none else 1,
       "hasSttSelection": stt_selection is not none,
+      "hasDictationSttSelection": dictation_stt_selected,
       "hasLlmSelection": llm_selection is not none,
       "sttAvailable": stt_available,
+      "dictationSttAvailable": dictation_stt_available,
       "sttStatusMessage": stt_status_message,
+      "dictationSttStatusMessage": dictation_stt_status_message,
       "latestIngestionJobStatus": active_transcript_latest_job.status.value if active_transcript_latest_job else none,
       "latestIngestionErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
       "showRedactionDebug": show_redaction_debug,
       "initialTranscriptErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
       "emisSections": structured_section_definitions,
       "activeTab": 'followups' if active_tab == 'followups' else 'output',
-      "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user'
+      "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user',
+      "userAppPreferences": user_app_preferences_json
     } | tojson }}
   </script>
   <script type="module" src="/static/js/transcribe/app.js"></script>

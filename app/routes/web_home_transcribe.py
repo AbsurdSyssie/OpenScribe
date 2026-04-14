@@ -953,6 +953,7 @@ def home_delete_personal_quick_action(
 def home_set_stt_selection(
     request: Request,
     stt_config_id: str = Form(...),
+    purpose: str = Form("conversation"),
     provider_model: str = Form(""),
     language: str = Form(""),
     return_view: str = Form(""),
@@ -968,6 +969,7 @@ def home_set_stt_selection(
             db,
             context.user,
             SttSelectionUpsert(
+                purpose=SttSelectionPurpose(purpose),
                 stt_config_id=UUID(stt_config_id),
                 model_name_override=provider_model or None,
                 language_override=language or None,
@@ -998,6 +1000,7 @@ def home_set_stt_selection(
 @app.post("/home/stt-selection/clear", response_class=HTMLResponse)
 def home_clear_stt_selection(
     request: Request,
+    purpose: str = Form("conversation"),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -1007,7 +1010,7 @@ def home_clear_stt_selection(
     if response is not None:
         return response
     try:
-        clear_team_stt_selection_service(db, context.user)
+        clear_team_stt_selection_service(db, context.user, purpose=SttSelectionPurpose(purpose))
     except AppError as exc:
         return render_home(
             request,

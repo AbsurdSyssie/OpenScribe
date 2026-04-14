@@ -227,8 +227,13 @@ def delete_stt_config(config_id: UUID, team_id: UUID | None = None, context: Aut
 
 
 @api.get("/stt-selection", response_model=SttSelectionDetail | None, responses=error_responses)
-def get_stt_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
-    selection = get_team_stt_selection_service(db, context.user, team_id=team_id)
+def get_stt_selection(
+    team_id: UUID | None = None,
+    purpose: main_module.SttSelectionPurpose = main_module.SttSelectionPurpose.conversation,
+    context: AuthenticatedContext = Depends(require_stt_selector),
+    db: Session = Depends(get_db),
+):
+    selection = get_team_stt_selection_service(db, context.user, team_id=team_id, purpose=purpose)
     return stt_selection_response(selection) if selection else None
 
 
@@ -243,8 +248,13 @@ def set_stt_selection(payload: SttSelectionUpsert, context: AuthenticatedContext
 
 
 @api.delete("/stt-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
-def clear_stt_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_stt_selector), db: Session = Depends(get_db)):
-    clear_team_stt_selection_service(db, context.user, team_id=team_id)
+def clear_stt_selection(
+    team_id: UUID | None = None,
+    purpose: main_module.SttSelectionPurpose = main_module.SttSelectionPurpose.conversation,
+    context: AuthenticatedContext = Depends(require_stt_selector),
+    db: Session = Depends(get_db),
+):
+    clear_team_stt_selection_service(db, context.user, team_id=team_id, purpose=purpose)
 
 
 @api.get("/llm-configs", response_model=list[LlmConfigDetail], responses=error_responses)
@@ -573,6 +583,48 @@ def get_transcript_detail(transcript_id: UUID, context: AuthenticatedContext = D
     if transcript.owner_user_id != context.user.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
     return transcript_detail_response(db, transcript)
+
+
+@api.get("/transcripts/{transcript_id}/post-consultation-dictation", response_model=PostConsultationDictationDetail | None, responses=error_responses)
+def get_transcript_dictation(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    dictation = get_post_consultation_dictation(db, context.user, transcript_id=transcript_id)
+    return dictation_detail_response(db, dictation=dictation) if dictation is not None else None
+
+
+@api.patch("/transcripts/{transcript_id}/post-consultation-dictation", response_model=PostConsultationDictationDetail, responses=error_responses)
+def update_transcript_dictation(
+    transcript_id: UUID,
+    payload: PostConsultationDictationUpdate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    dictation = update_post_consultation_dictation(db, context.user, transcript_id=transcript_id, combined_text=payload.combined_text)
+    return dictation_detail_response(db, dictation=dictation)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/post-consultation-dictation/audio-file",
+    response_model=PostConsultationDictationDetail,
+    responses=error_responses,
+)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def upload_transcript_dictation_audio_file(
+    request: Request,
+    transcript_id: UUID,
+    audio: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    audio_bytes = audio.file.read()
+    dictation = append_post_consultation_dictation_audio(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=audio.filename or "audio.bin",
+    )
+    return dictation_detail_response(db, dictation=dictation)
 
 
 @api.get("/transcribe/workspace", response_model=TranscribeWorkspaceDetail, responses=error_responses)

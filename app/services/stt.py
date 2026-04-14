@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import SttAdapterKind, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User
+from app.models import SttAdapterKind, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User
 from app.schemas import (
     SttConfigUpsert,
     SttInspectFieldTip,
@@ -97,9 +97,10 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this STT config while transcription jobs are queued or processing",
             {"config_id": str(config.id)},
         )
-    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id))
-    if selection is not None:
+    selections = list(db.scalars(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id)))
+    for selection in selections:
         db.delete(selection)
+    if selections:
         db.flush()
     delete_team_stt_bearer_token(team_id=config.team_id, config_id=config.id)
     db.delete(config)
@@ -112,12 +113,18 @@ def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | Non
     return list(db.scalars(stmt))
 
 
-def get_team_stt_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamSttSelection | None:
+def get_team_stt_selection(
+    db: Session,
+    actor: User,
+    *,
+    team_id: UUID | None = None,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+) -> TeamSttSelection | None:
     team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
     return db.scalar(
         select(TeamSttSelection)
         .options(joinedload(TeamSttSelection.config))
-        .where(TeamSttSelection.team_id == team.id)
+        .where(TeamSttSelection.team_id == team.id, TeamSttSelection.purpose == purpose)
     )
 
 
@@ -151,11 +158,17 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
                 "Selected STT model is not available for this provider",
                 {"field": "model_name_override"},
             )
-    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
+    selection = db.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == payload.purpose,
+        )
+    )
     if selection is None:
         selection = TeamSttSelection(
             id=uuid4(),
             team_id=team.id,
+            purpose=payload.purpose,
             stt_config_id=config.id,
             model_name_override=override,
             language_override=payload.language_override.strip() if payload.language_override else None,
@@ -163,6 +176,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
         )
         db.add(selection)
     else:
+        selection.purpose = payload.purpose
         selection.stt_config_id = config.id
         selection.model_name_override = override
         selection.language_override = payload.language_override.strip() if payload.language_override else None
@@ -178,28 +192,59 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
     ) or selection
 
 
-def clear_team_stt_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
+def clear_team_stt_selection(
+    db: Session,
+    actor: User,
+    *,
+    team_id: UUID | None = None,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+) -> None:
     team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
-    selection = db.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
+    selection = db.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == purpose,
+        )
+    )
     if selection is None:
-        raise AppError(404, "not_found", "STT selection not found", {"resource": "stt_selection", "team_id": str(team.id)})
+        raise AppError(
+            404,
+            "not_found",
+            "STT selection not found",
+            {"resource": "stt_selection", "team_id": str(team.id), "purpose": purpose.value},
+        )
     db.delete(selection)
     db.commit()
 
 
-def active_team_stt_selection(db: Session, *, team_id: UUID) -> TeamSttSelection:
+def active_team_stt_selection(
+    db: Session,
+    *,
+    team_id: UUID,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+) -> TeamSttSelection:
     selection = db.scalar(
         select(TeamSttSelection)
         .options(joinedload(TeamSttSelection.config))
-        .where(TeamSttSelection.team_id == team_id)
+        .where(TeamSttSelection.team_id == team_id, TeamSttSelection.purpose == purpose)
     )
     if selection is None or selection.config is None or not selection.config.is_active:
-        raise AppError(422, "business_rule_violation", "No active STT selection for team", {"team_id": str(team_id)})
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "No active STT selection for team and purpose",
+            {"team_id": str(team_id), "purpose": purpose.value},
+        )
     return selection
 
 
-def resolve_selected_team_stt(db: Session, *, team_id: UUID) -> tuple[TeamSttSelection, TeamSttConfig, str | None, str | None]:
-    selection = active_team_stt_selection(db, team_id=team_id)
+def resolve_selected_team_stt(
+    db: Session,
+    *,
+    team_id: UUID,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+) -> tuple[TeamSttSelection, TeamSttConfig, str | None, str | None]:
+    selection = active_team_stt_selection(db, team_id=team_id, purpose=purpose)
     config = selection.config
     provider_models = list(config.available_models_json or [])
     resolved_model_name = selection.model_name_override or config.model_name
@@ -576,11 +621,12 @@ def transcribe_with_team_stt(
     db: Session,
     *,
     team_id: UUID,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
 ) -> str:
-    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id)
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
     bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
     if config.adapter_kind is SttAdapterKind.openai_cloud:
         if not bearer_token:

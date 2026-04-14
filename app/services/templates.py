@@ -45,6 +45,7 @@ from app.schemas.templates import (
 )
 from app.services.llm import resolve_user_llm
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
+from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.redaction import (
     combined_phi_index,
     ensure_redaction_run_for_transcript_version,
@@ -53,7 +54,7 @@ from app.services.redaction import (
     redact_transient_text,
     reidentify_text,
 )
-from app.services.transcripts import set_transcript_structured_context, transcript_structured_context
+from app.services.transcripts import set_transcript_structured_context, transcript_structured_context, transcript_version_text
 from app.services.vault import read_team_llm_bearer_token
 
 
@@ -61,6 +62,7 @@ usage_logger = logging.getLogger("openscribe.usage")
 
 TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner_name_lower"}
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
+DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
 
 
 def _structured_section_definitions_snapshot(template_config: StructuredTemplateConfig | None) -> dict | None:
@@ -1544,20 +1546,24 @@ def _build_template_generation_messages(
     template_name: str,
     prompt_text: str,
     transcript_text: str,
+    dictation_text: str = "",
 ) -> tuple[str, str]:
     return (
-        "You generate concise note output from a transcript using the provided template instructions. "
+        "You generate concise note output from consultation source material using the provided template instructions. "
         "Return only a valid JSON object with exactly two string fields: "
         "\"title\" and \"content\". "
         "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
         "The \"content\" field must contain the full note text. "
         "Do not include markdown fences, commentary, or any text outside the JSON object. "
+        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "Do not invent facts absent from both sources. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
             f"Template name: {template_name}\n\n"
             f"Template instructions:\n{prompt_text}\n\n"
-            f"Transcript:\n{transcript_text}"
+            f"Consultation transcript:\n{transcript_text}"
+            + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         ),
     )
 
@@ -1567,6 +1573,7 @@ def _build_structured_template_generation_messages(
     template_name: str,
     global_instruction: str,
     transcript_text: str,
+    dictation_text: str,
     template_config: StructuredTemplateConfig,
 ) -> tuple[str, str]:
     section_lines = [
@@ -1583,6 +1590,8 @@ def _build_structured_template_generation_messages(
         f"{', '.join(section.section_key for section in sorted(template_config.sections, key=lambda item: item.section_order))}. "
         "Each included section value must be a string. Omit sections that have no relevant content. "
         "Do not include markdown fences, commentary, or any text outside the JSON object. "
+        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "Do not invent facts absent from both sources. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
@@ -1590,7 +1599,8 @@ def _build_structured_template_generation_messages(
             f"Global instructions:\n{global_instruction}\n\n"
             "EMIS sections to fill:\n"
             f"{chr(10).join(section_lines)}\n\n"
-            f"Transcript:\n{transcript_text}"
+            f"Consultation transcript:\n{transcript_text}"
+            + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         ),
     )
 
@@ -1778,26 +1788,59 @@ def _transcript_title_can_be_auto_filled(title: str | None) -> bool:
     return normalized in {"", "Untitled session"}
 
 
-def _build_followup_generation_messages(*, transcript_text: str, follow_up_prompt_text: str) -> tuple[str, str]:
+def _effective_dictation_text(db: Session, *, transcript: Transcript) -> str:
+    dictation = get_post_consultation_dictation(db, db.get(User, transcript.owner_user_id), transcript_id=transcript.id)
+    if dictation is None:
+        return ""
+    return dictation_effective_text(db, dictation=dictation).strip()
+
+
+def _redacted_generation_source_texts(
+    db: Session,
+    *,
+    transcript_version: TranscriptVersion,
+    redaction_run,
+    dictation_text: str,
+) -> tuple[str, str, list[dict[str, str | int]]]:
+    if not dictation_text.strip():
+        return redaction_run_text(db, run=redaction_run) or "", "", []
+    combined_source_redaction = redact_transient_text(
+        f"{transcript_version_text(db, transcript_version=transcript_version)}{DICTATION_SOURCE_SPLIT_MARKER}{dictation_text}",
+        start_index=next_placeholder_index(redaction_run),
+    )
+    redacted_text = combined_source_redaction["redacted_text"]
+    if DICTATION_SOURCE_SPLIT_MARKER not in redacted_text:
+        raise AppError(500, "redaction_failed", "Combined dictation redaction lost split marker")
+    redacted_transcript_text, redacted_dictation_text = redacted_text.split(DICTATION_SOURCE_SPLIT_MARKER, 1)
+    return redacted_transcript_text.strip(), redacted_dictation_text.strip(), list(combined_source_redaction["phi_index"])
+
+
+def _build_followup_generation_messages(*, transcript_text: str, follow_up_prompt_text: str, dictation_text: str = "") -> tuple[str, str]:
     return (
         "You are a medical secretary writing in British English. "
-        "Write a follow-up from the doctor's perspective based only on the transcript and the requested follow-up task. "
+        "Write a follow-up from doctor's perspective based only on consultation sources and requested follow-up task. "
+        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
         "Return only the finished follow-up text. "
         "The transcript and request may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
-        f"Transcript:\n{transcript_text}\n\nFollow-up request:\n{follow_up_prompt_text}",
+        f"Consultation transcript:\n{transcript_text}"
+        + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
+        + f"\n\nFollow-up request:\n{follow_up_prompt_text}",
     )
 
 
-def _build_quick_action_generation_messages(*, transcript_text: str, quick_action_text: str) -> tuple[str, str]:
+def _build_quick_action_generation_messages(*, transcript_text: str, quick_action_text: str, dictation_text: str = "") -> tuple[str, str]:
     return (
         "You are a medical secretary writing in British English. "
         "Write from the perspective of the doctor. "
-        "Complete the requested quick action using only the transcript and the quick action instructions. "
+        "Complete the requested quick action using only consultation sources and quick action instructions. "
+        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
         "Return only the finished text. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
-        f"Transcript:\n{transcript_text}\n\nQuick action instructions:\n{quick_action_text}",
+        f"Consultation transcript:\n{transcript_text}"
+        + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
+        + f"\n\nQuick action instructions:\n{quick_action_text}",
     )
 
 
@@ -2058,15 +2101,24 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         raise AppError(422, "business_rule_violation", "No resolved LLM model is stored for this generated document")
     redaction_run = ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
     document.redaction_run_id = redaction_run.id
-    transcript_text = redaction_run_text(db, run=redaction_run) or ""
-    extra_phi_index: list[dict[str, str | int]] = []
+    live_transcript = db.get(Transcript, document.transcript_id)
+    dictation_text = _effective_dictation_text(db, transcript=live_transcript) if live_transcript is not None else ""
+    transcript_text, dictation_text, extra_phi_index = _redacted_generation_source_texts(
+        db,
+        transcript_version=transcript_version,
+        redaction_run=redaction_run,
+        dictation_text=dictation_text,
+    )
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
-        prompt_redaction = redact_transient_text(prompt_text, start_index=next_placeholder_index(redaction_run))
-        extra_phi_index = list(prompt_redaction["phi_index"])
+        prompt_redaction = redact_transient_text(
+            prompt_text,
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
         template_config = None
         if document.template_version_id:
             template_version = db.get(PromptTemplateVersion, document.template_version_id)
@@ -2100,6 +2152,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 template_name=document.source_template_name,
                 global_instruction=prompt_with_context,
                 transcript_text=transcript_text,
+                dictation_text=dictation_text,
                 template_config=template_config,
             )
         else:
@@ -2107,26 +2160,35 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 template_name=document.source_template_name,
                 prompt_text=prompt_redaction["redacted_text"],
                 transcript_text=transcript_text,
+                dictation_text=dictation_text,
             )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
         follow_up_prompt_text = generated_document_text(db, document=document, field="follow_up_prompt_text").strip()
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
-        prompt_redaction = redact_transient_text(follow_up_prompt_text, start_index=next_placeholder_index(redaction_run))
-        extra_phi_index = list(prompt_redaction["phi_index"])
+        prompt_redaction = redact_transient_text(
+            follow_up_prompt_text,
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
         system_message, user_message = _build_followup_generation_messages(
             transcript_text=transcript_text,
             follow_up_prompt_text=prompt_redaction["redacted_text"],
+            dictation_text=dictation_text,
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.quick_action:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Quick action snapshot is missing for this generated document")
-        prompt_redaction = redact_transient_text(prompt_text, start_index=next_placeholder_index(redaction_run))
-        extra_phi_index = list(prompt_redaction["phi_index"])
+        prompt_redaction = redact_transient_text(
+            prompt_text,
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
         system_message, user_message = _build_quick_action_generation_messages(
             transcript_text=transcript_text,
             quick_action_text=prompt_redaction["redacted_text"],
+            dictation_text=dictation_text,
         )
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported generated document type", {"generator_type": document.generator_type.value})

@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+from .dictation import PostConsultationDictationDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
 from .transcripts import TranscriptDetail, TranscriptListItem
 
@@ -7,6 +8,7 @@ from .transcripts import TranscriptDetail, TranscriptListItem
 class TranscribeWorkspaceDetail(BaseModel):
     recent_transcripts: list[TranscriptListItem]
     active_transcript: TranscriptDetail | None = None
+    post_consultation_dictation: PostConsultationDictationDetail | None = None
     generated_documents: list[GeneratedDocumentDetail]
     available_templates: list[PromptTemplateDetail]
     available_quick_actions: list[QuickActionDetail]
@@ -14,6 +16,9 @@ class TranscribeWorkspaceDetail(BaseModel):
     stt_selected: bool
     stt_available: bool
     stt_status_message: str | None = None
+    dictation_stt_selected: bool = False
+    dictation_stt_available: bool = False
+    dictation_stt_status_message: str | None = None
     llm_selected: bool
     resolved_user_llm_model: str | None = None
     can_create_new_session: bool

@@ -29,6 +29,7 @@ from app.models import (
     RedactionRunStatus,
     SttAdapterKind,
     SttAuthMode,
+    SttSelectionPurpose,
     Team,
     TeamLlmConfig,
     TeamLlmSelection,
@@ -334,6 +335,7 @@ def make_stt_selection(db_session: Session, make_user: Callable[..., User]) -> C
         *,
         config: TeamSttConfig,
         actor: User | None = None,
+        purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
         model_name_override: str | None = None,
         language_override: str | None = None,
     ) -> TeamSttSelection:
@@ -346,6 +348,7 @@ def make_stt_selection(db_session: Session, make_user: Callable[..., User]) -> C
         )
         selection = TeamSttSelection(
             team_id=config.team_id,
+            purpose=purpose,
             stt_config_id=config.id,
             model_name_override=model_name_override,
             language_override=language_override,

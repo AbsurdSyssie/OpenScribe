@@ -29,11 +29,14 @@ from app.models import (
     ProviderUsageEventType,
     PromptTemplate,
     PromptTemplateVersion,
+    PostConsultationDictation,
+    PostConsultationDictationSegment,
     QuickAction,
     QuickActionVersion,
     RedactionRun,
     SttAdapterKind,
     SttAuthMode,
+    SttSelectionPurpose,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -57,7 +60,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, run_saved_stt_config_test
+from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.services.audio import NormalizedAudio
 from app.services.content_crypto import (
@@ -71,7 +74,9 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.stt import transcribe_with_team_stt
+from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
+    DICTATION_SOURCE_SPLIT_MARKER,
     _generate_freeform_output_ollama,
     _parse_generated_note_json,
     delete_personal_template,
@@ -1043,6 +1048,245 @@ def test_leader_can_choose_and_clear_team_stt_selection(client, db_session, make
     assert cleared.status_code == 204
     assert client.get("/api/v1/stt-selection").json() is None
     assert db_session.get(TeamSttConfig, config.id) is not None
+
+
+def test_leader_can_manage_distinct_stt_selections_by_purpose(client, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic Purpose Split")
+    admin = make_user(email="admin-purpose-split@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader-purpose-split@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    conversation_config = make_stt_config(team=team, actor=admin, label="Conversation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    dictation_config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Dictation STT",
+        model_name="gpt-4o-mini-transcribe",
+        available_models_json=["gpt-4o-mini-transcribe"],
+    )
+
+    login(client, email="leader-purpose-split@example.com", password="password-2")
+
+    conversation_selected = client.post(
+        "/api/v1/stt-selection",
+        json={
+            "purpose": "conversation",
+            "stt_config_id": str(conversation_config.id),
+        },
+    )
+    assert conversation_selected.status_code == 200
+    assert conversation_selected.json()["purpose"] == "conversation"
+    assert conversation_selected.json()["stt_config_id"] == str(conversation_config.id)
+
+    dictation_selected = client.post(
+        "/api/v1/stt-selection",
+        json={
+            "purpose": "post_consultation_dictation",
+            "stt_config_id": str(dictation_config.id),
+        },
+    )
+    assert dictation_selected.status_code == 200
+    assert dictation_selected.json()["purpose"] == "post_consultation_dictation"
+    assert dictation_selected.json()["stt_config_id"] == str(dictation_config.id)
+
+    fetched_conversation = client.get("/api/v1/stt-selection")
+    assert fetched_conversation.status_code == 200
+    assert fetched_conversation.json()["stt_config_id"] == str(conversation_config.id)
+
+    fetched_dictation = client.get("/api/v1/stt-selection?purpose=post_consultation_dictation")
+    assert fetched_dictation.status_code == 200
+    assert fetched_dictation.json()["stt_config_id"] == str(dictation_config.id)
+
+    cleared_dictation = client.delete("/api/v1/stt-selection?purpose=post_consultation_dictation")
+    assert cleared_dictation.status_code == 204
+    assert client.get("/api/v1/stt-selection?purpose=post_consultation_dictation").json() is None
+    assert client.get("/api/v1/stt-selection").json()["stt_config_id"] == str(conversation_config.id)
+
+
+def test_dictation_stt_resolution_requires_dictation_selection_without_fallback(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+):
+    team = make_team(name="Clinic No Fallback")
+    admin = make_user(email="admin-no-fallback@example.com", password="password-1", is_system_admin=True)
+    conversation_config = make_stt_config(team=team, actor=admin, label="Conversation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=conversation_config, purpose=SttSelectionPurpose.conversation)
+
+    selection, config, resolved_model_name, resolved_language = resolve_selected_team_stt(
+        db_session,
+        team_id=team.id,
+        purpose=SttSelectionPurpose.conversation,
+    )
+    assert selection.purpose is SttSelectionPurpose.conversation
+    assert config.id == conversation_config.id
+    assert resolved_model_name == "whisper-1"
+    assert resolved_language == conversation_config.language
+
+    with pytest.raises(AppError) as excinfo:
+        resolve_selected_team_stt(
+            db_session,
+            team_id=team.id,
+            purpose=SttSelectionPurpose.post_consultation_dictation,
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.code == "business_rule_violation"
+    assert excinfo.value.message == "No active STT selection for team and purpose"
+    assert excinfo.value.details == {
+        "team_id": str(team.id),
+        "purpose": "post_consultation_dictation",
+    }
+
+
+def test_owner_can_upload_and_edit_post_consultation_dictation(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Dictation")
+    admin = make_user(email="admin-dictation-flow@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-dictation-flow@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Dictation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.dictations.transcribe_with_team_stt",
+        lambda db, **kwargs: "Patient improving. Continue antibiotics for five days.",
+    )
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Consultation Dictation"})
+    transcript_id = transcript_created.json()["id"]
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+    assert uploaded.status_code == 200
+    body = uploaded.json()
+    assert body["effective_text"] == "Patient improving. Continue antibiotics for five days."
+    assert body["is_combined_text_user_edited"] is False
+    assert body["segment_count"] == 1
+
+    dictation = db_session.scalar(select(PostConsultationDictation).where(PostConsultationDictation.transcript_id == UUID(transcript_id)))
+    assert dictation is not None
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="post_consultation_dictation_segments",
+        field="asr_text_encrypted",
+        record_id=db_session.scalar(select(PostConsultationDictationSegment.id).where(PostConsultationDictationSegment.post_consultation_dictation_id == dictation.id)),
+        stored_value=db_session.scalar(select(PostConsultationDictationSegment.asr_text_encrypted).where(PostConsultationDictationSegment.post_consultation_dictation_id == dictation.id)),
+    ) == "Patient improving. Continue antibiotics for five days."
+
+    updated = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation",
+        json={"combined_text": "Clinician summary edited."},
+    )
+    assert updated.status_code == 200
+    updated_body = updated.json()
+    assert updated_body["effective_text"] == "Clinician summary edited."
+    assert updated_body["is_combined_text_user_edited"] is True
+
+    cleared = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation",
+        json={"combined_text": ""},
+    )
+    assert cleared.status_code == 200
+    cleared_body = cleared.json()
+    assert cleared_body["effective_text"] == ""
+    assert cleared_body["combined_edited_text_encrypted"] == ""
+    assert cleared_body["is_combined_text_user_edited"] is True
+
+    refreshed = client.get(f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["effective_text"] == ""
+    assert refreshed.json()["combined_edited_text_encrypted"] == ""
+
+
+def test_post_consultation_dictation_upload_requires_dictation_stt_selection(
+    client,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Missing Dictation STT")
+    admin = make_user(email="admin-missing-dictation@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-missing-dictation@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Conversation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Consultation Dictation"})
+    transcript_id = transcript_created.json()["id"]
+
+    uploaded = client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+    assert_error(
+        uploaded,
+        status_code=422,
+        code="business_rule_violation",
+        message="No active STT selection for team and purpose",
+    )
+
+
+def test_transcribe_workspace_includes_post_consultation_dictation(
+    client,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Workspace Dictation")
+    admin = make_user(email="admin-workspace-dictation@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-workspace-dictation@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Dictation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.dictations.transcribe_with_team_stt",
+        lambda db, **kwargs: "Extra dictation guidance.",
+    )
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Workspace Dictation"})
+    transcript_id = transcript_created.json()["id"]
+    client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["post_consultation_dictation"]["effective_text"] == "Extra dictation guidance."
+    assert workspace.json()["dictation_stt_selected"] is True
 
 
 def test_stt_selection_rejects_config_with_missing_saved_secret(client, make_team, make_user, make_stt_config, monkeypatch):
@@ -2418,6 +2662,101 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     assert processed.title == "John Smith review"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should rest and John Smith should book review."
+
+
+def test_process_generated_document_redacts_dictation_before_provider_call(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Dictation Redaction")
+    admin = make_user(email="admin-dictation-redaction@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-dictation-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Dictation redaction note", prompt_text="Write a note for John Smith.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Dictation redaction session",
+        current_draft_text_encrypted="John Smith reports headaches.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="John Smith should book blood tests.")
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    assert transcript_version is not None
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] reports headaches.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+
+    monkeypatch.setattr(
+        "app.services.templates.ensure_redaction_run_for_transcript_version",
+        lambda db, *, transcript_version: run,
+    )
+
+    def fake_redact_transient_text(text: str, *, start_index: int):
+        if text.startswith("John Smith reports headaches."):
+            return {
+                "redacted_text": f"[PHI-2] reports headaches.{DICTATION_SOURCE_SPLIT_MARKER}[PHI-3] should book blood tests.",
+                "phi_mapping": {
+                    "phi-2": {"type": "PERSON", "value": "John Smith"},
+                    "phi-3": {"type": "PERSON", "value": "John Smith"},
+                },
+                "phi_index": [
+                    {"index": 2, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-2]"},
+                    {"index": 3, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-3]"},
+                ],
+                "phi_count": 2,
+                "api_provider": "native_presidio",
+                "api_model_or_version": "en_core_web_sm",
+            }
+        return {
+            "redacted_text": "Write a note for [PHI-4].",
+            "phi_mapping": {"phi-4": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": 4, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-4]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured["user_message"] = kwargs["user_message"]
+        return (
+            '{"title":"[PHI-2] review","content":"[PHI-3] should book review."}',
+            {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert "Consultation transcript:\n[PHI-2] reports headaches." in captured["user_message"]
+    assert "Post-consultation dictation:\n[PHI-3] should book blood tests." in captured["user_message"]
+    assert "John Smith should book blood tests." not in captured["user_message"]
+    assert processed.title == "John Smith review"
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should book review."
 
 
 def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(

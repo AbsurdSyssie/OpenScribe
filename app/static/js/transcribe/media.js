@@ -1,6 +1,7 @@
 export function createAudioCaptureController({
   dom,
   config,
+  uploadBatchAudio,
   canUseLiveInput,
   canUseWholeFileInput,
   getState,
@@ -569,18 +570,22 @@ export function createAudioCaptureController({
     setRetryAvailability(false);
     try {
       await syncTranscriptTitleIfNeeded();
-      const { transcriptId } = getState();
-      const formData = new FormData();
-      formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
-      const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error(await parseErrorMessage(response, 'Could not send the microphone recording.'));
+      if (typeof uploadBatchAudio === 'function') {
+        await uploadBatchAudio(blob);
+      } else {
+        const { transcriptId } = getState();
+        const formData = new FormData();
+        formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
+        const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not send the microphone recording.'));
+        }
       }
-      showFlash('Recording sent to be turned into text.', 'success');
+      showFlash(config.batchUploadSuccessMessage || 'Recording sent to be turned into text.', 'success');
       await fetchWorkspace();
       scheduleWorkspaceRefreshBurst();
     } catch (error) {

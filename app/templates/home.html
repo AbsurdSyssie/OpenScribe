@@ -1690,9 +1690,13 @@ TEAM MANAGEMENT — restructured
 <div class="service-row__info">
 <div class="service-row__title">Speech to text</div>
 <div class="service-row__status">
-{% if stt_selection %}
+{% if stt_selection or stt_dictation_selection %}
 <span class="status-dot status-dot--active"></span>
-<span class="service-row__detail">{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}</span>
+<span class="service-row__detail">
+Conversation: {% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
+<br>
+Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.label }}{% if stt_dictation_selection.model_name_override or stt_dictation_selection.config.model_name %} · {{ stt_dictation_selection.model_name_override or stt_dictation_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
+</span>
 {% else %}
 <span class="status-dot status-dot--pending"></span>
 <span class="service-row__detail">Not configured</span>
@@ -1702,9 +1706,18 @@ TEAM MANAGEMENT — restructured
 <div class="service-row__actions">
 {% if stt_selection %}
 <form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Remove the current speech service?');" style="margin:0;">
+<input type="hidden" name="purpose" value="conversation">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
-<button type="submit" class="btn-ghost-sm">Clear</button>
+<button type="submit" class="btn-ghost-sm">Clear conversation</button>
+</form>
+{% endif %}
+{% if stt_dictation_selection %}
+<form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Remove current dictation speech service?');" style="margin:0;">
+<input type="hidden" name="purpose" value="post_consultation_dictation">
+<input type="hidden" name="return_view" value="{{ home_return_view }}">
+<input type="hidden" name="return_tab" value="ai-services">
+<button type="submit" class="btn-ghost-sm">Clear dictation</button>
 </form>
 {% endif %}
 <button type="button" class="btn-ghost-sm service-row__toggle" data-service-toggle="stt">{% if active_home_modal == 'stt-settings' %}Close{% else %}Configure{% endif %}</button>
@@ -1716,6 +1729,13 @@ TEAM MANAGEMENT — restructured
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <div class="form-row">
+<label class="form-label">
+<span class="form-label__text">Use for</span>
+<select name="purpose" class="form-select">
+<option value="conversation">Conversation transcription</option>
+<option value="post_consultation_dictation">Post-consultation dictation</option>
+</select>
+</label>
 <label class="form-label">
 <span class="form-label__text">Provider</span>
 <select name="stt_config_id" data-stt-config-select class="form-select" required>

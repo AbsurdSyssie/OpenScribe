@@ -92,6 +92,11 @@ class SttAdapterKind(str, enum.Enum):
     openai_compatible_rest = "openai_compatible_rest"
 
 
+class SttSelectionPurpose(str, enum.Enum):
+    conversation = "conversation"
+    post_consultation_dictation = "post_consultation_dictation"
+
+
 class LlmAuthMode(str, enum.Enum):
     none = "none"
     bearer = "bearer"
@@ -160,8 +165,10 @@ class Team(Base):
 
     users: Mapped[list["User"]] = relationship(back_populates="team")
     transcripts: Mapped[list["Transcript"]] = relationship(back_populates="team")
+    post_consultation_dictations: Mapped[list["PostConsultationDictation"]] = relationship(back_populates="team")
+    post_consultation_dictation_segments: Mapped[list["PostConsultationDictationSegment"]] = relationship(back_populates="team")
     stt_configs: Mapped[list["TeamSttConfig"]] = relationship(back_populates="team")
-    stt_selection: Mapped["TeamSttSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
+    stt_selections: Mapped[list["TeamSttSelection"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     llm_configs: Mapped[list["TeamLlmConfig"]] = relationship(back_populates="team")
     llm_selection: Mapped["TeamLlmSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
     templates: Mapped[list["PromptTemplate"]] = relationship(back_populates="team")
@@ -195,6 +202,8 @@ class User(Base):
 
     team: Mapped[Team | None] = relationship(back_populates="users")
     transcripts: Mapped[list["Transcript"]] = relationship(back_populates="owner")
+    post_consultation_dictations: Mapped[list["PostConsultationDictation"]] = relationship(back_populates="owner")
+    post_consultation_dictation_segments: Mapped[list["PostConsultationDictationSegment"]] = relationship(back_populates="owner")
     created_account_requests: Mapped[list["AccountRequest"]] = relationship(
         back_populates="linked_user",
         foreign_keys="AccountRequest.linked_user_id",
@@ -386,9 +395,15 @@ class TeamSttConfig(Base):
 
 class TeamSttSelection(Base):
     __tablename__ = "team_stt_selections"
+    __table_args__ = (UniqueConstraint("team_id", "purpose", name="uq_team_stt_selections_team_purpose"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), unique=True, nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    purpose: Mapped[SttSelectionPurpose] = mapped_column(
+        Enum(SttSelectionPurpose),
+        default=SttSelectionPurpose.conversation,
+        nullable=False,
+    )
     stt_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("team_stt_configs.id"), nullable=False)
     model_name_override: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language_override: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -396,7 +411,7 @@ class TeamSttSelection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    team: Mapped[Team] = relationship(back_populates="stt_selection")
+    team: Mapped[Team] = relationship(back_populates="stt_selections")
     config: Mapped[TeamSttConfig] = relationship(back_populates="selections")
     selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
 
@@ -620,6 +635,66 @@ class Transcript(Base):
         back_populates="transcript",
         cascade="all, delete-orphan",
     )
+    post_consultation_dictation: Mapped["PostConsultationDictation | None"] = relationship(
+        back_populates="transcript",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class PostConsultationDictation(Base):
+    __tablename__ = "post_consultation_dictations"
+    __table_args__ = (UniqueConstraint("transcript_id", name="uq_post_consultation_dictations_transcript"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transcripts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    combined_edited_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_combined_text_user_edited: Mapped[bool] = mapped_column(default=False, nullable=False)
+    latest_appended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="post_consultation_dictation")
+    owner: Mapped[User] = relationship(back_populates="post_consultation_dictations")
+    team: Mapped[Team] = relationship(back_populates="post_consultation_dictations")
+    segments: Mapped[list["PostConsultationDictationSegment"]] = relationship(
+        back_populates="dictation",
+        cascade="all, delete-orphan",
+        order_by="PostConsultationDictationSegment.sequence_no.asc()",
+    )
+
+
+class PostConsultationDictationSegment(Base):
+    __tablename__ = "post_consultation_dictation_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "post_consultation_dictation_id",
+            "sequence_no",
+            name="uq_post_consultation_dictation_segments_sequence",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    post_consultation_dictation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("post_consultation_dictations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    asr_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    dictation: Mapped[PostConsultationDictation] = relationship(back_populates="segments")
+    owner: Mapped[User] = relationship(back_populates="post_consultation_dictation_segments")
+    team: Mapped[Team] = relationship(back_populates="post_consultation_dictation_segments")
 
 
 class TranscriptVersion(Base):

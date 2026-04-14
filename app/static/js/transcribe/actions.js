@@ -17,6 +17,7 @@ export function attachTranscribeActions({
   setSessionProgress,
   setRetryAvailability,
   reflectBackendStatus,
+  persistUserAppPreferences,
   setMicButtons,
   setTab,
   structuredEditor,
@@ -157,7 +158,16 @@ export function attachTranscribeActions({
   }
 
   if (dom.generateOutputTemplateSelect) {
-    dom.generateOutputTemplateSelect.addEventListener('change', () => structuredEditor.syncStructuredTemplateUi());
+    dom.generateOutputTemplateSelect.addEventListener('change', async () => {
+      structuredEditor.syncStructuredTemplateUi();
+      const templateId = dom.generateOutputTemplateSelect.value || '';
+      if (!templateId || !persistUserAppPreferences) {
+        return;
+      }
+      try {
+        await persistUserAppPreferences({ default_template_id: templateId });
+      } catch (_) {}
+    });
   }
 
   dom.sessionLinks.forEach((link) => {
@@ -186,11 +196,12 @@ export function attachTranscribeActions({
     dom.newSessionForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       try {
+        const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';
         const response = await fetch('/api/v1/transcripts/start', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: 'Untitled session', ingestion_mode: 'whole_file' }),
+          body: JSON.stringify({ title: 'Untitled session', ingestion_mode: preferredMode }),
         });
         if (!response.ok) {
           throw new Error(await parseErrorMessage(response, 'Could not create a new consultation.'));
@@ -212,18 +223,23 @@ export function attachTranscribeActions({
         dom.recordingModeSelect.value = previousMode;
         return;
       }
-      try {
-        await syncTranscriptTitleIfNeeded();
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+        try {
+          await syncTranscriptTitleIfNeeded();
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ingestion_mode: targetMode }),
         });
-        if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not change the recording mode for this consultation.'));
-        }
-        await fetchWorkspace();
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not change the recording mode for this consultation.'));
+          }
+          if (persistUserAppPreferences) {
+            try {
+              await persistUserAppPreferences({ preferred_recording_mode: targetMode });
+            } catch (_) {}
+          }
+          await fetchWorkspace();
         setMicButtons(getIsLiveCaptureUiActive());
         showFlash(`Recording mode changed to ${targetMode === 'live_chunked' ? 'live capture' : 'recorded upload'}.`, 'success');
       } catch (error) {

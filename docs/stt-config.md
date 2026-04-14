@@ -235,6 +235,39 @@ Implemented storage model:
   - points at one provisioned STT config row
   - stores leader/system-admin selection overrides such as active model/language when they differ from the provisioned defaults
 
+## Post-consultation dictation Phase 0 lock
+
+Dictation should not introduce second STT config store. Current `team_stt_configs` model already holds right secrets and endpoint metadata for both normal consultation transcription and post-consultation dictation.
+
+Locked direction:
+
+- reuse `team_stt_configs` for both conversation and dictation endpoints
+- keep admin provisioning path unchanged: system admins still provision team STT endpoints and Vault-backed secrets
+- split active team policy by purpose at selection layer, not config layer
+- intended next schema change: extend selection model to support explicit purpose such as:
+  - `conversation`
+  - `post_consultation_dictation`
+- team may therefore hold different active STT selections for consultation capture and dictation capture at same time
+- runtime resolution must request purpose explicitly
+- if dictation purpose has no active selection, runtime must fail explicitly rather than silently falling back to conversation selection
+
+Implemented now:
+
+- `team_stt_selections` carries explicit `purpose`
+- supported purposes:
+  - `conversation`
+  - `post_consultation_dictation`
+- uniqueness is now one active selection per team per purpose, not one total selection per team
+- existing consultation transcription flows continue to use default `conversation` purpose
+- dictation callers must resolve `post_consultation_dictation` explicitly
+
+Why this shape:
+
+- preserves one secret/config authority model
+- avoids duplicate provider metadata tables
+- keeps provider-type boundary explicit
+- prevents accidental use of wrong STT endpoint for clinician dictation
+
 Recommended fields:
 
 - `id`

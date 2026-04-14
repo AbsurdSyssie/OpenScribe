@@ -338,6 +338,70 @@ def transcribe_retry_file_ingestion(
     )
 
 
+@app.post("/transcribe/dictation/upload", response_class=HTMLResponse)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def transcribe_upload_dictation_file(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    audio: UploadFile = File(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        dictation = append_post_consultation_dictation_audio(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            audio_bytes=audio.file.read(),
+            filename=audio.filename or "audio.bin",
+        )
+        detail = dictation_detail_response(db, dictation=dictation)
+    except AppError as exc:
+        return _transcribe_redirect_response(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    return RedirectResponse(
+        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': f'Dictation appended. {detail.segment_count} pass(es) saved.', 'message_kind': 'success'})}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/transcribe/dictation/save", response_class=HTMLResponse)
+def transcribe_save_dictation_text(
+    request: Request,
+    transcript_id: UUID = Form(...),
+    combined_text: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        update_post_consultation_dictation(
+            db,
+            context.user,
+            transcript_id=transcript_id,
+            combined_text=combined_text,
+        )
+    except AppError as exc:
+        return _transcribe_redirect_response(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=transcript_id,
+        )
+    return RedirectResponse(
+        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': 'Dictation saved.', 'message_kind': 'success'})}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/transcribe/generate-output", response_class=HTMLResponse)
 @LLM_GENERATION_DAILY_RATE_LIMIT
 @LLM_GENERATION_BURST_RATE_LIMIT

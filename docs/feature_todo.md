@@ -129,47 +129,82 @@ Settled decisions:
 ## Post consultation dictation phased checklist
 
 Phase 0: design lock
-- confirm provider config shape for dictation STT separate from conversation STT
-- confirm exact prompt rule for stronger dictation weighting
-- confirm whether generation uses all dictation segments or only combined edited text once non-empty
+- done: reuse `team_stt_configs` for both conversation and dictation endpoints; split active team policy by purpose instead of creating second config store
+- done: Phase 2 should extend team STT selection model to carry explicit purpose (`conversation`, `post_consultation_dictation`) with no silent cross-purpose fallback
+- done: prompt assembly rule = consultation transcript remains base factual source; post-consultation dictation is clinician-authored stronger signal for summary, assessment, terminology, and plan framing; when sources conflict, prefer dictation for clinician intent/plan wording but do not invent facts absent from both
+- done: generation source rule = if `is_combined_text_user_edited` is true, use `combined_edited_text_encrypted` exactly as saved, including intentional empty string; otherwise concatenate immutable segment ASR text in append order
+
+### Phase 0 locked decisions
+
+- provider config shape:
+  - keep one admin-provisioned STT config store: `team_stt_configs`
+  - do not add dictation-specific secret/config table
+  - same config row shape already supports both workloads: endpoint metadata, model defaults, available models, Vault-backed secret ref
+  - separate runtime policy at team-selection layer, not config layer
+  - intended Phase 2 DB direction: add purpose-aware selection shape so team can hold one active conversation STT selection and one active dictation STT selection at same time
+  - no runtime fallback may jump from dictation selection to conversation selection implicitly; missing dictation selection must fail explicitly
+- generation source contract:
+  - one `post_consultation_dictations` row per transcript
+  - many append-only `post_consultation_dictation_segments` rows per dictation
+  - clinician edits only parent combined text field
+  - raw segment ASR text remains immutable provenance record
+  - generation chooses source by explicit edit-state, not by non-empty string test alone
+  - if user has edited combined text, use combined text exactly
+  - if user has never edited combined text, use concatenated segment text in append order
+  - if user edited combined text down to empty, treat that as intentional removal of dictation influence for generation
+- prompt weighting rule:
+  - transcript remains consultation record and chronology anchor
+  - dictation is post-hoc clinician summary and should be framed as higher-priority interpretive guidance
+  - generation prompt should label sources separately, with dictation block after transcript block under explicit instruction that dictation should guide note wording, assessment, and plan emphasis
+  - if transcript and dictation disagree, prefer dictation for clinician-authored interpretation, diagnosis wording, medication names, and plan, unless dictation clearly contradicts hard transcript facts in a way that would require invention
+  - model must not merge two conflicting facts into new unsupported claim; if conflict cannot be reconciled safely, keep output conservative and source-grounded
 
 Phase 1: schema
-- add `post_consultation_dictations` table with owner/team/transcript FK and encrypted combined text field
-- add `post_consultation_dictation_segments` table with append-only raw ASR rows
-- enforce transcript-root cascade delete
-- add migration tests / schema assertions
+- done: added `post_consultation_dictations` table with owner/team/transcript FK, encrypted combined text field, explicit `is_combined_text_user_edited`, and one-row-per-transcript constraint
+- done: added `post_consultation_dictation_segments` table with append-only raw ASR rows and per-dictation sequence uniqueness
+- done: enforced transcript-root cascade delete via `transcript_id -> transcripts.id ON DELETE CASCADE` and segment cascade via `post_consultation_dictation_id -> post_consultation_dictations.id ON DELETE CASCADE`
+- done: added migration tests / schema assertions
 
 Phase 2: provider resolution
-- add dictation-specific provider selection path
-- ensure no fallback crosses into wrong provider type silently
-- add provider-resolution tests
+- done: added purpose-aware STT selection path with explicit `conversation` and `post_consultation_dictation` selection purposes on `team_stt_selections`
+- done: dictation resolution now requires explicit dictation-purpose selection and does not silently fall back to conversation selection
+- done: added provider-resolution tests and migration assertions for purpose-aware selection behavior
+- done: exposed separate conversation vs dictation STT team selection controls in admin and leader browser flows
 
 Phase 3: API/service
-- add owner-only create/get/update dictation endpoints
-- add owner-only append/upload/finalize dictation pass endpoints
-- encrypt combined text and raw segment text with user DEK
-- preserve immutable segment text on edit
-- add auth/encryption/deletion tests
+- done: added owner-only get/update dictation endpoints with lazy create on first update/upload
+- done: added owner-only append/upload dictation audio endpoint using dictation STT provider purpose
+- pending: explicit finalize-pass endpoint not added; append is immediate for first cut
+- done: encrypt combined text and raw segment text with user DEK
+- done: preserve immutable segment text on edit by keeping raw append-only segment rows separate from editable combined text
+- done: added auth/provider/encryption/workspace tests for dictation flow
 
 Phase 4: transcribe UI
-- add `Add post-consultation dictation` CTA
-- add dictation recorder UI with reused VAD visualizer/timer/status
-- allow append pass after prior dictation exists
-- add combined editable dictation field
-- refresh workspace payload/rendering
+- done: refreshed workspace payload/rendering to include dictation data and dictation STT availability
+- done: transcript tab now renders split-pane consultation transcript left + dictation pane right
+- done: allow append pass after prior dictation exists via append audio upload form
+- done: added combined editable dictation field
+- done: dedicated real-mic dictation recorder UI with reused VAD visualizer/timer/status for voice-only microphone capture
+- pending: explicit `Add post-consultation dictation` CTA polish; current first cut uses always-visible dictation pane
 
 Phase 5: generation integration
-- auto-include dictation in note/follow-up generation
-- prefer combined edited dictation text when present
-- otherwise concatenate immutable segment text in append order
-- update prompt assembly so dictation stronger than consultation transcript
-- add generation tests for freeform + structured note flows
+- done: auto-include dictation in note/follow-up/quick action generation
+- done: prefer combined edited dictation text when present
+- done: otherwise concatenate immutable segment text in append order
+- done: updated prompt assembly so dictation is stronger clinician-authored signal while transcript stays chronology/fact anchor
+- pending: add targeted generation tests for freeform + structured note flows
 
 Phase 6: docs and polish
 - update API docs
 - update architecture docs for provenance/storage model
 - update transcribe UX docs/checklists
-- add real-mic VAD tuning pass for dictation workflow
+- add real-mic VAD tuning pass for dictation workflow 
+
+## Workspace preference polish
+
+- done: transcribe workspace now remembers last selected note template in existing user app preferences `default_template_id`
+- done: transcribe workspace now remembers last selected recording mode in existing user app preferences `preferred_recording_mode`
+- done: transcribe page applies those saved values as defaults before dedicated preferences page exists
 
 # Account recovery
 Need recovery flow for lost password and lost TOTP that preserves current privacy/encryption model.

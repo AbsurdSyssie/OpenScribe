@@ -12,6 +12,7 @@ from ..models import (
     GeneratedDocumentGeneratorType,
     SessionAuthLevel,
     SessionStatus,
+    SttSelectionPurpose,
     TeamRole,
     TemplateMode,
     Transcript,
@@ -40,6 +41,7 @@ from ..services.llm import (
     resolve_user_llm as resolve_user_llm_service,
 )
 from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
+from ..services.dictations import dictation_detail_response, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.templates import (
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
@@ -137,6 +139,14 @@ def _order_assets_by_favourites(assets, favorite_ids: list[str] | None):
             str(getattr(asset, "name", "")).lower(),
         ),
     )
+
+
+def _preferred_template_from_preferences(available_templates, preferred_template_id: str | None):
+    if preferred_template_id:
+        preferred = next((template for template in available_templates if str(template.id) == preferred_template_id), None)
+        if preferred is not None:
+            return preferred
+    return available_templates[0] if available_templates else None
 
 
 def _latest_template_version(template):
@@ -328,6 +338,9 @@ def resolve_transcribe_workspace(
     stt_selection = None
     stt_available = False
     stt_status_message = None
+    dictation_stt_selection = None
+    dictation_stt_available = False
+    dictation_stt_status_message = None
     llm_selection = None
     user_llm_preference = None
     resolved_user_llm_model = None
@@ -340,6 +353,18 @@ def resolve_transcribe_workspace(
             stt_status_message = _missing_stt_selection_message(team_leader_email=team_leader_email)
         else:
             stt_available = True
+        try:
+            dictation_stt_selection = active_team_stt_selection_service(
+                db,
+                team_id=current_user.team_id,
+                purpose=SttSelectionPurpose.post_consultation_dictation,
+            )
+        except AppError:
+            dictation_stt_selection = None
+        if dictation_stt_selection is None:
+            dictation_stt_status_message = _missing_stt_selection_message(team_leader_email=team_leader_email)
+        else:
+            dictation_stt_available = True
         try:
             llm_selection = active_team_llm_selection_service(db, team_id=current_user.team_id)
         except AppError:
@@ -371,6 +396,7 @@ def resolve_transcribe_workspace(
     available_quick_actions = list_available_quick_actions_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_templates = _order_assets_by_favourites(available_templates, user_app_preferences_json.get("favorite_template_ids"))
     available_quick_actions = _order_assets_by_favourites(available_quick_actions, user_app_preferences_json.get("favorite_quick_action_ids"))
+    preferred_template = _preferred_template_from_preferences(available_templates, user_app_preferences_json.get("default_template_id"))
     generated_documents = (
         list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
         if active_transcript is not None and not current_user.is_system_admin
@@ -405,15 +431,25 @@ def resolve_transcribe_workspace(
             or _generated_note_has_content(db, latest_generated_document)
         )
     )
+    post_consultation_dictation = (
+        get_post_consultation_dictation(db, current_user, transcript_id=active_transcript.id)
+        if active_transcript is not None and not current_user.is_system_admin
+        else None
+    )
     return {
         "recent_transcripts": recent_transcripts,
         "active_transcript": active_transcript,
         "active_transcript_latest_job": active_transcript_latest_job,
         "active_transcript_next_live_chunk_sequence_no_upload": active_transcript_next_live_chunk_sequence_no_upload,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
+        "post_consultation_dictation": post_consultation_dictation,
         "stt_selection": stt_selection,
         "stt_available": stt_available,
         "stt_status_message": stt_status_message,
+        "dictation_stt_selection": dictation_stt_selection,
+        "dictation_stt_selected": bool(dictation_stt_selection),
+        "dictation_stt_available": dictation_stt_available,
+        "dictation_stt_status_message": dictation_stt_status_message,
         "llm_selection": llm_selection,
         "user_llm_preference": user_llm_preference,
         "resolved_user_llm_model": resolved_user_llm_model,
@@ -423,6 +459,10 @@ def resolve_transcribe_workspace(
         "can_switch_to_whole_file": can_switch_to_whole_file,
         "switch_mode_block_message": switch_mode_block_message,
         "available_templates": available_templates,
+        "preferred_template": preferred_template,
+        "preferred_template_id": str(preferred_template.id) if preferred_template is not None else None,
+        "preferred_recording_mode": user_app_preferences_json.get("preferred_recording_mode"),
+        "user_app_preferences_json": user_app_preferences_json,
         "template_section_definitions_by_id": _structured_section_option_payloads(available_templates),
         "available_quick_actions": available_quick_actions,
         "generated_documents": generated_documents,
@@ -478,6 +518,7 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
 
 def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> TranscribeWorkspaceDetail:
     active_transcript = workspace.get("active_transcript")
+    post_consultation_dictation = workspace.get("post_consultation_dictation")
     recent_transcripts = workspace.get("recent_transcripts") or []
     generated_documents = workspace.get("generated_documents") or []
     available_templates = workspace.get("available_templates") or []
@@ -485,6 +526,11 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     return TranscribeWorkspaceDetail(
         recent_transcripts=[TranscriptListItem.model_validate(transcript, from_attributes=True) for transcript in recent_transcripts],
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
+        post_consultation_dictation=(
+            dictation_detail_response(db, dictation=post_consultation_dictation)
+            if post_consultation_dictation is not None
+            else None
+        ),
         generated_documents=[generated_document_response(db, document) for document in generated_documents],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
@@ -492,6 +538,9 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
         stt_status_message=workspace.get("stt_status_message"),
+        dictation_stt_selected=bool(workspace.get("dictation_stt_selection")),
+        dictation_stt_available=bool(workspace.get("dictation_stt_available")),
+        dictation_stt_status_message=workspace.get("dictation_stt_status_message"),
         llm_selected=bool(workspace.get("llm_selection")),
         resolved_user_llm_model=workspace.get("resolved_user_llm_model"),
         can_create_new_session=bool(workspace.get("can_create_new_session")),
@@ -555,6 +604,9 @@ def render_transcribe(
         workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
+    post_consultation_dictation = workspace.get("post_consultation_dictation")
+    if post_consultation_dictation is not None:
+        workspace["post_consultation_dictation"] = dictation_detail_response(db, dictation=post_consultation_dictation)
     generated_documents = workspace.get("generated_documents") or []
     if generated_documents:
         generated_document_details = [generated_document_response(db, document) for document in generated_documents]

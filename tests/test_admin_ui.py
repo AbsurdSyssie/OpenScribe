@@ -24,6 +24,7 @@ from app.models import (
     TeamLlmSelection,
     TeamRole,
     TeamSttConfig,
+    SttSelectionPurpose,
     TeamSttSelection,
     TemplateMode,
     TemplateScope,
@@ -225,8 +226,6 @@ def test_user_home_shows_team_stt_selection_when_configured(client, make_team, m
 
     assert page.status_code == 200
     assert "Clinic STT" in page.text
-    assert "Current speech service: Clinic STT" in page.text
-    assert "No team STT selection yet" not in page.text
 
 
 def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, make_team, make_user):
@@ -477,8 +476,8 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Speech service" in page.text
-    assert "Save speech service" in page.text
+    assert "Speech to text" in page.text
+    assert "Conversation transcription" in page.text
     assert "Clinic STT" in page.text
 
     save = client.post(
@@ -495,6 +494,37 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
     selection = db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
     assert selection is not None
     assert selection.stt_config_id == config.id
+    assert selection.purpose is SttSelectionPurpose.conversation
+
+
+def test_leader_home_can_choose_dictation_stt_selection_from_provisioned_endpoints(client, db_session, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-dictation@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic Dictation STT", model_name="whisper-1")
+    make_user(email="leader-dictation@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "leader-dictation@example.com", "password": "password-1"}, follow_redirects=False)
+    save = client.post(
+        "/home/stt-selection",
+        data={
+            "purpose": "post_consultation_dictation",
+            "stt_config_id": str(config.id),
+            "provider_model": "",
+            "language": "en",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+    assert save.headers["location"] == "/home?tab=team-management"
+
+    selection = db_session.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == SttSelectionPurpose.post_consultation_dictation,
+        )
+    )
+    assert selection is not None
+    assert selection.stt_config_id == config.id
 
 
 def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoint(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
@@ -506,17 +536,21 @@ def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoi
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
-    assert "Choose speech service" in page.text
-    assert "Save speech service" in page.text
-    assert ">Clear<" in page.text
+    assert "Speech to text" in page.text
+    assert "Clear conversation" in page.text
 
     cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/home?tab=team-management"
 
     page_after = client.get("/home")
-    assert "No speech service selected yet" in page_after.text
-    assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
+    assert "Clear conversation" not in page_after.text
+    assert db_session.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == SttSelectionPurpose.conversation,
+        )
+    ) is None
     assert db_session.get(TeamSttConfig, config.id) is not None
 
 
@@ -2876,7 +2910,12 @@ def test_user_transcribe_page_shows_history_tab_empty_state(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=history")
 
     assert page.status_code == 200
-    assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in page.text
+    assert "Consultation sources" in page.text
+    assert "Post-consultation dictation" in page.text
+    assert 'action="/transcribe/dictation/upload"' in page.text
+    assert 'action="/transcribe/dictation/save"' in page.text
+    assert 'data-dictation-record-toggle' in page.text
+    assert "No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds." in page.text
 
 
 def test_user_transcribe_page_renders_ready_freeform_note_editor(
@@ -3034,6 +3073,65 @@ def test_user_transcribe_page_exposes_workspace_api_endpoint(
     assert 'id="new-session-form"' in page.text
     assert 'id="bulk-delete-sessions"' in page.text
     assert 'data-session-link' in page.text
+
+
+def test_user_transcribe_page_uses_preferred_recording_mode_for_new_session(
+    client,
+    make_team,
+    make_user,
+    make_user_app_preference,
+):
+    team = make_team(name="Clinic Preferred Recording")
+    member = make_user(email="preferred-recording-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    make_user_app_preference(user=member, preferences_json={"preferred_recording_mode": "live_chunked"})
+
+    client.post("/login", data={"email": "preferred-recording-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get("/transcribe")
+
+    assert page.status_code == 200
+    assert 'name="ingestion_mode" value="live_chunked"' in page.text
+    assert '<option value="live_chunked" selected>Live capture</option>' in page.text
+
+
+def test_user_transcribe_page_uses_preferred_template_as_note_default(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_user_app_preference,
+):
+    team = make_team(name="Clinic Preferred Template")
+    admin = make_user(email="preferred-template-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="preferred-template-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="preferred-template-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    first_template = make_template(scope=TemplateScope.user, owner=member, actor=member, name="First note", prompt_text="Write first note.", mode=TemplateMode.freeform)
+    preferred_template = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Preferred note", prompt_text="Write preferred note.", mode=TemplateMode.structured)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Existing session",
+        current_draft_text_encrypted="Patient is improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    make_user_app_preference(user=member, preferences_json={"default_template_id": str(preferred_template.id)})
+
+    client.post("/login", data={"email": "preferred-template-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
+
+    assert page.status_code == 200
+    assert "Preferred note" in page.text
+    assert f'value="{preferred_template.id}"' in page.text
+    assert first_template.name in page.text
 
 
 def test_user_transcribe_page_keeps_structured_output_refresh_hooks(
@@ -3660,8 +3758,8 @@ def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, ma
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
 
     page = client.get(f"/admin?team_id={team.id}")
-    assert "Current active selection" in page.text
-    assert "Clear active STT selection" in page.text
+    assert "Current active selections" in page.text
+    assert "Clear conversation selection" in page.text
 
     cleared = client.post("/admin/stt-selection/clear", data={"team_id": str(team.id)}, follow_redirects=False)
     assert cleared.status_code == 303
@@ -3669,9 +3767,45 @@ def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, ma
 
     page_after = client.get(f"/admin?team_id={team.id}")
     assert "Add provisioned endpoint" in page_after.text
-    assert "Current active selection" not in page_after.text
-    assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) is None
+    assert "Clear conversation selection" not in page_after.text
+    assert db_session.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == SttSelectionPurpose.conversation,
+        )
+    ) is None
     assert db_session.get(TeamSttConfig, config.id) is not None
+
+
+def test_admin_page_can_assign_stt_config_to_dictation_purpose(client, db_session, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-purpose-ui@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Dictation Ready STT")
+
+    client.post("/login", data={"email": "admin-purpose-ui@example.com", "password": "password-1"}, follow_redirects=False)
+
+    save = client.post(
+        "/admin/stt-selection",
+        data={
+            "team_id": str(team.id),
+            "purpose": "post_consultation_dictation",
+            "stt_config_id": str(config.id),
+            "provider_model": "",
+            "language": "en",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+
+    selection = db_session.scalar(
+        select(TeamSttSelection).where(
+            TeamSttSelection.team_id == team.id,
+            TeamSttSelection.purpose == SttSelectionPurpose.post_consultation_dictation,
+        )
+    )
+    assert selection is not None
+    assert selection.stt_config_id == config.id
 
 
 def test_admin_page_can_delete_selected_team_stt_config(client, db_session, make_team, make_user, make_stt_config):

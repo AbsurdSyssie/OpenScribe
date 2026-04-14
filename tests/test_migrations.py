@@ -46,6 +46,8 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "account_requests",
         "generated_document_sections",
         "generated_documents",
+        "post_consultation_dictation_segments",
+        "post_consultation_dictations",
         "provider_usage_events",
         "quick_actions",
         "quick_action_versions",
@@ -159,6 +161,10 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
     generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
     generated_document_section_columns = {column["name"] for column in inspector.get_columns("generated_document_sections")}
+    post_consultation_dictation_columns = {column["name"] for column in inspector.get_columns("post_consultation_dictations")}
+    post_consultation_dictation_segment_columns = {
+        column["name"] for column in inspector.get_columns("post_consultation_dictation_segments")
+    }
     provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
     redaction_run_columns = {column["name"] for column in inspector.get_columns("redaction_runs")}
     redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
@@ -171,7 +177,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"device_token_hash", "last_mfa_verified_at", "expires_at", "revoke_reason"} <= trusted_device_columns
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns
     assert {"team_id", "adapter_kind", "base_url", "transcribe_path", "vault_secret_ref", "response_text_path", "available_models_json"} <= stt_columns
-    assert {"team_id", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
+    assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
@@ -226,6 +232,24 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "edited_text_encrypted",
         "is_edited",
     } <= generated_document_section_columns
+    assert {
+        "transcript_id",
+        "owner_user_id",
+        "team_id",
+        "combined_edited_text_encrypted",
+        "is_combined_text_user_edited",
+        "latest_appended_at",
+        "created_at",
+        "updated_at",
+    } <= post_consultation_dictation_columns
+    assert {
+        "post_consultation_dictation_id",
+        "owner_user_id",
+        "team_id",
+        "sequence_no",
+        "asr_text_encrypted",
+        "created_at",
+    } <= post_consultation_dictation_segment_columns
     assert {
         "team_id",
         "owner_user_id",
@@ -310,6 +334,193 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "created_at",
         "rotated_at",
     } <= user_encryption_key_columns
+
+
+@pytest.mark.migration
+def test_alembic_head_adds_post_consultation_dictation_constraints_and_cascades():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    inspector = inspect(isolated_engine)
+
+    dictation_uniques = inspector.get_unique_constraints("post_consultation_dictations")
+    segment_uniques = inspector.get_unique_constraints("post_consultation_dictation_segments")
+    dictation_fks = inspector.get_foreign_keys("post_consultation_dictations")
+    segment_fks = inspector.get_foreign_keys("post_consultation_dictation_segments")
+
+    assert any(
+        item["name"] == "uq_post_consultation_dictations_transcript"
+        and item["column_names"] == ["transcript_id"]
+        for item in dictation_uniques
+    )
+    assert any(
+        item["name"] == "uq_post_consultation_dictation_segments_sequence"
+        and item["column_names"] == ["post_consultation_dictation_id", "sequence_no"]
+        for item in segment_uniques
+    )
+    assert any(
+        item["referred_table"] == "transcripts"
+        and item["constrained_columns"] == ["transcript_id"]
+        and item.get("options", {}).get("ondelete") == "CASCADE"
+        for item in dictation_fks
+    )
+    assert any(
+        item["referred_table"] == "post_consultation_dictations"
+        and item["constrained_columns"] == ["post_consultation_dictation_id"]
+        and item.get("options", {}).get("ondelete") == "CASCADE"
+        for item in segment_fks
+    )
+
+
+@pytest.mark.migration
+def test_alembic_head_supports_multiple_stt_selection_purposes_per_team():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000401',
+                    'Admin User',
+                    'admin-purpose@example.com',
+                    'hash',
+                    NULL,
+                    NULL,
+                    true,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000402',
+                    'Clinic Purpose',
+                    'clinic purpose',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_stt_configs (
+                    id, team_id, label, adapter_kind, base_url, transcribe_path, auth_mode, model_name,
+                    available_models_json, file_field_name, language, response_text_path, extra_form_fields_json, vault_secret_ref,
+                    is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000403',
+                    '00000000-0000-0000-0000-000000000402',
+                    'Conversation STT',
+                    'openai_compatible_rest',
+                    'http://127.0.0.1:7000',
+                    '/v1/audio/transcriptions',
+                    'bearer',
+                    'whisper-1',
+                    '[]'::json,
+                    'file',
+                    'en',
+                    'text',
+                    '{}'::json,
+                    'secret:openscribe/stt/team/402/config/403',
+                    true,
+                    '00000000-0000-0000-0000-000000000401',
+                    '00000000-0000-0000-0000-000000000401',
+                    NOW(),
+                    NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000404',
+                    '00000000-0000-0000-0000-000000000402',
+                    'Dictation STT',
+                    'openai_compatible_rest',
+                    'http://127.0.0.1:7001',
+                    '/v1/audio/transcriptions',
+                    'bearer',
+                    'gpt-4o-mini-transcribe',
+                    '[]'::json,
+                    'file',
+                    'en',
+                    'text',
+                    '{}'::json,
+                    'secret:openscribe/stt/team/402/config/404',
+                    true,
+                    '00000000-0000-0000-0000-000000000401',
+                    '00000000-0000-0000-0000-000000000401',
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_stt_selections (
+                    id, team_id, purpose, stt_config_id, model_name_override, language_override, selected_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000405',
+                    '00000000-0000-0000-0000-000000000402',
+                    'conversation',
+                    '00000000-0000-0000-0000-000000000403',
+                    NULL,
+                    NULL,
+                    '00000000-0000-0000-0000-000000000401',
+                    NOW(),
+                    NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000406',
+                    '00000000-0000-0000-0000-000000000402',
+                    'post_consultation_dictation',
+                    '00000000-0000-0000-0000-000000000404',
+                    NULL,
+                    NULL,
+                    '00000000-0000-0000-0000-000000000401',
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+
+        count = connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM team_stt_selections
+                WHERE team_id = '00000000-0000-0000-0000-000000000402'
+                """
+            )
+        ).scalar_one()
+
+    assert count == 2
 
 
 @pytest.mark.migration

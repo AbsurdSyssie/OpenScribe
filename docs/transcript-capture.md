@@ -98,6 +98,32 @@ Shared invariants:
 - backend owns persisted draft text updates
 - commit/version semantics remain separate from ingestion semantics
 
+## Post-consultation dictation Phase 0 lock
+
+Post-consultation dictation is separate transcript-derived child source, not extension of consultation draft itself.
+
+Locked direction:
+
+- do not write dictation text into `transcripts.current_draft_text_encrypted`
+- do not attach dictation text to `generated_documents`; dictation is generation input, not one document-specific artifact
+- create one transcript-owned dictation aggregate per transcript root
+- append later dictation passes as immutable child segment rows under same dictation aggregate
+- keep user-editable combined dictation text on parent dictation row
+
+Generation contract:
+
+- transcript remains base source for chronology and patient-spoken content
+- dictation remains separate clinician-authored source for summary/assessment/plan emphasis
+- if combined dictation text was user-edited, generation uses that combined text exactly
+- otherwise generation concatenates immutable dictation segment ASR text in append order
+- empty edited combined text means clinician intentionally removed dictation influence, so generation should omit dictation rather than falling back to raw segments
+
+Prompt contract:
+
+- prompt assembly should label consultation transcript and post-consultation dictation as separate sources
+- prompt should instruct model to treat dictation as stronger clinician-authored signal for interpretation, terminology, and plan wording
+- prompt should still keep transcript as factual consultation anchor and should not permit invention of facts absent from both sources
+
 Shared backend concepts:
 
 - transcript start

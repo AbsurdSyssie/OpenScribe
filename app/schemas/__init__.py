@@ -17,6 +17,7 @@ from .auth import (
     TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
+from .dictation import PostConsultationDictationDetail, PostConsultationDictationUpdate
 from .llm import (
     LlmConfigDetail,
     LlmConfigInspectResult,
@@ -78,6 +79,8 @@ __all__ = [
     "AccountRequestListItem",
     "AccountRequestReject",
     "CurrentUserResponse",
+    "PostConsultationDictationDetail",
+    "PostConsultationDictationUpdate",
     "LoginRequest",
     "LoginResponse",
     "MfaChallengeRequest",

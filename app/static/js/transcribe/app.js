@@ -20,9 +20,12 @@ import { createGuidedTour } from './tour.js';
       let activeIngestionMode = bootstrap.activeIngestionMode;
       let nextLiveChunkSequenceNo = bootstrap.nextLiveChunkSequenceNo;
       let hasSttSelection = bootstrap.hasSttSelection;
+      let hasDictationSttSelection = bootstrap.hasDictationSttSelection;
       let hasLlmSelection = bootstrap.hasLlmSelection;
       let sttAvailable = bootstrap.sttAvailable;
+      let dictationSttAvailable = bootstrap.dictationSttAvailable;
       let sttStatusMessage = bootstrap.sttStatusMessage;
+      let dictationSttStatusMessage = bootstrap.dictationSttStatusMessage;
       let latestIngestionJobStatus = bootstrap.latestIngestionJobStatus;
       let latestIngestionErrorMessage = bootstrap.latestIngestionErrorMessage;
       let currentTranscriptStatus = null;
@@ -41,6 +44,12 @@ import { createGuidedTour } from './tour.js';
       let noteSaveInFlight = null;
       let noteSaveQueued = false;
       let noteSaveConflictShown = false;
+      let userAppPreferences = (bootstrap.userAppPreferences && typeof bootstrap.userAppPreferences === 'object') ? { ...bootstrap.userAppPreferences } : {};
+      let dictationDirty = false;
+      let dictationSaveTimer = null;
+      let dictationSaveInFlight = null;
+      let dictationSaveQueued = false;
+      let lastSavedDictationText = '';
       const showRedactionDebug = bootstrap.showRedactionDebug;
       const initialTranscriptErrorMessage = bootstrap.initialTranscriptErrorMessage;
 
@@ -54,6 +63,12 @@ import { createGuidedTour } from './tour.js';
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
       const micVisualizer = document.querySelector('[data-mic-visualizer]');
+      const dictationMicStatus = document.querySelector('[data-dictation-mic-status]');
+      const dictationMicTimer = document.querySelector('[data-dictation-mic-timer]');
+      const dictationMicVisualizer = document.querySelector('[data-dictation-mic-visualizer]');
+      const dictationSessionProgress = document.querySelector('[data-dictation-session-progress]');
+      const dictationCombinedInput = document.querySelector('[data-dictation-combined-input]');
+      const dictationProvenance = document.querySelector('[data-dictation-provenance]');
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
@@ -92,6 +107,8 @@ import { createGuidedTour } from './tour.js';
       const newSessionBlockMessage = document.querySelector('[data-new-session-block-message]');
       const uploadForm = document.querySelector('[data-upload-form]');
       const fileInput = document.querySelector('[data-audio-file-input]');
+      const dictationUploadForm = document.querySelector('[data-dictation-upload-form]');
+      const dictationFileInput = document.querySelector('[data-dictation-audio-file-input]');
       const retryIngestionForm = document.querySelector('[data-retry-ingestion-form]');
       const retryIngestionTrigger = document.querySelector('[data-retry-ingestion-trigger]');
       const retryTranscriptIdInput = document.querySelector('[data-retry-transcript-id]');
@@ -117,10 +134,13 @@ import { createGuidedTour } from './tour.js';
       const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
+      const dictationAudioActionTrigger = document.querySelector('[data-dictation-audio-action-trigger]');
       const recordingModeSelect = document.querySelector('[data-recording-mode-select]');
       const recordToggleButton = document.querySelector('[data-record-toggle]');
       const recordToggleLabel = document.querySelector('[data-record-toggle-label]');
       const recordToggleIcon = document.querySelector('[data-record-toggle-icon]');
+      const dictationRecordToggleButton = document.querySelector('[data-dictation-record-toggle]');
+      const dictationRecordToggleLabel = document.querySelector('[data-dictation-record-toggle-label]');
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
       const newSessionControls = [newSessionButton].filter(Boolean);
       const copyToast = document.querySelector('#copy-toast');
@@ -146,6 +166,7 @@ import { createGuidedTour } from './tour.js';
 
       let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let captureController = null;
+      let dictationCaptureController = null;
       let structuredEditor = null;
       let workspaceRefreshBurstTimeoutIds = [];
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
@@ -312,6 +333,88 @@ import { createGuidedTour } from './tour.js';
         }, 1400);
       };
 
+      const persistUserAppPreferences = async (patch) => {
+        const nextPreferences = {
+          favorite_quick_action_ids: Array.isArray(userAppPreferences.favorite_quick_action_ids) ? userAppPreferences.favorite_quick_action_ids : [],
+          favorite_template_ids: Array.isArray(userAppPreferences.favorite_template_ids) ? userAppPreferences.favorite_template_ids : [],
+          default_quick_action_id: userAppPreferences.default_quick_action_id || null,
+          default_template_id: userAppPreferences.default_template_id || null,
+          llm_detail_level: userAppPreferences.llm_detail_level || null,
+          preferred_recording_mode: userAppPreferences.preferred_recording_mode || null,
+          preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
+          ...patch,
+        };
+        const response = await fetch('/api/v1/app-preferences', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextPreferences),
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not save your workspace preferences.'));
+        }
+        userAppPreferences = await response.json();
+        const newSessionModeInput = document.querySelector('#new-session-form input[name="ingestion_mode"]');
+        if (newSessionModeInput && userAppPreferences.preferred_recording_mode) {
+          newSessionModeInput.value = userAppPreferences.preferred_recording_mode;
+        }
+        return userAppPreferences;
+      };
+
+      const persistDictationSilently = async ({ keepalive = false } = {}) => {
+        if (dictationSaveInFlight) {
+          dictationSaveQueued = true;
+          return dictationSaveInFlight;
+        }
+        if (!transcriptId || !dictationCombinedInput || !dictationDirty) {
+          return null;
+        }
+        const combinedText = dictationCombinedInput.value;
+        dictationSaveInFlight = (async () => {
+          try {
+            const response = await fetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation`, {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              keepalive,
+              body: JSON.stringify({ combined_text: combinedText }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not save dictation.'));
+            }
+            const savedDictation = await response.json();
+            lastSavedDictationText = savedDictation.effective_text || '';
+            dictationDirty = false;
+            renderDictation(savedDictation);
+            return savedDictation;
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not save dictation.', 'error');
+            return null;
+          } finally {
+            dictationSaveInFlight = null;
+            if (dictationSaveQueued) {
+              dictationSaveQueued = false;
+              scheduleDictationAutosave({ immediate: true });
+            }
+          }
+        })();
+        return dictationSaveInFlight;
+      };
+
+      function scheduleDictationAutosave({ immediate = false } = {}) {
+        if (dictationSaveTimer) {
+          window.clearTimeout(dictationSaveTimer);
+          dictationSaveTimer = null;
+        }
+        if (!dictationDirty) {
+          return;
+        }
+        dictationSaveTimer = window.setTimeout(() => {
+          dictationSaveTimer = null;
+          void persistDictationSilently();
+        }, immediate ? 0 : 700);
+      }
+
       const persistNoteEditsSilently = async ({ keepalive = false } = {}) => {
         if (noteSaveInFlight) {
           noteSaveQueued = true;
@@ -407,6 +510,76 @@ import { createGuidedTour } from './tour.js';
           micStatus.classList.add('text-coral');
         } else if (kind === 'success') {
           micStatus.classList.add('text-success');
+        }
+      };
+
+      const setDictationMicStatus = (message, kind = '') => {
+        if (!dictationMicStatus) return;
+        dictationMicStatus.textContent = message;
+        dictationMicStatus.classList.remove('text-coral', 'text-success');
+        if (kind === 'error') {
+          dictationMicStatus.classList.add('text-coral');
+        } else if (kind === 'success') {
+          dictationMicStatus.classList.add('text-success');
+        }
+      };
+
+      const setDictationSessionProgress = (message) => {
+        if (!dictationSessionProgress) return;
+        dictationSessionProgress.textContent = message || '';
+        dictationSessionProgress.hidden = !message;
+      };
+
+      const defaultDictationMicStatusState = () => {
+        if (!transcriptId) {
+          return { message: 'Open consultation first.', kind: 'error' };
+        }
+        if (!hasDictationSttSelection) {
+          return { message: dictationSttStatusMessage || 'No dictation STT configured for team.', kind: 'error' };
+        }
+        if (!dictationSttAvailable) {
+          return { message: dictationSttStatusMessage || 'Dictation STT unavailable.', kind: 'error' };
+        }
+        return { message: 'Ready to append dictation audio from upload or microphone.', kind: '' };
+      };
+
+      const canUseDictationInput = () => Boolean(transcriptId && hasDictationSttSelection && dictationSttAvailable);
+
+      const setDictationMicButtons = (isRecording) => {
+        if (dictationFileInput) {
+          dictationFileInput.disabled = !isRecording && !canUseDictationInput();
+          dictationFileInput.title = (!isRecording && !canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
+        }
+        if (dictationAudioActionTrigger) {
+          dictationAudioActionTrigger.disabled = !isRecording && !canUseDictationInput();
+          dictationAudioActionTrigger.title = (!isRecording && !canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
+        }
+        if (dictationRecordToggleButton) {
+          dictationRecordToggleButton.disabled = !isRecording && !canUseDictationInput();
+          dictationRecordToggleButton.title = (!isRecording && !canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
+        }
+        if (dictationRecordToggleLabel) {
+          dictationRecordToggleLabel.textContent = isRecording ? 'Stop dictation' : 'Start dictation';
+        }
+        dictationCaptureController?.syncDisplayedDuration?.();
+      };
+
+      const renderDictation = (dictation) => {
+        const nextText = dictation?.effective_text || '';
+        if (dictationCombinedInput && document.activeElement !== dictationCombinedInput && !dictationDirty) {
+          dictationCombinedInput.value = nextText;
+        }
+        if (!dictationDirty) {
+          lastSavedDictationText = nextText;
+        }
+        if (dictationProvenance) {
+          if (dictation?.is_combined_text_user_edited) {
+            dictationProvenance.textContent = 'Edited dictation used for generation.';
+          } else if (dictation) {
+            dictationProvenance.textContent = 'Using appended raw dictation segments in append order until you edit this field.';
+          } else {
+            dictationProvenance.textContent = 'No dictation yet. Upload audio pass or type summary directly.';
+          }
         }
       };
 
@@ -725,6 +898,7 @@ import { createGuidedTour } from './tour.js';
           uploadForm,
         },
         config: {
+          batchUploadSuccessMessage: 'Dictation recording sent.',
           batchVadPreRollMs,
           batchVadSilenceThresholdMs,
           batchVadTrailingBufferMs,
@@ -765,6 +939,73 @@ import { createGuidedTour } from './tour.js';
         setRetryAvailability,
         showFlash,
         reflectBackendStatus,
+      });
+
+      dictationCaptureController = createAudioCaptureController({
+        dom: {
+          audioActionTrigger: dictationAudioActionTrigger,
+          fileInput: dictationFileInput,
+          micTimer: dictationMicTimer,
+          micVisualizer: dictationMicVisualizer,
+          recordToggleButton: dictationRecordToggleButton,
+          uploadForm: dictationUploadForm,
+        },
+        config: {
+          batchVadPreRollMs,
+          batchVadSilenceThresholdMs,
+          batchVadTrailingBufferMs,
+          liveChunkOverlapMs,
+          liveMaxChunkMs,
+          liveMinChunkMs,
+          liveOnnxBasePath: liveVadOnnxBasePath,
+          livePostRollTrimMs,
+          livePreRollMs,
+          liveRestartDelayMs,
+          liveSilenceThresholdMs,
+          liveVadAssetBasePath,
+          liveVadModel,
+          liveVadOnnxBasePath,
+          liveVadSampleRate,
+        },
+        uploadBatchAudio: async (blob) => {
+          if (!transcriptId) {
+            throw new Error('Open consultation before sending dictation audio.');
+          }
+          const formData = new FormData();
+          formData.append('audio', blob, blob.type === 'audio/wav' ? 'dictation-mic.wav' : 'dictation-mic.webm');
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation/audio-file`, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not send dictation recording.'));
+          }
+          await fetchWorkspace();
+          scheduleWorkspaceRefreshBurst();
+        },
+        canUseLiveInput: () => false,
+        canUseWholeFileInput: canUseDictationInput,
+        getState: () => ({
+          transcriptId,
+          activeIngestionMode: 'whole_file',
+          nextLiveChunkSequenceNo: 1,
+          latestIngestionJobStatus: null,
+        }),
+        setNextLiveChunkSequenceNo: () => {},
+        getDefaultMicStatusState: defaultDictationMicStatusState,
+        syncTranscriptTitleIfNeeded: async () => {},
+        fetchWorkspace,
+        pollWorkspace,
+        scheduleWorkspaceRefreshBurst,
+        parseErrorMessage,
+        setMicButtons: setDictationMicButtons,
+        setMicStatus: setDictationMicStatus,
+        setVisibleStatus: () => {},
+        setSessionProgress: setDictationSessionProgress,
+        setRetryAvailability: () => {},
+        showFlash,
+        reflectBackendStatus: () => {},
       });
 
       const syncDeleteState = () => {
@@ -1051,6 +1292,7 @@ import { createGuidedTour } from './tour.js';
       const applyWorkspacePayload = (workspace) => {
         if (!workspace || typeof workspace !== 'object') return;
         const transcript = workspace.active_transcript || null;
+        const dictation = workspace.post_consultation_dictation || null;
         const generatedDocuments = Array.isArray(workspace.generated_documents) ? workspace.generated_documents : [];
         const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
         const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
@@ -1061,8 +1303,11 @@ import { createGuidedTour } from './tour.js';
         activeIngestionMode = transcript?.ingestion_mode || null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
+        hasDictationSttSelection = Boolean(workspace.dictation_stt_selected);
         sttAvailable = Boolean(workspace.stt_available);
+        dictationSttAvailable = Boolean(workspace.dictation_stt_available);
         sttStatusMessage = workspace.stt_status_message || null;
+        dictationSttStatusMessage = workspace.dictation_stt_status_message || null;
         latestIngestionJobStatus = transcript?.latest_ingestion_job_status || null;
         latestIngestionErrorMessage = transcript?.latest_ingestion_error_message || null;
         const retryAvailable = Boolean(
@@ -1111,16 +1356,19 @@ import { createGuidedTour } from './tour.js';
           if (sessionTitleDisplay) sessionTitleDisplay.value = '';
           if (renameTitleInput) renameTitleInput.value = '';
           if (activeIngestionModeChip) activeIngestionModeChip.textContent = '';
-          syncRecordingModeControl('whole_file');
+          syncRecordingModeControl(userAppPreferences.preferred_recording_mode || 'whole_file');
           latestIngestionJobStatus = null;
           latestIngestionErrorMessage = null;
           setRetryAvailability(false);
           setSessionProgress('Create or open a consultation to begin.');
         }
+        renderDictation(dictation);
         if (!(shouldPreserveLiveMicStatus() && !(latestIngestionJobStatus === 'failed' && latestIngestionErrorMessage))) {
           const micStatusState = defaultMicStatusState();
           setMicStatus(micStatusState.message, micStatusState.kind);
         }
+        const dictationMicStatusState = defaultDictationMicStatusState();
+        setDictationMicStatus(dictationMicStatusState.message, dictationMicStatusState.kind);
 
         const structuredContext = workspace.active_structured_context || {};
         workspaceNoteDocuments = noteDocuments;
@@ -1135,6 +1383,7 @@ import { createGuidedTour } from './tour.js';
         structuredEditor.syncStructuredContextHiddenInputs();
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isLiveCaptureUiActive());
+        setDictationMicButtons(false);
         if (!preserveDirtyNoteEditor) {
           structuredEditor.syncStructuredTemplateUi();
         }
@@ -1199,6 +1448,16 @@ import { createGuidedTour } from './tour.js';
       syncGenerationAvailability(readActiveDraftText().trim());
       structuredEditor.syncStructuredTemplateUi();
       syncTemplatePickerUi();
+      dictationCombinedInput?.addEventListener('input', () => {
+        const nextValue = dictationCombinedInput.value;
+        dictationDirty = nextValue !== lastSavedDictationText;
+        scheduleDictationAutosave();
+      });
+      dictationCombinedInput?.addEventListener('blur', () => {
+        if (dictationDirty) {
+          scheduleDictationAutosave({ immediate: true });
+        }
+      });
       document.addEventListener('openscribe:legacy-structured-context-changed', () => {
         syncGenerationAvailability(readActiveDraftText().trim());
       });
@@ -1209,6 +1468,8 @@ import { createGuidedTour } from './tour.js';
           const micStatusState = defaultMicStatusState();
           setMicStatus(micStatusState.message, micStatusState.kind);
         }
+        const dictationMicStatusState = defaultDictationMicStatusState();
+        setDictationMicStatus(dictationMicStatusState.message, dictationMicStatusState.kind);
       }
       syncWorkspaceRealtimeConnection();
       if (transcriptId) {
@@ -1217,10 +1478,11 @@ import { createGuidedTour } from './tour.js';
         }, 0);
       }
 
-      syncRecordingModeControl(activeIngestionMode || 'whole_file');
+      syncRecordingModeControl(activeIngestionMode || userAppPreferences.preferred_recording_mode || 'whole_file');
       generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi);
 
       captureController.attachDomListeners();
+      dictationCaptureController.attachDomListeners();
       attachTranscribeActions({
         dom: {
           activeDraft,
@@ -1269,6 +1531,7 @@ import { createGuidedTour } from './tour.js';
         setSessionProgress,
         setRetryAvailability,
         reflectBackendStatus,
+        persistUserAppPreferences,
         setMicButtons,
         setTab,
         structuredEditor,
@@ -1325,7 +1588,12 @@ import { createGuidedTour } from './tour.js';
           window.clearTimeout(noteSaveTimer);
           noteSaveTimer = null;
         }
+        if (dictationSaveTimer) {
+          window.clearTimeout(dictationSaveTimer);
+          dictationSaveTimer = null;
+        }
         void persistNoteEditsSilently({ keepalive: true });
+        void persistDictationSilently({ keepalive: true });
       });
 
       window.setTimeout(fetchWorkspace, 250);

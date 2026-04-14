@@ -30,6 +30,7 @@ from .models import (
     SessionAuthLevel,
     SessionStatus,
     SttAdapterKind,
+    SttSelectionPurpose,
     TeamRole,
     TeamStatus,
     TemplateMode,
@@ -53,6 +54,8 @@ from .schemas import (
     AccountRequestListItem,
     AccountRequestReject,
     CurrentUserResponse,
+    PostConsultationDictationDetail,
+    PostConsultationDictationUpdate,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
     ErrorResponse,
@@ -170,6 +173,12 @@ from .services.stt import (
     clear_team_stt_selection as clear_team_stt_selection_service,
     set_team_stt_selection as set_team_stt_selection_service,
     upsert_stt_config as upsert_stt_config_service,
+)
+from .services.dictations import (
+    append_post_consultation_dictation_audio,
+    dictation_detail_response,
+    get_post_consultation_dictation,
+    update_post_consultation_dictation,
 )
 from .services.admin import (
     admin_usage_overview as admin_usage_overview_service,

@@ -400,16 +400,32 @@
           </label>
         </form>
         {% if selected_team_id %}
+        {% if stt_selection or stt_dictation_selection %}
+        <h3>Current active selections</h3>
         {% if stt_selection %}
-        <h3>Current active selection</h3>
+        <h4>Conversation transcription</h4>
         <p><span class="pill">{{ stt_selection.config.label }}</span> <span class="pill">{{ stt_selection.config.adapter_kind.value }}</span> {{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }}</p>
         <p><small>Resolved model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}. Resolved language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}.</small></p>
         <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="purpose" value="conversation">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <button type="submit">Clear active STT selection</button>
+          <button type="submit">Clear conversation selection</button>
         </form>
+        {% endif %}
+        {% if stt_dictation_selection %}
+        <h4>Post-consultation dictation</h4>
+        <p><span class="pill">{{ stt_dictation_selection.config.label }}</span> <span class="pill">{{ stt_dictation_selection.config.adapter_kind.value }}</span> {{ stt_dictation_selection.config.base_url }}{{ stt_dictation_selection.config.transcribe_path }}</p>
+        <p><small>Resolved model: {{ stt_dictation_selection.model_name_override or stt_dictation_selection.config.model_name or "not set" }}. Resolved language: {{ stt_dictation_selection.language_override or stt_dictation_selection.config.language or "not set" }}.</small></p>
+        <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear active dictation STT selection for this team?');">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="purpose" value="post_consultation_dictation">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <button type="submit">Clear dictation selection</button>
+        </form>
+        {% endif %}
         {% else %}
         <p><small>No active STT selection is set for this team yet.</small></p>
         {% endif %}
@@ -420,6 +436,13 @@
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
+          <label>
+            Use for
+            <select name="purpose">
+              <option value="conversation">Conversation transcription</option>
+              <option value="post_consultation_dictation">Post-consultation dictation</option>
+            </select>
+          </label>
           <label>
             Provisioned endpoint
             <select name="stt_config_id" data-stt-config-select required>
@@ -478,6 +501,22 @@
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
                   <button type="submit">Test STT</button>
+                </form>
+                <form method="post" action="/admin/stt-selection">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="purpose" value="conversation">
+                  <input type="hidden" name="stt_config_id" value="{{ config.id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Use for conversation</button>
+                </form>
+                <form method="post" action="/admin/stt-selection">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="purpose" value="post_consultation_dictation">
+                  <input type="hidden" name="stt_config_id" value="{{ config.id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Use for dictation</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned STT endpoint and its saved secret?');">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">

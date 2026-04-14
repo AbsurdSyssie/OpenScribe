@@ -61,6 +61,9 @@ Browser navigation behavior:
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
+- `GET /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
+- `PATCH /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
+- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
@@ -92,6 +95,11 @@ Browser navigation behavior:
 - `GET /api/v1/stt-selection/options`
 - `POST /api/v1/stt-selection`
 - `DELETE /api/v1/stt-selection`
+- `GET /api/v1/stt-selection` now accepts optional `purpose` query param:
+  - `conversation` default
+  - `post_consultation_dictation`
+- `DELETE /api/v1/stt-selection` now accepts same optional `purpose` query param
+- `POST /api/v1/stt-selection` now accepts `purpose` in JSON body with same values
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ### Team LLM configuration

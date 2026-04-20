@@ -243,6 +243,7 @@ Implemented now for manual browser testing:
 - the browser workspace currently creates `whole_file` sessions by default and can switch a blank `live_chunked` session back to `whole_file`
 - the workspace blocks a second blank session until the latest session has actual content or descendant work, or is deleted
 - the workspace also blocks new-session creation while the latest session is still transcribing in the backend
+- the browser shell now surfaces blocked new-session attempts as toasts instead of a persistent sidebar warning, so the session rail does not shift during recording state changes
 - whole-file upload routes are throttled to reduce authenticated abuse:
   - `1 per 5 seconds`
   - `100 per day`
@@ -268,6 +269,7 @@ Implemented now for manual browser testing:
 - selected-session deletion now submits through owner-scoped transcript `DELETE` API calls from the browser shell
 - blank-session mode switching now patches `ingestion_mode` through the transcript JSON API
 - session-rail transcript selection now refreshes the active workspace in place from the workspace API and updates the URL with the selected `transcript_id`
+- session-rail transcript selection is blocked while local/live recording is active and asks the user to stop recording before switching
 - session title changes now patch the transcript directly through the transcript JSON API instead of relying on a redirect round-trip
 - the large session title in the workspace header is now the primary editable title control; pressing Enter or blurring the field saves it back to `transcripts.title`
 - whole-file upload and microphone batch controls now live in the header bar instead of a separate audio-input panel
@@ -277,8 +279,7 @@ Implemented now for manual browser testing:
 - whole-file upload and note/follow-up/quick-action queue actions now submit directly to the owner-only JSON APIs from the browser shell
 - the session header reports the resolved user LLM model, not just the team default, so the displayed model matches the model the generation path will actually use
 - the workspace now distinguishes local browser progress from backend queue status:
-  - `recording (local)` while MediaRecorder is still capturing
-  - `uploading` while a file or mic blob is being submitted
+  - compact status-pill labels such as `listening`, `speech detected`, `sending chunk`, `stopping`, and `uploading` while MediaRecorder/live VAD is active
   - backend `queued`/`transcribing`/`ready`/`failed` once the transcript row reflects worker state
 - when the active transcript is `failed`, the workspace now shows the latest owner-visible ingestion error message instead of only a generic failed-state banner
 - missing active team STT selection is surfaced before queueing work rather than as a later failed worker job
@@ -337,6 +338,7 @@ Implemented now for manual browser testing:
   - does not expose the original PHI values
 - follow-up and quick-action free-text instructions are also redacted transiently before the provider call so outbound user-entered text follows the same PHI rule
 - successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab
+- selected generated notes expose a permanent-delete control that confirms before calling the owner-only generated-document delete API
 - successful follow-up generation persists a second `generated_documents` type under the same transcript root and renders it back into the Follow-ups tab
 - successful quick action generation persists a third `generated_documents` type under the same transcript root and also renders it back into the Follow-ups tab/history
 - the initial server-rendered follow-up history now uses the same copy/delete action hooks as the JS-refreshed cards, so those controls still work before the first workspace refresh
@@ -344,9 +346,9 @@ Implemented now for manual browser testing:
 - generation routes are rate-limited per authenticated user:
   - `1 per 5 seconds`
   - `100 per day`
-- metadata-only usage logging now records generation event type, IDs, provider/model names, durations, and token counts when the provider returns them
+- metadata-only usage logging now records generation event type, IDs, provider/model names, durations, and separate input/output/total token counts when the provider returns them
 - the same metadata is now persisted into `provider_usage_events` for later per-user and per-team usage analysis
-- generated-document rows now also retain per-run token counts, durations, and safe provider error metadata for owner-visible debugging without storing prompts or note text
+- generated-document rows now also retain per-run input/output/total token counts, durations, and safe provider error metadata for owner-visible debugging without storing prompts or note text
 - failed generations should now surface a safer, more specific reason when available, such as timeout, unreachable provider, credential rejection, or missing model
 - important current caveat:
   - redacted transcript text and original PHI mappings are persisted in columns still named `*_encrypted`

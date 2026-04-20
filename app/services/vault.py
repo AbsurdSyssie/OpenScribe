@@ -342,6 +342,82 @@ def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
+def deidentification_secret_path(provider_id: UUID, *, secret_id: UUID | None = None) -> str:
+    if secret_id is None:
+        return f"openscribe/deidentification/provider/{provider_id}"
+    return f"openscribe/deidentification/provider/{provider_id}/{secret_id}"
+
+
+def deidentification_secret_ref(provider_id: UUID, *, secret_id: UUID | None = None) -> str:
+    return f"{VAULT_KV_MOUNT}:{deidentification_secret_path(provider_id, secret_id=secret_id)}"
+
+
+def _deidentification_path_from_ref(*, provider_id: UUID, secret_ref: str | None = None) -> str:
+    if not secret_ref:
+        return deidentification_secret_path(provider_id)
+    prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(prefix):
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(prefix):].strip()
+    if not path:
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    return path
+
+
+def write_deidentification_bearer_token(*, provider_id: UUID, bearer_token: str, secret_id: UUID | None = None) -> str:
+    path = deidentification_secret_path(provider_id, secret_id=secret_id)
+    url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
+    try:
+        response = httpx.post(
+            url,
+            headers=_vault_headers(),
+            json={"data": {"bearer_token": bearer_token}},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code >= 400:
+        raise AppError(502, "vault_write_failed", "Vault secret write failed")
+    return deidentification_secret_ref(provider_id, secret_id=secret_id)
+
+
+def read_deidentification_bearer_token(*, provider_id: UUID, secret_ref: str | None = None) -> str:
+    path = _deidentification_path_from_ref(provider_id=provider_id, secret_ref=secret_ref)
+    url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
+    try:
+        response = httpx.get(
+            url,
+            headers=_vault_headers(),
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code >= 400:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    payload = response.json()
+    bearer_token = (((payload.get("data") or {}).get("data") or {}).get("bearer_token"))
+    if not bearer_token:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    return str(bearer_token)
+
+
+def delete_deidentification_bearer_token(*, provider_id: UUID, secret_ref: str | None = None) -> None:
+    path = _deidentification_path_from_ref(provider_id=provider_id, secret_ref=secret_ref)
+    url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/metadata/{path}"
+    try:
+        response = httpx.delete(
+            url,
+            headers=_vault_headers(),
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code in {200, 204, 404}:
+        return
+    raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
+
+
 def transcript_ingestion_source_audio_path(job_id: UUID) -> str:
     return f"openscribe/transcript-ingestion/{job_id}/source-audio"
 

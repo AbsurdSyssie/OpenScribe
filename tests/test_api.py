@@ -1,6 +1,7 @@
 import json
 import time
 import io
+import subprocess
 from datetime import timedelta
 from uuid import UUID, uuid4
 import wave
@@ -19,12 +20,19 @@ from app.main import app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    DefaultPromptTemplate,
+    DefaultPromptTemplateVersion,
+    DefaultQuickAction,
+    DefaultQuickActionVersion,
+    DeidentificationProvider,
     GeneratedDocument,
     GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
     LlmAuthMode,
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
     ProviderUsageEvent,
     ProviderUsageEventType,
     PromptTemplate,
@@ -37,10 +45,14 @@ from app.models import (
     SttAdapterKind,
     SttAuthMode,
     SttSelectionPurpose,
+    Team,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
+    TeamDeidentificationProviderAssignment,
+    TeamDeidentificationSelection,
     TeamSttConfig,
+    TeamSttSelection,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -62,7 +74,7 @@ from app.models import (
 )
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.services.audio import NormalizedAudio
+from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
 from app.services.content_crypto import (
     decrypt_json_for_owner,
     decrypt_text_for_owner,
@@ -133,6 +145,34 @@ def make_test_wav_bytes(*, duration_seconds: float, sample_rate: int = 16000) ->
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\x00\x00" * frame_count)
     return buffer.getvalue()
+
+
+def test_audio_duration_probe_timeout_surfaces_app_error(monkeypatch):
+    def fake_run(*args, **kwargs):
+        assert kwargs["timeout"] > 0
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("app.services.audio.subprocess.run", fake_run)
+
+    with pytest.raises(AppError) as exc_info:
+        probe_audio_duration_seconds(audio_bytes=b"raw-audio", source_filename="chunk.webm")
+
+    assert exc_info.value.code == "audio_duration_probe_failed"
+    assert exc_info.value.message == "Audio duration inspection timed out"
+
+
+def test_audio_normalization_timeout_surfaces_app_error(monkeypatch):
+    def fake_run(*args, **kwargs):
+        assert kwargs["timeout"] > 0
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("app.services.audio.subprocess.run", fake_run)
+
+    with pytest.raises(AppError) as exc_info:
+        normalize_audio_to_wav_16k_mono(audio_bytes=b"raw-audio", source_filename="chunk.webm")
+
+    assert exc_info.value.code == "audio_normalization_failed"
+    assert exc_info.value.message == "Audio normalization timed out"
 
 
 def decrypt_transcript_draft(db_session, transcript: Transcript) -> str | None:
@@ -1569,6 +1609,474 @@ def test_leader_can_choose_and_clear_team_llm_selection(client, db_session, make
     assert db_session.get(TeamLlmConfig, config.id) is not None
 
 
+def test_system_admin_can_provision_assign_and_leader_select_deidentification_provider(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Deid")
+    make_user(email="deid-admin@example.com", password="password-1", is_system_admin=True)
+    make_user(email="deid-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+
+    login(client, email="deid-admin@example.com", password="password-1")
+    listed = client.get("/api/v1/deidentification-providers")
+    assert listed.status_code == 200
+    assert any(item["adapter_kind"] == "native_presidio" and item["is_builtin"] for item in listed.json())
+
+    created = client.post(
+        "/api/v1/deidentification-providers",
+        json={
+            "label": "Clinic REST Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9100",
+            "detect_path": "/detect",
+            "auth_mode": "bearer",
+            "bearer_token": "secret-token",
+            "request_text_field": "text",
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "entity_type_map_json": {"PATIENT": "PERSON"},
+        },
+    )
+    assert created.status_code == 200
+    provider_id = created.json()["id"]
+
+    assigned = client.post(
+        "/api/v1/deidentification-provider-assignments",
+        json={"team_id": str(team.id), "provider_id": provider_id},
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["team_id"] == str(team.id)
+    assert assigned.json()["provider_id"] == provider_id
+
+    login(client, email="deid-leader@example.com", password="password-2")
+    options = client.get("/api/v1/deidentification-selection/options")
+    assert options.status_code == 200
+    option_ids = [item["id"] for item in options.json()]
+    assert provider_id in option_ids
+    assert any(item["is_builtin"] for item in options.json())
+
+    selected = client.post("/api/v1/deidentification-selection", json={"provider_id": provider_id})
+    assert selected.status_code == 200
+    body = selected.json()
+    assert body["provider_id"] == provider_id
+    assert body["selected_provider_label"] == "Clinic REST Deid"
+    assert body["selected_provider_adapter_kind"] == "generic_rest"
+
+    persisted = db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id))
+    assert persisted is not None
+    assert str(persisted.provider_id) == provider_id
+
+    cleared = client.delete("/api/v1/deidentification-selection")
+    assert cleared.status_code == 204
+    assert client.get("/api/v1/deidentification-selection").json() is None
+
+
+def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_token(
+    client,
+    make_user,
+    make_deidentification_provider,
+):
+    admin = make_user(email="deid-secret-admin@example.com", password="password-1", is_system_admin=True)
+    existing_provider = make_deidentification_provider(
+        actor=admin,
+        label="No Secret Yet",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        has_secret=False,
+    )
+
+    login(client, email="deid-secret-admin@example.com", password="password-1")
+
+    secret_header = client.post(
+        "/api/v1/deidentification-providers",
+        json={
+            "label": "Header Secret",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://deid.example.com",
+            "detect_path": "/detect",
+            "auth_mode": "none",
+            "extra_headers_json": {"Authorization": "Bearer raw-secret"},
+        },
+    )
+    assert secret_header.status_code == 422
+
+    secret_body = client.post(
+        "/api/v1/deidentification-providers",
+        json={
+            "label": "Body Secret",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://deid.example.com",
+            "detect_path": "/detect",
+            "auth_mode": "none",
+            "extra_body_json": {"api_key": "raw-secret"},
+        },
+    )
+    assert secret_body.status_code == 422
+
+    missing_token = client.post(
+        "/api/v1/deidentification-providers",
+        json={
+            "provider_id": str(existing_provider.id),
+            "label": "No Secret Yet",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://deid.example.com",
+            "detect_path": "/detect",
+            "auth_mode": "bearer",
+        },
+    )
+    assert_error(
+        missing_token,
+        status_code=422,
+        code="business_rule_violation",
+        message="Bearer token is required when configuring bearer-auth de-identification provider",
+    )
+
+
+def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commit_failure(
+    db_session,
+    make_user,
+    make_deidentification_provider,
+    monkeypatch,
+):
+    from app.schemas import DeidentificationProviderUpsert
+    from app.services.deidentification import upsert_deidentification_provider
+
+    admin = make_user(email="deid-commit-fail-admin@example.com", password="password-1", is_system_admin=True)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Commit Fail Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.bearer,
+        has_secret=True,
+    )
+    old_secret_ref = provider.vault_secret_ref
+    new_secret_ref = f"secret:openscribe/deidentification/provider/{provider.id}/replacement"
+    deleted_secret_refs: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.deidentification.write_deidentification_bearer_token",
+        lambda *, provider_id, bearer_token, secret_id=None: new_secret_ref,
+    )
+    monkeypatch.setattr(
+        "app.services.deidentification.delete_deidentification_bearer_token",
+        lambda *, provider_id, secret_ref=None: deleted_secret_refs.append(secret_ref or ""),
+    )
+
+    def fail_commit():
+        raise RuntimeError("synthetic commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+
+    with pytest.raises(RuntimeError, match="synthetic commit failure"):
+        upsert_deidentification_provider(
+            db_session,
+            admin,
+            DeidentificationProviderUpsert(
+                provider_id=provider.id,
+                label="Commit Fail Deid",
+                adapter_kind=DeidentificationAdapterKind.generic_rest,
+                base_url="https://deid.example.com",
+                detect_path="/detect",
+                auth_mode=DeidentificationAuthMode.bearer,
+                bearer_token="new-secret",
+            ),
+        )
+
+    assert deleted_secret_refs == [new_secret_ref]
+    db_session.rollback()
+    assert db_session.get(DeidentificationProvider, provider.id).vault_secret_ref == old_secret_ref
+
+
+def test_deidentification_provider_delete_defers_vault_cleanup_until_after_db_commit(
+    client,
+    db_session,
+    make_user,
+    make_deidentification_provider,
+    monkeypatch,
+):
+    admin = make_user(email="deid-delete-vault-admin@example.com", password="password-1", is_system_admin=True)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Delete Vault Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.bearer,
+        has_secret=True,
+    )
+    old_secret_ref = provider.vault_secret_ref
+    deleted_secret_refs: list[str] = []
+
+    def fake_delete_secret(*, provider_id, secret_ref=None):
+        assert db_session.get(DeidentificationProvider, provider.id) is None
+        deleted_secret_refs.append(secret_ref or "")
+
+    monkeypatch.setattr("app.services.deidentification.delete_deidentification_bearer_token", fake_delete_secret)
+
+    login(client, email="deid-delete-vault-admin@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/deidentification-providers/{provider.id}")
+
+    assert deleted.status_code == 204
+    assert deleted_secret_refs == [old_secret_ref]
+
+
+def test_leader_cannot_select_unassigned_deidentification_provider(client, make_team, make_user, make_deidentification_provider):
+    team = make_team(name="Clinic Deid Unassigned")
+    admin = make_user(email="deid-unassigned-admin@example.com", password="password-1", is_system_admin=True)
+    make_user(email="deid-unassigned-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Unassigned REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9200",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+    )
+
+    login(client, email="deid-unassigned-leader@example.com", password="password-2")
+    options = client.get("/api/v1/deidentification-selection/options")
+    assert options.status_code == 200
+    assert all(item["id"] != str(provider.id) for item in options.json())
+
+    rejected = client.post("/api/v1/deidentification-selection", json={"provider_id": str(provider.id)})
+    assert_error(rejected, status_code=404, code="not_found", message="Selectable de-identification provider not found")
+
+
+def test_deidentification_runtime_falls_back_to_builtin_when_selection_is_inactive(
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+):
+    from app.services.deidentification import BUILTIN_DEIDENTIFICATION_PROVIDER_ID, active_team_deidentification_provider
+
+    team = make_team(name="Clinic Deid Fallback")
+    admin = make_user(email="deid-fallback-admin@example.com", password="password-1", is_system_admin=True)
+    inactive_provider = make_deidentification_provider(
+        actor=admin,
+        label="Inactive REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        is_active=False,
+    )
+    make_deidentification_provider_assignment(team=team, provider=inactive_provider, actor=admin)
+    make_deidentification_selection(team=team, provider=inactive_provider, actor=admin)
+
+    provider = active_team_deidentification_provider(db_session, team_id=team.id)
+
+    assert provider.id == BUILTIN_DEIDENTIFICATION_PROVIDER_ID
+    assert provider.adapter_kind is DeidentificationAdapterKind.native_presidio
+
+
+def test_ensure_builtin_deidentification_provider_does_not_commit_caller_transaction(db_session):
+    from app.services.deidentification import BUILTIN_DEIDENTIFICATION_PROVIDER_ID, ensure_builtin_deidentification_provider
+
+    team_id = uuid4()
+    team = Team(
+        id=team_id,
+        name="Rollback Builtin Provider Clinic",
+        name_key=f"rollback-builtin-provider-{team_id}",
+    )
+    db_session.add(team)
+
+    provider = ensure_builtin_deidentification_provider(db_session)
+
+    assert provider.id == BUILTIN_DEIDENTIFICATION_PROVIDER_ID
+    db_session.rollback()
+    assert db_session.get(Team, team_id) is None
+    assert db_session.get(DeidentificationProvider, BUILTIN_DEIDENTIFICATION_PROVIDER_ID) is None
+
+
+def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_fallback(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+):
+    team_with_external = make_team(name="Clinic External Deid")
+    team_builtin = make_team(name="Clinic Builtin Deid")
+    admin = make_user(email="deid-runtime-admin@example.com", password="password-1", is_system_admin=True)
+    owner_external = make_user(email="deid-runtime-owner1@example.com", password="password-2", team=team_with_external, team_role=TeamRole.user)
+    owner_builtin = make_user(email="deid-runtime-owner2@example.com", password="password-3", team=team_builtin, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Runtime REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9300",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+    )
+    make_deidentification_provider_assignment(team=team_with_external, provider=provider, actor=admin)
+    make_deidentification_selection(team=team_with_external, provider=provider, actor=admin)
+
+    def make_version(*, owner: User, text_value: str) -> TranscriptVersion:
+        transcript = Transcript(
+            owner_user_id=owner.id,
+            team_id=owner.team_id,
+            title="Redaction source",
+            current_draft_text_encrypted=encrypt_text_for_owner(
+                db_session,
+                owner_user_id=owner.id,
+                table="transcripts",
+                field="current_draft_text_encrypted",
+                record_id=uuid4(),
+                plaintext=text_value,
+            ),
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=owner.created_at,
+        )
+        db_session.add(transcript)
+        db_session.flush()
+        transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            plaintext=text_value,
+        )
+        version = TranscriptVersion(
+            transcript_id=transcript.id,
+            version_no=1,
+            text_encrypted=encrypt_text_for_owner(
+                db_session,
+                owner_user_id=owner.id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=uuid4(),
+                plaintext=text_value,
+            ),
+        )
+        db_session.add(version)
+        db_session.flush()
+        version.text_encrypted = encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version.id,
+            plaintext=text_value,
+        )
+        db_session.add(transcript)
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(version)
+        return version
+
+    external_version = make_version(owner=owner_external, text_value="John Smith reports headaches.")
+    builtin_version = make_version(owner=owner_builtin, text_value="Jane Doe reports dizziness.")
+
+    captured_provider_ids: list[UUID] = []
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+    from app.services.deidentification import BUILTIN_DEIDENTIFICATION_PROVIDER_ID
+
+    def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
+        captured_provider_ids.append(provider.id)
+        name = "John Smith" if "John Smith" in text else "Jane Doe"
+        return DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len(name), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub-model",
+        )
+
+    monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
+
+    external_run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=external_version)
+    builtin_run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=builtin_version)
+
+    assert captured_provider_ids[0] == provider.id
+    assert captured_provider_ids[1] == BUILTIN_DEIDENTIFICATION_PROVIDER_ID
+    assert external_run.api_provider == "Runtime REST Deid"
+    assert builtin_run.api_provider == "Built-in Native Presidio"
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner_external.id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=external_run.id,
+        stored_value=external_run.redacted_text_encrypted,
+    ) == "[PHI-1] reports headaches."
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner_builtin.id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=builtin_run.id,
+        stored_value=builtin_run.redacted_text_encrypted,
+    ) == "[PHI-1] reports dizziness."
+
+
+def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
+    db_session,
+    monkeypatch,
+    make_user,
+    make_deidentification_provider,
+):
+    from app.services.redaction import redact_text_with_mapping
+
+    admin = make_user(email="deid-span-admin@example.com", password="password-1", is_system_admin=True)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="REST Span Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        response_score_field="score",
+        entity_type_map_json={"NAME": "PERSON"},
+    )
+    text = "Patient John Smith has pain 5/10 today."
+    name_start = text.index("John Smith")
+    pain_start = text.index("5/10")
+    today_start = text.index("today")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "entities": [
+                    {"start": name_start - 1, "end": name_start + len("John Smith"), "entity_type": "NAME", "score": 0.99},
+                    {"start": pain_start, "end": pain_start + len("5/10"), "entity_type": "PERSON", "score": 0.99},
+                    {"start": today_start, "end": today_start + len("today"), "entity_type": "DATE_TIME", "score": 0.99},
+                    {"start": 0, "end": len("Patient"), "entity_type": "PERSON", "score": 0.1},
+                ]
+            }
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeResponse())
+
+    result = redact_text_with_mapping(
+        db_session,
+        text,
+        provider=provider,
+        score_threshold=0.35,
+        start_index=3,
+    )
+
+    assert result["redacted_text"] == "Patient [PHI-3] has pain 5/10 today."
+    assert result["phi_index"] == [
+        {"index": 3, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-3]"}
+    ]
+
+
 def test_user_can_set_llm_preference_and_falls_back_to_team_default(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -1859,7 +2367,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Visit summary","content":"Generated note body"}', {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
+        lambda **kwargs: ('{"title":"Visit summary","content":"Generated note body"}', {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
     )
 
     login(client, email="leader@example.com", password="password-2")
@@ -1934,6 +2442,8 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert generated_rows.status_code == 200
     assert len(generated_rows.json()) == 1
     assert generated_rows.json()[0]["edited_output_text_encrypted"] == "Generated note body"
+    assert generated_rows.json()[0]["input_token_count"] == 123
+    assert generated_rows.json()[0]["output_token_count"] == 45
 
     versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
     assert len(versions) == 1
@@ -1989,7 +2499,7 @@ def test_template_generation_supports_ollama_adapter(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_ollama",
-        lambda **kwargs: ('{"title":"Ollama summary","content":"Ollama note body"}', {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Ollama summary","content":"Ollama note body"}', {"input_tokens": 20, "output_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
     )
 
     login(client, email="owner-ollama@example.com", password="password-2")
@@ -2050,7 +2560,7 @@ def test_template_generation_supports_bedrock_adapter(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Bedrock summary","content":"Bedrock note body"}', {"prompt_tokens": 12, "completion_tokens": 18, "total_tokens": 30, "duration_ms": 20}),
+        lambda **kwargs: ('{"title":"Bedrock summary","content":"Bedrock note body"}', {"input_tokens": 12, "output_tokens": 18, "total_tokens": 30, "duration_ms": 20}),
     )
 
     login(client, email="owner-bedrock-template@example.com", password="password-2")
@@ -2115,7 +2625,7 @@ def test_structured_emis_template_generation_persists_sections(
         "app.services.templates._generate_freeform_output_openai",
         lambda **kwargs: (
             '{"title":"Chest review","content":{"problem":"Asthma flare.","history":"Cough improving.","tasks":"Repeat peak flow diary."}}',
-            {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30, "duration_ms": 25},
+            {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25},
         ),
     )
 
@@ -2476,8 +2986,8 @@ def test_generate_freeform_output_ollama_streams_chunks_and_collects_usage(monke
     )
 
     assert generated_text == '{"title":"Visit summary","content":"Body text"}'
-    assert usage["prompt_tokens"] == 17
-    assert usage["completion_tokens"] == 23
+    assert usage["input_tokens"] == 17
+    assert usage["output_tokens"] == 23
     assert usage["total_tokens"] == 40
     assert usage["provider_duration_ms"] == 9
 
@@ -2542,7 +3052,7 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Please arrange repeat bloods in two weeks and advise review if symptoms persist.", {"prompt_tokens": 12, "completion_tokens": 22, "total_tokens": 34, "duration_ms": 10}),
+        lambda **kwargs: ("Please arrange repeat bloods in two weeks and advise review if symptoms persist.", {"input_tokens": 12, "output_tokens": 22, "total_tokens": 34, "duration_ms": 10}),
     )
 
     login(client, email="owner-followup@example.com", password="password-2")
@@ -2631,7 +3141,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         lambda db, *, transcript_version: run,
     )
 
-    def fake_redact_transient_text(text: str, *, start_index: int):
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
         return {
             "redacted_text": "Write a note for [PHI-2].",
             "phi_mapping": {"phi-2": {"type": "PERSON", "value": "John Smith"}},
@@ -2650,7 +3160,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         assert "Write a note for [PHI-2]." in kwargs["user_message"]
         return (
             '{"title":"[PHI-1] review","content":"[PHI-1] should rest and [PHI-2] should book review."}',
-            {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
         )
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
@@ -2710,7 +3220,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
         lambda db, *, transcript_version: run,
     )
 
-    def fake_redact_transient_text(text: str, *, start_index: int):
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
         if text.startswith("John Smith reports headaches."):
             return {
                 "redacted_text": f"[PHI-2] reports headaches.{DICTATION_SOURCE_SPLIT_MARKER}[PHI-3] should book blood tests.",
@@ -2744,7 +3254,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
         captured["user_message"] = kwargs["user_message"]
         return (
             '{"title":"[PHI-2] review","content":"[PHI-3] should book review."}',
-            {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
         )
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
@@ -2808,7 +3318,7 @@ def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
 
     monkeypatch.setattr(
         "app.services.redaction.redact_text_with_mapping",
-        lambda text, **kwargs: {
+        lambda db, text, **kwargs: {
             "redacted_text": "[PHI-1] reports headaches.",
             "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
             "phi_index": [{"index": 1, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]"}],
@@ -2879,7 +3389,7 @@ def test_process_generated_document_uses_first_note_title_to_fill_default_sessio
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Ankle review","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Ankle review","content":"Generated note body"}', {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -2922,7 +3432,7 @@ def test_process_generated_document_does_not_overwrite_custom_session_title(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Improvement review","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Improvement review","content":"Generated note body"}', {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -2979,7 +3489,7 @@ def test_process_generated_document_fails_on_invalid_placeholder_output(
     monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Broken review","content":"[PHI-999] should rest."}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Broken review","content":"[PHI-999] should rest."}', {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -3021,7 +3531,7 @@ def test_process_generated_document_fails_on_invalid_note_json(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("not-json", {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ("not-json", {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -3714,7 +4224,7 @@ def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generatio
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Please arrange repeat bloods in one week and ask the patient to book a GP review if symptoms persist.", {"prompt_tokens": 21, "completion_tokens": 33, "total_tokens": 54, "duration_ms": 10}),
+        lambda **kwargs: ("Please arrange repeat bloods in one week and ask the patient to book a GP review if symptoms persist.", {"input_tokens": 21, "output_tokens": 33, "total_tokens": 54, "duration_ms": 10}),
     )
 
     login(client, email="leader-quick-action@example.com", password="password-2")
@@ -3862,7 +4372,7 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Snapshot note","content":"Generated note body"}', {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: ('{"title":"Snapshot note","content":"Generated note body"}', {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     from app.services.templates import delete_personal_template as delete_personal_template_service
@@ -3990,7 +4500,7 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     document = queue_quick_action_generation(db_session, owner, transcript_id=transcript.id, quick_action_id=quick_action.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("SMS body", {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
+        lambda **kwargs: ("SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
     )
 
     from app.services.templates import delete_personal_quick_action as delete_personal_quick_action_service
@@ -4135,7 +4645,7 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
 
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("SMS body", {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
+        lambda **kwargs: ("SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -4265,7 +4775,7 @@ def test_process_generated_document_logs_usage_metadata(
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Usage note","content":"Generated note body"}', {"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
+        lambda **kwargs: ('{"title":"Usage note","content":"Generated note body"}', {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
     )
 
     caplog.set_level("INFO", logger="openscribe.usage")
@@ -4613,6 +5123,107 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
     assert refreshed_request.linked_user_id is None
     assert refreshed_request.reviewed_by_user_id == leader.id
     assert deleted_secret_refs == ["secret:openscribe/transcript-ingestion/user-delete/source-audio"]
+
+
+def test_system_admin_delete_reassigns_metadata_foreign_keys(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_default_template,
+    make_default_quick_action,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_stt_config,
+    make_stt_selection,
+    make_llm_config,
+    make_llm_selection,
+):
+    actor = make_user(email="admin-delete-metadata-actor@example.com", password="password-1", is_system_admin=True)
+    target = make_user(email="admin-delete-metadata-target@example.com", password="password-2", is_system_admin=True)
+    team = make_team(name="Metadata Delete Clinic")
+    leader = make_user(email="leader-delete-metadata@example.com", password="password-3", team=team, team_role=TeamRole.leader)
+    default_template = make_default_template(actor=target, name="Metadata default template")
+    default_quick_action = make_default_quick_action(actor=target, name="Metadata default action")
+    deidentification_provider = make_deidentification_provider(
+        actor=target,
+        label="Metadata REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+    )
+    assignment = make_deidentification_provider_assignment(team=team, provider=deidentification_provider, actor=target)
+    selection = make_deidentification_selection(team=team, provider=deidentification_provider, actor=target)
+    stt_config = make_stt_config(team=team, actor=target, label="Metadata STT")
+    stt_selection = make_stt_selection(config=stt_config, actor=target)
+    llm_config = make_llm_config(team=team, actor=target, label="Metadata LLM")
+    llm_selection = make_llm_selection(config=llm_config, actor=target)
+    team_template = PromptTemplate(
+        scope=TemplateScope.team,
+        owner_user_id=None,
+        team_id=team.id,
+        name="Metadata team template",
+        created_by_user_id=leader.id,
+    )
+    db_session.add(team_template)
+    db_session.flush()
+    team_template_version = PromptTemplateVersion(
+        template_id=team_template.id,
+        version_no=1,
+        mode=TemplateMode.freeform,
+        prompt_text="Team prompt",
+        created_by_user_id=leader.id,
+    )
+    team_quick_action = QuickAction(
+        scope=TemplateScope.team,
+        owner_user_id=None,
+        team_id=team.id,
+        name="Metadata team action",
+        created_by_user_id=leader.id,
+    )
+    db_session.add(team_quick_action)
+    db_session.flush()
+    team_quick_action_version = QuickActionVersion(
+        quick_action_id=team_quick_action.id,
+        version_no=1,
+        mode=TemplateMode.freeform,
+        prompt_text="Team action",
+        created_by_user_id=leader.id,
+    )
+    db_session.add_all([team_template_version, team_quick_action_version])
+    db_session.commit()
+
+    login(client, email="admin-delete-metadata-actor@example.com", password="password-1")
+    deleted_target = client.delete(f"/api/v1/users/{target.id}")
+    deleted_leader = client.delete(f"/api/v1/users/{leader.id}")
+
+    assert deleted_target.status_code == 204
+    assert deleted_leader.status_code == 204
+    assert db_session.get(User, target.id) is None
+    assert db_session.get(User, leader.id) is None
+
+    assert db_session.get(DefaultPromptTemplate, default_template.id).created_by_user_id == actor.id
+    default_template_version = db_session.scalar(select(DefaultPromptTemplateVersion).where(DefaultPromptTemplateVersion.default_template_id == default_template.id))
+    assert default_template_version.created_by_user_id == actor.id
+    assert db_session.get(DefaultQuickAction, default_quick_action.id).created_by_user_id == actor.id
+    default_quick_action_version = db_session.scalar(select(DefaultQuickActionVersion).where(DefaultQuickActionVersion.default_quick_action_id == default_quick_action.id))
+    assert default_quick_action_version.created_by_user_id == actor.id
+    refreshed_deidentification_provider = db_session.get(DeidentificationProvider, deidentification_provider.id)
+    assert refreshed_deidentification_provider.created_by_user_id == actor.id
+    assert refreshed_deidentification_provider.updated_by_user_id == actor.id
+    assert db_session.get(TeamDeidentificationProviderAssignment, assignment.id).assigned_by_user_id == actor.id
+    assert db_session.get(TeamDeidentificationSelection, selection.id).selected_by_user_id == actor.id
+    assert db_session.get(TeamSttConfig, stt_config.id).created_by_user_id == actor.id
+    assert db_session.get(TeamSttConfig, stt_config.id).updated_by_user_id == actor.id
+    assert db_session.get(TeamSttSelection, stt_selection.id).selected_by_user_id == actor.id
+    assert db_session.get(TeamLlmConfig, llm_config.id).created_by_user_id == actor.id
+    assert db_session.get(TeamLlmConfig, llm_config.id).updated_by_user_id == actor.id
+    assert db_session.get(TeamLlmSelection, llm_selection.id).selected_by_user_id == actor.id
+    assert db_session.get(PromptTemplate, team_template.id).created_by_user_id == actor.id
+    assert db_session.get(PromptTemplateVersion, team_template_version.id).created_by_user_id == actor.id
+    assert db_session.get(QuickAction, team_quick_action.id).created_by_user_id == actor.id
+    assert db_session.get(QuickActionVersion, team_quick_action_version.id).created_by_user_id == actor.id
 
 
 def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client, db_session, make_team, make_user, monkeypatch):
@@ -6629,6 +7240,156 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     )
     assert refreshed_job is not None
     assert refreshed_job.status is TranscriptIngestionJobStatus.applied
+
+
+def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processing_gap(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-live-stale@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        current_draft_text_encrypted="draft-1",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        next_live_chunk_sequence_no_applied=1,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    stale_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.wav",
+        status=TranscriptIngestionJobStatus.processing,
+        started_at=utcnow() - timedelta(minutes=20),
+    )
+    later_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=2,
+        source_filename="chunk-2.wav",
+        status=TranscriptIngestionJobStatus.completed,
+        result_text_encrypted="second chunk",
+    )
+    db_session.add_all([stale_job, later_job])
+    db_session.commit()
+    monkeypatch.setattr("app.services.transcripts.LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS", 60)
+
+    login(client, email="owner-live-stale@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["current_draft_text_encrypted"] == "draft-1\nsecond chunk"
+    assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
+    assert detail.json()["status"] == "ready"
+
+    refreshed_stale_job = db_session.get(TranscriptIngestionJob, stale_job.id)
+    assert refreshed_stale_job is not None
+    assert refreshed_stale_job.status is TranscriptIngestionJobStatus.failed
+    assert refreshed_stale_job.error_code == "ingestion_processing_stale"
+    refreshed_later_job = db_session.get(TranscriptIngestionJob, later_job.id)
+    assert refreshed_later_job is not None
+    assert refreshed_later_job.status is TranscriptIngestionJobStatus.applied
+
+
+def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-failed-worker@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    failed_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.wav",
+        status=TranscriptIngestionJobStatus.failed,
+        error_code="ingestion_processing_stale",
+        error_message="Live audio chunk processing timed out before completion",
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("failed ingestion jobs should not be processed by late worker delivery")
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fail_if_called)
+
+    processed = process_transcript_ingestion_job(db_session, job_id=failed_job.id, audio_bytes=b"raw-audio")
+
+    assert processed.status is TranscriptIngestionJobStatus.failed
+    assert processed.error_code == "ingestion_processing_stale"
+
+
+def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_job(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-midflight-failed@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+
+    def fake_transcribe_with_stt_snapshot(db, **kwargs):
+        refreshed_job = db.get(TranscriptIngestionJob, job.id)
+        refreshed_transcript = db.get(Transcript, transcript.id)
+        assert refreshed_job is not None
+        assert refreshed_transcript is not None
+        refreshed_job.status = TranscriptIngestionJobStatus.failed
+        refreshed_job.error_code = "ingestion_processing_stale"
+        refreshed_job.error_message = "Live audio chunk processing timed out before completion"
+        refreshed_transcript.status = TranscriptStatus.failed
+        db.add(refreshed_job)
+        db.add(refreshed_transcript)
+        db.commit()
+        return "late text"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id, audio_bytes=b"raw-audio")
+
+    assert processed.status is TranscriptIngestionJobStatus.failed
+    assert processed.error_code == "ingestion_processing_stale"
+    assert processed.result_text_encrypted is None
+    refreshed_transcript = db_session.get(Transcript, transcript.id)
+    assert refreshed_transcript is not None
+    assert refreshed_transcript.status is TranscriptStatus.failed
 
 
 def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(client, db_session, make_team, make_user):

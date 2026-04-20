@@ -1,4 +1,5 @@
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@1.8.0"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
@@ -1478,7 +1479,18 @@ box-shadow: 0 1px 2px rgba(26, 32, 44, 0.04);
 margin-bottom: 0;
 }
 
+.structured-section-header {
+display: flex;
+align-items: stretch;
+justify-content: space-between;
+gap: 0.5rem;
+background: linear-gradient(90deg, rgba(224, 242, 245, 0.58), rgba(255, 255, 255, 0.92));
+border-bottom: 1px solid rgba(226, 222, 214, 0.82);
+}
+
 .structured-section-title {
+flex: 1;
+min-width: 0;
 font-family: 'Fraunces', serif;
 font-size: 1rem;
 font-weight: 500;
@@ -1486,8 +1498,29 @@ letter-spacing: 0;
 color: var(--fg);
 margin: 0;
 padding: 0.7rem 1rem 0.62rem;
-background: linear-gradient(90deg, rgba(224, 242, 245, 0.58), rgba(255, 255, 255, 0.92));
-border-bottom: 1px solid rgba(226, 222, 214, 0.82);
+}
+
+.structured-section-copy-button {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+flex: 0 0 auto;
+width: 2.35rem;
+min-height: 2.35rem;
+margin: 0.18rem 0.45rem 0.18rem 0;
+border: 1px solid rgba(226, 222, 214, 0.95);
+border-radius: 0.45rem;
+background: rgba(255, 255, 255, 0.78);
+color: var(--muted);
+transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.structured-section-copy-button:hover,
+.structured-section-copy-button:focus-visible {
+color: var(--fg);
+border-color: rgba(61, 122, 140, 0.65);
+background: rgba(255, 255, 255, 0.96);
+outline: none;
 }
 
 .transcript-content {

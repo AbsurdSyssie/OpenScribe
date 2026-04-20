@@ -64,10 +64,62 @@
     main {
       position: relative;
       z-index: 1;
-      max-width: 1240px;
-      margin: 0 auto;
       display: grid;
       gap: 24px;
+      min-width: 0;
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    .home-pane {
+      min-width: 0;
+    }
+
+    .home-pane__header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .home-pane__header p {
+      margin-top: 8px;
+      max-width: 72ch;
+      color: var(--muted);
+    }
+
+    .home-pane__header-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      min-height: 28px;
+      padding: 6px 10px 6px 0;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--accent);
+      opacity: 0.9;
     }
 
     h1, h2, h3 {
@@ -497,7 +549,6 @@ a > button { text-decoration: none; }
     .actions-inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .actions-inline form, .actions-inline a { margin: 0; }
 
-    .tab-header { display: flex; justify-content: flex-end; }
     .tab-shell__nav {
       display: none; gap: 2px; align-items: center; width: fit-content;
       padding: 4px; border-radius: var(--radius-md);
@@ -517,6 +568,16 @@ a > button { text-decoration: none; }
       background: var(--card); color: var(--ink); font-weight: 500;
       border-color: var(--border); box-shadow: var(--shadow-xs);
     }
+    .tab-stack {
+      padding-top: 22px;
+      border-top: 1px solid var(--border);
+    }
+
+    .tab-stack .settings-header {
+      margin-bottom: 0;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
     .tab-shell, .tab-stack { display: grid; gap: 24px; }
 
 .overview-grid {
@@ -525,8 +586,8 @@ a > button { text-decoration: none; }
   grid-template-columns: 1fr 1.2fr;
 }
 .overview-grid .panel {
-background: var(--card);
-box-shadow: var(--shadow-xs);
+  background: var(--card);
+  box-shadow: var(--shadow-xs);
 }
 @media (max-width: 900px) {
 .overview-grid { grid-template-columns: 1fr; }
@@ -1359,7 +1420,6 @@ padding: 1rem 0;
   .tab-shell__nav.is-tabs-ready {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); width: 100%;
   }
-  .tab-header { justify-content: stretch; }
   .modal-shell { padding: 12px; }
   .modal-dialog { padding: 20px; border-radius: var(--radius-lg); }
   .section-headline { flex-direction: column; align-items: flex-start; gap: 12px; }
@@ -1379,20 +1439,36 @@ padding: 1rem 0;
   </style>
 </head>
 <body>
-  <main>
-    <section class="panel topbar">
-      <div class="hero-copy">
-        <div class="hero-row">
+  <main class="home-pane">
+      <header class="home-pane__header">
+        <div>
+          <div class="eyebrow">Clinical workspace</div>
           <h1>Your OpenScribe home</h1>
-          <div class="actions-inline">
-            <button type="button" class="btn-secondary" data-home-guide>Guide</button>
-            <a href="/transcribe"><button type="button" class="btn-primary" data-tour-target="workspace-button">Open consultation notes</button></a>
-            <form method="post" action="/logout"><button type="submit" class="btn-secondary">Sign out</button></form>
-          </div>
+          <p>Keep overview fast. Use sections below for settings, assets, service policy, team admin.</p>
         </div>
+        <div class="home-pane__header-actions">
+          <div class="pill role">{{ current_user.team_role.value if current_user.team_role else "user" }}</div>
+          <form method="post" action="/logout"><button type="submit" class="btn-secondary">Sign out</button></form>
+        </div>
+      </header>
+
+      <nav class="tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Home sections">
+        <button type="button" class="tab-shell__tab" data-tab-target="overview" data-tab-url="{{ home_page_route }}?tab=overview" role="tab" aria-selected="true" data-tour-target="overview-tab">Overview</button>
+        {% if not current_user.is_system_admin and current_user.team_id %}
+        <button type="button" class="tab-shell__tab" data-tab-target="templates" data-tab-url="{{ home_page_route }}?tab=templates" role="tab" aria-selected="false" data-tour-target="templates-tab">Templates</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" data-tab-url="{{ home_page_route }}?tab=quick-actions" role="tab" aria-selected="false" data-tour-target="saved-prompts-tab">Quick actions</button>
+        {% endif %}
+        {% if is_manager %}
+        <button type="button" class="tab-shell__tab" data-tab-target="ai-services" data-tab-url="{{ home_page_route }}?tab=ai-services" role="tab" aria-selected="false" data-tour-target="ai-services-tab">AI Services</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="team-management" data-tab-url="{{ home_page_route }}?tab=team-management" role="tab" aria-selected="false" data-tour-target="team-tab">Team</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="account-requests" data-tab-url="{{ home_page_route }}?tab=account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
+        {% endif %}
+      </nav>
+
+    <section class="topbar">
+      <div class="hero-copy">
         <div class="hero-meta">
           <p>Signed in as {{ current_user.full_name or current_user.email }}.</p>
-          <div class="pill role">{{ current_user.team_role.value if current_user.team_role else "user" }}</div>
         </div>
       </div>
     </section>
@@ -1427,21 +1503,6 @@ padding: 1rem 0;
     <div class="panel flash {{ message_kind }}">{{ message }}</div>
     {% endif %}
 
-    <div class="tab-header">
-      <nav class="tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Home sections">
-        <button type="button" class="tab-shell__tab" data-tab-target="overview" role="tab" aria-selected="true" data-tour-target="overview-tab">Overview</button>
-        {% if not current_user.is_system_admin and current_user.team_id %}
-        <button type="button" class="tab-shell__tab" data-tab-target="templates" role="tab" aria-selected="false" data-tour-target="templates-tab">Templates</button>
-        <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" role="tab" aria-selected="false" data-tour-target="saved-prompts-tab">Quick actions</button>
-        {% endif %}
-        {% if is_manager %}
-        <button type="button" class="tab-shell__tab" data-tab-target="ai-services" role="tab" aria-selected="false" data-tour-target="ai-services-tab">AI Services</button>
-        <button type="button" class="tab-shell__tab" data-tab-target="team-management" role="tab" aria-selected="false" data-tour-target="team-tab">Team</button>
-        <button type="button" class="tab-shell__tab" data-tab-target="account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
-        {% endif %}
-      </nav>
-    </div>
-
     <div class="tab-shell" data-tab-shell data-default-tab="{{ active_home_tab }}">
 
 {# ── OVERVIEW ── #}
@@ -1457,9 +1518,10 @@ padding: 1rem 0;
 <p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to set it up.</small></p>
 {% endif %}
 <div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open consultation notes</button></a></div>
+<div style="margin-top: 10px;"><button type="button" class="btn-secondary btn-sm" data-home-guide>Guide</button></div>
 </div>
 <div class="panel">
-<div class="section-kicker">Preferences</div><h2>Your service preferences</h2>
+<div class="section-kicker">Preferences</div><h2>Your writing assistant preference</h2>
 <p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Choose which speech and writing services to use for your consultations.</p>
 {% if not stt_selection and not llm_selection %}
 <p style="margin-top: 14px;"><small>Your team has no services configured yet. Contact your team leader to set them up.</small></p>
@@ -1510,6 +1572,7 @@ padding: 1rem 0;
 <h2>Templates</h2>
 <span class="settings-header__hint">Save reusable templates for yourself or your team.</span>
 </div>
+<p><small>Sectioned EMIS note templates live here too.</small></p>
 <div class="section-action-group" style="margin-bottom:1rem;">
 <a href="/home/templates/editor?scope=personal{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-primary btn-sm">New personal template</button></a>
 {% if is_manager %}<a href="/home/templates/editor?scope=team{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-secondary btn-sm">New team template</button></a>{% endif %}
@@ -1839,14 +1902,14 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 <section class="tab-stack" data-tab-panel="team-management" data-tour-target="team-panel">
 <div class="settings-header">
 <h2>Team members</h2>
-<span class="settings-header__hint">Manage {{ current_user.team.name if current_user.team else "your team" }}.</span>
+<span class="settings-header__hint">Manage members and configuration for {{ current_user.team.name if current_user.team else "your team" }}.</span>
 </div>
 <section class="member-panel">
 <details class="create-member-details">
 <summary class="create-member-toggle">
 <span style="display:flex;align-items:center;gap:8px;">
 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
-Add member
+Create a new team member
 </span>
 <svg class="create-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
 </summary>
@@ -2066,9 +2129,10 @@ const tourOverlay = document.querySelector('[data-tour-overlay]');
       /* ── Tab switching ── */
       document.querySelectorAll('[data-tab-shell]').forEach((shell) => {
         const navContainer = shell.previousElementSibling;
-        const nav = navContainer?.matches('[data-tab-nav]')
-          ? navContainer
-          : navContainer?.querySelector('[data-tab-nav]');
+        const nav = document.querySelector('[data-tab-nav]')
+          || (navContainer?.matches('[data-tab-nav]')
+            ? navContainer
+            : navContainer?.querySelector('[data-tab-nav]'));
         const tabs = Array.from(nav?.querySelectorAll('[data-tab-target]') || []);
         const panels = Array.from(shell.querySelectorAll('[data-tab-panel]'));
         if (!nav || !tabs.length || !panels.length) return;

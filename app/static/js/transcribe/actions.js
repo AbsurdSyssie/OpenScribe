@@ -4,6 +4,7 @@ export function attachTranscribeActions({
   getTranscriptId,
   getActiveIngestionMode,
   getIsLiveCaptureUiActive,
+  getIsRecordingSwitchBlocked,
   selectDocumentFromUi,
   showFlash,
   showCopyToast,
@@ -44,6 +45,28 @@ export function attachTranscribeActions({
     const button = event.target.closest('[data-document-id]');
     if (!button) return;
     selectDocumentFromUi('followup', button.dataset.documentId || '');
+  });
+
+  dom.noteDeleteButton?.addEventListener('click', async (event) => {
+    event.preventDefault();
+    const generatedDocumentId = dom.latestGeneratedOutput?.dataset.latestGeneratedId || '';
+    if (!generatedDocumentId) return;
+    if (!window.confirm('Delete this note permanently?')) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        throw new Error(await parseErrorMessage(response, 'Could not delete the note.'));
+      }
+      showFlash('Note deleted.', 'success');
+      await fetchWorkspace();
+    } catch (error) {
+      showFlash(error instanceof Error ? error.message : 'Could not delete the note.', 'error');
+    }
   });
 
   dom.followupHistory?.addEventListener('click', async (event) => {
@@ -145,6 +168,40 @@ export function attachTranscribeActions({
     });
   }
 
+  if (dom.generatedStructuredPanel) {
+    dom.generatedStructuredPanel.addEventListener('click', async (event) => {
+      const copyButton = event.target.closest('[data-copy-structured-section]');
+      if (!copyButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const section = copyButton.closest('[data-generated-structured-section]');
+      const label = section?.dataset?.sectionLabel || '';
+      const lines = structuredEditor.collectStructuredSectionLines(section);
+      if (lines.length === 0) {
+        if (dom.structuredCopyStatus) {
+          dom.structuredCopyStatus.textContent = label ? `No ${label} lines to copy.` : 'No section lines to copy.';
+        }
+        return;
+      }
+      const body = lines.join('\n');
+      const textToCopy = label ? `${label}:\n${body}` : body;
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        if (dom.structuredCopyStatus) {
+          dom.structuredCopyStatus.textContent = `Copied ${label || 'section'} section to the clipboard.`;
+        }
+        showCopyToast();
+      } catch (_) {
+        if (dom.structuredCopyStatus) {
+          dom.structuredCopyStatus.textContent = 'Could not copy the section.';
+        } else {
+          showFlash('Could not copy the section.', 'error');
+        }
+      }
+    });
+  }
+
   if (dom.clearStructuredSelectionButton) {
     dom.clearStructuredSelectionButton.addEventListener('click', () => {
       structuredEditor.clearStructuredSelection();
@@ -180,6 +237,10 @@ export function attachTranscribeActions({
       if (!nextTranscriptId || nextTranscriptId === getTranscriptId()) {
         return;
       }
+      if (getIsRecordingSwitchBlocked?.()) {
+        showFlash('Stop recording before switching consultations.', 'warning');
+        return;
+      }
       const workspace = await fetchWorkspace(nextTranscriptId);
       if (!workspace) {
         window.location.assign(link.href);
@@ -195,6 +256,10 @@ export function attachTranscribeActions({
   if (dom.newSessionForm) {
     dom.newSessionForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (getIsRecordingSwitchBlocked?.()) {
+        showFlash('Stop recording before creating a new consultation.', 'warning');
+        return;
+      }
       try {
         const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';
         const response = await fetch('/api/v1/transcripts/start', {

@@ -182,8 +182,8 @@ def api_skip_recovery_codes(request: Request, context: AuthenticatedContext = De
 
 
 @api.post("/teams", response_model=TeamDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
-def create_team(payload: TeamCreate, _: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return create_team_service(db, payload)
+def create_team(payload: TeamCreate, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return create_team_service(db, payload, actor=context.user)
 
 
 @api.get("/teams", response_model=list[TeamListItem], responses=error_responses)
@@ -296,6 +296,63 @@ def set_llm_selection(payload: LlmSelectionUpsert, context: AuthenticatedContext
 @api.delete("/llm-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
 def clear_llm_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
     clear_team_llm_selection_service(db, context.user, team_id=team_id)
+
+
+@api.get("/deidentification-providers", response_model=list[DeidentificationProviderDetail], responses=error_responses)
+def list_deidentification_providers(context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return [deidentification_provider_response(provider) for provider in list_deidentification_providers_service(db, context.user)]
+
+
+@api.post("/deidentification-providers", response_model=DeidentificationProviderDetail, responses=error_responses)
+def upsert_deidentification_provider(payload: DeidentificationProviderUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return deidentification_provider_response(upsert_deidentification_provider_service(db, context.user, payload))
+
+
+@api.delete("/deidentification-providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_deidentification_provider(provider_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    delete_deidentification_provider_service(db, context.user, provider_id=provider_id)
+
+
+@api.get("/deidentification-provider-assignments", response_model=list[DeidentificationProviderAssignmentDetail], responses=error_responses)
+def list_deidentification_provider_assignments(team_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return [
+        deidentification_provider_assignment_response(item)
+        for item in list_team_deidentification_provider_assignments_service(db, context.user, team_id=team_id)
+    ]
+
+
+@api.post("/deidentification-provider-assignments", response_model=DeidentificationProviderAssignmentDetail, responses=error_responses)
+def assign_deidentification_provider(payload: DeidentificationProviderAssignmentUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return deidentification_provider_assignment_response(assign_deidentification_provider_to_team_service(db, context.user, payload))
+
+
+@api.delete("/deidentification-provider-assignments", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def remove_deidentification_provider_assignment(team_id: UUID, provider_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    remove_deidentification_provider_assignment_service(db, context.user, team_id=team_id, provider_id=provider_id)
+
+
+@api.get("/deidentification-selection", response_model=DeidentificationSelectionDetail | None, responses=error_responses)
+def get_deidentification_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    selection = get_team_deidentification_selection_service(db, context.user, team_id=team_id)
+    return deidentification_selection_response(selection) if selection else None
+
+
+@api.get("/deidentification-selection/options", response_model=list[DeidentificationProviderDetail], responses=error_responses)
+def list_deidentification_selection_options(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    return [
+        deidentification_provider_response(provider)
+        for provider in list_selectable_deidentification_providers_service(db, context.user, team_id=team_id)
+    ]
+
+
+@api.post("/deidentification-selection", response_model=DeidentificationSelectionDetail, responses=error_responses)
+def set_deidentification_selection(payload: DeidentificationSelectionUpsert, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    return deidentification_selection_response(set_team_deidentification_selection_service(db, context.user, payload))
+
+
+@api.delete("/deidentification-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_deidentification_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    clear_team_deidentification_selection_service(db, context.user, team_id=team_id)
 
 
 @api.get("/llm-preference", response_model=UserLlmPreferenceDetail | None, responses=error_responses)

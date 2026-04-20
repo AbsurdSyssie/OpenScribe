@@ -22,6 +22,8 @@ from .db import SessionLocal, get_db
 from .cookie_security import should_set_secure_cookie
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
 from .models import (
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
     GeneratedDocument,
     GeneratedDocumentGeneratorType,
     LlmAdapterKind,
@@ -52,8 +54,16 @@ from .schemas import (
     AccountRequestCreate,
     AccountRequestDetail,
     AccountRequestListItem,
+    DeidentificationProviderAssignmentDetail,
+    DeidentificationProviderAssignmentUpsert,
+    DeidentificationProviderDetail,
+    DeidentificationProviderUpsert,
+    DeidentificationSelectionDetail,
+    DeidentificationSelectionUpsert,
     AccountRequestReject,
     CurrentUserResponse,
+    DefaultPromptTemplateUpsert,
+    DefaultQuickActionUpsert,
     PostConsultationDictationDetail,
     PostConsultationDictationUpdate,
     EMIS_SECTION_KEYS,
@@ -141,6 +151,16 @@ from .services.templates import (
     upsert_team_quick_action as upsert_team_quick_action_service,
     upsert_team_template as upsert_team_template_service,
 )
+from .services.default_assets import (
+    delete_default_quick_action as delete_default_quick_action_service,
+    delete_default_template as delete_default_template_service,
+    duplicate_default_quick_action as duplicate_default_quick_action_service,
+    duplicate_default_template as duplicate_default_template_service,
+    list_default_quick_actions as list_default_quick_actions_service,
+    list_default_templates as list_default_templates_service,
+    upsert_default_quick_action as upsert_default_quick_action_service,
+    upsert_default_template as upsert_default_template_service,
+)
 from .services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     clear_team_llm_selection as clear_team_llm_selection_service,
@@ -155,6 +175,18 @@ from .services.llm import (
     set_team_llm_selection as set_team_llm_selection_service,
     set_user_llm_preference as set_user_llm_preference_service,
     upsert_llm_config as upsert_llm_config_service,
+)
+from .services.deidentification import (
+    assign_deidentification_provider_to_team as assign_deidentification_provider_to_team_service,
+    clear_team_deidentification_selection as clear_team_deidentification_selection_service,
+    delete_deidentification_provider as delete_deidentification_provider_service,
+    get_team_deidentification_selection as get_team_deidentification_selection_service,
+    list_deidentification_providers as list_deidentification_providers_service,
+    list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
+    list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
+    remove_deidentification_provider_assignment as remove_deidentification_provider_assignment_service,
+    set_team_deidentification_selection as set_team_deidentification_selection_service,
+    upsert_deidentification_provider as upsert_deidentification_provider_service,
 )
 from .services.preferences import (
     clear_user_app_preferences as clear_user_app_preferences_service,
@@ -187,6 +219,7 @@ from .services.admin import (
     create_bootstrap_admin,
     create_team as create_team_service,
     create_user as create_user_service,
+    delete_team as delete_team_service,
     delete_user as delete_user_service,
     list_manageable_account_requests as list_manageable_account_requests_service,
     list_manageable_users as list_manageable_users_service,
@@ -251,6 +284,9 @@ from .web.presentation import (
     admin_page_route_from_return_view,
     admin_redirect_url,
     admin_return_view_value,
+    deidentification_provider_assignment_response,
+    deidentification_provider_response,
+    deidentification_selection_response,
     generated_document_redaction_debug_response,
     generated_document_response,
     home_page_route_from_return_view,
@@ -633,6 +669,14 @@ def require_llm_selector(context: AuthenticatedContext = Depends(require_full_co
     raise AppError(403, "forbidden", "LLM selection access required")
 
 
+def require_deidentification_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+    if context.user.is_system_admin:
+        return context
+    if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
+        return context
+    raise AppError(403, "forbidden", "De-identification selection access required")
+
+
 def require_user_manager(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
@@ -668,6 +712,12 @@ def _structured_template_config_from_form(*, section_values: dict[str, str]) -> 
     if not sections:
         return None
     return {"profile": "emis", "sections": sections}
+
+
+def _template_config_from_form(*, mode: TemplateMode, section_values: dict[str, str]) -> dict | None:
+    if mode is not TemplateMode.structured:
+        return None
+    return _structured_template_config_from_form(section_values=section_values)
 
 
 def _structured_context_from_form(*, section_values: dict[str, str]) -> dict[str, list[str]] | None:

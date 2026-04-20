@@ -78,13 +78,16 @@ All coding agents follow architecture + process rules here. Project is privacy-s
 - System-level user deletion immediately deletes:
   - transcript-derived content
   - personal templates/actions
-- Team deletion blocked until cleanup is explicit.
+- Team deletion requires explicit system-admin confirmation and explicit cleanup.
+- Team hard-delete may proceed only when the cleanup path enumerates and removes team users, transcript-derived content, team-scoped assets, provider config/selection rows, usage metadata, linked account requests, and provider credential references.
+- Team deletion must block rather than silently skip unresolved blockers, including any system-admin account still linked to the team.
 
 ### Encryption and secrets
 - HashiCorp Vault is KEK/master-key layer.
 - One DEK per user, created at account creation.
 - Encrypt user-owned confidential content with user DEK.
 - Store provider credentials as Vault references in DB, not raw secrets.
+- Provider credential cleanup must not delete Vault secrets before the DB commit that removes the corresponding references unless compensation or retry cleanup is implemented.
 - Do not log or expose confidential fields.
 
 ### Provider rules
@@ -95,7 +98,9 @@ All coding agents follow architecture + process rules here. Project is privacy-s
 - User chooses one active LLM for all LLM actions until changed.
 - If invalid, fallback is team default.
 - Transcription provider fixed per team in MVP, but active team policy may be selected from admin-provisioned STT options for that team.
-- Pseudonymisation provider fixed globally in MVP.
+- De-identification/pseudonymisation providers are system-admin provisioned. Team leaders may select an assigned active provider for their own team.
+- If no valid team de-identification selection exists, use the built-in legacy/native Presidio provider.
+- Remote de-identification endpoints must use HTTPS unless the endpoint is localhost, LAN/private, or link-local. Raw provider secrets must use Vault-backed bearer-token storage, not arbitrary headers or DB fields.
 
 ---
 

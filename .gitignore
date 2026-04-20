@@ -22,4 +22,6 @@ tests/oscar.mp3
 .tmp_parakeet_both.json
 .tmp_parakeet_segment.json
 .tmp_parakeet_word.json
-.playwright-mcp/ 
+.playwright-mcp/
+
+docs/Compliance/Hazard Log/*

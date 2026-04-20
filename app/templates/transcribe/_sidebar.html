@@ -2,9 +2,7 @@
       <div class="p-5 border-b border-stone">
         <div class="flex items-center gap-3">
           <div class="w-9 h-9 rounded-lg bg-teal-deep flex items-center justify-center">
-            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
-            </svg>
+            <i class="w-5 h-5 text-white" data-lucide="mic"></i>
           </div>
           <div class="min-w-0">
             <h1 class="font-display font-semibold text-ink text-lg leading-none">Ambient Scribe</h1>
@@ -27,9 +25,7 @@
               href="/home"
               class="inline-flex items-center gap-1 rounded-lg border border-stone bg-white px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-slate hover:text-ink hover:border-teal-muted transition"
               aria-label="Return home">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10.75 12 3l9 7.75M5.5 9.5V21h13V9.5"/>
-              </svg>
+              <i class="w-3.5 h-3.5" data-lucide="house" aria-hidden="true"></i>
               Home
             </a>
           </div>
@@ -47,12 +43,9 @@
               class="w-full bg-teal-deep text-white rounded-lg px-4 py-3 font-medium text-sm shadow-sm hover:bg-teal-muted transition flex items-center justify-between gap-3 text-left"
               data-new-session-button
               data-local-busy-protected
-              data-tour-target="new-session"
-              {% if not can_create_new_session %}disabled title="{{ new_session_block_message }}"{% endif %}>
+              data-tour-target="new-session">
               <span class="flex items-center gap-2">
-                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                </svg>
+                <i class="w-4 h-4 flex-shrink-0" data-lucide="plus"></i>
                 <span>Create new consultation</span>
               </span>
               <span class="text-[11px] font-medium opacity-80">Blank session</span>
@@ -67,9 +60,6 @@
               disabled>
               Delete
             </button>
-          </div>
-          <div class="text-xs text-coral{% if can_create_new_session or not new_session_block_message %} hidden{% endif %}" data-new-session-block-message>
-            {{ new_session_block_message or '' }}
           </div>
         </div>
 

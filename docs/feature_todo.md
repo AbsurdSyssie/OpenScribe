@@ -22,6 +22,10 @@ Follow-up tuning:
   - background room noise
   - quiet speaker / laptop mic
 
+# Hazard log
+Make a silence detected for thirty seconds have you finished your consultation? Prompt
+In training, include warning if file uploaded it is clinicians responsibility to ensure patient info is correct
+
 # Post recording dictation prompt
 After consult recording, prompt clinician to dictate note.
 Summarize interaction, capture clinical entities: drugs, conditions, plan.

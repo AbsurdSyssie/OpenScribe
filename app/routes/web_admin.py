@@ -16,6 +16,8 @@ def admin_page(
     team_id: str | None = None,
     stt_config_id: str | None = None,
     llm_config_id: str | None = None,
+    default_template_id: str | None = None,
+    default_quick_action_id: str | None = None,
     tab: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -31,6 +33,8 @@ def admin_page(
         selected_team_id=team_id,
         selected_stt_config_id=stt_config_id,
         selected_llm_config_id=llm_config_id,
+        selected_default_template_id=default_template_id,
+        selected_default_quick_action_id=default_quick_action_id,
         active_admin_tab=tab,
         admin_page_route="/admin",
         admin_return_view="",
@@ -43,6 +47,8 @@ def admin_restyled_page(
     team_id: str | None = None,
     stt_config_id: str | None = None,
     llm_config_id: str | None = None,
+    default_template_id: str | None = None,
+    default_quick_action_id: str | None = None,
     tab: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -58,6 +64,8 @@ def admin_restyled_page(
         selected_team_id=team_id,
         selected_stt_config_id=stt_config_id,
         selected_llm_config_id=llm_config_id,
+        selected_default_template_id=default_template_id,
+        selected_default_quick_action_id=default_quick_action_id,
         active_admin_tab=tab,
         admin_page_route="/admin-restyled",
         admin_return_view="restyled",
@@ -82,7 +90,7 @@ def admin_create_team(
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        create_team_service(db, TeamCreate(name=name, status=status_value, default_retention_days=default_retention_days))
+        create_team_service(db, TeamCreate(name=name, status=status_value, default_retention_days=default_retention_days), actor=context.user)
     except AppError as exc:
         return render_admin(
             request,
@@ -100,6 +108,322 @@ def admin_create_team(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@app.post("/admin/teams/{team_id}/delete", response_class=HTMLResponse)
+def admin_delete_team(
+    request: Request,
+    team_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form("directory"),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_team_service(db, context.user, team_id=team_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=str(team_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "directory",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get("/admin/templates/editor", response_class=HTMLResponse)
+def admin_template_editor_page(
+    request: Request,
+    scope: str,
+    template_id: str | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
+    return_view: str = "",
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    if scope != "default":
+        return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_default_template_id=template_id,
+        message=message,
+        message_kind=safe_message_kind,
+        active_admin_tab="defaults",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
+        template_name="template_editor.html",
+    )
+
+
+@app.post("/admin/default-templates", response_class=HTMLResponse)
+def admin_upsert_default_template(
+    request: Request,
+    template_id: str = Form(""),
+    return_view: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    mode: str = Form("freeform"),
+    section_prompt_problem: str = Form(""),
+    section_prompt_history: str = Form(""),
+    section_prompt_family_history: str = Form(""),
+    section_prompt_social_history: str = Form(""),
+    section_prompt_examination: str = Form(""),
+    section_prompt_comment: str = Form(""),
+    section_prompt_tasks: str = Form(""),
+    section_prompt_investigations: str = Form(""),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        template_mode = TemplateMode(mode)
+        template = upsert_default_template_service(
+            db,
+            context.user,
+            DefaultPromptTemplateUpsert(
+                template_id=UUID(template_id) if template_id else None,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                mode=template_mode,
+                config_json=main_module._template_config_from_form(
+                    mode=template_mode,
+                    section_values={
+                        "problem": section_prompt_problem,
+                        "history": section_prompt_history,
+                        "family_history": section_prompt_family_history,
+                        "social_history": section_prompt_social_history,
+                        "examination": section_prompt_examination,
+                        "comment": section_prompt_comment,
+                        "tasks": section_prompt_tasks,
+                        "investigations": section_prompt_investigations,
+                    }
+                ),
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid default template"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_template_id=template_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+            template_name="template_editor.html",
+        )
+    return RedirectResponse(
+        url=f"/admin/templates/editor?scope=default&template_id={template.id}&return_view={_admin_return_view_value(return_view)}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/default-templates/{template_id}/delete", response_class=HTMLResponse)
+def admin_delete_default_template(
+    request: Request,
+    template_id: UUID,
+    return_view: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_default_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_template_id=str(template_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/default-templates/{template_id}/duplicate", response_class=HTMLResponse)
+def admin_duplicate_default_template(
+    request: Request,
+    template_id: UUID,
+    return_view: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        duplicated = duplicate_default_template_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_template_id=str(template_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=f"/admin/templates/editor?scope=default&template_id={duplicated.id}&return_view={_admin_return_view_value(return_view)}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/default-quick-actions", response_class=HTMLResponse)
+def admin_upsert_default_quick_action(
+    request: Request,
+    quick_action_id: str = Form(""),
+    return_view: str = Form(""),
+    name: str = Form(...),
+    description: str = Form(""),
+    prompt_text: str = Form(...),
+    is_active: str | None = Form(default=None),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        upsert_default_quick_action_service(
+            db,
+            context.user,
+            DefaultQuickActionUpsert(
+                quick_action_id=UUID(quick_action_id) if quick_action_id else None,
+                name=name,
+                description=description or None,
+                prompt_text=prompt_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid default quick action"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_quick_action_id=quick_action_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/default-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
+def admin_delete_default_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    return_view: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_default_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_quick_action_id=str(quick_action_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/default-quick-actions/{quick_action_id}/duplicate", response_class=HTMLResponse)
+def admin_duplicate_default_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    return_view: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        duplicate_default_quick_action_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_default_quick_action_id=str(quick_action_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab="defaults",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users", response_class=HTMLResponse)

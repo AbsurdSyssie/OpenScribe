@@ -8,6 +8,12 @@ from sqlalchemy import func, select
 
 from app.errors import AppError
 from app.models import (
+    AccountRequest,
+    DeidentificationAdapterKind,
+    DefaultPromptTemplate,
+    DefaultPromptTemplateVersion,
+    DefaultQuickAction,
+    DefaultQuickActionVersion,
     GeneratedDocument,
     GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
@@ -20,6 +26,9 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    Team,
+    TeamDeidentificationProviderAssignment,
+    TeamDeidentificationSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -35,10 +44,12 @@ from app.models import (
     TranscriptIngestionMode,
     TranscriptStatus,
     TranscriptVersion,
+    User,
     UserLlmPreference,
     UserStatus,
     utcnow,
 )
+from app.services.default_assets import import_team_assets_to_defaults
 
 
 class FakeHttpxResponse:
@@ -702,6 +713,52 @@ def test_template_editor_page_uses_dedicated_full_page_layout(client, db_session
     assert 'Personal template' in page.text
 
 
+def test_new_freeform_template_editor_hides_emis_sections_until_structured_mode(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Freeform Template Editor")
+    make_user(email="freeform-template-editor@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "freeform-template-editor@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home/templates/editor?scope=personal")
+
+    assert page.status_code == 200
+    assert 'data-template-mode-select' in page.text
+    assert 'data-template-sections hidden' in page.text
+    assert "sections.hidden = modeSelect.value !== 'structured';" in page.text
+
+
+def test_freeform_template_save_does_not_persist_section_config_from_form(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Freeform Template Save")
+    member = make_user(email="freeform-template-save@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "freeform-template-save@example.com", "password": "password-1"}, follow_redirects=False)
+    saved = client.post(
+        "/home/personal-templates",
+        data={
+            "name": "Freeform note",
+            "description": "No structured config",
+            "prompt_text": "Write a concise note.",
+            "mode": "freeform",
+            "section_prompt_problem": "Should be ignored",
+            "section_prompt_history": "Should also be ignored",
+            "is_active": "true",
+        },
+        follow_redirects=False,
+    )
+
+    assert saved.status_code == 303
+    template = db_session.scalar(select(PromptTemplate).where(PromptTemplate.owner_user_id == member.id, PromptTemplate.name == "Freeform note"))
+    assert template is not None
+    latest_version = db_session.scalar(
+        select(PromptTemplateVersion)
+        .where(PromptTemplateVersion.template_id == template.id)
+        .order_by(PromptTemplateVersion.version_no.desc())
+        .limit(1)
+    )
+    assert latest_version is not None
+    assert latest_version.mode is TemplateMode.freeform
+    assert latest_version.config_json is None
+
+
 def test_team_template_editor_page_keeps_team_scope_for_new_template(client, db_session, make_team, make_user):
     team = make_team(name="Clinic Team Template Editor Layout")
     make_user(email="team-template-editor-layout@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -986,6 +1043,7 @@ def test_leader_home_can_delete_team_user(client, db_session, make_team, make_us
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
     assert "Delete" in page.text
+    assert "Delete this user and all owned transcript content immediately?" in page.text
 
     delete_response = client.post(f"/home/users/{member.id}/delete", follow_redirects=False)
     assert delete_response.status_code == 303
@@ -1008,6 +1066,23 @@ def test_home_restyled_team_management_uses_member_menu_without_duplicate_user_t
     assert "Delete" in page.text
 
 
+def test_home_page_uses_flat_sidebar_workspace_layout(client, make_team, make_user):
+    team = make_team(name="Clinic Home Flat Layout")
+    make_user(email="leader-home-flat@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "leader-home-flat@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home?tab=team-management")
+
+    assert page.status_code == 200
+    assert 'class="home-pane"' in page.text
+    assert 'data-tab-nav hidden role="tablist" aria-label="Home sections"' in page.text
+    assert 'data-tab-shell data-default-tab="team-management"' in page.text
+    assert "Clinical workspace" in page.text
+    assert "Open consultation notes" in page.text
+    assert 'class="home-shell"' not in page.text
+    assert 'class="home-sidebar"' not in page.text
+
+
 def test_admin_restyled_preview_route_renders_for_system_admin(client, make_team, make_user):
     team = make_team(name="Clinic Admin Preview")
     admin = make_user(email="admin-preview@example.com", password="password-1", is_system_admin=True)
@@ -1020,6 +1095,65 @@ def test_admin_restyled_preview_route_renders_for_system_admin(client, make_team
     assert "Provisioned endpoints" in page.text
     assert 'form method="get" action="/admin-restyled"' in page.text
     assert 'name="return_view" value="restyled"' in page.text
+
+
+def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
+    make_user(email="admin-flat-layout@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-flat-layout@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin?tab=directory")
+
+    assert page.status_code == 200
+    assert 'class="admin-shell"' in page.text
+    assert 'class="admin-sidebar"' in page.text
+    assert 'class="admin-pane"' in page.text
+    assert 'data-tab-nav role="tablist" aria-label="Admin sections"' in page.text
+    assert 'data-tab-shell data-default-tab="directory"' in page.text
+    assert "Provider setup" in page.text
+    assert "Create team" in page.text
+    assert "Create managed user" in page.text
+    assert 'section class="hero panel"' not in page.text
+    assert 'class="panel tab-shell__nav"' not in page.text
+    assert "border-radius: 18px" not in page.text
+
+
+def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(client, db_session, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic Admin LLM Tiles")
+    admin = make_user(email="admin-llm-tiles@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Clinic LLM",
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+    )
+
+    client.post("/login", data={"email": "admin-llm-tiles@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}")
+
+    assert page.status_code == 200
+    assert 'class="model-toggle-grid"' in page.text
+    assert 'class="model-toggle-card is-enabled"' in page.text
+    assert 'data-llm-default-model-select' in page.text
+    assert '<input type="radio" name="provider_model"' not in page.text
+    assert "Default model choices come from visible models only." in page.text
+
+    save = client.post(
+        "/admin/llm-selection",
+        data={
+            "team_id": str(team.id),
+            "llm_config_id": str(config.id),
+            "allowed_model_names": ["gpt-4.1-mini", "gpt-4.1"],
+            "provider_model": "gpt-4.1",
+        },
+        follow_redirects=False,
+    )
+
+    assert save.status_code == 303
+    selection = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
+    assert selection is not None
+    assert selection.allowed_models_json == ["gpt-4.1-mini", "gpt-4.1"]
+    assert selection.model_name_override == "gpt-4.1"
 
 
 def test_admin_restyled_stt_config_redirect_preserves_preview_route(client, db_session, make_team, make_user):
@@ -1270,6 +1404,9 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-tour-scrim="top"' in page.text
     assert 'data-tour-scrim="right"' in page.text
     assert "background: var(--accent);" in page.text
+    assert "https://unpkg.com/lucide@1.8.0" in page.text
+    assert 'data-lucide="mic"' in page.text
+    assert 'data-lucide="upload"' in page.text
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
     assert 'data-route-base="/transcribe"' in page.text
@@ -1795,9 +1932,11 @@ def test_user_transcribe_page_renders_live_session_controls(client, db_session, 
     page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "Start live capture" in page.text
+    assert "Start live" in page.text
     assert 'data-recording-mode-select' in page.text
     assert "Live capture is not ready for your team yet." in page.text
+    assert '<div class="sr-only" data-mic-status aria-live="polite">' in page.text
+    assert 'data-active-status-pill' in page.text
     assert 'data-record-toggle' in page.text
     assert 'data-workspace-stream-endpoint="' in page.text
     assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
@@ -2195,6 +2334,13 @@ def test_user_transcribe_page_blocks_new_blank_session_when_latest_is_still_empt
         follow_redirects=False,
     )
     assert created.status_code == 303
+    transcript = db_session.scalar(select(Transcript))
+    assert transcript is not None
+
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+    assert page.status_code == 200
+    assert "Finish or delete the current empty session before creating a new one" not in page.text
+    assert "data-new-session-block-message" not in page.text
 
     blocked = client.post(
         "/transcribe/sessions",
@@ -2421,6 +2567,8 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
     assert 'data-generated-structured-section data-section-key="history"' not in page.text
     assert 'data-template-sections=' in page.text
     assert 'data-copy-structured-lines' in page.text
+    assert 'data-copy-structured-section' in page.text
+    assert 'aria-label="Copy Problem section"' in page.text
 
 
 def test_user_transcribe_page_marks_structured_template_options_for_blank_note_editor(
@@ -2617,6 +2765,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
     media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
     workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
+    sidebar_html = (root / "app" / "templates" / "transcribe" / "_sidebar.html").read_text(encoding="utf-8")
     head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
 
     assert "const generateOutputTemplateSelect = document.querySelector('[data-template-select]');" in app_js
@@ -2638,22 +2787,36 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "row.className = 'statement-row';" in structured_js
     assert "textarea.className = 'statement-editor';" in structured_js
     assert "card.className = 'structured-section-block';" in structured_js
+    assert "copyButton.setAttribute('data-copy-structured-section', '');" in structured_js
+    assert "collectStructuredSectionLines" in structured_js
+    assert "dom.generatedStructuredPanel.addEventListener('click'" in actions_js
+    assert "navigator.clipboard.writeText(textToCopy);" in actions_js
     assert "const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);" in structured_js
     assert "const templatePickerButton = document.querySelector('[data-template-picker-button]');" in app_js
     assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
     assert "const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');" in app_js
     assert "const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');" in app_js
+    assert "const activeStatusPill = document.querySelector('[data-active-status-pill]');" in app_js
+    assert "const statusLabelForRecordingProgress = (message) => {" in app_js
+    assert "getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording'," in app_js
+    assert "if (getIsRecordingSwitchBlocked?.()) {" in actions_js
+    assert "Stop recording before switching consultations." in actions_js
+    assert "Stop recording before creating a new consultation." in actions_js
     assert "let noteEditorDirty = false;" in app_js
     assert "const markNoteEditorDirty = () => {" in app_js
-    assert "const shouldPreserveLocalNoteEdits = () => noteEditorDirty;" in app_js
+    assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteDocumentId()) => {" in app_js
     assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
-    assert "const preserveDirtyNoteEditor = shouldPreserveLocalNoteEdits();" in app_js
+    assert "const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');" in app_js
     assert "renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });" in app_js
     assert "if (!preserveDirtyNoteEditor) {" in app_js
     assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
     assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
+    assert "const noteDeleteButton = document.querySelector('[data-note-delete]');" in app_js
+    assert "dom.noteDeleteButton?.addEventListener('click'" in actions_js
+    assert "Delete this note permanently?" in actions_js
+    assert "Could not delete the note." in actions_js
     assert "const buildNoteSavePayload = () => {" in app_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
@@ -2673,14 +2836,23 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert '<div class="px-4 pt-3" hidden data-flash-wrap>' in workspace_html
     assert "data-generated-freeform-panel" in workspace_html
     assert "data-latest-generated-updated-at=" in workspace_html
+    assert "data-active-status-pill" in workspace_html
+    assert '<div class="sr-only" data-mic-status aria-live="polite">' in workspace_html
+    assert "data-new-session-block-message" not in sidebar_html
     assert "openscribe:legacy-workspace-document-selected" not in workspace_html
     assert "activateNoteTab('note')" not in workspace_html
     assert "data-generated-structured-sections" in workspace_html
     assert "data-followup-history" in workspace_html
-    assert '<div class="transcript-content" data-active-draft>' in workspace_html
+    assert 'data-lucide="settings"' in workspace_html
+    assert 'data-lucide="message-square-more"' in workspace_html
+    assert 'data-lucide="sparkles"' in workspace_html
+    assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>' in workspace_html
     assert "structuredEditor.renderStructuredSections(generatedStructuredDraft);" not in app_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform'" in structured_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform' && Boolean(generatedDocument.edited_output_text_encrypted)" not in structured_js
+    assert "const autosizeStatementEditorsIn = (container) => {" in structured_js
+    assert "window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedStructuredPanel));" in structured_js
+    assert "window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedFreeformPanel));" in structured_js
     assert "...((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || [])" in structured_js
     assert "renderStructuredSections(null);" in structured_js
     assert "renderFreeformLines(null);" in structured_js
@@ -2698,13 +2870,19 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
     assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
-    assert "if (!preserveEditor && !shouldPreserveLocalNoteEdits?.()) {" in documents_js
+    assert "if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {" in documents_js
     assert "const selectDocumentFromUi = async (kind, documentId) => {" in documents_js
     assert "const savedDocument = await persistNoteEditsSilently?.();" in documents_js
     assert "if (!savedDocument) {" in documents_js
     assert "clearNoteEditorDirty?.();" in documents_js
     assert "card.className = `followup-card${item.id === selectedId ? \" followup-card--active\" : \"\"}`;" in documents_js
     assert "followupHistory.innerHTML = `\n        <div class=\"empty-state\">" in documents_js
+    assert "window.refreshLucideIcons?.(root);" in app_js
+    assert "const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');" in app_js
+    assert "const recordToggleIcon = getRecordToggleIcon();" in app_js
+    assert "recordToggleIcon.dataset.lucide = isRecording" in app_js
+    assert "refreshIcons?.(followupHistory);" in documents_js
+    assert 'data-lucide="trash-2"' in documents_js
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
     assert "not active_note_input_available" in workspace_html
 
@@ -2777,6 +2955,15 @@ def test_home_overview_and_asset_cards_keep_white_fill_like_team_cards():
     assert ".overview-grid .panel {\n  background: var(--card);" in home_html
     assert ".asset-card {\n  display: grid;" in home_html
     assert "padding: 18px;\n  background: var(--card);" in home_html
+
+
+def test_home_tab_script_finds_relocated_tab_nav():
+    root = Path(__file__).resolve().parents[1]
+    home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
+
+    assert "const nav = document.querySelector('[data-tab-nav]')" in home_html
+    assert "navContainer?.matches('[data-tab-nav]')" in home_html
+    assert "nav.hidden = false;" in home_html
 
 
 def test_user_transcribe_page_hides_emis_context_for_freeform_template(
@@ -3273,6 +3460,8 @@ def test_user_transcribe_page_uses_generated_note_snapshot_for_structured_sectio
 
     assert page.status_code == 200
     assert '<h3 class="structured-section-title">Problem</h3>' in page.text
+    assert 'data-copy-structured-section' in page.text
+    assert 'aria-label="Copy Problem section"' in page.text
     assert '<h3 class="structured-section-title">History</h3>' not in page.text
 
 
@@ -3493,12 +3682,11 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert "Selected note" in page.text
     assert 'data-note-selector' in page.text
+    assert 'data-note-delete' in page.text
+    assert "Delete selected note permanently" in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
-    assert "Selected follow-up" in page.text
-    assert 'data-followup-selector' in page.text
     assert 'data-document-kind="followup"' in page.text
     assert 'data-followup-document-select' in page.text
     assert 'data-run-quick-action-form' in page.text
@@ -3506,7 +3694,6 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert 'data-followup-copy' in page.text
     assert 'data-followup-delete' in page.text
     assert 'data-followup-copy-body' in page.text
-    assert 'data-copy-followup' not in page.text
     assert "Send patient-facing review advice." in page.text
     assert "Send SMS" in page.text
 
@@ -3747,6 +3934,340 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_sessio
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
+
+
+def test_admin_page_can_manage_default_assets(client, db_session, make_user):
+    make_user(email="admin-default-assets@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-default-assets@example.com", "password": "password-1"}, follow_redirects=False)
+
+    editor = client.get("/admin/templates/editor?scope=default")
+    assert editor.status_code == 200
+    assert "Default template" in editor.text
+
+    saved_template = client.post(
+        "/admin/default-templates",
+        data={
+            "name": "Default EMIS",
+            "description": "Team starter note",
+            "prompt_text": "Write an EMIS note.",
+            "mode": "structured",
+            "section_prompt_problem": "Problem summary",
+            "section_prompt_history": "History summary",
+            "section_prompt_family_history": "Family history",
+            "section_prompt_social_history": "Social history",
+            "section_prompt_examination": "Examination",
+            "section_prompt_comment": "Comment",
+            "section_prompt_tasks": "Tasks",
+            "section_prompt_investigations": "Investigations",
+            "is_active": "true",
+        },
+        follow_redirects=False,
+    )
+    assert saved_template.status_code == 303
+    persisted_template = db_session.scalar(select(DefaultPromptTemplate).where(DefaultPromptTemplate.name == "Default EMIS"))
+    assert persisted_template is not None
+
+    saved_quick_action = client.post(
+        "/admin/default-quick-actions",
+        data={
+            "name": "Default SMS",
+            "description": "Starter patient text",
+            "prompt_text": "Write a short patient SMS.",
+            "is_active": "true",
+        },
+        follow_redirects=False,
+    )
+    assert saved_quick_action.status_code == 303
+    persisted_quick_action = db_session.scalar(select(DefaultQuickAction).where(DefaultQuickAction.name == "Default SMS"))
+    assert persisted_quick_action is not None
+
+    defaults_page = client.get("/admin?tab=defaults")
+    assert defaults_page.status_code == 200
+    assert "Default templates" in defaults_page.text
+    assert "Default quick actions" in defaults_page.text
+    assert "Default EMIS" in defaults_page.text
+    assert "Default SMS" in defaults_page.text
+
+
+def test_admin_team_creation_seeds_active_default_assets(client, db_session, make_user, make_default_template, make_default_quick_action):
+    admin = make_user(email="admin-default-seed@example.com", password="password-1", is_system_admin=True)
+    make_default_template(actor=admin, name="Starter note", prompt_text="Write a starter note.")
+    make_default_quick_action(actor=admin, name="Starter action", prompt_text="Write a starter action.")
+    make_default_template(actor=admin, name="Disabled note", prompt_text="Skip me.", is_active=False)
+    make_default_quick_action(actor=admin, name="Disabled action", prompt_text="Skip me.", is_active=False)
+
+    client.post("/login", data={"email": "admin-default-seed@example.com", "password": "password-1"}, follow_redirects=False)
+
+    created = client.post(
+        "/admin/teams",
+        data={
+            "name": "Seeded Clinic",
+            "status": "active",
+            "default_retention_days": "30",
+            "return_tab": "defaults",
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+
+    team = db_session.scalar(select(func.count()).select_from(PromptTemplate).join(PromptTemplate.team).where(PromptTemplate.name == "Starter note"))
+    assert team == 1
+    assert db_session.scalar(select(func.count()).select_from(QuickAction).join(QuickAction.team).where(QuickAction.name == "Starter action")) == 1
+    assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.name == "Disabled note")) == 0
+    assert db_session.scalar(select(func.count()).select_from(QuickAction).where(QuickAction.name == "Disabled action")) == 0
+
+
+def test_admin_page_can_delete_team_and_owned_records(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+    make_stt_config,
+    make_stt_selection,
+    make_llm_config,
+    make_llm_selection,
+    make_account_request,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+):
+    admin = make_user(email="admin-delete-team@example.com", password="password-1", is_system_admin=True)
+    team = make_team(name="Delete Clinic")
+    leader = make_user(email="leader-delete-team@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    member = make_user(email="member-delete-team@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    account_request = make_account_request(requested_email="pending-delete-team@example.com", requested_team_name=team.name)
+    make_template(scope=TemplateScope.team, team=team, actor=leader, name="Team note")
+    make_quick_action(scope=TemplateScope.team, team=team, actor=leader, name="Team action", prompt_text="Send a follow-up")
+    stt_config = make_stt_config(team=team, actor=admin, label="Team STT")
+    make_stt_selection(config=stt_config, actor=admin)
+    llm_config = make_llm_config(team=team, actor=admin, label="Team LLM", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=llm_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    deidentification_provider = make_deidentification_provider(actor=admin, label="Team Deid", adapter_kind=DeidentificationAdapterKind.generic_rest, base_url="https://deid.example.com", detect_path="/detect")
+    make_deidentification_provider_assignment(team=team, provider=deidentification_provider, actor=admin)
+    make_deidentification_selection(team=team, provider=deidentification_provider, actor=leader)
+
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Delete me",
+        current_draft_text_encrypted="Transcript text",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(
+        ProviderUsageEvent(
+            team_id=team.id,
+            owner_user_id=member.id,
+            generated_document_id=None,
+            transcript_id=transcript.id,
+            llm_config_id=llm_config.id,
+            feature_type=ProviderFeatureType.llm_generation,
+            event_type=ProviderUsageEventType.completed,
+            provider_adapter="openai_chat",
+            model_name="gpt-4o-mini",
+            status="completed",
+            total_tokens=42,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "admin-delete-team@example.com", "password": "password-1"}, follow_redirects=False)
+    deleted = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
+
+    assert deleted.status_code == 303
+    assert deleted.headers["location"] == "/admin?tab=directory"
+    assert db_session.get(Team, team.id) is None
+    assert db_session.get(AccountRequest, account_request.id) is None
+    assert db_session.get(TeamSttConfig, stt_config.id) is None
+    assert db_session.get(TeamLlmConfig, llm_config.id) is None
+    assert db_session.scalar(select(func.count()).select_from(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(TeamDeidentificationProviderAssignment).where(TeamDeidentificationProviderAssignment.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(QuickAction).where(QuickAction.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(Transcript).where(Transcript.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(ProviderUsageEvent).where(ProviderUsageEvent.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_([leader.id, member.id]))) == 0
+    assert db_session.get(User, leader.id) is None
+    assert db_session.get(User, member.id) is None
+
+
+def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_llm_config,
+    monkeypatch,
+):
+    admin = make_user(email="admin-delete-team-preflight@example.com", password="password-1", is_system_admin=True)
+    team = make_team(name="Delete Preflight Clinic")
+    team_admin = make_user(email="team-admin-preflight@example.com", password="password-1", is_system_admin=True)
+    team_admin.team_id = team.id
+    db_session.add(team_admin)
+    stt_config = make_stt_config(team=team, actor=admin, label="Preflight STT")
+    llm_config = make_llm_config(team=team, actor=admin, label="Preflight LLM")
+    db_session.commit()
+
+    deleted_secret_calls: list[str] = []
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_stt_bearer_token",
+        lambda *, team_id, config_id: deleted_secret_calls.append(f"stt:{config_id}"),
+    )
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_llm_bearer_token",
+        lambda *, team_id, config_id: deleted_secret_calls.append(f"llm:{config_id}"),
+    )
+
+    client.post("/login", data={"email": "admin-delete-team-preflight@example.com", "password": "password-1"}, follow_redirects=False)
+    blocked = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
+
+    assert blocked.status_code == 409
+    assert "Cannot delete a team that still contains a system-admin account" in blocked.text
+    assert db_session.get(Team, team.id) is not None
+    assert db_session.get(TeamSttConfig, stt_config.id) is not None
+    assert db_session.get(TeamLlmConfig, llm_config.id) is not None
+    assert deleted_secret_calls == []
+
+
+def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_llm_config,
+    monkeypatch,
+):
+    admin = make_user(email="admin-delete-team-deferred-vault@example.com", password="password-1", is_system_admin=True)
+    team = make_team(name="Delete Deferred Vault Clinic")
+    member = make_user(email="member-deferred-vault@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    stt_config = make_stt_config(team=team, actor=admin, label="Deferred STT")
+    llm_config = make_llm_config(team=team, actor=admin, label="Deferred LLM")
+
+    deleted_secret_calls: list[str] = []
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_stt_bearer_token",
+        lambda *, team_id, config_id: deleted_secret_calls.append(f"stt:{config_id}"),
+    )
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_llm_bearer_token",
+        lambda *, team_id, config_id: deleted_secret_calls.append(f"llm:{config_id}"),
+    )
+
+    def fail_user_cleanup(db, actor, *, user):
+        raise AppError(409, "conflict", "Synthetic user cleanup failure")
+
+    monkeypatch.setattr("app.services.admin._delete_user_rows", fail_user_cleanup)
+
+    client.post("/login", data={"email": "admin-delete-team-deferred-vault@example.com", "password": "password-1"}, follow_redirects=False)
+    blocked = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
+
+    assert blocked.status_code == 409
+    assert "Synthetic user cleanup failure" in blocked.text
+    assert db_session.get(Team, team.id) is not None
+    assert db_session.get(User, member.id) is not None
+    assert db_session.get(TeamSttConfig, stt_config.id) is not None
+    assert db_session.get(TeamLlmConfig, llm_config.id) is not None
+    assert deleted_secret_calls == []
+
+
+def test_import_team_assets_to_defaults_copies_latest_team_assets(db_session, make_team, make_user, make_template, make_quick_action, make_default_template):
+    admin = make_user(email="admin-import-defaults@example.com", password="password-1", is_system_admin=True)
+    team = make_team(name="The Range")
+    leader = make_user(email="range-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    make_default_template(actor=admin, name="Simple Consult", prompt_text="Existing default prompt")
+    structured_template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="  Simple Consult  ",
+        description="Structured source",
+        prompt_text="Old prompt",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{"section_key": "problem", "section_label": "Problem", "section_order": 1}]},
+    )
+    db_session.add(
+        PromptTemplateVersion(
+            template_id=structured_template.id,
+            version_no=2,
+            mode=TemplateMode.structured,
+            prompt_text="Latest structured prompt",
+            config_json={"profile": "emis", "sections": [{"section_key": "history", "section_label": "History", "section_order": 1}]},
+            created_by_user_id=leader.id,
+        )
+    )
+    inactive_template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Unwell Child",
+        description="Inactive source",
+        prompt_text="Inactive prompt",
+        is_active=False,
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="  Referral Letter  ",
+        description="Referral source",
+        prompt_text="Old quick action",
+    )
+    db_session.add(
+        QuickActionVersion(
+            quick_action_id=quick_action.id,
+            version_no=2,
+            mode=TemplateMode.structured,
+            prompt_text="Latest quick action",
+            created_by_user_id=leader.id,
+        )
+    )
+    db_session.commit()
+
+    summary = import_team_assets_to_defaults(db_session, admin, source_team_name="The Range")
+
+    assert summary.templates_imported == 1
+    assert summary.quick_actions_imported == 1
+    skipped_existing_template = db_session.scalar(select(DefaultPromptTemplate).where(DefaultPromptTemplate.name == "Simple Consult"))
+    assert skipped_existing_template is not None
+    assert db_session.scalar(select(func.count()).select_from(DefaultPromptTemplate).where(DefaultPromptTemplate.name == "Simple Consult")) == 1
+    imported_default_template_version = db_session.scalar(
+        select(DefaultPromptTemplateVersion)
+        .join(DefaultPromptTemplate, DefaultPromptTemplate.id == DefaultPromptTemplateVersion.default_template_id)
+        .where(DefaultPromptTemplate.name == inactive_template.name)
+    )
+    assert imported_default_template_version is not None
+    assert imported_default_template_version.prompt_text == "Inactive prompt"
+    assert imported_default_template_version.config_json is None
+
+    imported_inactive_template = db_session.scalar(select(DefaultPromptTemplate).where(DefaultPromptTemplate.name == inactive_template.name))
+    assert imported_inactive_template is not None
+    assert imported_inactive_template.is_active is False
+
+    imported_quick_action = db_session.scalar(select(DefaultQuickAction).where(DefaultQuickAction.name == "Referral Letter"))
+    assert imported_quick_action is not None
+    imported_default_quick_action_version = db_session.scalar(
+        select(DefaultQuickActionVersion)
+        .where(DefaultQuickActionVersion.default_quick_action_id == imported_quick_action.id)
+    )
+    assert imported_default_quick_action_version is not None
+    assert imported_default_quick_action_version.mode is TemplateMode.freeform
+    assert imported_default_quick_action_version.prompt_text == "Latest quick action"
+
+    rerun_summary = import_team_assets_to_defaults(db_session, admin, source_team_name="The Range")
+    assert rerun_summary.templates_imported == 0
+    assert rerun_summary.quick_actions_imported == 0
 
 
 def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
@@ -4188,6 +4709,8 @@ def test_admin_page_lists_teams_users_and_account_requests(client, make_team, ma
     assert "lead@example.com" in page.text
     assert "Account requests" in page.text
     assert "alice@example.com" in page.text
+    assert "Delete this team, all team users, and all team-owned data immediately?" in page.text
+    assert "Delete this user and all owned transcript content immediately?" in page.text
 
 
 def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, make_team, make_user):
@@ -4224,6 +4747,8 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
             event_type=ProviderUsageEventType.completed,
             provider_adapter="ollama_chat",
             model_name="clinic-model",
+            prompt_tokens=80,
+            completion_tokens=43,
             total_tokens=123,
         )
     )
@@ -4235,11 +4760,23 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert page.status_code == 200
     assert "Usage overview" in page.text
     assert "Last 24 hours" in page.text
+    assert "Last 30 days" in page.text
+    assert "Daily activity" in page.text
+    assert "Team comparison, last 7 days" in page.text
+    assert "Provider and model mix" in page.text
+    assert "Speech ingestion mix" in page.text
     assert "User activity in Clinic Usage" in page.text
     assert "owner-usage-ui@example.com" in page.text
     assert "123" in page.text
+    assert "80" in page.text
+    assert "43" in page.text
+    assert "Input tokens in 7 days" in page.text
+    assert "Output tokens in 7 days" in page.text
+    assert "Input tokens" in page.text
+    assert "Output tokens" in page.text
     assert "2.0 MB" in page.text
     assert "0.50" in page.text
+    assert "Share of team activity" in page.text
 
 
 def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_user):

@@ -54,6 +54,7 @@ import { createGuidedTour } from './tour.js';
       const initialTranscriptErrorMessage = bootstrap.initialTranscriptErrorMessage;
 
       const activeStatus = document.querySelector('[data-active-status]');
+      const activeStatusPill = document.querySelector('[data-active-status-pill]');
       const activeIngestionModeChip = document.querySelector('[data-active-ingestion-mode]');
       currentTranscriptStatus = activeStatus?.textContent?.trim() || null;
       const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
@@ -82,6 +83,7 @@ import { createGuidedTour } from './tour.js';
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
       const noteSelectorWrap = document.querySelector('[data-note-selector-wrap]');
       const noteSelector = document.querySelector('[data-note-selector]');
+      const noteDeleteButton = document.querySelector('[data-note-delete]');
       const noteSelectorCount = document.querySelector('[data-note-selector-count]');
       const followupSelectorWrap = document.querySelector('[data-followup-selector-wrap]');
       const followupSelector = document.querySelector('[data-followup-selector]');
@@ -104,7 +106,6 @@ import { createGuidedTour } from './tour.js';
       const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
       const deleteButton = document.querySelector('[data-delete-selected]');
       const newSessionButton = document.querySelector('[data-new-session-button]');
-      const newSessionBlockMessage = document.querySelector('[data-new-session-block-message]');
       const uploadForm = document.querySelector('[data-upload-form]');
       const fileInput = document.querySelector('[data-audio-file-input]');
       const dictationUploadForm = document.querySelector('[data-dictation-upload-form]');
@@ -138,7 +139,7 @@ import { createGuidedTour } from './tour.js';
       const recordingModeSelect = document.querySelector('[data-recording-mode-select]');
       const recordToggleButton = document.querySelector('[data-record-toggle]');
       const recordToggleLabel = document.querySelector('[data-record-toggle-label]');
-      const recordToggleIcon = document.querySelector('[data-record-toggle-icon]');
+      const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');
       const dictationRecordToggleButton = document.querySelector('[data-dictation-record-toggle]');
       const dictationRecordToggleLabel = document.querySelector('[data-dictation-record-toggle-label]');
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
@@ -195,6 +196,9 @@ import { createGuidedTour } from './tour.js';
       const initialSplitRatio = Number.parseFloat(window.localStorage.getItem(splitRatioStorageKey) || '');
 
       const friendlyModeLabel = (mode) => mode === 'live_chunked' ? 'live capture' : 'recorded upload';
+      const refreshIcons = (root) => {
+        window.refreshLucideIcons?.(root);
+      };
 
       const markNoteEditorDirty = () => {
         noteEditorDirty = true;
@@ -488,17 +492,75 @@ import { createGuidedTour } from './tour.js';
         }, immediate ? 0 : 700);
       }
 
+      const statusPillKind = (label) => {
+        const normalized = String(label || '').toLowerCase();
+        if (normalized.includes('failed') || normalized.includes('unavailable') || normalized.includes('error')) return 'error';
+        if (normalized.includes('ready')) return 'ready';
+        if (
+          normalized.includes('recording')
+          || normalized.includes('listening')
+          || normalized.includes('speech')
+          || normalized.includes('sending')
+          || normalized.includes('stopping')
+          || normalized.includes('uploading')
+        ) {
+          return 'active';
+        }
+        return 'idle';
+      };
+
+      const syncStatusPillStyle = (label) => {
+        if (!activeStatusPill || !activeStatus) return;
+        const dot = activeStatusPill.querySelector('span:first-child');
+        activeStatusPill.classList.remove('bg-teal-pale', 'bg-coral/15', 'bg-white', 'border', 'border-stone');
+        activeStatus.classList.remove('text-teal-deep', 'text-coral', 'text-slate');
+        dot?.classList.remove('bg-teal-deep', 'bg-coral', 'bg-slate', 'status-pulse');
+        const kind = statusPillKind(label);
+        if (kind === 'error') {
+          activeStatusPill.classList.add('bg-coral/15');
+          activeStatus.classList.add('text-coral');
+          dot?.classList.add('bg-coral');
+        } else if (kind === 'ready' || kind === 'active') {
+          activeStatusPill.classList.add('bg-teal-pale');
+          activeStatus.classList.add('text-teal-deep');
+          dot?.classList.add('bg-teal-deep', 'status-pulse');
+        } else {
+          activeStatusPill.classList.add('bg-white', 'border', 'border-stone');
+          activeStatus.classList.add('text-slate');
+          dot?.classList.add('bg-slate');
+        }
+      };
+
       const setVisibleStatus = (label) => {
-        if (activeStatus) activeStatus.textContent = label;
+        const nextLabel = label || 'idle';
+        if (activeStatus) activeStatus.textContent = nextLabel;
+        syncStatusPillStyle(nextLabel);
         if (transcriptId) {
           const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
-          if (sidebarStatus) sidebarStatus.textContent = label;
+          if (sidebarStatus) sidebarStatus.textContent = nextLabel;
         }
+      };
+
+      const statusLabelForRecordingProgress = (message) => {
+        const normalized = String(message || '').toLowerCase();
+        if (!normalized) return null;
+        if (normalized.includes('speech detected')) return 'speech detected';
+        if (normalized.includes('listening')) return 'listening';
+        if (normalized.includes('thirty second') || normalized.includes('sending live audio') || normalized.includes('live audio part sent') || normalized.includes('live chunk queued')) {
+          return 'sending chunk';
+        }
+        if (normalized.includes('finishing') || normalized.includes('stopping')) return 'stopping';
+        if (normalized.includes('uploading')) return 'uploading';
+        return null;
       };
 
       const setSessionProgress = (message) => {
         if (activeProgress) {
           activeProgress.textContent = message;
+        }
+        const recordingStatus = statusLabelForRecordingProgress(message);
+        if (recordingStatus && (captureController?.isLiveCaptureUiActive?.() || activeIngestionMode === 'live_chunked')) {
+          setVisibleStatus(recordingStatus);
         }
       };
 
@@ -585,6 +647,9 @@ import { createGuidedTour } from './tour.js';
 
       const displayStatusLabel = (statusLabel, ingestionMode) => {
         if (statusLabel === 'recording') {
+          if (ingestionMode === 'live_chunked' && captureController?.isLiveCaptureUiActive?.()) {
+            return 'listening';
+          }
           return 'idle';
         }
         return statusLabel || 'idle';
@@ -840,12 +905,12 @@ import { createGuidedTour } from './tour.js';
             recordToggleLabel.textContent = liveMode ? 'Start live capture' : 'Start recording';
           }
         }
+        const recordToggleIcon = getRecordToggleIcon();
         if (recordToggleIcon) {
-          recordToggleIcon.innerHTML = isRecording
-            ? '<rect x="7" y="7" width="10" height="10" rx="2"></rect>'
-            : (liveMode
-              ? '<path d="M12 3v18M3 12h18"></path><circle cx="12" cy="12" r="8"></circle>'
-              : '<circle cx="12" cy="12" r="6"></circle>');
+          recordToggleIcon.dataset.lucide = isRecording
+            ? 'square'
+            : (liveMode ? 'circle-plus' : 'disc');
+          refreshIcons(recordToggleIcon.parentElement || recordToggleIcon);
         }
         if (audioActionTrigger) {
           audioActionTrigger.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
@@ -858,18 +923,13 @@ import { createGuidedTour } from './tour.js';
 
       const setNewSessionAvailability = (canCreate, message) => {
         newSessionControls.forEach((button) => {
-          button.disabled = !canCreate;
+          button.disabled = false;
           if (canCreate || !message) {
-            button.removeAttribute('title');
+            delete button.dataset.newSessionBlockMessage;
           } else {
-            button.title = message;
+            button.dataset.newSessionBlockMessage = message;
           }
         });
-        if (newSessionBlockMessage) {
-          const shouldShow = !canCreate && Boolean(message);
-          newSessionBlockMessage.textContent = message || '';
-          newSessionBlockMessage.classList.toggle('hidden', !shouldShow);
-        }
       };
 
       const syncTranscriptTitleIfNeeded = async () => {
@@ -1161,6 +1221,7 @@ import { createGuidedTour } from './tour.js';
           renderGeneratedOutput: (...args) => structuredEditor.renderGeneratedOutput(...args),
           renderFollowupOutput,
           renderRedactionDebugPanel,
+          refreshIcons,
           setTab,
         },
         getState: () => ({
@@ -1496,9 +1557,12 @@ import { createGuidedTour } from './tour.js';
           generateFollowupForm,
           generateFollowupPromptInput,
           generateFollowupTrigger,
+          generatedStructuredPanel,
           generateOutputForm,
           generateOutputTemplateSelect,
+          latestGeneratedOutput,
           newSessionForm,
+          noteDeleteButton,
           noteSelector,
           quickActionContextInput,
           quickActionQuickPicks,
@@ -1518,6 +1582,7 @@ import { createGuidedTour } from './tour.js';
         getTranscriptId: () => transcriptId,
         getActiveIngestionMode: () => activeIngestionMode,
         getIsLiveCaptureUiActive: () => isLiveCaptureUiActive(),
+        getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',
         selectDocumentFromUi,
         showFlash,
         showCopyToast,

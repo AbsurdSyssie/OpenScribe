@@ -8,7 +8,7 @@ from ..main import (
     _home_template_editor_url,
     _home_template_name_from_return_view,
     _page_context_or_redirect,
-    _structured_template_config_from_form,
+    _template_config_from_form,
 )
 
 
@@ -340,6 +340,7 @@ def home_upsert_team_template(
     if response is not None:
         return response
     try:
+        template_mode = TemplateMode(mode)
         upsert_team_template_service(
             db,
             context.user,
@@ -349,8 +350,9 @@ def home_upsert_team_template(
                 name=name,
                 description=description or None,
                 prompt_text=prompt_text,
-                mode=TemplateMode(mode),
-                config_json=_structured_template_config_from_form(
+                mode=template_mode,
+                config_json=_template_config_from_form(
+                    mode=template_mode,
                     section_values={
                         "problem": section_prompt_problem,
                         "history": section_prompt_history,
@@ -511,6 +513,7 @@ def home_upsert_personal_template(
     if response is not None:
         return response
     try:
+        template_mode = TemplateMode(mode)
         upsert_personal_template_service(
             db,
             context.user,
@@ -520,8 +523,9 @@ def home_upsert_personal_template(
                 name=name,
                 description=description or None,
                 prompt_text=prompt_text,
-                mode=TemplateMode(mode),
-                config_json=_structured_template_config_from_form(
+                mode=template_mode,
+                config_json=_template_config_from_form(
+                    mode=template_mode,
                     section_values={
                         "problem": section_prompt_problem,
                         "history": section_prompt_history,

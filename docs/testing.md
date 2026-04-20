@@ -66,6 +66,7 @@ What it does:
 - the GLM 2 note pane prioritises the latest generated note above the note-input area and allows structured note generation from EMIS context alone when the selected template is structured
 - the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
+- structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
 
 ## Main.py refactor guardrails
 
@@ -131,8 +132,11 @@ What it does:
 - duplicate live chunk sequence rejection
 - sequence-aware live chunk worker application
 - sequence-aware live chunk reconciliation advancing past failed live-chunk gaps once later completed chunks are available
+- stale live-chunk queued/processing jobs being marked failed during reconciliation so later completed chunks can apply
+- late Celery delivery not reviving ingestion jobs already marked failed
 - live chunk worker failure when no active team STT selection exists
 - live chunk worker encrypting provider result text at rest before owner-visible reconciliation
+- ffprobe/ffmpeg timeouts surfacing as clean audio inspection/normalization errors instead of hanging workers
 - owner-only whole-file ingestion queueing
 - whole-file ingestion retaining retryable source audio outside Postgres, with the ingestion job carrying either a legacy blob or a Vault-backed source-audio ref
 - whole-file ingestion rejecting transcripts in the wrong ingestion mode
@@ -168,10 +172,14 @@ What it does:
 - generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version
 - generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
 - generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
+- system-admin de-identification provider provisioning and team assignment
+- leader de-identification provider selection using assigned providers plus built-in fallback
+- redaction runtime resolving team-selected de-identification provider and falling back to built-in native provider when no explicit selection exists
 - LLM config edits/deletes being blocked while queued or processing generated documents still reference that config
 - server-side STT/LLM model validation rejecting API-submitted model names outside the provider-discovered list
 - leader team-quick-action create/update/delete scope
 - user personal-quick-action create/update/delete scope
+- one-off import of team-scoped templates and quick actions into admin-managed default assets, including editor-equivalent name normalization, idempotent skip-existing behavior, and freeform quick-action normalization
 - owner-only quick action generation now queues a generated-document job using the same async worker path and persists quick action provenance
 - generated-document worker processing updates queued documents to `ready`, persists `provider_usage_events`, and logs metadata-only usage counts
 - provider failure tests now verify sanitized provider HTTP/error metadata is persisted without logging prompts or output text
@@ -204,6 +212,7 @@ What it does:
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
+- owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active
 - owner transcription workspace preserving structured EMIS output hooks during workspace refresh and poll-driven rerender
 - owner transcription workspace keeping the redesigned clinical shell copy and core controls while preserving current browser hooks
 - GLM 2 transcribe route exposing the same owner-only workspace endpoint and pane controls for hide, split, and expand states
@@ -221,11 +230,14 @@ What it does:
 - owner transcription workspace output-tab note generation flow
 - owner transcription workspace follow-ups tab queueing a follow-up request into the same async generated-document pipeline
 - owner transcription workspace follow-ups tab quick-action dropdown queueing a quick action into the same async generated-document pipeline
+- owner transcription workspace rendering a selected-note delete control wired through a permanent-delete browser confirmation
 - system-admin usage tab rendering provider usage telemetry plus transcript ingestion bytes/duration by team and selected-team user scope
+- system-admin usage tab rendering KPI cards, split input/output token metrics and charts, provider/model mix, generated-document mix, ingestion mix, failure hotspots, and selected-team user activity share without exposing content
 - `/home` rendering the lighter user/leader guide overlay and the renamed `Saved prompts` navigation copy
 - localhost-only seeded dev-account access to generated-document redaction debug for manual verification that the outbound LLM path used the redacted transcript payload
 - localhost-only seeded dev-account redaction debug exposing the raw redacted failed provider output for malformed note JSON diagnosis
 - home and transcribe UI showing structured EMIS template authoring, transcript-backed EMIS context reload, and line-array context inputs
+- template editor hiding EMIS section prompts until `structured` mode is selected and ignoring posted section fields for freeform template saves
 - `/transcribe` hiding the EMIS context editor when the selected note template is freeform
 - structured EMIS generation filtering transcript-persisted sections that are removed by the selected template
 - template API responses preserving `latest_version.config_json` for structured template round-tripping
@@ -238,9 +250,26 @@ What it does:
 - GLM 2 workspace showing `idle` instead of backend `recording` for untouched whole-file sessions while leaving whole-file controls available when a team STT selection exists
 - browser manager-account routes redirecting unauthenticated requests to `/login`
 - admin page showing teams, users, and account requests
+- admin page flat sidebar workspace layout for admin areas
+- home page flat sidebar workspace layout for settings/admin-like areas while keeping overview as dashboard cards
 - admin page protected-account marker for the current system-admin account
 - admin page team-scoped STT config form
 - admin page team-scoped STT inspection flow
+- admin page LLM team policy rendering visible-model tiles with default model dropdown limited to visible models
+- admin page default template management and default quick-action management
+- admin team creation seeding active default templates and quick actions into team-owned assets
+- admin team hard delete removing team users, team-owned configs, team assets, transcript-derived rows, account requests, and team usage metadata
+- admin team hard delete preflighting system-admin membership before deleting Vault-backed provider secrets
+- admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
+- system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
+- de-identification provider validation rejecting secret-bearing extra headers/body fields and bearer-auth providers without a Vault-backed token
+- de-identification provider Vault lifecycle keeping old secrets until DB commits and cleaning pending replacement secrets on failed commits
+- built-in de-identification provider fallback helper preserving caller transaction boundaries
+- generic REST de-identification span normalization/filtering before placeholder replacement
+- de-identification runtime fallback to the built-in global provider when a selected team provider is inactive or unavailable
+- home tabs initializing after the navigation moved above the tab shell
+- transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
+- transcribe history tab keeping the transcript pane independently scrollable inside the split workspace
 - MFA challenge page and remember-browser option for completed users
 - login form rate-limiting returning `429`
 - login form rate-limiting returning a generic wait-and-retry page

@@ -18,6 +18,14 @@ from .auth import (
 )
 from .common import ApiError, ErrorResponse
 from .dictation import PostConsultationDictationDetail, PostConsultationDictationUpdate
+from .deidentification import (
+    DeidentificationProviderAssignmentDetail,
+    DeidentificationProviderAssignmentUpsert,
+    DeidentificationProviderDetail,
+    DeidentificationProviderUpsert,
+    DeidentificationSelectionDetail,
+    DeidentificationSelectionUpsert,
+)
 from .llm import (
     LlmConfigDetail,
     LlmConfigInspectResult,
@@ -42,6 +50,8 @@ from .stt import (
 )
 from .teams import TeamCreate, TeamDetail, TeamListItem
 from .templates import (
+    DefaultPromptTemplateUpsert,
+    DefaultQuickActionUpsert,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
     GenerateFollowupRequest,
@@ -81,6 +91,12 @@ __all__ = [
     "CurrentUserResponse",
     "PostConsultationDictationDetail",
     "PostConsultationDictationUpdate",
+    "DeidentificationProviderAssignmentDetail",
+    "DeidentificationProviderAssignmentUpsert",
+    "DeidentificationProviderDetail",
+    "DeidentificationProviderUpsert",
+    "DeidentificationSelectionDetail",
+    "DeidentificationSelectionUpsert",
     "LoginRequest",
     "LoginResponse",
     "MfaChallengeRequest",
@@ -110,6 +126,8 @@ __all__ = [
     "TeamCreate",
     "TeamDetail",
     "TeamListItem",
+    "DefaultPromptTemplateUpsert",
+    "DefaultQuickActionUpsert",
     "GenerateTemplateOutputRequest",
     "GenerateFollowupRequest",
     "GenerateQuickActionRequest",

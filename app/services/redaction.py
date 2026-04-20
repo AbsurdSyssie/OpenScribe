@@ -9,11 +9,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
+    DeidentificationAdapterKind,
+    DeidentificationProvider,
     RedactionEntity,
     RedactionRun,
     RedactionRunStatus,
@@ -21,6 +24,7 @@ from app.models import (
     utcnow,
 )
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
+from app.services.deidentification import active_team_deidentification_provider, read_deidentification_provider_bearer_token
 
 from .redaction_policy import filter_analyzer_results, normalize_span_bounds
 
@@ -41,6 +45,13 @@ class Span:
     @property
     def length(self) -> int:
         return self.end - self.start
+
+
+@dataclass
+class DeidentificationDetectionResult:
+    spans: list[Span]
+    api_provider: str
+    api_model_or_version: str | None = None
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -109,6 +120,166 @@ def _filter_results(text: str, raw_results: list[Any]) -> list[Span]:
     return spans
 
 
+def _filter_provider_spans(
+    text: str,
+    spans: list[Span],
+    *,
+    score_threshold: float,
+    entities: list[str] | None,
+) -> list[Span]:
+    allowed_entities = {str(entity) for entity in entities} if entities is not None else None
+    normalized_spans: list[Span] = []
+    for span in spans:
+        if span.start < 0 or span.end > len(text) or span.start >= span.end:
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+        if span.score < score_threshold:
+            continue
+        if allowed_entities is not None and span.entity_type not in allowed_entities:
+            continue
+        normalized_bounds = normalize_span_bounds(text, span.start, span.end, span.entity_type)
+        if normalized_bounds is None:
+            continue
+        start, end = normalized_bounds
+        normalized_spans.append(Span(start=start, end=end, entity_type=span.entity_type, score=span.score))
+    return list(filter_analyzer_results(text, normalized_spans))
+
+
+def _extract_path(payload: Any, path: str | None) -> Any:
+    if path is None or not path.strip():
+        return payload
+    current = payload
+    for part in path.split("."):
+        key = part.strip()
+        if not key:
+            continue
+        if not isinstance(current, dict) or key not in current:
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+        current = current[key]
+    return current
+
+
+def _coerce_span_field(item: dict[str, Any], field_name: str, *, kind: type[int] | type[str]) -> int | str:
+    if field_name not in item:
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+    value = item[field_name]
+    try:
+        return kind(value)
+    except (TypeError, ValueError) as exc:
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
+
+
+def _normalize_entity_type(raw_type: str, *, entity_type_map: dict[str, str]) -> str:
+    trimmed = raw_type.strip()
+    if not trimmed:
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+    return entity_type_map.get(trimmed, trimmed)
+
+
+def _detect_with_presidio(text: str, *, language: str, score_threshold: float, entities: list[str] | None) -> DeidentificationDetectionResult:
+    analyzer, config = _redaction_runtime()
+    try:
+        raw_results = analyzer.analyze(
+            text=text,
+            language=language,
+            entities=entities,
+            score_threshold=score_threshold,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise AppError(502, "redaction_failed", "PHI redaction failed") from exc
+    return DeidentificationDetectionResult(
+        spans=_resolve_overlaps(_filter_results(text, raw_results)),
+        api_provider="native_presidio",
+        api_model_or_version=config.get("nlp", {}).get("model_name", "en_core_web_sm"),
+    )
+
+
+def _detect_with_generic_rest(
+    db: Session,
+    *,
+    provider: DeidentificationProvider,
+    text: str,
+    language: str,
+    score_threshold: float,
+    entities: list[str] | None,
+) -> DeidentificationDetectionResult:
+    body: dict[str, Any] = dict(provider.extra_body_json or {})
+    body[provider.request_text_field] = text
+    if provider.request_language_field:
+        body[provider.request_language_field] = language
+    headers = {key: str(value) for key, value in (provider.extra_headers_json or {}).items()}
+    if provider.auth_mode.value == "bearer":
+        headers["Authorization"] = f"Bearer {read_deidentification_provider_bearer_token(db, provider_id=provider.id)}"
+    url = f"{provider.base_url.rstrip('/')}{provider.detect_path}"
+    try:
+        response = httpx.post(url, json=body, headers=headers, timeout=20.0)
+    except httpx.HTTPError as exc:  # pragma: no cover
+        raise AppError(502, "redaction_failed", "PHI redaction failed") from exc
+    if response.status_code >= 400:
+        raise AppError(502, "redaction_failed", "PHI redaction failed")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
+    entities_payload = _extract_path(payload, provider.response_entities_path)
+    if not isinstance(entities_payload, list):
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+    spans: list[Span] = []
+    for raw_item in entities_payload:
+        if not isinstance(raw_item, dict):
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+        score = 1.0
+        if provider.response_score_field:
+            raw_score = raw_item.get(provider.response_score_field)
+            if raw_score is not None:
+                try:
+                    score = float(raw_score)
+                except (TypeError, ValueError) as exc:
+                    raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
+        spans.append(
+            Span(
+                start=_coerce_span_field(raw_item, provider.response_start_field, kind=int),
+                end=_coerce_span_field(raw_item, provider.response_end_field, kind=int),
+                entity_type=_normalize_entity_type(
+                    _coerce_span_field(raw_item, provider.response_type_field, kind=str),
+                    entity_type_map={str(key): str(value) for key, value in (provider.entity_type_map_json or {}).items()},
+                ),
+                score=score,
+            )
+        )
+    model_or_version = None
+    if provider.response_model_version_path:
+        resolved_value = _extract_path(payload, provider.response_model_version_path)
+        model_or_version = str(resolved_value) if resolved_value is not None else None
+    return DeidentificationDetectionResult(
+        spans=_resolve_overlaps(_filter_provider_spans(text, spans, score_threshold=score_threshold, entities=entities)),
+        api_provider=provider.label,
+        api_model_or_version=model_or_version,
+    )
+
+
+def _detect_phi(
+    db: Session,
+    *,
+    provider: DeidentificationProvider,
+    text: str,
+    language: str,
+    score_threshold: float,
+    entities: list[str] | None,
+) -> DeidentificationDetectionResult:
+    if provider.adapter_kind is DeidentificationAdapterKind.native_presidio:
+        return _detect_with_presidio(text, language=language, score_threshold=score_threshold, entities=entities)
+    if provider.adapter_kind is DeidentificationAdapterKind.generic_rest:
+        return _detect_with_generic_rest(
+            db,
+            provider=provider,
+            text=text,
+            language=language,
+            score_threshold=score_threshold,
+            entities=entities,
+        )
+    raise AppError(422, "business_rule_violation", "Unsupported de-identification adapter")
+
+
 def _resolve_overlaps(spans: list[Span]) -> list[Span]:
     if not spans:
         return []
@@ -126,24 +297,24 @@ def _normalized_value_hash(value: str) -> str:
 
 
 def redact_text_with_mapping(
+    db: Session,
     text: str,
     *,
+    provider: DeidentificationProvider,
     language: str = "en",
     score_threshold: float = 0.35,
     entities: list[str] | None = None,
     start_index: int = 1,
 ) -> dict[str, Any]:
-    analyzer, config = _redaction_runtime()
-    try:
-        raw_results = analyzer.analyze(
-            text=text,
-            language=language,
-            entities=entities,
-            score_threshold=score_threshold,
-        )
-    except Exception as exc:  # pragma: no cover
-        raise AppError(502, "redaction_failed", "PHI redaction failed") from exc
-    spans = _resolve_overlaps(_filter_results(text, raw_results))
+    detection = _detect_phi(
+        db,
+        provider=provider,
+        text=text,
+        language=language,
+        score_threshold=score_threshold,
+        entities=entities,
+    )
+    spans = detection.spans
 
     parts: list[str] = []
     phi_index: list[dict[str, Any]] = []
@@ -170,12 +341,13 @@ def redact_text_with_mapping(
         "phi_mapping": phi_mapping,
         "phi_index": phi_index,
         "phi_count": len(phi_index),
-        "api_provider": "native_presidio",
-        "api_model_or_version": config.get("nlp", {}).get("model_name", "en_core_web_sm"),
+        "api_provider": detection.api_provider,
+        "api_model_or_version": detection.api_model_or_version,
     }
 
 
-def redact_transient_text(text: str, *, start_index: int) -> dict[str, Any]:
+def redact_transient_text(db: Session, text: str, *, team_id: uuid.UUID, start_index: int) -> dict[str, Any]:
+    provider = active_team_deidentification_provider(db, team_id=team_id)
     clean = text.strip()
     if not clean:
         return {
@@ -183,10 +355,10 @@ def redact_transient_text(text: str, *, start_index: int) -> dict[str, Any]:
             "phi_mapping": {},
             "phi_index": [],
             "phi_count": 0,
-            "api_provider": "native_presidio",
-            "api_model_or_version": _load_yaml(DEFAULT_CONFIG_PATH).get("nlp", {}).get("model_name", "en_core_web_sm"),
+            "api_provider": provider.label,
+            "api_model_or_version": None,
         }
-    return redact_text_with_mapping(clean, start_index=start_index)
+    return redact_text_with_mapping(db, clean, provider=provider, start_index=start_index)
 
 
 def _mapping_hash(phi_index: list[dict[str, Any]]) -> str:
@@ -249,13 +421,14 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
     if existing is not None:
         return existing
 
+    provider = active_team_deidentification_provider(db, team_id=transcript_version.transcript.team_id)
     run = RedactionRun(
         transcript_id=transcript_version.transcript_id,
         transcript_version_id=transcript_version.id,
         owner_user_id=transcript_version.transcript.owner_user_id,
         team_id=transcript_version.transcript.team_id,
         status=RedactionRunStatus.succeeded,
-        api_provider="native_presidio",
+        api_provider=provider.label,
     )
     db.add(run)
     db.flush()
@@ -271,7 +444,7 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
             )
             or ""
         )
-        result = redact_text_with_mapping(transcript_text)
+        result = redact_text_with_mapping(db, transcript_text, provider=provider)
         run.redacted_text_encrypted = encrypt_text_for_owner(
             db,
             owner_user_id=transcript_version.transcript.owner_user_id,

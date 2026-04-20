@@ -108,6 +108,16 @@ class LlmAdapterKind(str, enum.Enum):
     ollama_chat = "ollama_chat"
 
 
+class DeidentificationAuthMode(str, enum.Enum):
+    none = "none"
+    bearer = "bearer"
+
+
+class DeidentificationAdapterKind(str, enum.Enum):
+    native_presidio = "native_presidio"
+    generic_rest = "generic_rest"
+
+
 class TemplateScope(str, enum.Enum):
     team = "team"
     user = "user"
@@ -171,6 +181,15 @@ class Team(Base):
     stt_selections: Mapped[list["TeamSttSelection"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     llm_configs: Mapped[list["TeamLlmConfig"]] = relationship(back_populates="team")
     llm_selection: Mapped["TeamLlmSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
+    deidentification_provider_assignments: Mapped[list["TeamDeidentificationProviderAssignment"]] = relationship(
+        back_populates="team",
+        cascade="all, delete-orphan",
+    )
+    deidentification_selection: Mapped["TeamDeidentificationSelection | None"] = relationship(
+        back_populates="team",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     templates: Mapped[list["PromptTemplate"]] = relationship(back_populates="team")
     quick_actions: Mapped[list["QuickAction"]] = relationship(back_populates="team")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="team")
@@ -457,6 +476,86 @@ class TeamLlmSelection(Base):
     selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
 
 
+class DeidentificationProvider(Base):
+    __tablename__ = "deidentification_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    adapter_kind: Mapped[DeidentificationAdapterKind] = mapped_column(
+        Enum(DeidentificationAdapterKind),
+        default=DeidentificationAdapterKind.native_presidio,
+        nullable=False,
+    )
+    base_url: Mapped[str] = mapped_column(String(2048), default="", nullable=False)
+    detect_path: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    auth_mode: Mapped[DeidentificationAuthMode] = mapped_column(
+        Enum(DeidentificationAuthMode),
+        default=DeidentificationAuthMode.none,
+        nullable=False,
+    )
+    request_text_field: Mapped[str] = mapped_column(String(255), default="text", nullable=False)
+    request_language_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    extra_headers_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    extra_body_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    response_entities_path: Mapped[str] = mapped_column(String(255), default="entities", nullable=False)
+    response_start_field: Mapped[str] = mapped_column(String(255), default="start", nullable=False)
+    response_end_field: Mapped[str] = mapped_column(String(255), default="end", nullable=False)
+    response_type_field: Mapped[str] = mapped_column(String(255), default="entity_type", nullable=False)
+    response_score_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    response_model_version_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    entity_type_map_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    vault_secret_ref: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    is_builtin: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    assignments: Mapped[list["TeamDeidentificationProviderAssignment"]] = relationship(
+        back_populates="provider",
+        cascade="all, delete-orphan",
+    )
+    selections: Mapped[list["TeamDeidentificationSelection"]] = relationship(
+        back_populates="provider",
+        cascade="all, delete-orphan",
+    )
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_user_id])
+    updated_by: Mapped[User | None] = relationship(foreign_keys=[updated_by_user_id])
+
+
+class TeamDeidentificationProviderAssignment(Base):
+    __tablename__ = "team_deidentification_provider_assignments"
+    __table_args__ = (
+        UniqueConstraint("team_id", "provider_id", name="uq_team_deidentification_provider_assignment"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("deidentification_providers.id"), nullable=False)
+    assigned_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="deidentification_provider_assignments")
+    provider: Mapped[DeidentificationProvider] = relationship(back_populates="assignments")
+    assigned_by: Mapped[User] = relationship(foreign_keys=[assigned_by_user_id])
+
+
+class TeamDeidentificationSelection(Base):
+    __tablename__ = "team_deidentification_selections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), unique=True, nullable=False)
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("deidentification_providers.id"), nullable=False)
+    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="deidentification_selection")
+    provider: Mapped[DeidentificationProvider] = relationship(back_populates="selections")
+    selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
+
+
 class UserLlmPreference(Base):
     __tablename__ = "user_llm_preferences"
 
@@ -539,6 +638,39 @@ class PromptTemplateVersion(Base):
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
 
 
+class DefaultPromptTemplate(Base):
+    __tablename__ = "default_templates"
+    __table_args__ = (Index("uq_default_templates_name_lower", text("lower(btrim(name))"), unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    versions: Mapped[list["DefaultPromptTemplateVersion"]] = relationship(back_populates="template", cascade="all, delete-orphan")
+
+
+class DefaultPromptTemplateVersion(Base):
+    __tablename__ = "default_template_versions"
+    __table_args__ = (UniqueConstraint("default_template_id", "version_no", name="uq_default_template_version_number"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    default_template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("default_templates.id"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[TemplateMode] = mapped_column(Enum(TemplateMode), default=TemplateMode.freeform, nullable=False)
+    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    template: Mapped[DefaultPromptTemplate] = relationship(back_populates="versions")
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+
+
 class QuickAction(Base):
     __tablename__ = "quick_actions"
     __table_args__ = (
@@ -593,6 +725,38 @@ class QuickActionVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     quick_action: Mapped[QuickAction] = relationship(back_populates="versions")
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+
+
+class DefaultQuickAction(Base):
+    __tablename__ = "default_quick_actions"
+    __table_args__ = (Index("uq_default_quick_actions_name_lower", text("lower(btrim(name))"), unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    versions: Mapped[list["DefaultQuickActionVersion"]] = relationship(back_populates="quick_action", cascade="all, delete-orphan")
+
+
+class DefaultQuickActionVersion(Base):
+    __tablename__ = "default_quick_action_versions"
+    __table_args__ = (UniqueConstraint("default_quick_action_id", "version_no", name="uq_default_quick_action_version_number"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    default_quick_action_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("default_quick_actions.id"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[TemplateMode] = mapped_column(Enum(TemplateMode), default=TemplateMode.freeform, nullable=False)
+    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    quick_action: Mapped[DefaultQuickAction] = relationship(back_populates="versions")
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
 
 

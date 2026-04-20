@@ -23,7 +23,7 @@
       --success: #2F855A;
       --warning: #B7791F;
       --error: #C53030;
-      --shadow-soft: 0 10px 30px rgba(26, 32, 44, 0.04);
+      --shadow-soft: none;
       --shadow-focus: 0 0 0 3px rgba(224, 242, 245, 0.9);
     }
 
@@ -31,6 +31,7 @@
     html { background: var(--bg); }
     body {
       margin: 0;
+      min-height: 100vh;
       font-family: "DM Sans", sans-serif;
       color: var(--ink);
       background: var(--bg);
@@ -43,17 +44,14 @@
       inset: 0;
       pointer-events: none;
       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
-      opacity: 0.018;
+      opacity: 0;
       z-index: 0;
     }
     main {
       position: relative;
       z-index: 1;
-      max-width: 1320px;
-      margin: 0 auto;
-      padding: 28px;
       display: grid;
-      gap: 20px;
+      gap: 22px;
     }
     h1, h2, h3, legend {
       margin: 0;
@@ -65,6 +63,7 @@
     h1 { font-size: clamp(2rem, 3vw, 2.8rem); line-height: 1.05; margin-top: 10px; }
     h2 { font-size: 1.48rem; line-height: 1.12; margin-bottom: 10px; }
     h3 { font-size: 1.08rem; line-height: 1.2; margin: 10px 0 0; }
+    h4 { margin: 18px 0 4px; font-size: 0.95rem; color: var(--slate); }
     p, ul { margin: 0; }
     ul { padding-left: 1.1rem; }
     li + li { margin-top: 0.35rem; }
@@ -73,16 +72,63 @@
     hr { margin: 28px 0; border: 0; border-top: 1px solid rgba(226, 222, 214, 0.95) !important; }
     [hidden] { display: none !important; }
 
-    .hero, .topbar, .grid { display: grid; gap: 20px; }
+    .admin-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+    .admin-sidebar {
+      position: sticky;
+      top: 0;
+      min-height: 100vh;
+      align-self: start;
+      padding: 20px 16px;
+      border-right: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(245, 241, 235, 0.98) 0%, rgba(250, 248, 245, 1) 100%);
+      display: grid;
+      grid-template-rows: auto auto auto 1fr auto;
+      gap: 18px;
+    }
+    .admin-sidebar__header {
+      display: grid;
+      gap: 8px;
+    }
+    .admin-sidebar__header p,
+    .admin-sidebar__meta {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+    .admin-pane {
+      min-width: 0;
+      padding: 28px 40px 80px;
+    }
+    .admin-pane__header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .admin-pane__header p {
+      margin-top: 8px;
+      max-width: 72ch;
+      color: var(--muted);
+    }
+    .hero, .topbar, .grid { display: grid; gap: 22px; }
     .topbar { grid-template-columns: 1fr auto; align-items: center; }
-    .grid { grid-template-columns: minmax(0, 2.1fr) minmax(320px, 1fr); }
+    .grid { grid-template-columns: minmax(0, 1fr); }
 
     .panel {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 24px;
-      box-shadow: var(--shadow-soft);
+      background: transparent;
+      border: 0;
+      border-top: 1px solid var(--border);
+      border-radius: 0;
+      padding: 22px 0 0;
+      box-shadow: none;
+      overflow-x: auto;
     }
     .hero {
       background: linear-gradient(180deg, rgba(245, 241, 235, 0.95) 0%, rgba(255, 255, 255, 0.98) 100%);
@@ -94,7 +140,7 @@
       width: fit-content;
       min-height: 28px;
       padding: 6px 10px;
-      border-radius: 999px;
+      border-radius: 4px;
       font-size: 0.75rem;
       font-weight: 700;
       letter-spacing: 0.12em;
@@ -103,14 +149,15 @@
     .eyebrow {
       margin-bottom: 2px;
       color: var(--muted);
-      background: rgba(255,255,255,0.78);
-      border: 1px solid rgba(226, 222, 214, 0.92);
+      background: transparent;
+      border: 0;
+      padding-left: 0;
     }
     .eyebrow::before {
       content: "";
       width: 8px;
       height: 8px;
-      border-radius: 999px;
+      border-radius: 4px;
       background: var(--accent);
       opacity: 0.9;
     }
@@ -133,7 +180,7 @@
     input, select, textarea {
       width: 100%;
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 0;
       padding: 12px 14px;
       font: inherit;
       color: var(--ink);
@@ -155,7 +202,7 @@
     button {
       width: fit-content;
       border: 1px solid transparent;
-      border-radius: 10px;
+      border-radius: 0;
       padding: 11px 16px;
       font: inherit;
       font-weight: 500;
@@ -188,7 +235,7 @@
       border-color: rgba(61, 122, 140, 0.28);
     }
 
-    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; overflow-x: auto; }
     th, td {
       padding: 14px 0;
       border-bottom: 1px solid rgba(226, 222, 214, 0.9);
@@ -204,13 +251,39 @@
     }
     tbody tr:hover { background: rgba(29, 79, 94, 0.025); }
     td form { margin-top: 10px; gap: 10px; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
+    }
+    dl {
+      display: grid;
+      gap: 10px;
+      margin: 12px 0 0;
+    }
+    dl > div {
+      display: grid;
+      grid-template-columns: minmax(120px, 0.3fr) minmax(0, 1fr);
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid rgba(226, 222, 214, 0.9);
+    }
+    dt {
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.75rem;
+    }
+    dd { margin: 0; min-width: 0; }
 
     fieldset {
       margin: 0;
       padding: 14px 16px 16px;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      background: rgba(245, 241, 235, 0.7);
+      border-radius: 0;
+      background: transparent;
       display: grid;
       gap: 12px;
     }
@@ -221,7 +294,7 @@
 
     .flash {
       padding: 14px 16px;
-      border-radius: 12px;
+      border-radius: 0;
       border: 1px solid var(--border);
       background: rgba(245, 241, 235, 0.7);
     }
@@ -248,7 +321,7 @@
     .toast {
       pointer-events: auto;
       padding: 12px 16px;
-      border-radius: 12px;
+      border-radius: 0;
       border: 1px solid var(--border);
       background: #fff;
       font-size: 0.9rem;
@@ -285,9 +358,61 @@
     }
 
     .tips { display: grid; gap: 10px; margin: 14px 0; }
+    .stack {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .result {
+      margin-top: 16px;
+      padding: 14px 0;
+      border: 1px solid var(--border);
+      border-width: 1px 0;
+    }
+    .result.success { border-color: rgba(47, 133, 90, 0.28); }
+    .result.error { border-color: rgba(197, 48, 48, 0.28); }
+    .model-toggle-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .model-toggle-card {
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      background: rgba(245, 241, 235, 0.65);
+      color: var(--muted);
+    }
+    .model-toggle-card.is-enabled,
+    .model-toggle-card:has(input:checked) {
+      background: rgba(224, 242, 245, 0.52);
+      border-color: rgba(61, 122, 140, 0.36);
+      color: var(--ink);
+    }
+    .model-toggle-card input {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+    }
+    .model-toggle-card span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .model-default-row {
+      margin-top: 14px;
+      display: grid;
+      gap: 8px;
+      max-width: 520px;
+    }
     .tip {
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 0;
       padding: 14px;
       background: rgba(245, 241, 235, 0.55);
       display: grid;
@@ -319,33 +444,251 @@
     .tab-shell__nav.is-tabs-ready {
       display: flex;
     }
+    .admin-sidebar .tab-shell__nav.is-tabs-ready {
+      display: grid;
+      gap: 0;
+      align-content: start;
+    }
 
     .tab-shell__tab {
-      border: 1px solid var(--border);
-      background: rgba(245, 241, 235, 0.85);
+      width: 100%;
+      justify-content: flex-start;
+      border: 0;
+      border-bottom: 1px solid rgba(216, 210, 200, 0.78);
+      background: transparent;
       color: var(--slate);
       min-height: 40px;
       box-shadow: none;
+      padding: 12px 10px;
     }
 
     .tab-shell__tab:hover {
-      background: rgba(224, 242, 245, 0.75);
+      background: rgba(29, 79, 94, 0.06);
       color: var(--ink);
       transform: none;
     }
 
     .tab-shell__tab[aria-selected="true"] {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: white;
+      background: rgba(29, 79, 94, 0.08);
+      border-color: rgba(29, 79, 94, 0.22);
+      color: var(--ink);
+    }
+
+    .usage-hero {
+      display: grid;
+      gap: 18px;
+      padding: 0 0 8px;
+    }
+    .usage-hero__top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+      gap: 18px;
+      align-items: end;
+    }
+    .usage-hero__scope {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid rgba(61, 122, 140, 0.18);
+      background: rgba(224, 242, 245, 0.45);
+      color: var(--accent);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      width: fit-content;
+    }
+    .usage-kpi-grid,
+    .usage-window-grid,
+    .usage-chart-grid,
+    .usage-detail-grid,
+    .usage-user-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .usage-kpi-grid {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .usage-window-grid,
+    .usage-detail-grid {
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .usage-chart-grid {
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+    .usage-user-grid {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .usage-card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(245,241,235,0.86) 100%);
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+    .usage-card--accent {
+      background: linear-gradient(180deg, rgba(224, 242, 245, 0.85) 0%, rgba(255,255,255,0.98) 100%);
+      border-color: rgba(61, 122, 140, 0.22);
+    }
+    .usage-card__eyebrow {
+      font-size: 0.74rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+    .usage-card__value {
+      font-size: clamp(1.4rem, 2vw, 2rem);
+      line-height: 1;
+      font-family: "Fraunces", serif;
+      color: var(--ink);
+    }
+    .usage-card__detail {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .usage-delta {
+      width: fit-content;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(255,255,255,0.75);
+      color: var(--muted);
+    }
+    .usage-delta.good {
+      color: var(--success);
+      border-color: rgba(47, 133, 90, 0.25);
+      background: rgba(47, 133, 90, 0.08);
+    }
+    .usage-delta.warning {
+      color: var(--warning);
+      border-color: rgba(183, 121, 31, 0.25);
+      background: rgba(183, 121, 31, 0.08);
+    }
+    .usage-chart {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 14px;
+      min-height: 280px;
+    }
+    .usage-chart__meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .usage-chart__bars {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(16px, 1fr));
+      align-items: end;
+      gap: 8px;
+      min-height: 170px;
+    }
+    .usage-chart__column {
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+      align-items: end;
+      justify-items: center;
+    }
+    .usage-chart__stack {
+      width: 100%;
+      height: 150px;
+      display: flex;
+      align-items: end;
+      justify-content: center;
+      gap: 3px;
+    }
+    .usage-chart__bar {
+      width: 100%;
+      max-width: 18px;
+      min-height: 2px;
+      background: rgba(61, 122, 140, 0.18);
+      position: relative;
+    }
+    .usage-chart__bar--generation { background: linear-gradient(180deg, #1D4F5E 0%, #3D7A8C 100%); }
+    .usage-chart__bar--failure { background: linear-gradient(180deg, #C53030 0%, #E28B8B 100%); }
+    .usage-chart__bar--token { background: linear-gradient(180deg, #6B46C1 0%, #B794F4 100%); }
+    .usage-chart__bar--ingestion { background: linear-gradient(180deg, #B7791F 0%, #ECC94B 100%); }
+    .usage-chart__label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .usage-table-wrap {
+      display: grid;
+      gap: 16px;
+    }
+    .usage-meter {
+      position: relative;
+      width: 100%;
+      max-width: 140px;
+      height: 8px;
+      background: rgba(29, 79, 94, 0.08);
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    .usage-meter > span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      background: linear-gradient(90deg, #1D4F5E 0%, #3D7A8C 100%);
+    }
+    .usage-table-note {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .usage-card-list {
+      display: grid;
+      gap: 10px;
+    }
+    .usage-card-list__row {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .usage-card-list__top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .usage-chip-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .usage-chip {
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      background: rgba(245, 241, 235, 0.75);
+      color: var(--slate);
+      font-size: 0.8rem;
     }
 
     @media (max-width: 1080px) {
+      .admin-shell { grid-template-columns: 280px minmax(0, 1fr); }
+      .admin-pane { padding: 24px 28px 72px; }
       .grid { grid-template-columns: 1fr; }
+      .usage-hero__top { grid-template-columns: 1fr; }
     }
     @media (max-width: 760px) {
-      main { padding: 18px; }
-      .panel { padding: 20px; }
+      .admin-shell { grid-template-columns: 1fr; }
+      .admin-sidebar {
+        position: relative;
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .admin-pane { padding: 18px 16px 56px; }
+      .panel { padding: 18px 0 0; }
       .topbar { grid-template-columns: 1fr; }
       button { width: 100%; }
       th:nth-child(n+4), td:nth-child(n+4) { }
@@ -357,32 +700,39 @@
   </style>
 </head>
 <body>
-  <main>
-    <section class="hero panel">
-      <div class="eyebrow">System admin</div>
-      <h1>Admin foundation for teams, managed onboarding, and account-request review.</h1>
-      <p>System admins can manage teams, create users directly, and approve or reject incoming access requests across all teams.</p>
-    </section>
-
-    <section class="topbar panel">
-      <div>Signed in as {{ current_user.email }}</div>
+  <div class="admin-shell">
+    <aside class="admin-sidebar">
+      <div class="admin-sidebar__header">
+        <div class="eyebrow">System admin</div>
+        <h2>Admin</h2>
+        <p>Manage team setup, provider policy, account lifecycle, defaults, requests, and usage metadata.</p>
+      </div>
+      <div class="admin-sidebar__meta">Signed in as {{ current_user.email }}</div>
       <form method="post" action="/logout">
         <button type="submit">Sign out</button>
       </form>
-    </section>
+      <nav class="tab-shell__nav" data-tab-nav role="tablist" aria-label="Admin sections">
+        <button type="button" class="tab-shell__tab" data-tab-target="providers" role="tab" aria-selected="true">Provider setup</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="defaults" role="tab" aria-selected="false">Defaults</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="directory" role="tab" aria-selected="false">Directory</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="usage" role="tab" aria-selected="false">Usage</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="requests" role="tab" aria-selected="false">Requests</button>
+      </nav>
+    </aside>
+    <main class="admin-pane">
+      <header class="admin-pane__header">
+        <div>
+          <div class="eyebrow">Platform controls</div>
+          <h1>Teams, providers, access, defaults, and usage.</h1>
+          <p>Configure operational metadata without opening transcript or note content.</p>
+        </div>
+      </header>
 
-    {% if message %}
-    <div class="panel flash {{ message_kind }}">{{ message }}</div>
-    {% endif %}
+      {% if message %}
+      <div class="flash {{ message_kind }}">{{ message }}</div>
+      {% endif %}
 
-    <div class="panel tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Admin sections">
-      <button type="button" class="tab-shell__tab" data-tab-target="providers" role="tab" aria-selected="true">Providers</button>
-      <button type="button" class="tab-shell__tab" data-tab-target="directory" role="tab" aria-selected="false">Directory</button>
-      <button type="button" class="tab-shell__tab" data-tab-target="usage" role="tab" aria-selected="false">Usage</button>
-      <button type="button" class="tab-shell__tab" data-tab-target="requests" role="tab" aria-selected="false">Requests</button>
-    </div>
-
-    <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
+      <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
     <section class="grid" data-tab-panel="providers">
       <div class="panel">
         <h2>Team STT endpoints</h2>
@@ -759,24 +1109,28 @@
             {% for config in selectable_llm_configs %}
             <fieldset data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
               <legend>Visible models for users</legend>
+              {% set selected_default_model = (llm_selection.model_name_override or llm_selection.config.model_name) if llm_selection and llm_selection.llm_config_id == config.id else (config.model_name or '') %}
+              <div class="model-toggle-grid">
               {% for model in config.available_models_json %}
               {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
-              <label>
+              <label class="model-toggle-card{% if is_allowed %} is-enabled{% endif %}">
                 <input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}>
-                {{ model }}
+                <span>{{ model }}</span>
               </label>
               {% endfor %}
-              <p><small>Select which models users in this team can see.</small></p>
-              <div>
-                <strong>Team default model</strong>
-                {% for model in config.available_models_json %}
-                {% set is_selected_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and (config.model_name == model) and loop.first) %}
-                <label>
-                  <input type="radio" name="provider_model" value="{{ model }}" {% if is_selected_default %}checked{% endif %}>
-                  {{ model }}
-                </label>
-                {% endfor %}
               </div>
+              <label class="model-default-row">
+                Team default model
+                <select name="provider_model" data-llm-default-model-select data-selected-value="{{ selected_default_model }}" required>
+                {% for model in config.available_models_json %}
+                {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
+                {% if is_allowed %}
+                <option value="{{ model }}" {% if selected_default_model == model %}selected{% endif %}>{{ model }}</option>
+                {% endif %}
+                {% endfor %}
+                </select>
+              </label>
+              <p><small>Select which models users in this team can see. Default model choices come from visible models only.</small></p>
             </fieldset>
             {% endfor %}
           </div>
@@ -925,6 +1279,9 @@
         {% endif %}
       </div>
 
+    </section>
+
+    <section class="grid" data-tab-panel="directory">
       <div class="panel">
         <h2>Create team</h2>
         <form method="post" action="/admin/teams">
@@ -1006,9 +1363,7 @@
           <button type="submit">Create user</button>
         </form>
       </div>
-    </section>
 
-    <section class="grid" data-tab-panel="directory">
       <div class="panel">
         <h2>Teams</h2>
         <table>
@@ -1017,6 +1372,7 @@
               <th>Name</th>
               <th>Status</th>
               <th>Retention</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1025,6 +1381,13 @@
               <td>{{ team.name }}</td>
               <td><span class="pill">{{ team.status.value }}</span></td>
               <td>{{ team.default_retention_days }} days</td>
+              <td>
+                <form method="post" action="/admin/teams/{{ team.id }}/delete" onsubmit="return confirm('Delete this team, all team users, and all team-owned data immediately?');">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <button type="submit">Delete permanently</button>
+                </form>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -1088,128 +1451,491 @@
       </div>
     </section>
 
-    <section class="grid" data-tab-panel="usage">
+    <section class="grid" data-tab-panel="defaults">
       <div class="panel">
-        <h2>Usage overview</h2>
-        <p>Metadata-only observability for ingestion and generation activity. No transcript or note content is shown here.</p>
-        <form method="get" action="{{ admin_page_route }}">
-          <input type="hidden" name="tab" value="usage">
-          <label>
-            Team filter
-            <select name="team_id" onchange="this.form.submit()">
-              <option value="">All teams</option>
-              {% for team in teams %}
-              <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
-              {% endfor %}
-            </select>
-          </label>
-        </form>
-        {% if usage_scope_team %}
-        <p><small>Showing usage for {{ usage_scope_team.name }}.</small></p>
-        {% else %}
-        <p><small>Showing usage across all teams.</small></p>
-        {% endif %}
+        <h2>Default templates</h2>
+        <p>System-owned blueprints copied into each new team when the team is created.</p>
+        <p><a href="/admin/templates/editor?scope=default{% if admin_return_view %}&return_view={{ admin_return_view }}{% endif %}"><button type="button">New default template</button></a></p>
+        {% if default_templates %}
         <table>
           <thead>
             <tr>
-              <th>Window</th>
-              <th>Generated</th>
-              <th>Generation failures</th>
-              <th>Total tokens</th>
-              <th>Ingestion jobs</th>
-              <th>Ingestion failures</th>
-              <th>Uploaded</th>
-              <th>Audio hours</th>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {% for summary in usage_window_summaries %}
+            {% for template in default_templates %}
+            {% set latest_version = template.versions|sort(attribute='version_no')|last %}
             <tr>
-              <td>{{ summary.label }}</td>
-              <td>{{ summary.provider_completed_count }}</td>
-              <td>{{ summary.provider_failed_count }}</td>
-              <td>{{ summary.provider_total_tokens }}</td>
-              <td>{{ summary.ingestion_job_count }}</td>
-              <td>{{ summary.ingestion_failed_count }}</td>
-              <td>{{ "%.1f"|format(summary.ingested_megabytes) }} MB</td>
-              <td>{{ "%.2f"|format(summary.ingested_hours) }}</td>
+              <td>
+                <strong>{{ template.name }}</strong><br>
+                <small>{{ latest_version.mode.value }}{% if template.description %} · {{ template.description }}{% endif %}</small>
+              </td>
+              <td><span class="pill">{{ 'enabled' if template.is_active else 'disabled' }}</span></td>
+              <td>
+                <a href="/admin/templates/editor?scope=default&template_id={{ template.id }}{% if admin_return_view %}&return_view={{ admin_return_view }}{% endif %}"><button type="button">Edit</button></a>
+                <form method="post" action="/admin/default-templates/{{ template.id }}/duplicate">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <button type="submit">Duplicate</button>
+                </form>
+                <form method="post" action="/admin/default-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this default template permanently?');">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        {% else %}
+        <p><small>No default templates yet.</small></p>
+        {% endif %}
       </div>
 
       <div class="panel">
-        <h2>Team activity, last 7 days</h2>
-        {% if usage_team_rows %}
+        <h2>Default quick actions</h2>
+        <p>System-owned quick actions copied into each new team when the team is created.</p>
+        <form method="post" action="/admin/default-quick-actions">
+          <input type="hidden" name="quick_action_id" value="{{ default_quick_action.id if default_quick_action else '' }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <label>
+            Quick action name
+            <input type="text" name="name" maxlength="255" required value="{{ default_quick_action.name if default_quick_action else '' }}">
+          </label>
+          <label>
+            Description
+            <input type="text" name="description" value="{{ default_quick_action.description if default_quick_action else '' }}">
+          </label>
+          <label>
+            Quick action text
+            <textarea name="prompt_text" rows="8" required>{{ default_quick_action_latest_version.prompt_text if default_quick_action_latest_version else '' }}</textarea>
+          </label>
+          <label>
+            <input type="checkbox" name="is_active" value="true" {% if not default_quick_action or default_quick_action.is_active %}checked{% endif %}>
+            Active
+          </label>
+          <button type="submit">{{ 'Save default quick action' if default_quick_action else 'Create default quick action' }}</button>
+        </form>
+        {% if default_quick_actions %}
         <table>
           <thead>
             <tr>
-              <th>Team</th>
-              <th>Generated</th>
-              <th>Generation failures</th>
-              <th>Total tokens</th>
-              <th>Whole-file uploads</th>
-              <th>Live chunks</th>
-              <th>Ingestion failures</th>
-              <th>Uploaded</th>
-              <th>Audio hours</th>
+              <th>Name</th>
+              <th>Latest text</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {% for row in usage_team_rows %}
+            {% for quick_action in default_quick_actions %}
+            {% set latest_version = quick_action.versions|sort(attribute='version_no')|last %}
             <tr>
-              <td>{{ row.team_name }}</td>
-              <td>{{ row.provider_completed_count }}</td>
-              <td>{{ row.provider_failed_count }}</td>
-              <td>{{ row.provider_total_tokens }}</td>
-              <td>{{ row.whole_file_count }}</td>
-              <td>{{ row.live_chunk_count }}</td>
-              <td>{{ row.ingestion_failed_count }}</td>
-              <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB</td>
-              <td>{{ "%.2f"|format(row.ingested_hours) }}</td>
+              <td>
+                <strong>{{ quick_action.name }}</strong><br>
+                <small>{{ quick_action.description or '' }}</small>
+              </td>
+              <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
+              <td>
+                <a href="{{ admin_page_route }}?tab=defaults&default_quick_action_id={{ quick_action.id }}"><button type="button">Edit</button></a>
+                <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/duplicate">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <button type="submit">Duplicate</button>
+                </form>
+                <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this default quick action permanently?');">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <button type="submit">Delete</button>
+                </form>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        {% else %}
+        <p><small>No default quick actions yet.</small></p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="grid" data-tab-panel="usage">
+      <div class="panel usage-hero">
+        <div class="usage-hero__top">
+          <div>
+            <h2>Usage overview</h2>
+            <p>Metadata-only observability for ingestion and generation activity. This view compares trends, teams, providers, and users without exposing transcript or note content.</p>
+            <div class="usage-hero__scope">{% if usage_scope_team %}Focused on {{ usage_scope_team.name }}{% else %}All teams{% endif %}</div>
+          </div>
+          <form method="get" action="{{ admin_page_route }}">
+            <input type="hidden" name="tab" value="usage">
+            <label>
+              Team filter
+              <select name="team_id" onchange="this.form.submit()">
+                <option value="">All teams</option>
+                {% for team in teams %}
+                <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </form>
+        </div>
+
+        <div class="usage-kpi-grid">
+          {% for card in usage_kpi_cards %}
+          <article class="usage-card usage-card--accent">
+            <div class="usage-card__eyebrow">{{ card.label }}</div>
+            <div class="usage-card__value">{{ card.value }}</div>
+            <div class="usage-card__detail">{{ card.detail }}</div>
+            <div class="usage-delta {{ card.delta_tone }}">{{ card.delta_text }}</div>
+          </article>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Window comparisons</h2>
+        <p>Quick read across the main reporting windows, including throughput, reliability, and media volume.</p>
+        <div class="usage-window-grid">
+          {% for summary in usage_window_summaries %}
+          <article class="usage-card">
+            <div class="usage-card__eyebrow">{{ summary.label }}</div>
+            <div class="usage-card__value">{{ summary.provider_completed_count }} generated</div>
+            <div class="usage-chip-row">
+              <span class="usage-chip">{{ summary.provider_success_rate }}% success</span>
+              <span class="usage-chip">{{ summary.provider_input_tokens }} input</span>
+              <span class="usage-chip">{{ summary.provider_output_tokens }} output</span>
+              <span class="usage-chip">{{ summary.ingestion_job_count }} ingestion jobs</span>
+            </div>
+            <div class="usage-card__detail">{{ "%.1f"|format(summary.ingested_megabytes) }} MB uploaded · {{ "%.2f"|format(summary.ingested_hours) }} audio hours · {{ summary.ingestion_failed_count }} ingestion failures</div>
+            <div class="usage-chip-row">
+              <span class="usage-delta {{ 'neutral' if summary.provider_completed_delta_pct is none else ('good' if summary.provider_completed_delta_pct >= 0 else 'warning') }}">
+                generated {% if summary.provider_completed_delta_pct is none %}new{% else %}{{ '%+.1f'|format(summary.provider_completed_delta_pct) }}%{% endif %}
+              </span>
+              <span class="usage-delta {{ 'neutral' if summary.provider_input_tokens_delta_pct is none else ('good' if summary.provider_input_tokens_delta_pct >= 0 else 'warning') }}">
+                input {% if summary.provider_input_tokens_delta_pct is none %}new{% else %}{{ '%+.1f'|format(summary.provider_input_tokens_delta_pct) }}%{% endif %}
+              </span>
+              <span class="usage-delta {{ 'neutral' if summary.provider_output_tokens_delta_pct is none else ('good' if summary.provider_output_tokens_delta_pct >= 0 else 'warning') }}">
+                output {% if summary.provider_output_tokens_delta_pct is none %}new{% else %}{{ '%+.1f'|format(summary.provider_output_tokens_delta_pct) }}%{% endif %}
+              </span>
+              <span class="usage-delta {{ 'neutral' if summary.ingested_duration_delta_pct is none else ('good' if summary.ingested_duration_delta_pct >= 0 else 'warning') }}">
+                audio {% if summary.ingested_duration_delta_pct is none %}new{% else %}{{ '%+.1f'|format(summary.ingested_duration_delta_pct) }}%{% endif %}
+              </span>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Daily activity</h2>
+        <p>Four aligned 14-day charts show how generation volume, token load, ingestion volume, and failures move over time.</p>
+        <div class="usage-chart-grid">
+          <article class="usage-card usage-chart">
+            <div class="usage-chart__meta">
+              <div>
+                <div class="usage-card__eyebrow">Generations</div>
+                <div class="usage-card__detail">Completed generation events per day</div>
+              </div>
+            </div>
+            <div class="usage-chart__bars">
+              {% for point in usage_trend_points %}
+              <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_completed_count }} completed generations">
+                <div class="usage-chart__stack">
+                  <div class="usage-chart__bar usage-chart__bar--generation" style="height: {{ point.generation_height_pct }}%;"></div>
+                </div>
+                <div class="usage-chart__label">{{ point.short_label }}</div>
+              </div>
+              {% endfor %}
+            </div>
+          </article>
+
+          <article class="usage-card usage-chart">
+            <div class="usage-chart__meta">
+              <div>
+                <div class="usage-card__eyebrow">Input tokens</div>
+                <div class="usage-card__detail">Prompt tokens consumed per day</div>
+              </div>
+            </div>
+            <div class="usage-chart__bars">
+              {% for point in usage_trend_points %}
+              <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_input_tokens }} input tokens">
+                <div class="usage-chart__stack">
+                  <div class="usage-chart__bar usage-chart__bar--token" style="height: {{ point.input_token_height_pct }}%;"></div>
+                </div>
+                <div class="usage-chart__label">{{ point.short_label }}</div>
+              </div>
+              {% endfor %}
+            </div>
+          </article>
+
+          <article class="usage-card usage-chart">
+            <div class="usage-chart__meta">
+              <div>
+                <div class="usage-card__eyebrow">Output tokens</div>
+                <div class="usage-card__detail">Completion tokens produced per day</div>
+              </div>
+            </div>
+            <div class="usage-chart__bars">
+              {% for point in usage_trend_points %}
+              <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_output_tokens }} output tokens">
+                <div class="usage-chart__stack">
+                  <div class="usage-chart__bar usage-chart__bar--token" style="height: {{ point.output_token_height_pct }}%;"></div>
+                </div>
+                <div class="usage-chart__label">{{ point.short_label }}</div>
+              </div>
+              {% endfor %}
+            </div>
+          </article>
+
+          <article class="usage-card usage-chart">
+            <div class="usage-chart__meta">
+              <div>
+                <div class="usage-card__eyebrow">Speech ingestion</div>
+                <div class="usage-card__detail">Ingestion jobs created per day</div>
+              </div>
+            </div>
+            <div class="usage-chart__bars">
+              {% for point in usage_trend_points %}
+              <div class="usage-chart__column" title="{{ point.label }}: {{ point.ingestion_job_count }} ingestion jobs">
+                <div class="usage-chart__stack">
+                  <div class="usage-chart__bar usage-chart__bar--ingestion" style="height: {{ point.ingestion_height_pct }}%;"></div>
+                </div>
+                <div class="usage-chart__label">{{ point.short_label }}</div>
+              </div>
+              {% endfor %}
+            </div>
+          </article>
+
+          <article class="usage-card usage-chart">
+            <div class="usage-chart__meta">
+              <div>
+                <div class="usage-card__eyebrow">Failures</div>
+                <div class="usage-card__detail">Generation and ingestion failures per day</div>
+              </div>
+            </div>
+            <div class="usage-chart__bars">
+              {% for point in usage_trend_points %}
+              <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_failed_count + point.ingestion_failed_count }} total failures">
+                <div class="usage-chart__stack">
+                  <div class="usage-chart__bar usage-chart__bar--failure" style="height: {{ point.failure_height_pct }}%;"></div>
+                </div>
+                <div class="usage-chart__label">{{ point.short_label }}</div>
+              </div>
+              {% endfor %}
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Team comparison, last 7 days</h2>
+        <p>Compare throughput, reliability, and ingestion mix across teams. The activity share bar combines token load and processed audio volume.</p>
+        {% if usage_team_rows %}
+        <div class="usage-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Team</th>
+                <th>Generated</th>
+                <th>Success</th>
+                <th>Input / output / gen</th>
+                <th>Audio mix</th>
+                <th>Uploaded</th>
+                <th>Activity share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in usage_team_rows %}
+              <tr>
+                <td>
+                  <strong>{{ row.team_name }}</strong><br>
+                  <small>{{ row.whole_file_count }} whole-file · {{ row.live_chunk_count }} live chunk · {{ row.ingestion_failed_count }} ingestion failures</small>
+                </td>
+                <td>
+                  {{ row.provider_completed_count }}<br>
+                  <small>{{ row.provider_failed_count }} provider failures</small>
+                </td>
+                <td>
+                  {{ row.provider_success_rate }}%<br>
+                  <small>{{ row.avg_tokens_per_generation }} total avg tokens</small>
+                </td>
+                <td>{{ row.avg_input_tokens_per_generation }} / {{ row.avg_output_tokens_per_generation }}<br><small>{{ row.avg_tokens_per_generation }} total</small></td>
+                <td>
+                  {{ row.live_share_pct }}% live<br>
+                  <small>{{ row.ingestion_failure_rate }}% ingestion failure</small>
+                </td>
+                <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB<br><small>{{ "%.2f"|format(row.ingested_hours) }} hours</small></td>
+                <td>
+                  {{ row.activity_share_pct }}%
+                  <div class="usage-meter" aria-hidden="true"><span style="width: {{ row.activity_share_pct }}%;"></span></div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
         {% else %}
         <p><small>No usage has been recorded in the last 7 days.</small></p>
         {% endif %}
       </div>
 
       <div class="panel">
+        <h2>{% if usage_scope_team %}Team drilldown for {{ usage_scope_team.name }}{% else %}Platform breakdowns, last 7 days{% endif %}</h2>
+        <div class="usage-detail-grid">
+          <article class="usage-card">
+            <h3>Provider and model mix</h3>
+            {% if usage_provider_rows %}
+            <table>
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Completed</th>
+                  <th>Failed</th>
+                  <th>Tokens</th>
+                  <th>Avg latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in usage_provider_rows %}
+                <tr>
+                  <td><strong>{{ row.provider_adapter }}</strong><br><small>{{ row.model_name }}</small></td>
+                  <td>{{ row.completed_count }}</td>
+                  <td>{{ row.failed_count }}</td>
+                  <td>{{ row.input_tokens }} in / {{ row.output_tokens }} out<br><small>{{ row.avg_input_tokens }} / {{ row.avg_output_tokens }} avg</small></td>
+                  <td>{{ row.avg_duration_ms }} ms<br><small>provider {{ row.avg_provider_duration_ms }} ms</small></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p><small>No provider usage telemetry in this window.</small></p>
+            {% endif %}
+          </article>
+
+          <article class="usage-card">
+            <h3>Generated document mix</h3>
+            {% if usage_generator_rows %}
+            <div class="usage-card-list">
+              {% for row in usage_generator_rows %}
+              <div class="usage-card-list__row">
+                <div class="usage-card-list__top">
+                  <strong>{{ row.generator_type|replace('_', ' ')|title }}</strong>
+                  <span>{{ row.ready_count }} ready</span>
+                </div>
+                <div class="usage-chip-row">
+                  <span class="usage-chip">{{ row.failed_count }} failed</span>
+                  <span class="usage-chip">{{ row.input_tokens }} input</span>
+                  <span class="usage-chip">{{ row.output_tokens }} output</span>
+                  <span class="usage-chip">{{ row.avg_input_tokens }} / {{ row.avg_output_tokens }} avg</span>
+                  <span class="usage-chip">{{ row.avg_duration_ms }} ms avg</span>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <p><small>No generated document telemetry in this window.</small></p>
+            {% endif %}
+          </article>
+
+          <article class="usage-card">
+            <h3>Speech ingestion mix</h3>
+            {% if usage_ingestion_rows %}
+            <table>
+              <thead>
+                <tr>
+                  <th>Adapter</th>
+                  <th>Mode</th>
+                  <th>Jobs</th>
+                  <th>Failures</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in usage_ingestion_rows %}
+                <tr>
+                  <td>{{ row.stt_adapter_kind }}</td>
+                  <td>{{ row.job_kind }}</td>
+                  <td>{{ row.job_count }}</td>
+                  <td>{{ row.failed_count }}<br><small>{{ row.failure_rate }}%</small></td>
+                  <td>{{ row.ingested_megabytes }} MB<br><small>{{ row.ingested_hours }} h</small></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p><small>No ingestion telemetry in this window.</small></p>
+            {% endif %}
+          </article>
+
+          <article class="usage-card">
+            <h3>Failure hotspots</h3>
+            {% if usage_failure_rows %}
+            <div class="usage-card-list">
+              {% for row in usage_failure_rows %}
+              <div class="usage-card-list__row">
+                <div class="usage-card-list__top">
+                  <strong>{{ row.code }}</strong>
+                  <span>{{ row.count }}</span>
+                </div>
+                <div class="usage-table-note">{{ row.source }}</div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <p><small>No failures recorded in this window.</small></p>
+            {% endif %}
+          </article>
+        </div>
+      </div>
+
+      <div class="panel">
         <h2>{% if usage_scope_team %}User activity in {{ usage_scope_team.name }}{% else %}Per-user breakdown{% endif %}</h2>
         {% if usage_scope_team and usage_user_rows %}
-        <table>
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>Generated</th>
-              <th>Generation failures</th>
-              <th>Total tokens</th>
-              <th>Whole-file uploads</th>
-              <th>Live chunks</th>
-              <th>Ingestion failures</th>
-              <th>Uploaded</th>
-              <th>Audio hours</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in usage_user_rows %}
-            <tr>
-              <td>{{ row.full_name or "-" }}<br><small>{{ row.email }}</small></td>
-              <td>{{ row.provider_completed_count }}</td>
-              <td>{{ row.provider_failed_count }}</td>
-              <td>{{ row.provider_total_tokens }}</td>
-              <td>{{ row.whole_file_count }}</td>
-              <td>{{ row.live_chunk_count }}</td>
-              <td>{{ row.ingestion_failed_count }}</td>
-              <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB</td>
-              <td>{{ "%.2f"|format(row.ingested_hours) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <div class="usage-user-grid">
+          {% for row in usage_user_rows[:4] %}
+          <article class="usage-card">
+            <div class="usage-card__eyebrow">{{ row.full_name or row.email }}</div>
+            <div class="usage-card__value">{{ row.activity_share_pct }}%</div>
+            <div class="usage-card__detail">Share of team activity</div>
+            <div class="usage-chip-row">
+              <span class="usage-chip">{{ row.provider_completed_count }} generated</span>
+              <span class="usage-chip">{{ row.provider_input_tokens }} input</span>
+              <span class="usage-chip">{{ row.provider_output_tokens }} output</span>
+              <span class="usage-chip">{{ row.ingested_hours }} hours</span>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+        <div class="usage-table-wrap" style="margin-top: 16px;">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Generated</th>
+                <th>Success</th>
+                <th>Input / output / gen</th>
+                <th>Audio mix</th>
+                <th>Volume</th>
+                <th>Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in usage_user_rows %}
+              <tr>
+                <td>{{ row.full_name or "-" }}<br><small>{{ row.email }}</small></td>
+                <td>{{ row.provider_completed_count }}<br><small>{{ row.provider_failed_count }} provider failures</small></td>
+                <td>{{ row.provider_success_rate }}%<br><small>{{ row.ingestion_failure_rate }}% ingestion failure</small></td>
+                <td>{{ row.avg_input_tokens_per_generation }} / {{ row.avg_output_tokens_per_generation }}<br><small>{{ row.avg_tokens_per_generation }} total</small></td>
+                <td>{{ row.live_share_pct }}% live<br><small>{{ row.whole_file_count }} whole-file · {{ row.live_chunk_count }} live</small></td>
+                <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB<br><small>{{ "%.2f"|format(row.ingested_hours) }} hours</small></td>
+                <td>
+                  {{ row.activity_share_pct }}%
+                  <div class="usage-meter" aria-hidden="true"><span style="width: {{ row.activity_share_pct }}%;"></span></div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
         {% elif usage_scope_team %}
         <p><small>No usage has been recorded for this team in the last 7 days.</small></p>
         {% else %}
@@ -1282,8 +2008,9 @@
         </tbody>
       </table>
     </section>
-    </div>
-  </main>
+      </div>
+    </main>
+  </div>
   <div class="toast-container" data-toast-container></div>
   <script>
     (() => {
@@ -1312,7 +2039,7 @@
   <script>
     (() => {
       document.querySelectorAll('[data-tab-shell]').forEach((shell) => {
-        const nav = shell.previousElementSibling?.matches('[data-tab-nav]') ? shell.previousElementSibling : null;
+        const nav = document.querySelector('[data-tab-nav]');
         const tabs = Array.from(nav?.querySelectorAll('[data-tab-target]') || []);
         const panels = Array.from(shell.querySelectorAll('[data-tab-panel]'));
         if (!nav || !tabs.length || !panels.length) return;
@@ -1510,32 +2237,30 @@
         form.querySelectorAll('[data-llm-model-group]').forEach((group) => {
           const active = group.getAttribute('data-llm-model-group') === selectedConfigId;
           group.hidden = !active;
-          group.querySelectorAll('input').forEach((input) => {
+          group.querySelectorAll('input, select').forEach((input) => {
             input.disabled = !active;
           });
           if (!active) return;
 
           const checkboxes = Array.from(group.querySelectorAll('input[type="checkbox"][name="allowed_model_names"]'));
-          const radios = Array.from(group.querySelectorAll('input[type="radio"][name="provider_model"]'));
-          if (!checkboxes.some((input) => input.checked)) {
-            checkboxes.forEach((input) => {
-              input.checked = true;
-            });
-          }
-          const allowedValues = new Set(checkboxes.filter((input) => input.checked).map((input) => input.value));
-          radios.forEach((radio) => {
-            radio.disabled = !allowedValues.has(radio.value);
+          const defaultSelect = group.querySelector('[data-llm-default-model-select]');
+          checkboxes.forEach((input) => {
+            input.closest('.model-toggle-card')?.classList.toggle('is-enabled', input.checked);
           });
-          const checkedRadio = radios.find((radio) => radio.checked && !radio.disabled);
-          if (!checkedRadio) {
-            const preferredRadio = radios.find((radio) => radio.value === defaultModel && !radio.disabled);
-            const fallbackRadio = radios.find((radio) => !radio.disabled);
-            if (preferredRadio) {
-              preferredRadio.checked = true;
-            } else if (fallbackRadio) {
-              fallbackRadio.checked = true;
-            }
-          }
+          if (!defaultSelect) return;
+          const previousValue = defaultSelect.value || defaultSelect.dataset.selectedValue || defaultModel;
+          const visibleModels = checkboxes.filter((input) => input.checked).map((input) => input.value);
+          defaultSelect.innerHTML = '';
+          visibleModels.forEach((model) => {
+            const option = document.createElement('option');
+            option.value = model;
+            option.textContent = model;
+            defaultSelect.appendChild(option);
+          });
+          const fallbackValue = visibleModels.includes(defaultModel) ? defaultModel : visibleModels[0] || '';
+          defaultSelect.value = visibleModels.includes(previousValue) ? previousValue : fallbackValue;
+          defaultSelect.required = true;
+          defaultSelect.disabled = !active;
         });
       }
 

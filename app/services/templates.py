@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from datetime import timezone
+from typing import TypedDict
 from uuid import UUID, uuid4
 
 import httpx
@@ -63,6 +64,14 @@ usage_logger = logging.getLogger("openscribe.usage")
 TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner_name_lower"}
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
+
+
+class GenerationUsage(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    duration_ms: int | None
+    provider_duration_ms: int | None
 
 
 def _structured_section_definitions_snapshot(template_config: StructuredTemplateConfig | None) -> dict | None:
@@ -1272,7 +1281,29 @@ def _usage_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _estimated_cost_usd(*, config: TeamLlmConfig, usage: dict[str, int | None]) -> float | None:
+def _generation_usage(
+    *,
+    input_tokens: object = None,
+    output_tokens: object = None,
+    total_tokens: object = None,
+    duration_ms: object = None,
+    provider_duration_ms: object = None,
+) -> GenerationUsage:
+    normalized_input_tokens = _usage_int(input_tokens)
+    normalized_output_tokens = _usage_int(output_tokens)
+    normalized_total_tokens = _usage_int(total_tokens)
+    if normalized_total_tokens is None and normalized_input_tokens is not None and normalized_output_tokens is not None:
+        normalized_total_tokens = normalized_input_tokens + normalized_output_tokens
+    return {
+        "input_tokens": normalized_input_tokens,
+        "output_tokens": normalized_output_tokens,
+        "total_tokens": normalized_total_tokens,
+        "duration_ms": _usage_int(duration_ms),
+        "provider_duration_ms": _usage_int(provider_duration_ms),
+    }
+
+
+def _estimated_cost_usd(*, config: TeamLlmConfig, usage: GenerationUsage) -> float | None:
     if config.adapter_kind is LlmAdapterKind.ollama_chat:
         return 0.0
     return None
@@ -1412,7 +1443,7 @@ def _generate_freeform_output_openai(
     user_id: UUID,
     system_message: str,
     user_message: str,
-) -> tuple[str, dict[str, int | None]]:
+ ) -> tuple[str, GenerationUsage]:
     started = time.perf_counter()
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -1451,12 +1482,12 @@ def _generate_freeform_output_openai(
     prompt_tokens = getattr(usage, "prompt_tokens", None) if usage is not None else None
     completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
     total_tokens = getattr(usage, "total_tokens", None) if usage is not None else None
-    return generated_text, {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "duration_ms": int((time.perf_counter() - started) * 1000),
-    }
+    return generated_text, _generation_usage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
 
 
 def _generate_freeform_output_ollama(
@@ -1466,7 +1497,7 @@ def _generate_freeform_output_ollama(
     model: str,
     system_message: str,
     user_message: str,
-) -> tuple[str, dict[str, int | None]]:
+) -> tuple[str, GenerationUsage]:
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     started = time.perf_counter()
     generated_parts: list[str] = []
@@ -1529,16 +1560,12 @@ def _generate_freeform_output_ollama(
     completion_tokens = payload.get("eval_count")
     provider_duration_raw = payload.get("total_duration")
     provider_duration_ms = int(provider_duration_raw / 1_000_000) if isinstance(provider_duration_raw, int) else None
-    total_tokens = None
-    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
-        total_tokens = prompt_tokens + completion_tokens
-    return generated_text, {
-        "prompt_tokens": prompt_tokens if isinstance(prompt_tokens, int) else None,
-        "completion_tokens": completion_tokens if isinstance(completion_tokens, int) else None,
-        "total_tokens": total_tokens,
-        "duration_ms": int((time.perf_counter() - started) * 1000),
-        "provider_duration_ms": provider_duration_ms,
-    }
+    return generated_text, _generation_usage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        provider_duration_ms=provider_duration_ms,
+    )
 
 
 def _build_template_generation_messages(
@@ -1805,7 +1832,9 @@ def _redacted_generation_source_texts(
     if not dictation_text.strip():
         return redaction_run_text(db, run=redaction_run) or "", "", []
     combined_source_redaction = redact_transient_text(
+        db,
         f"{transcript_version_text(db, transcript_version=transcript_version)}{DICTATION_SOURCE_SPLIT_MARKER}{dictation_text}",
+        team_id=transcript_version.transcript.team_id,
         start_index=next_placeholder_index(redaction_run),
     )
     redacted_text = combined_source_redaction["redacted_text"]
@@ -2115,7 +2144,9 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
         prompt_redaction = redact_transient_text(
+            db,
             prompt_text,
+            team_id=document.team_id,
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
@@ -2140,7 +2171,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                     prefill_lines = []
                 if prefill_lines:
                     prefill_text = "\n".join(prefill_lines)
-                    prefill_redaction = redact_transient_text(prefill_text, start_index=placeholder_index)
+                    prefill_redaction = redact_transient_text(db, prefill_text, team_id=document.team_id, start_index=placeholder_index)
                     extra_phi_index.extend(list(prefill_redaction["phi_index"]))
                     placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
                     context_lines.append(f'- "{section.section_key}": {prefill_redaction["redacted_text"]}')
@@ -2167,7 +2198,9 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
         prompt_redaction = redact_transient_text(
+            db,
             follow_up_prompt_text,
+            team_id=document.team_id,
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
@@ -2181,7 +2214,9 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Quick action snapshot is missing for this generated document")
         prompt_redaction = redact_transient_text(
+            db,
             prompt_text,
+            team_id=document.team_id,
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
@@ -2353,11 +2388,11 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     document.provider_error_code = None
     document.provider_http_status = None
     document.error_message = None
-    document.input_token_count = _usage_int(usage.get("prompt_tokens"))
-    document.output_token_count = _usage_int(usage.get("completion_tokens"))
-    document.total_token_count = _usage_int(usage.get("total_tokens"))
-    document.duration_ms = _usage_int(usage.get("duration_ms"))
-    document.provider_duration_ms = _usage_int(usage.get("provider_duration_ms"))
+    document.input_token_count = usage.get("input_tokens")
+    document.output_token_count = usage.get("output_tokens")
+    document.total_token_count = usage.get("total_tokens")
+    document.duration_ms = usage.get("duration_ms")
+    document.provider_duration_ms = usage.get("provider_duration_ms")
     document.estimated_cost_usd = _estimated_cost_usd(config=config, usage=usage)
     db.add(document)
     db.commit()
@@ -2367,8 +2402,8 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         event="llm_generation_completed",
         document=document,
         config=config,
-        prompt_tokens=usage.get("prompt_tokens"),
-        completion_tokens=usage.get("completion_tokens"),
+        prompt_tokens=usage.get("input_tokens"),
+        completion_tokens=usage.get("output_tokens"),
         total_tokens=usage.get("total_tokens"),
         duration_ms=usage.get("duration_ms"),
         provider_duration_ms=usage.get("provider_duration_ms"),

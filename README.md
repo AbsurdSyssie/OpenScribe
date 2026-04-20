@@ -12,6 +12,7 @@ Entry points:
 - XSS testing plan and probe script: [docs/security-xss.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/security-xss.md)
 - test strategy and non-DB coverage: [docs/testing.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/testing.md)
 - database behavior, DB safety, and DB-specific tests: [docs/dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
+- admin usage observability design: [docs/usage_tab.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/usage_tab.md)
 
 Documentation convention:
 

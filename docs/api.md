@@ -120,6 +120,22 @@ Browser navigation behavior:
 - `DELETE /api/v1/app-preferences`
 - these are metadata and secret-reference routes, not transcript-content routes
 
+### De-identification provider configuration
+
+- `GET /api/v1/deidentification-providers`
+- `POST /api/v1/deidentification-providers`
+- `DELETE /api/v1/deidentification-providers/{provider_id}`
+- `GET /api/v1/deidentification-provider-assignments`
+- `POST /api/v1/deidentification-provider-assignments`
+- `DELETE /api/v1/deidentification-provider-assignments`
+- `GET /api/v1/deidentification-selection`
+- `GET /api/v1/deidentification-selection/options`
+- `POST /api/v1/deidentification-selection`
+- `DELETE /api/v1/deidentification-selection`
+- built-in native provider remains selectable for every team by default
+- external providers require explicit admin assignment before team selection
+- these are metadata and secret-reference routes, not transcript-content routes
+
 ## Error envelope
 
 All non-2xx JSON responses use:
@@ -409,8 +425,8 @@ Current generation behavior:
   - `100 per day`
 - browser and JSON generation routes share the same authenticated limiter bucket
 - generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
-- generation metadata now carries team/user IDs, provider/model names, statuses, durations, token counts, and safe provider error metadata when available
-- generated-document rows now retain per-run token counts, durations, provider HTTP status, and safe provider error codes for later debugging
+- generation metadata now carries team/user IDs, provider/model names, statuses, durations, input/output/total token counts, and safe provider error metadata when available
+- generated-document rows now retain per-run input/output/total token counts, durations, provider HTTP status, and safe provider error codes for later debugging
 - failed generations now keep a more specific safe reason where available, such as provider timeout, unreachable provider, rejected credentials, missing model, or provider-side rate limiting
 - transcript deletion cascades to generated documents through the transcript-root delete path
 
@@ -479,13 +495,14 @@ Current live chunk-ingestion behavior:
   - base URL and transcribe path
   - resolved model and language
   - file field name, response text path, and extra form fields
-- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
+- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`; ffprobe/ffmpeg calls have bounded timeouts so stuck media inspection/normalization fails cleanly
 - the backend worker reads the queued STT snapshot plus the selected provider credentials from Vault
 - the backend worker forwards the normalized chunk to the external STT service
 - the backend worker encrypts the returned live-chunk text at rest before later owner-visible draft reconciliation
 - live chunk application is sequence-aware:
   - duplicate `chunk_sequence_no` values are rejected at queue time
   - completed chunks are appended only in order using `next_live_chunk_sequence_no_applied`
+- live chunk jobs left queued or processing beyond `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` are marked `failed` with `ingestion_processing_stale` during transcript reconciliation, so later completed chunks can advance through the existing failed-gap path
 - the transcript status remains `transcribing` while more live chunks may still arrive
 - leaders/admins may configure team transcription metadata without gaining transcript readability
 
@@ -507,7 +524,7 @@ Current whole-file ingestion behavior:
 - queueing now fails early if no active team STT selection exists
 - queueing now also fails early with `stt_config_secret_missing` if the selected STT config expects a saved credential and Vault no longer has it
 - queued file jobs snapshot the resolved STT provider execution settings at enqueue time, so later team-setting changes do not alter where an already-uploaded file is sent
-- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`
+- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`; ffprobe/ffmpeg calls have bounded timeouts so stuck media inspection/normalization fails cleanly
 - the backend worker uses the queued STT snapshot plus the saved bearer credential when the selected adapter needs one
 - the backend worker forwards the normalized audio file to the external STT service
 - the backend worker appends the returned transcript text into `current_draft_text_encrypted`

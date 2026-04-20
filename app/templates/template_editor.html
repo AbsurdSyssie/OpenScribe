@@ -4,10 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   {% set is_team_editor = template_editor_scope == 'team' %}
-  {% set current_template = team_template if is_team_editor else personal_template %}
-  {% set current_version = team_template_latest_version if is_team_editor else personal_template_latest_version %}
-  {% set current_section_prompts = team_template_section_prompts if is_team_editor else personal_template_section_prompts %}
-  <title>{{ "Team" if is_team_editor else "Personal" }} template editor</title>
+  {% set is_default_editor = template_editor_scope == 'default' %}
+  {% set current_template = default_template if is_default_editor else (team_template if is_team_editor else personal_template) %}
+  {% set current_version = default_template_latest_version if is_default_editor else (team_template_latest_version if is_team_editor else personal_template_latest_version) %}
+  {% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
+  <title>{{ "Default" if is_default_editor else ("Team" if is_team_editor else "Personal") }} template editor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Fraunces:wght@500&display=swap" rel="stylesheet">
@@ -300,20 +301,22 @@
 </head>
 <body>
   {% set is_team_editor = template_editor_scope == 'team' %}
-  {% set current_template = team_template if is_team_editor else personal_template %}
-  {% set current_version = team_template_latest_version if is_team_editor else personal_template_latest_version %}
-  {% set current_section_prompts = team_template_section_prompts if is_team_editor else personal_template_section_prompts %}
-  {% set back_url = '/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates' %}
-  {% set editor_action = '/home/team-templates' if is_team_editor else '/home/personal-templates' %}
-  {% set scope_value = 'team' if is_team_editor else 'personal' %}
-  {% set save_label = 'Save team template' if is_team_editor and current_template else 'Create team template' if is_team_editor else 'Save personal template' if current_template else 'Create personal template' %}
-  {% set template_list = team_templates if is_team_editor else personal_templates %}
+  {% set is_default_editor = template_editor_scope == 'default' %}
+  {% set current_template = default_template if is_default_editor else (team_template if is_team_editor else personal_template) %}
+  {% set current_version = default_template_latest_version if is_default_editor else (team_template_latest_version if is_team_editor else personal_template_latest_version) %}
+  {% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
+  {% set back_url = admin_page_route ~ '?tab=defaults' if is_default_editor else ('/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates') %}
+  {% set editor_action = '/admin/default-templates' if is_default_editor else ('/home/team-templates' if is_team_editor else '/home/personal-templates') %}
+  {% set scope_value = 'default' if is_default_editor else ('team' if is_team_editor else 'personal') %}
+  {% set save_label = 'Save default template' if is_default_editor and current_template else 'Create default template' if is_default_editor else ('Save team template' if is_team_editor and current_template else 'Create team template' if is_team_editor else 'Save personal template' if current_template else 'Create personal template') %}
+  {% set template_list = default_templates if is_default_editor else (team_templates if is_team_editor else personal_templates) %}
+  {% set current_mode = current_version.mode.value if current_version else 'freeform' %}
   <div class="app-shell">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="eyebrow">{{ 'Team' if is_team_editor else 'Personal' }} templates</div>
+        <div class="eyebrow">{{ 'Default' if is_default_editor else ('Team' if is_team_editor else 'Personal') }} templates</div>
         <h2>{{ template_list|length }} saved</h2>
-        <p>{{ 'Shared across your team.' if is_team_editor else 'Available in your own workspace.' }}</p>
+        <p>{{ 'Copied into each new team at creation time.' if is_default_editor else ('Shared across your team.' if is_team_editor else 'Available in your own workspace.') }}</p>
       </div>
       <div class="sidebar-actions">
         <a class="button-link button-secondary" href="{{ back_url }}">Back</a>
@@ -322,7 +325,7 @@
         <div class="template-list">
           {% for template in template_list %}
           {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-          <a class="template-list-item{% if current_template and template.id == current_template.id %} is-current{% endif %}" href="/home/templates/editor?scope={{ scope_value }}&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}">
+          <a class="template-list-item{% if current_template and template.id == current_template.id %} is-current{% endif %}" href="{{ '/admin/templates/editor?scope=default&template_id=' ~ template.id ~ '&return_view=' ~ admin_return_view if is_default_editor else ('/home/templates/editor?scope=' ~ scope_value ~ '&template_id=' ~ template.id ~ (('&return_view=' ~ home_return_view) if home_return_view else '') ~ (('&queued_transcript_id=' ~ queued_transcript_id) if queued_transcript_id else '') ~ (('&transcribe_tab=' ~ transcribe_return_tab) if transcribe_return_tab else '')) }}">
             <strong>{{ template.name }}</strong>
             <small>{{ latest_version.mode.value }}{% if template.description %} · {{ template.description }}{% endif %}</small>
           </a>
@@ -337,9 +340,9 @@
     <main class="editor-pane">
       <div class="editor-header">
         <div class="page-copy">
-          <div class="eyebrow">{{ 'Team' if is_team_editor else 'Personal' }} template</div>
-          <h1>{{ current_template.name if current_template else ('New team template' if is_team_editor else 'New personal template') }}</h1>
-          <p>Build reusable note instructions with room for the full brief and section guidance.</p>
+          <div class="eyebrow">{{ 'Default' if is_default_editor else ('Team' if is_team_editor else 'Personal') }} template</div>
+          <h1>{{ current_template.name if current_template else ('New default template' if is_default_editor else ('New team template' if is_team_editor else 'New personal template')) }}</h1>
+          <p>Build reusable note instructions with room for the full brief and, when needed, structured EMIS section guidance.</p>
         </div>
       </div>
       {% if message %}
@@ -348,10 +351,12 @@
       <div class="workspace-shell">
         <form method="post" action="{{ editor_action }}" class="template-form">
           <input type="hidden" name="template_id" value="{{ current_template.id if current_template else '' }}">
-          <input type="hidden" name="return_view" value="{{ home_return_view }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view if is_default_editor else home_return_view }}">
+          {% if not is_default_editor %}
           <input type="hidden" name="return_tab" value="templates">
           <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
           <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
+          {% endif %}
           <div class="field-grid">
             <label>
               Template name
@@ -359,7 +364,7 @@
             </label>
             <label>
               Template style
-              <select name="mode">
+              <select name="mode" data-template-mode-select>
                 <option value="freeform" {% if not current_version or current_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
                 <option value="structured" {% if current_version and current_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
               </select>
@@ -373,7 +378,7 @@
             What should be written
             <textarea name="prompt_text" rows="10" required>{{ current_version.prompt_text if current_version else '' }}</textarea>
           </label>
-          <div class="section-list">
+          <div class="section-list" data-template-sections{% if current_mode != 'structured' %} hidden{% endif %}>
             {% for section in emis_sections %}
             <div class="section-row">
               <h3>{{ section.label }}</h3>
@@ -393,6 +398,22 @@
       </div>
     </main>
   </div>
+  <script>
+    (() => {
+      const modeSelect = document.querySelector('[data-template-mode-select]');
+      const sections = document.querySelector('[data-template-sections]');
+      if (!modeSelect || !sections) {
+        return;
+      }
+
+      const syncSectionVisibility = () => {
+        sections.hidden = modeSelect.value !== 'structured';
+      };
+
+      syncSectionVisibility();
+      modeSelect.addEventListener('change', syncSectionVisibility);
+    })();
+  </script>
   {% include "_csrf_script.html" %}
 </body>
 </html>

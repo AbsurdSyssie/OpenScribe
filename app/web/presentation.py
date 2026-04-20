@@ -23,6 +23,9 @@ from ..models import (
     UserStatus,
 )
 from ..schemas import (
+    DeidentificationProviderAssignmentDetail,
+    DeidentificationProviderDetail,
+    DeidentificationSelectionDetail,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
     GeneratedDocumentDetail,
@@ -56,6 +59,12 @@ from ..services.llm import (
     list_llm_configs as list_llm_configs_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.deidentification import (
+    get_team_deidentification_selection as get_team_deidentification_selection_service,
+    list_deidentification_providers as list_deidentification_providers_service,
+    list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
+    list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
+)
 from ..services.redaction import redaction_run_text as redaction_run_text_service
 from ..services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
@@ -70,6 +79,10 @@ from ..services.templates import (
     list_personal_templates as list_personal_templates_service,
     list_team_quick_actions as list_team_quick_actions_service,
     list_team_templates as list_team_templates_service,
+)
+from ..services.default_assets import (
+    list_default_quick_actions as list_default_quick_actions_service,
+    list_default_templates as list_default_templates_service,
 )
 from .templates import templates
 
@@ -167,6 +180,62 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
     )
 
 
+def deidentification_provider_response(provider) -> DeidentificationProviderDetail:
+    return DeidentificationProviderDetail(
+        id=provider.id,
+        label=provider.label,
+        adapter_kind=provider.adapter_kind,
+        base_url=provider.base_url,
+        detect_path=provider.detect_path,
+        auth_mode=provider.auth_mode,
+        request_text_field=provider.request_text_field,
+        request_language_field=provider.request_language_field,
+        extra_headers_json=provider.extra_headers_json or {},
+        extra_body_json=provider.extra_body_json or {},
+        response_entities_path=provider.response_entities_path,
+        response_start_field=provider.response_start_field,
+        response_end_field=provider.response_end_field,
+        response_type_field=provider.response_type_field,
+        response_score_field=provider.response_score_field,
+        response_model_version_path=provider.response_model_version_path,
+        entity_type_map_json=provider.entity_type_map_json or {},
+        is_active=provider.is_active,
+        is_builtin=provider.is_builtin,
+        has_secret=bool(provider.vault_secret_ref),
+        created_by_user_id=provider.created_by_user_id,
+        updated_by_user_id=provider.updated_by_user_id,
+        created_at=provider.created_at,
+        updated_at=provider.updated_at,
+    )
+
+
+def deidentification_provider_assignment_response(assignment) -> DeidentificationProviderAssignmentDetail:
+    return DeidentificationProviderAssignmentDetail(
+        id=assignment.id,
+        team_id=assignment.team_id,
+        provider_id=assignment.provider_id,
+        provider_label=assignment.provider.label,
+        provider_adapter_kind=assignment.provider.adapter_kind,
+        assigned_by_user_id=assignment.assigned_by_user_id,
+        created_at=assignment.created_at,
+    )
+
+
+def deidentification_selection_response(selection) -> DeidentificationSelectionDetail:
+    provider = selection.provider
+    return DeidentificationSelectionDetail(
+        id=selection.id,
+        team_id=selection.team_id,
+        provider_id=selection.provider_id,
+        selected_by_user_id=selection.selected_by_user_id,
+        selected_provider_label=provider.label,
+        selected_provider_adapter_kind=provider.adapter_kind,
+        selected_provider_is_builtin=provider.is_builtin,
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
 def user_llm_preference_response(preference, *, resolved_model_name: str | None, allowed_models: list[str]) -> UserLlmPreferenceDetail:
     return UserLlmPreferenceDetail(
         id=preference.id,
@@ -202,6 +271,23 @@ def _latest_template_version(template: PromptTemplate):
 
 def _latest_quick_action_version(quick_action: QuickAction):
     return max(quick_action.versions, key=lambda version: version.version_no)
+
+
+def _structured_section_prompt_map(version) -> dict[str, str]:
+    if version is None or not version.config_json or not isinstance(version.config_json, dict):
+        return {}
+    sections = version.config_json.get("sections")
+    if not isinstance(sections, list):
+        return {}
+    prompts: dict[str, str] = {}
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        key = section.get("section_key")
+        instruction = section.get("instruction")
+        if isinstance(key, str) and isinstance(instruction, str):
+            prompts[key] = instruction
+    return prompts
 
 
 def template_response(template: PromptTemplate) -> PromptTemplateDetail:
@@ -448,6 +534,8 @@ def render_admin(
     selected_team_id: str | None = None,
     selected_stt_config_id: str | None = None,
     selected_llm_config_id: str | None = None,
+    selected_default_template_id: str | None = None,
+    selected_default_quick_action_id: str | None = None,
     stt_inspection: SttInspectResult | None = None,
     stt_form_override: dict[str, object] | None = None,
     stt_test_result: dict[str, object] | None = None,
@@ -478,13 +566,25 @@ def render_admin(
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
-    available_admin_tabs = {"providers", "directory", "requests", "usage"}
+    default_templates = list_default_templates_service(db, current_user)
+    default_quick_actions = list_default_quick_actions_service(db, current_user)
+    selected_default_template = next((template for template in default_templates if str(template.id) == selected_default_template_id), None)
+    selected_default_quick_action = next((quick_action for quick_action in default_quick_actions if str(quick_action.id) == selected_default_quick_action_id), None)
+    default_template_latest_version = _latest_template_version(selected_default_template) if selected_default_template is not None else None
+    default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
+    available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults"}
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
     usage_context = {
         "usage_scope_team": None,
+        "usage_kpi_cards": [],
         "usage_window_summaries": [],
+        "usage_trend_points": [],
         "usage_team_rows": [],
         "usage_user_rows": [],
+        "usage_provider_rows": [],
+        "usage_generator_rows": [],
+        "usage_ingestion_rows": [],
+        "usage_failure_rows": [],
     }
     if resolved_admin_tab == "usage":
         usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
@@ -496,6 +596,8 @@ def render_admin(
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
         "selected_llm_config_id": selected_llm_config_id,
+        "selected_default_template_id": selected_default_template_id,
+        "selected_default_quick_action_id": selected_default_quick_action_id,
         "stt_configs": stt_configs,
         "stt_config": edit_stt_config,
         "stt_selection": stt_selection,
@@ -510,6 +612,15 @@ def render_admin(
         "llm_inspection": llm_inspection,
         "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),
         "selectable_llm_configs": list_selectable_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
+        "default_templates": default_templates,
+        "default_template": selected_default_template,
+        "default_template_latest_version": default_template_latest_version,
+        "default_template_section_prompts": _structured_section_prompt_map(default_template_latest_version),
+        "default_quick_actions": default_quick_actions,
+        "default_quick_action": selected_default_quick_action,
+        "default_quick_action_latest_version": default_quick_action_latest_version,
+        "template_editor_scope": "default" if template_name == "template_editor.html" else None,
+        "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
         "account_requests": list_manageable_account_requests_service(db, current_user),
         "team_statuses": list(TeamStatus),
         "team_roles": list(TeamRole),
@@ -575,22 +686,6 @@ def render_home(
     transcribe_return_tab: str | None = None,
     template_editor_scope: str | None = None,
 ):
-    def _structured_section_prompt_map(version) -> dict[str, str]:
-        if version is None or not version.config_json or not isinstance(version.config_json, dict):
-            return {}
-        sections = version.config_json.get("sections")
-        if not isinstance(sections, list):
-            return {}
-        prompts: dict[str, str] = {}
-        for section in sections:
-            if not isinstance(section, dict):
-                continue
-            key = section.get("section_key")
-            instruction = section.get("instruction")
-            if isinstance(key, str) and isinstance(instruction, str):
-                prompts[key] = instruction
-        return prompts
-
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
     stt_selection = None
     stt_dictation_selection = None

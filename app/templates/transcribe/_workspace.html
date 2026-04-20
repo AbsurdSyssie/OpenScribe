@@ -31,17 +31,17 @@ data-transcript-title-input>
 {% set active_status_display = 'idle' %}
 {% endif %}
 {% if active_status_display == 'ready' %}
-<div class="flex items-center gap-2 px-3 py-1.5 bg-teal-pale rounded-full">
+<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-teal-pale rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-teal-deep rounded-full status-pulse"></span>
 <span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
 </div>
 {% elif active_status_display == 'failed' %}
-<div class="flex items-center gap-2 px-3 py-1.5 bg-coral/15 rounded-full">
+<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-coral/15 rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-coral rounded-full"></span>
 <span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
 </div>
 {% else %}
-<div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone rounded-full">
+<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-white border border-stone rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-slate rounded-full"></span>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>
@@ -53,9 +53,7 @@ data-audio-action-trigger
 data-local-busy-protected
 {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-</svg>
+<i class="w-4 h-4" data-lucide="upload"></i>
 Upload
 </button>
 <div class="record-split-button"
@@ -66,9 +64,7 @@ type="button"
 class="record-split-button__main"
 data-record-toggle
 {% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
-<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" data-record-toggle-icon>
-<circle cx="12" cy="12" r="6"/>
-</svg>
+<i class="w-4 h-4" data-record-toggle-icon data-lucide="disc"></i>
 <span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Start recording{% endif %}</span>
 </button>
 <div class="mic-visualizer" data-mic-visualizer data-vad-active="false" aria-hidden="true"></div>
@@ -79,9 +75,7 @@ data-record-mode-dropdown
 aria-haspopup="true"
 aria-expanded="false"
 {% if not active_transcript %}disabled{% endif %}>
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-</svg>
+<i class="w-4 h-4" data-lucide="chevron-down"></i>
 </button>
 <div class="record-split-button__menu" data-record-mode-menu hidden>
 <button type="button" class="record-split-button__option{% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %} active{% endif %}" data-mode="whole_file">
@@ -146,7 +140,7 @@ Ready when you are.
 Create or open a consultation to begin.
 {% endif %}
 </div>
-<div class="text-sm {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' and active_transcript_latest_job and active_transcript_latest_job.status.value == 'failed' and active_transcript_latest_job.error_message) or (stt_selection and not stt_available) %}text-coral{% else %}text-slate{% endif %}" data-mic-status>
+<div class="sr-only" data-mic-status aria-live="polite">
 {% if not active_transcript %}
 Create or open a consultation to begin.
 {% elif active_transcript.ingestion_mode.value == "live_chunked" %}
@@ -188,10 +182,7 @@ class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-l
 data-workspace-settings-link
 aria-label="Open related settings"
 title="Open related settings">
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317a1 1 0 011.35-.936l.833.353a1 1 0 00.95-.07l.75-.5a1 1 0 011.45.348l.436.786a1 1 0 00.84.51l.902.06a1 1 0 01.95 1.146l-.128.895a1 1 0 00.288.88l.642.642a1 1 0 010 1.414l-.642.642a1 1 0 00-.288.88l.128.895a1 1 0 01-.95 1.146l-.901.06a1 1 0 00-.841.51l-.436.786a1 1 0 01-1.45.348l-.75-.5a1 1 0 00-.95-.07l-.833.353a1 1 0 01-1.35-.936l-.06-.902a1 1 0 00-.51-.84l-.786-.436a1 1 0 01-.348-1.45l.5-.75a1 1 0 00.07-.95l-.353-.833a1 1 0 01.936-1.35l.902-.06a1 1 0 00.84-.51l.436-.786z"/>
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
-</svg>
+<i class="w-4 h-4" data-lucide="settings" aria-hidden="true"></i>
 </a>
 </div>
 
@@ -229,9 +220,7 @@ aria-expanded="false">
 type="submit"
 class="btn-primary btn-primary--compact"
 {% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text_encrypted and not active_structured_context) %}disabled{% endif %}>
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-</svg>
+<i class="w-4 h-4" data-lucide="zap"></i>
 Create
 </button>
 </form>
@@ -241,9 +230,7 @@ class="btn-icon"
 data-workspace-settings-link
 aria-label="Open templates"
 title="Manage templates">
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
-</svg>
+<i class="w-4 h-4" data-lucide="plus" aria-hidden="true"></i>
 </a>
 </div>
 <select
@@ -274,8 +261,13 @@ data-settings-url="/home/templates/editor?scope={% if template.scope.value == 't
 <div class="structured-workspace__body">
 <div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not note_documents %} hidden{% endif %}>
 <div class="flex items-center justify-between gap-4">
+<div>
 <span class="text-xs font-medium uppercase tracking-[0.12em] text-slate">Note versions</span>
 <span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length }}</span>
+</div>
+<button type="button" class="btn-icon" data-note-delete title="Delete selected note permanently" aria-label="Delete selected note permanently">
+<i class="w-4 h-4" data-lucide="trash-2"></i>
+</button>
 </div>
 <div class="document-switcher" data-note-selector>
 {% for document in note_documents %}
@@ -315,9 +307,7 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% else %}
 <div class="empty-state">
 <div class="empty-state__icon">
-<svg class="w-10 h-10 text-slate/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-</svg>
+<i class="w-10 h-10 text-slate/30" data-lucide="file-text"></i>
 </div>
 <div class="empty-state__text">Add note lines here as the consultation unfolds.</div>
 </div>
@@ -346,7 +336,7 @@ data-note-editor-toolbar
 <p>Select from your saved note templates.</p>
 </div>
 <button type="button" class="template-picker-modal__close" data-template-picker-close aria-label="Close template picker">
-<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>
+<i class="w-3.5 h-3.5" data-lucide="x"></i>
 </button>
 </div>
 <div class="template-picker-list">
@@ -386,6 +376,9 @@ data-generated-structured-panel
 <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
 <div class="structured-section-header">
 <h3 class="structured-section-title">{{ section.label }}</h3>
+<button type="button" class="structured-section-copy-button" data-copy-structured-section aria-label="Copy {{ section.label }} section" title="Copy section">
+<i class="w-3.5 h-3.5" data-lucide="copy" aria-hidden="true"></i>
+</button>
 </div>
 <div class="structured-statement-list" data-generated-structured-section-rows>
 {% for row in section.rows %}
@@ -473,27 +466,15 @@ aria-pressed="false"
 {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
 <span class="followup-quick-pick__icon" aria-hidden="true">
 {% if quick_action_kind == "sms" %}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v6A2.5 2.5 0 0 1 16.5 16H10l-4 3v-3.5A2.5 2.5 0 0 1 5 13.5z"/>
-</svg>
+<i data-lucide="message-square"></i>
 {% elif quick_action_kind == "letter" %}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M8 4.75h6.5L19 9.25V19a1.75 1.75 0 0 1-1.75 1.75h-9.5A1.75 1.75 0 0 1 6 19V6.5A1.75 1.75 0 0 1 7.75 4.75z"/>
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M14 4.75V9h4.25M9 12h6M9 15h6"/>
-</svg>
+<i data-lucide="file-text"></i>
 {% elif quick_action_kind == "call" %}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7.75 5.75h2.2a1 1 0 0 1 .98.79l.56 2.62a1 1 0 0 1-.29.93l-1.37 1.33a11.25 11.25 0 0 0 4.78 4.78l1.33-1.37a1 1 0 0 1 .93-.29l2.62.56a1 1 0 0 1 .79.98v2.2A1.75 1.75 0 0 1 18.53 20C11.07 20 5 13.93 5 6.47A1.75 1.75 0 0 1 6.75 4.72z"/>
-</svg>
+<i data-lucide="phone"></i>
 {% elif quick_action_kind == "results" %}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 18.25h10M9.5 18.25V9.5M14.5 18.25v-5m-2.5 5v-8.5"/>
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M6.75 5.75h10.5A1.75 1.75 0 0 1 19 7.5v9.75A1.75 1.75 0 0 1 17.25 19h-10.5A1.75 1.75 0 0 1 5 17.25V7.5a1.75 1.75 0 0 1 1.75-1.75z"/>
-</svg>
+<i data-lucide="chart-column"></i>
 {% else %}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M12 4.75 13.9 8.6l4.25.62-3.08 3 .73 4.23L12 14.45l-3.8 2 .73-4.23-3.08-3 4.25-.62z"/>
-</svg>
+<i data-lucide="sparkles"></i>
 {% endif %}
 </span>
 <span class="followup-quick-pick__copy">
@@ -579,9 +560,7 @@ Create
 {% if not followup_documents %}
 <div class="empty-state">
 <div class="empty-state__icon">
-<svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
-</svg>
+<i class="w-12 h-12 text-slate/40" data-lucide="message-square-more"></i>
 </div>
 <div class="empty-state__text">No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation.</div>
 </div>
@@ -602,15 +581,11 @@ Create
 <div class="followup-card__actions">
 {% if document.status.value == "ready" and document.edited_output_text_encrypted %}
 <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-</svg>
+<i class="w-4 h-4" data-lucide="copy"></i>
 </button>
 {% endif %}
 <button type="button" class="btn-icon" data-followup-delete data-generated-document-id="{{ document.id }}" title="Delete permanently">
-<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5.75A1.75 1.75 0 0110.75 4h2.5A1.75 1.75 0 0115 5.75V7m-7 0 .7 10.15A1.75 1.75 0 0010.45 18.8h3.1a1.75 1.75 0 001.75-1.65L16 7"/>
-</svg>
+<i class="w-4 h-4" data-lucide="trash-2"></i>
 </button>
 </div>
 </div>
@@ -632,9 +607,7 @@ Create
 {% else %}
 <div class="empty-state">
 <div class="empty-state__icon">
-<svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
-</svg>
+<i class="w-12 h-12 text-slate/40" data-lucide="message-square-more"></i>
 </div>
 <div class="empty-state__text">Select a quick action or describe what you need to create a follow-up message.</div>
 </div>
@@ -683,7 +656,7 @@ Create
 <div class="structured-workspace__body">
 <div class="flex flex-col lg:flex-row h-full min-h-0 gap-0 border-t border-stone">
 <section class="flex-[3] min-w-0 flex flex-col border-r border-stone bg-white overflow-hidden">
-<div class="transcript-content flex-1" data-active-draft>
+<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
 {% if active_transcript and active_transcript.current_draft_text_encrypted %}
 {{ active_transcript.current_draft_text_encrypted }}
 {% else %}

@@ -15,6 +15,13 @@ from sqlalchemy.pool import NullPool
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    DefaultPromptTemplate,
+    DefaultPromptTemplateVersion,
+    DefaultQuickAction,
+    DefaultQuickActionVersion,
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
+    DeidentificationProvider,
     GeneratedDocument,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
@@ -31,6 +38,8 @@ from app.models import (
     SttAuthMode,
     SttSelectionPurpose,
     Team,
+    TeamDeidentificationProviderAssignment,
+    TeamDeidentificationSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -283,6 +292,113 @@ def make_account_request(db_session: Session) -> Callable[..., AccountRequest]:
 
 
 @pytest.fixture
+def make_deidentification_provider(db_session: Session, make_user: Callable[..., User]) -> Callable[..., DeidentificationProvider]:
+    def factory(
+        *,
+        actor: User | None = None,
+        label: str = "Built-in Native Presidio",
+        adapter_kind: DeidentificationAdapterKind = DeidentificationAdapterKind.native_presidio,
+        base_url: str = "",
+        detect_path: str = "",
+        auth_mode: DeidentificationAuthMode = DeidentificationAuthMode.none,
+        request_text_field: str = "text",
+        request_language_field: str | None = None,
+        extra_headers_json: dict[str, str] | None = None,
+        extra_body_json: dict[str, str] | None = None,
+        response_entities_path: str = "entities",
+        response_start_field: str = "start",
+        response_end_field: str = "end",
+        response_type_field: str = "entity_type",
+        response_score_field: str | None = None,
+        response_model_version_path: str | None = None,
+        entity_type_map_json: dict[str, str] | None = None,
+        is_active: bool = True,
+        is_builtin: bool = False,
+        has_secret: bool = False,
+    ) -> DeidentificationProvider:
+        resolved_actor = actor or make_user(email=f"deid-admin-{uuid4()}@example.com", password="password-1", is_system_admin=True)
+        provider = DeidentificationProvider(
+            label=label,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            detect_path=detect_path,
+            auth_mode=auth_mode,
+            request_text_field=request_text_field,
+            request_language_field=request_language_field,
+            extra_headers_json=extra_headers_json or {},
+            extra_body_json=extra_body_json or {},
+            response_entities_path=response_entities_path,
+            response_start_field=response_start_field,
+            response_end_field=response_end_field,
+            response_type_field=response_type_field,
+            response_score_field=response_score_field,
+            response_model_version_path=response_model_version_path,
+            entity_type_map_json=entity_type_map_json or {},
+            vault_secret_ref=f"secret:openscribe/deidentification/provider/{uuid4()}" if has_secret else "",
+            is_active=is_active,
+            is_builtin=is_builtin,
+            created_by_user_id=resolved_actor.id if not is_builtin else None,
+            updated_by_user_id=resolved_actor.id if not is_builtin else None,
+        )
+        db_session.add(provider)
+        db_session.commit()
+        db_session.refresh(provider)
+        return provider
+
+    return factory
+
+
+@pytest.fixture
+def make_deidentification_provider_assignment(db_session: Session, make_user: Callable[..., User]) -> Callable[..., TeamDeidentificationProviderAssignment]:
+    def factory(
+        *,
+        team: Team,
+        provider: DeidentificationProvider,
+        actor: User | None = None,
+    ) -> TeamDeidentificationProviderAssignment:
+        resolved_actor = actor or make_user(email=f"deid-assigner-{uuid4()}@example.com", password="password-1", is_system_admin=True)
+        assignment = TeamDeidentificationProviderAssignment(
+            team_id=team.id,
+            provider_id=provider.id,
+            assigned_by_user_id=resolved_actor.id,
+        )
+        db_session.add(assignment)
+        db_session.commit()
+        db_session.refresh(assignment)
+        return assignment
+
+    return factory
+
+
+@pytest.fixture
+def make_deidentification_selection(db_session: Session, make_user: Callable[..., User]) -> Callable[..., TeamDeidentificationSelection]:
+    def factory(
+        *,
+        team: Team,
+        provider: DeidentificationProvider,
+        actor: User | None = None,
+    ) -> TeamDeidentificationSelection:
+        resolved_actor = actor or make_user(
+            email=f"leader-deid-{team.id}@example.com",
+            password="password-1",
+            team=team,
+            team_role=TeamRole.leader,
+            is_system_admin=False,
+        )
+        selection = TeamDeidentificationSelection(
+            team_id=team.id,
+            provider_id=provider.id,
+            selected_by_user_id=resolved_actor.id,
+        )
+        db_session.add(selection)
+        db_session.commit()
+        db_session.refresh(selection)
+        return selection
+
+    return factory
+
+
+@pytest.fixture
 def make_stt_config(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., TeamSttConfig]:
     def factory(
         *,
@@ -478,6 +594,43 @@ def make_template(db_session: Session, make_team: Callable[..., Team], make_user
 
 
 @pytest.fixture
+def make_default_template(db_session: Session, make_user: Callable[..., User]) -> Callable[..., DefaultPromptTemplate]:
+    def factory(
+        *,
+        actor: User | None = None,
+        name: str = "Default template",
+        description: str | None = "Default template description",
+        prompt_text: str = "Summarise the transcript as a note.",
+        mode: TemplateMode = TemplateMode.freeform,
+        config_json: dict | None = None,
+        is_active: bool = True,
+    ) -> DefaultPromptTemplate:
+        resolved_actor = actor or make_user(email=f"default-template-admin-{uuid4()}@example.com", password="password-1", is_system_admin=True)
+        template = DefaultPromptTemplate(
+            name=name,
+            description=description,
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(template)
+        db_session.flush()
+        version = DefaultPromptTemplateVersion(
+            default_template_id=template.id,
+            version_no=1,
+            mode=mode,
+            prompt_text=prompt_text,
+            config_json=config_json,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(template)
+        return template
+
+    return factory
+
+
+@pytest.fixture
 def make_quick_action(db_session: Session, make_team: Callable[..., Team], make_user: Callable[..., User]) -> Callable[..., QuickAction]:
     def factory(
         *,
@@ -508,6 +661,40 @@ def make_quick_action(db_session: Session, make_team: Callable[..., Team], make_
         db_session.flush()
         version = QuickActionVersion(
             quick_action_id=quick_action.id,
+            version_no=1,
+            mode=TemplateMode.freeform,
+            prompt_text=prompt_text,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(version)
+        db_session.commit()
+        db_session.refresh(quick_action)
+        return quick_action
+
+    return factory
+
+
+@pytest.fixture
+def make_default_quick_action(db_session: Session, make_user: Callable[..., User]) -> Callable[..., DefaultQuickAction]:
+    def factory(
+        *,
+        actor: User | None = None,
+        name: str = "Default quick action",
+        description: str | None = "Default quick action description",
+        prompt_text: str = "Write a short follow-up from the doctor's perspective.",
+        is_active: bool = True,
+    ) -> DefaultQuickAction:
+        resolved_actor = actor or make_user(email=f"default-quick-action-admin-{uuid4()}@example.com", password="password-1", is_system_admin=True)
+        quick_action = DefaultQuickAction(
+            name=name,
+            description=description,
+            is_active=is_active,
+            created_by_user_id=resolved_actor.id,
+        )
+        db_session.add(quick_action)
+        db_session.flush()
+        version = DefaultQuickActionVersion(
+            default_quick_action_id=quick_action.id,
             version_no=1,
             mode=TemplateMode.freeform,
             prompt_text=prompt_text,
@@ -646,6 +833,16 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_read_team_llm_bearer_token(*, team_id, config_id):
         return "test-llm-token"
 
+    def fake_write_deidentification_bearer_token(*, provider_id, bearer_token, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/deidentification/provider/{provider_id}{suffix}"
+
+    def fake_delete_deidentification_bearer_token(*, provider_id, secret_ref=None):
+        return None
+
+    def fake_read_deidentification_bearer_token(*, provider_id, secret_ref=None):
+        return "test-deidentification-token"
+
     monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
@@ -653,6 +850,10 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete_team_llm_bearer_token)
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
     monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.deidentification.write_deidentification_bearer_token", fake_write_deidentification_bearer_token)
+    monkeypatch.setattr("app.services.deidentification.delete_deidentification_bearer_token", fake_delete_deidentification_bearer_token)
+    monkeypatch.setattr("app.services.deidentification.read_deidentification_bearer_token", fake_read_deidentification_bearer_token)
+    monkeypatch.setattr("app.services.redaction.read_deidentification_provider_bearer_token", lambda db, provider_id: fake_read_deidentification_bearer_token(provider_id=provider_id))
 
 
 @pytest.fixture(autouse=True)
@@ -729,7 +930,7 @@ def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session
         db_session.refresh(run)
         return run
 
-    def fake_redact_transient_text(text: str, *, start_index: int):
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
         return {
             "redacted_text": text.strip() if text.strip() else text,
             "phi_mapping": {},

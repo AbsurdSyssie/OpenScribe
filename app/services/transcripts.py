@@ -35,6 +35,7 @@ from app.services.vault import (
 )
 
 LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", "3600"))
+LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS = float(os.getenv("LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS", "600"))
 WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(250 * 1024 * 1024)))
 WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", "7200"))
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
@@ -955,9 +956,48 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
     if not advanced_sequence:
         return
 
+    db.flush()
     transcript.status = _resolved_transcript_status(db, transcript=transcript)
     db.add(transcript)
     db.commit()
+
+
+def _mark_stale_live_chunk_jobs_failed(db: Session, *, transcript: Transcript) -> bool:
+    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
+        return False
+    if LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS <= 0:
+        return False
+
+    cutoff = utcnow() - timedelta(seconds=LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS)
+    stale_jobs = list(
+        db.scalars(
+            select(TranscriptIngestionJob)
+            .where(
+                TranscriptIngestionJob.transcript_id == transcript.id,
+                TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
+                TranscriptIngestionJob.status.in_(
+                    [TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]
+                ),
+                (
+                    (TranscriptIngestionJob.started_at.is_not(None) & (TranscriptIngestionJob.started_at < cutoff))
+                    | (TranscriptIngestionJob.started_at.is_(None) & (TranscriptIngestionJob.created_at < cutoff))
+                ),
+            )
+            .order_by(TranscriptIngestionJob.chunk_sequence_no, TranscriptIngestionJob.created_at)
+        )
+    )
+    if not stale_jobs:
+        return False
+
+    now = utcnow()
+    for job in stale_jobs:
+        job.status = TranscriptIngestionJobStatus.failed
+        job.error_code = "ingestion_processing_stale"
+        job.error_message = "Live audio chunk processing timed out before completion"
+        job.completed_at = now
+        db.add(job)
+    db.commit()
+    return True
 
 
 def reconcile_transcript_status(
@@ -966,6 +1006,7 @@ def reconcile_transcript_status(
     transcript: Transcript,
 ) -> Transcript:
     if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        _mark_stale_live_chunk_jobs_failed(db, transcript=transcript)
         _apply_completed_live_chunks(db, transcript)
         db.refresh(transcript)
     resolved_status = _resolved_transcript_status(db, transcript=transcript)
@@ -998,7 +1039,7 @@ def process_transcript_ingestion_job(
     transcript = db.get(Transcript, job.transcript_id)
     if transcript is None:
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
-    if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied}:
+    if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.failed}:
         return job
 
     _mark_job_processing(db, job)
@@ -1023,6 +1064,10 @@ def process_transcript_ingestion_job(
             filename=normalized_audio.filename,
             content_type=normalized_audio.content_type,
         )
+        db.refresh(job)
+        db.refresh(transcript)
+        if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.failed}:
+            return job
         now = utcnow()
         job.result_text_encrypted = encrypt_text_for_owner(
             db,

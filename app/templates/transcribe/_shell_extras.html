@@ -8,6 +8,11 @@ Copied to clipboard
 
 <script>
 (function() {
+window.refreshLucideIcons = function(root) {
+if (!window.lucide?.createIcons) return;
+window.lucide.createIcons(root ? { root: root } : undefined);
+};
+window.refreshLucideIcons();
 var toastContainer = document.querySelector('[data-toast-container]');
 window.showToast = function(message, kind, duration) {
 if (!toastContainer) return;

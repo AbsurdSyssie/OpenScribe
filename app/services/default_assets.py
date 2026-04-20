@@ -1,0 +1,427 @@
+from dataclasses import dataclass
+from uuid import UUID, uuid4
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.errors import AppError
+from app.models import (
+    DefaultPromptTemplate,
+    DefaultPromptTemplateVersion,
+    DefaultQuickAction,
+    DefaultQuickActionVersion,
+    PromptTemplate,
+    PromptTemplateVersion,
+    QuickAction,
+    QuickActionVersion,
+    Team,
+    TemplateMode,
+    TemplateScope,
+    User,
+)
+from app.normalization import normalize_team_name_key
+from app.schemas.templates import DefaultPromptTemplateUpsert, DefaultQuickActionUpsert
+from app.services.templates import (
+    _latest_quick_action_version,
+    _latest_template_version,
+    _serialize_asset_name,
+    _serialize_prompt_text,
+    _serialize_template_config,
+    _split_duplicate_asset_name,
+    _template_version_config,
+)
+
+
+@dataclass(slots=True)
+class DefaultAssetImportSummary:
+    source_team_id: UUID
+    source_team_name: str
+    templates_imported: int
+    quick_actions_imported: int
+
+
+def _require_system_admin(actor: User) -> None:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "Default asset management requires a system admin account")
+
+
+def _next_default_template_version_no(db: Session, *, template_id: UUID) -> int:
+    current_max = db.scalar(select(func.max(DefaultPromptTemplateVersion.version_no)).where(DefaultPromptTemplateVersion.default_template_id == template_id))
+    return (current_max or 0) + 1
+
+
+def _next_default_quick_action_version_no(db: Session, *, quick_action_id: UUID) -> int:
+    current_max = db.scalar(select(func.max(DefaultQuickActionVersion.version_no)).where(DefaultQuickActionVersion.default_quick_action_id == quick_action_id))
+    return (current_max or 0) + 1
+
+
+def _resolve_default_template(db: Session, *, template_id: UUID) -> DefaultPromptTemplate:
+    template = db.get(DefaultPromptTemplate, template_id)
+    if template is None:
+        raise AppError(404, "not_found", "Default template not found", {"resource": "default_template", "template_id": str(template_id)})
+    return template
+
+
+def _resolve_default_quick_action(db: Session, *, quick_action_id: UUID) -> DefaultQuickAction:
+    quick_action = db.get(DefaultQuickAction, quick_action_id)
+    if quick_action is None:
+        raise AppError(404, "not_found", "Default quick action not found", {"resource": "default_quick_action", "quick_action_id": str(quick_action_id)})
+    return quick_action
+
+
+def _resolve_source_team(db: Session, *, team_name: str) -> Team:
+    normalized_name = normalize_team_name_key(team_name)
+    team = db.scalar(select(Team).where(Team.name_key == normalized_name))
+    if team is None:
+        raise AppError(404, "not_found", "Source team not found", {"resource": "team", "team_name": team_name})
+    return team
+
+
+def _ensure_unique_default_template_name(db: Session, *, name: str, current_template_id: UUID | None = None) -> None:
+    duplicate = db.scalar(
+        select(DefaultPromptTemplate).where(
+            func.lower(DefaultPromptTemplate.name) == name.strip().lower(),
+            DefaultPromptTemplate.id != current_template_id if current_template_id is not None else True,
+        )
+    )
+    if duplicate is not None:
+        raise AppError(409, "conflict", "Default template name already exists", {"resource": "default_template", "field": "name"})
+
+
+def _ensure_unique_default_quick_action_name(db: Session, *, name: str, current_quick_action_id: UUID | None = None) -> None:
+    duplicate = db.scalar(
+        select(DefaultQuickAction).where(
+            func.lower(DefaultQuickAction.name) == name.strip().lower(),
+            DefaultQuickAction.id != current_quick_action_id if current_quick_action_id is not None else True,
+        )
+    )
+    if duplicate is not None:
+        raise AppError(409, "conflict", "Default quick action name already exists", {"resource": "default_quick_action", "field": "name"})
+
+
+def _latest_default_template_version(db: Session, *, template_id: UUID) -> DefaultPromptTemplateVersion:
+    version = db.scalar(
+        select(DefaultPromptTemplateVersion)
+        .where(DefaultPromptTemplateVersion.default_template_id == template_id)
+        .order_by(DefaultPromptTemplateVersion.version_no.desc())
+        .limit(1)
+    )
+    if version is None:
+        raise AppError(404, "not_found", "Default template version not found", {"resource": "default_template_version", "template_id": str(template_id)})
+    return version
+
+
+def _latest_default_quick_action_version(db: Session, *, quick_action_id: UUID) -> DefaultQuickActionVersion:
+    version = db.scalar(
+        select(DefaultQuickActionVersion)
+        .where(DefaultQuickActionVersion.default_quick_action_id == quick_action_id)
+        .order_by(DefaultQuickActionVersion.version_no.desc())
+        .limit(1)
+    )
+    if version is None:
+        raise AppError(404, "not_found", "Default quick action version not found", {"resource": "default_quick_action_version", "quick_action_id": str(quick_action_id)})
+    return version
+
+
+def _next_duplicate_default_name(existing_names: list[str], source_name: str) -> str:
+    base_name, parsed_suffix = _split_duplicate_asset_name(source_name)
+    candidate_base = base_name if parsed_suffix else source_name.strip()
+    normalized_existing = {str(name or "").strip().lower() for name in existing_names}
+    next_index = 2
+    while f"{candidate_base} {next_index}".strip().lower() in normalized_existing:
+        next_index += 1
+    return f"{candidate_base} {next_index}"
+
+
+def _default_template_exists(db: Session, *, name: str) -> bool:
+    normalized_name = _serialize_asset_name(name)
+    return db.scalar(select(DefaultPromptTemplate.id).where(func.lower(DefaultPromptTemplate.name) == normalized_name.lower()).limit(1)) is not None
+
+
+def _default_quick_action_exists(db: Session, *, name: str) -> bool:
+    normalized_name = _serialize_asset_name(name)
+    return db.scalar(select(DefaultQuickAction.id).where(func.lower(DefaultQuickAction.name) == normalized_name.lower()).limit(1)) is not None
+
+
+def list_default_templates(db: Session, actor: User) -> list[DefaultPromptTemplate]:
+    _require_system_admin(actor)
+    return list(db.scalars(select(DefaultPromptTemplate).order_by(DefaultPromptTemplate.updated_at.desc(), DefaultPromptTemplate.id.desc())))
+
+
+def list_default_quick_actions(db: Session, actor: User) -> list[DefaultQuickAction]:
+    _require_system_admin(actor)
+    return list(db.scalars(select(DefaultQuickAction).order_by(DefaultQuickAction.updated_at.desc(), DefaultQuickAction.id.desc())))
+
+
+def upsert_default_template(db: Session, actor: User, payload: DefaultPromptTemplateUpsert) -> DefaultPromptTemplate:
+    _require_system_admin(actor)
+    prompt_text = _serialize_prompt_text(payload.prompt_text)
+    template_name = _serialize_asset_name(payload.name)
+    config_json = _serialize_template_config(payload)
+    template = _resolve_default_template(db, template_id=payload.template_id) if payload.template_id else None
+    _ensure_unique_default_template_name(db, name=template_name, current_template_id=template.id if template is not None else None)
+    if template is None:
+        template = DefaultPromptTemplate(
+            id=uuid4(),
+            name=template_name,
+            description=(payload.description or "").strip() or None,
+            is_active=payload.is_active,
+            created_by_user_id=actor.id,
+        )
+        db.add(template)
+        db.flush()
+    else:
+        template.name = template_name
+        template.description = (payload.description or "").strip() or None
+        template.is_active = payload.is_active
+        db.add(template)
+
+    version = DefaultPromptTemplateVersion(
+        id=uuid4(),
+        default_template_id=template.id,
+        version_no=_next_default_template_version_no(db, template_id=template.id),
+        mode=payload.mode,
+        prompt_text=prompt_text,
+        config_json=config_json,
+        created_by_user_id=actor.id,
+    )
+    db.add(version)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError(409, "conflict", "Default template changed during save. Retry.", {"resource": "default_template"}) from exc
+    db.refresh(template)
+    return template
+
+
+def upsert_default_quick_action(db: Session, actor: User, payload: DefaultQuickActionUpsert) -> DefaultQuickAction:
+    _require_system_admin(actor)
+    prompt_text = _serialize_prompt_text(payload.prompt_text)
+    quick_action_name = _serialize_asset_name(payload.name)
+    quick_action = _resolve_default_quick_action(db, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
+    _ensure_unique_default_quick_action_name(db, name=quick_action_name, current_quick_action_id=quick_action.id if quick_action is not None else None)
+    if quick_action is None:
+        quick_action = DefaultQuickAction(
+            id=uuid4(),
+            name=quick_action_name,
+            description=(payload.description or "").strip() or None,
+            is_active=payload.is_active,
+            created_by_user_id=actor.id,
+        )
+        db.add(quick_action)
+        db.flush()
+    else:
+        quick_action.name = quick_action_name
+        quick_action.description = (payload.description or "").strip() or None
+        quick_action.is_active = payload.is_active
+        db.add(quick_action)
+
+    version = DefaultQuickActionVersion(
+        id=uuid4(),
+        default_quick_action_id=quick_action.id,
+        version_no=_next_default_quick_action_version_no(db, quick_action_id=quick_action.id),
+        mode=TemplateMode.freeform,
+        prompt_text=prompt_text,
+        created_by_user_id=actor.id,
+    )
+    db.add(version)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError(409, "conflict", "Default quick action changed during save. Retry.", {"resource": "default_quick_action"}) from exc
+    db.refresh(quick_action)
+    return quick_action
+
+
+def delete_default_template(db: Session, actor: User, *, template_id: UUID) -> None:
+    _require_system_admin(actor)
+    template = _resolve_default_template(db, template_id=template_id)
+    db.delete(template)
+    db.commit()
+
+
+def delete_default_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> None:
+    _require_system_admin(actor)
+    quick_action = _resolve_default_quick_action(db, quick_action_id=quick_action_id)
+    db.delete(quick_action)
+    db.commit()
+
+
+def duplicate_default_template(db: Session, actor: User, *, template_id: UUID) -> DefaultPromptTemplate:
+    _require_system_admin(actor)
+    template = _resolve_default_template(db, template_id=template_id)
+    latest_version = _latest_default_template_version(db, template_id=template.id)
+    return upsert_default_template(
+        db,
+        actor,
+        DefaultPromptTemplateUpsert(
+            name=_next_duplicate_default_name(list(db.scalars(select(DefaultPromptTemplate.name))), template.name),
+            description=template.description,
+            prompt_text=latest_version.prompt_text,
+            mode=latest_version.mode,
+            config_json=_template_version_config(latest_version),
+            is_active=template.is_active,
+        ),
+    )
+
+
+def duplicate_default_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> DefaultQuickAction:
+    _require_system_admin(actor)
+    quick_action = _resolve_default_quick_action(db, quick_action_id=quick_action_id)
+    latest_version = _latest_default_quick_action_version(db, quick_action_id=quick_action.id)
+    return upsert_default_quick_action(
+        db,
+        actor,
+        DefaultQuickActionUpsert(
+            name=_next_duplicate_default_name(list(db.scalars(select(DefaultQuickAction.name))), quick_action.name),
+            description=quick_action.description,
+            prompt_text=latest_version.prompt_text,
+            is_active=quick_action.is_active,
+        ),
+    )
+
+
+def import_team_assets_to_defaults(db: Session, actor: User, *, source_team_name: str) -> DefaultAssetImportSummary:
+    _require_system_admin(actor)
+    source_team = _resolve_source_team(db, team_name=source_team_name)
+    imported_template_count = 0
+    imported_quick_action_count = 0
+    templates = list(
+        db.scalars(
+            select(PromptTemplate)
+            .where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == source_team.id)
+            .order_by(PromptTemplate.updated_at.asc(), PromptTemplate.id.asc())
+        )
+    )
+    quick_actions = list(
+        db.scalars(
+            select(QuickAction)
+            .where(QuickAction.scope == TemplateScope.team, QuickAction.team_id == source_team.id)
+            .order_by(QuickAction.updated_at.asc(), QuickAction.id.asc())
+        )
+    )
+
+    for template in templates:
+        normalized_template_name = _serialize_asset_name(template.name)
+        if _default_template_exists(db, name=normalized_template_name):
+            continue
+        latest_version = _latest_template_version(db, template_id=template.id)
+        imported_template = DefaultPromptTemplate(
+            id=uuid4(),
+            name=normalized_template_name,
+            description=template.description,
+            is_active=template.is_active,
+            created_by_user_id=actor.id,
+        )
+        db.add(imported_template)
+        db.flush()
+        db.add(
+            DefaultPromptTemplateVersion(
+                id=uuid4(),
+                default_template_id=imported_template.id,
+                version_no=1,
+                mode=latest_version.mode,
+                prompt_text=latest_version.prompt_text,
+                config_json=latest_version.config_json,
+                created_by_user_id=actor.id,
+            )
+        )
+        imported_template_count += 1
+
+    for quick_action in quick_actions:
+        normalized_quick_action_name = _serialize_asset_name(quick_action.name)
+        if _default_quick_action_exists(db, name=normalized_quick_action_name):
+            continue
+        latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
+        imported_quick_action = DefaultQuickAction(
+            id=uuid4(),
+            name=normalized_quick_action_name,
+            description=quick_action.description,
+            is_active=quick_action.is_active,
+            created_by_user_id=actor.id,
+        )
+        db.add(imported_quick_action)
+        db.flush()
+        db.add(
+            DefaultQuickActionVersion(
+                id=uuid4(),
+                default_quick_action_id=imported_quick_action.id,
+                version_no=1,
+                mode=TemplateMode.freeform,
+                prompt_text=latest_version.prompt_text,
+                created_by_user_id=actor.id,
+            )
+        )
+        imported_quick_action_count += 1
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError(409, "conflict", "Default assets changed during import. Retry.", {"resource": "default_asset_import"}) from exc
+
+    return DefaultAssetImportSummary(
+        source_team_id=source_team.id,
+        source_team_name=source_team.name,
+        templates_imported=imported_template_count,
+        quick_actions_imported=imported_quick_action_count,
+    )
+
+
+def seed_team_default_assets(db: Session, *, team: Team, actor: User) -> None:
+    _require_system_admin(actor)
+    default_templates = list(db.scalars(select(DefaultPromptTemplate).where(DefaultPromptTemplate.is_active.is_(True)).order_by(DefaultPromptTemplate.updated_at.asc(), DefaultPromptTemplate.id.asc())))
+    for default_template in default_templates:
+        latest_version = _latest_default_template_version(db, template_id=default_template.id)
+        template = PromptTemplate(
+            id=uuid4(),
+            scope=TemplateScope.team,
+            owner_user_id=None,
+            team_id=team.id,
+            name=default_template.name,
+            description=default_template.description,
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(template)
+        db.flush()
+        db.add(
+            PromptTemplateVersion(
+                id=uuid4(),
+                template_id=template.id,
+                version_no=1,
+                mode=latest_version.mode,
+                prompt_text=latest_version.prompt_text,
+                config_json=latest_version.config_json,
+                created_by_user_id=actor.id,
+            )
+        )
+
+    default_quick_actions = list(db.scalars(select(DefaultQuickAction).where(DefaultQuickAction.is_active.is_(True)).order_by(DefaultQuickAction.updated_at.asc(), DefaultQuickAction.id.asc())))
+    for default_quick_action in default_quick_actions:
+        latest_version = _latest_default_quick_action_version(db, quick_action_id=default_quick_action.id)
+        quick_action = QuickAction(
+            id=uuid4(),
+            scope=TemplateScope.team,
+            owner_user_id=None,
+            team_id=team.id,
+            name=default_quick_action.name,
+            description=default_quick_action.description,
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(quick_action)
+        db.flush()
+        db.add(
+            QuickActionVersion(
+                id=uuid4(),
+                quick_action_id=quick_action.id,
+                version_no=1,
+                mode=TemplateMode.freeform,
+                prompt_text=latest_version.prompt_text,
+                created_by_user_id=actor.id,
+            )
+        )

@@ -319,6 +319,14 @@ Useful future design split:
 - request review
 - observability
 
+Current visual direction:
+- keep `/admin` as a server-rendered Jinja surface
+- use a persistent sidebar for area selection instead of top card tabs
+- use flat full-width editing panes with row dividers instead of stacked cards
+- keep provider setup, defaults, directory, requests, and usage as separate admin work areas
+- keep any future provider-policy split explicit so provisioning and team selection authority remain understandable
+- render LLM user-visible models as multi-column selectable tiles, with team default model chosen from a dropdown populated only by enabled visible models
+
 ## Recommended use of this brief
 
 Use this document as an admin capability map:

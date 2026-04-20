@@ -11,6 +11,8 @@ from app.errors import AppError
 
 WHOLE_FILE_MAX_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 WHOLE_FILE_MAX_DURATION_SECONDS = int(os.getenv("WHOLE_FILE_MAX_DURATION_SECONDS", str(30 * 60)))
+AUDIO_FFPROBE_TIMEOUT_SECONDS = float(os.getenv("AUDIO_FFPROBE_TIMEOUT_SECONDS", "15"))
+AUDIO_FFMPEG_TIMEOUT_SECONDS = float(os.getenv("AUDIO_FFMPEG_TIMEOUT_SECONDS", "60"))
 
 
 @dataclass(slots=True)
@@ -69,9 +71,12 @@ def probe_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) ->
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=AUDIO_FFPROBE_TIMEOUT_SECONDS,
             )
         except OSError as exc:
             raise AppError(502, "audio_duration_probe_failed", "ffprobe is unavailable for audio duration inspection") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AppError(502, "audio_duration_probe_failed", "Audio duration inspection timed out") from exc
 
         if completed.returncode != 0:
             raise AppError(502, "audio_duration_probe_failed", "Audio duration could not be inspected")
@@ -146,9 +151,12 @@ def normalize_audio_to_wav_16k_mono(*, audio_bytes: bytes, source_filename: str)
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=AUDIO_FFMPEG_TIMEOUT_SECONDS,
             )
         except OSError as exc:
             raise AppError(502, "audio_normalization_failed", "ffmpeg is unavailable for audio normalization") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AppError(502, "audio_normalization_failed", "Audio normalization timed out") from exc
 
         if completed.returncode != 0:
             raise AppError(502, "audio_normalization_failed", "Audio normalization failed")

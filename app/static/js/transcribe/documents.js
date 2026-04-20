@@ -29,6 +29,7 @@ export function createDocumentNavigator({
     renderGeneratedOutput,
     renderFollowupOutput,
     renderRedactionDebugPanel,
+    refreshIcons,
     setTab,
   } = helpers;
 
@@ -126,13 +127,12 @@ export function createDocumentNavigator({
       followupHistory.innerHTML = `
         <div class="empty-state">
           <div class="empty-state__icon">
-            <svg class="w-12 h-12 text-slate/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-5l-5 5v-5z"/>
-            </svg>
+            <i class="w-12 h-12 text-slate/40" data-lucide="message-square-more"></i>
           </div>
           <div class="empty-state__text">Select a quick action or describe what you need to create a follow-up message.</div>
         </div>
       `;
+      refreshIcons?.(followupHistory);
       return;
     }
     documents.forEach((item) => {
@@ -159,15 +159,11 @@ export function createDocumentNavigator({
         <div class="followup-card__actions">
           ${item.status === "ready" && item.edited_output_text_encrypted ? `
             <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2m-6 12h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2z"/>
-              </svg>
+              <i class="w-4 h-4" data-lucide="copy"></i>
             </button>
           ` : ""}
           <button type="button" class="btn-icon" data-followup-delete data-generated-document-id="${escapeHtml(item.id || "")}" title="Delete permanently">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5.75A1.75 1.75 0 0 1 10.75 4h2.5A1.75 1.75 0 0 1 15 5.75V7m-7 0 .7 10.15A1.75 1.75 0 0 0 10.45 18.8h3.1a1.75 1.75 0 0 0 1.75-1.65L16 7"/>
-            </svg>
+            <i class="w-4 h-4" data-lucide="trash-2"></i>
           </button>
         </div>
       `;
@@ -187,6 +183,7 @@ export function createDocumentNavigator({
       `;
       followupHistory.appendChild(card);
     });
+    refreshIcons?.(followupHistory);
   };
 
   const renderSelectedNote = ({ preserveEditor = false } = {}) => {

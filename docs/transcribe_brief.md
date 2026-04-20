@@ -59,9 +59,10 @@ Contained information:
 - current recording mode
 - upload availability
 - microphone/live capture availability
-- ingestion progress and retry status
+- status-pill ingestion progress and retry status
 - duration timer
 - ingest failure messages
+- toast-only blocked navigation/session creation feedback
 
 User can change:
 - choose recording mode
@@ -74,6 +75,7 @@ How:
 - start/stop recording
 - upload file
 - trigger retry
+- try blocked navigation/session creation and receive a toast without sidebar layout changes
 
 Access:
 - owner only
@@ -157,12 +159,15 @@ Notes:
 Contained information:
 - selected vs unselected structured lines
 - copy-ready structured output subset
+- section-level structured output text
 
 User can change:
 - select or deselect structured note statements for copy
+- copy a single structured section from its header without changing line selection
 
 How:
 - toggle line selection in structured output
+- use a section header copy button
 
 Access:
 - owner only

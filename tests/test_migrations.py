@@ -44,6 +44,11 @@ def test_alembic_upgrade_head_creates_expected_schema():
     assert current_tables() == {
         "alembic_version",
         "account_requests",
+        "default_quick_actions",
+        "default_quick_action_versions",
+        "default_templates",
+        "default_template_versions",
+        "deidentification_providers",
         "generated_document_sections",
         "generated_documents",
         "post_consultation_dictation_segments",
@@ -54,6 +59,8 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "redaction_entities",
         "redaction_runs",
         "teams",
+        "team_deidentification_provider_assignments",
+        "team_deidentification_selections",
         "team_llm_configs",
         "team_llm_selections",
         "team_stt_configs",
@@ -151,14 +158,23 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     stt_selection_columns = {column["name"] for column in inspector.get_columns("team_stt_selections")}
     llm_columns = {column["name"] for column in inspector.get_columns("team_llm_configs")}
     llm_selection_columns = {column["name"] for column in inspector.get_columns("team_llm_selections")}
+    deidentification_provider_columns = {column["name"] for column in inspector.get_columns("deidentification_providers")}
+    deidentification_assignment_columns = {column["name"] for column in inspector.get_columns("team_deidentification_provider_assignments")}
+    deidentification_selection_columns = {column["name"] for column in inspector.get_columns("team_deidentification_selections")}
     user_llm_preference_columns = {column["name"] for column in inspector.get_columns("user_llm_preferences")}
     user_app_preference_columns = {column["name"] for column in inspector.get_columns("user_app_preferences")}
     template_indexes = inspector.get_indexes("templates")
     template_columns = {column["name"] for column in inspector.get_columns("templates")}
     template_version_columns = {column["name"] for column in inspector.get_columns("template_versions")}
+    default_template_indexes = inspector.get_indexes("default_templates")
+    default_template_columns = {column["name"] for column in inspector.get_columns("default_templates")}
+    default_template_version_columns = {column["name"] for column in inspector.get_columns("default_template_versions")}
     quick_action_indexes = inspector.get_indexes("quick_actions")
     quick_action_columns = {column["name"] for column in inspector.get_columns("quick_actions")}
     quick_action_version_columns = {column["name"] for column in inspector.get_columns("quick_action_versions")}
+    default_quick_action_indexes = inspector.get_indexes("default_quick_actions")
+    default_quick_action_columns = {column["name"] for column in inspector.get_columns("default_quick_actions")}
+    default_quick_action_version_columns = {column["name"] for column in inspector.get_columns("default_quick_action_versions")}
     generated_document_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
     generated_document_section_columns = {column["name"] for column in inspector.get_columns("generated_document_sections")}
     post_consultation_dictation_columns = {column["name"] for column in inspector.get_columns("post_consultation_dictations")}
@@ -180,16 +196,40 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
+    assert {
+        "label",
+        "adapter_kind",
+        "base_url",
+        "detect_path",
+        "auth_mode",
+        "request_text_field",
+        "response_entities_path",
+        "response_start_field",
+        "response_end_field",
+        "response_type_field",
+        "entity_type_map_json",
+        "vault_secret_ref",
+        "is_active",
+        "is_builtin",
+    } <= deidentification_provider_columns
+    assert {"team_id", "provider_id", "assigned_by_user_id"} <= deidentification_assignment_columns
+    assert {"team_id", "provider_id", "selected_by_user_id"} <= deidentification_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
     assert {"user_id", "preferences_json"} <= user_app_preference_columns
     assert any(item["name"] == "uq_templates_team_name_lower" for item in template_indexes)
     assert any(item["name"] == "uq_templates_owner_name_lower" for item in template_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns
     assert {"template_id", "version_no", "mode", "prompt_text", "config_json"} <= template_version_columns
+    assert any(item["name"] == "uq_default_templates_name_lower" for item in default_template_indexes)
+    assert {"name", "description", "is_active", "created_by_user_id"} <= default_template_columns
+    assert {"default_template_id", "version_no", "mode", "prompt_text", "config_json"} <= default_template_version_columns
     assert any(item["name"] == "uq_quick_actions_team_name_lower" for item in quick_action_indexes)
     assert any(item["name"] == "uq_quick_actions_owner_name_lower" for item in quick_action_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= quick_action_columns
     assert {"quick_action_id", "version_no", "mode", "prompt_text"} <= quick_action_version_columns
+    assert any(item["name"] == "uq_default_quick_actions_name_lower" for item in default_quick_action_indexes)
+    assert {"name", "description", "is_active", "created_by_user_id"} <= default_quick_action_columns
+    assert {"default_quick_action_id", "version_no", "mode", "prompt_text"} <= default_quick_action_version_columns
     assert {
         "owner_user_id",
         "team_id",

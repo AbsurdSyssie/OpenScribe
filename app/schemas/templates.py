@@ -52,6 +52,16 @@ class PromptTemplateUpsert(BaseModel):
     is_active: bool = True
 
 
+class DefaultPromptTemplateUpsert(BaseModel):
+    template_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    prompt_text: str = Field(min_length=1)
+    mode: TemplateMode = TemplateMode.freeform
+    config_json: StructuredTemplateConfig | None = None
+    is_active: bool = True
+
+
 class PromptTemplateVersionDetail(BaseModel):
     id: UUID
     version_no: int
@@ -79,6 +89,14 @@ class PromptTemplateDetail(BaseModel):
 class QuickActionUpsert(BaseModel):
     quick_action_id: UUID | None = None
     scope: TemplateScope
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    prompt_text: str = Field(min_length=1)
+    is_active: bool = True
+
+
+class DefaultQuickActionUpsert(BaseModel):
+    quick_action_id: UUID | None = None
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     prompt_text: str = Field(min_length=1)

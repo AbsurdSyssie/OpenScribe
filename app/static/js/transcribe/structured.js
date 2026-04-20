@@ -21,6 +21,13 @@ export function createStructuredEditor({
     textarea.style.height = `${Math.max(textarea.scrollHeight, 22)}px`;
   };
 
+  const autosizeStatementEditorsIn = (container) => {
+    if (!(container instanceof HTMLElement)) return;
+    container.querySelectorAll('textarea').forEach((textarea) => {
+      autosizeStatementEditor(textarea);
+    });
+  };
+
   const focusStatementEditor = (textarea) => {
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     textarea.focus();
@@ -700,6 +707,19 @@ export function createStructuredEditor({
       title.textContent = section.sectionLabel || 'Section';
       header.appendChild(title);
 
+      const copyButton = document.createElement('button');
+      copyButton.type = 'button';
+      copyButton.className = 'structured-section-copy-button';
+      copyButton.setAttribute('data-copy-structured-section', '');
+      copyButton.setAttribute('aria-label', `Copy ${section.sectionLabel || 'section'} section`);
+      copyButton.title = 'Copy section';
+      const copyIcon = document.createElement('i');
+      copyIcon.className = 'w-3.5 h-3.5';
+      copyIcon.setAttribute('data-lucide', 'copy');
+      copyIcon.setAttribute('aria-hidden', 'true');
+      copyButton.appendChild(copyIcon);
+      header.appendChild(copyButton);
+
       const body = document.createElement('div');
       body.className = 'structured-statement-list';
       body.setAttribute('data-generated-structured-section-rows', '');
@@ -715,11 +735,13 @@ export function createStructuredEditor({
       } else {
         addGeneratedStructuredLine(card, '', null, true);
       }
+      window.refreshLucideIcons?.(card);
     });
     syncGeneratedStructuredDraftFromDom();
     syncStructuredContextHiddenInputs();
     syncStructuredEditorAvailability();
     dom.generatedStructuredPanel.hidden = false;
+    window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedStructuredPanel));
     restoreEditorFocusState(focusState?.mode === 'structured' ? focusState : null);
   };
 
@@ -737,6 +759,7 @@ export function createStructuredEditor({
     syncGeneratedFreeformDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedFreeformPanel.hidden = false;
+    window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedFreeformPanel));
     restoreEditorFocusState(focusState?.mode === 'freeform' ? focusState : null);
   };
 
@@ -921,6 +944,15 @@ export function createStructuredEditor({
     return rows;
   };
 
+  const collectStructuredSectionLines = (section) => {
+    if (!(section instanceof HTMLElement)) {
+      return [];
+    }
+    return [...section.querySelectorAll('[data-structured-statement-row]')]
+      .map((row) => row.querySelector('[data-structured-line-input]')?.value?.trim() || '')
+      .filter((text) => text.length > 0);
+  };
+
   const hasNoteInputContent = () => {
     return collectSelectedNoteLines({ includeUnselected: true }).some((line) => String(line.text || '').trim().length > 0);
   };
@@ -929,6 +961,7 @@ export function createStructuredEditor({
     bootstrapFromDom,
     buildGeneratedStructuredDraft,
     collectSelectedNoteLines,
+    collectStructuredSectionLines,
     clearStructuredSelection,
     collectStructuredContext,
     getGeneratedStructuredDraft: () => generatedStructuredDraft,

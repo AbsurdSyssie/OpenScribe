@@ -1,5 +1,158 @@
 # Progress
 
+## 2026-04-21 Transcript Content Flag Review Fix
+
+### Scope
+
+- Fixed the transcribe workspace `has_transcript_content` flag so blank committed transcript versions do not trigger the "has transcript text" delete confirmation.
+- Kept the existing owner-only workspace response shape and immediate transcript-root deletion behavior.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/web/transcribe_workspace.py`: derive transcript content from decrypted draft text or decrypted committed version text with non-whitespace content.
+- `tests/test_admin_ui.py`: cover sidebar delete-confirmation flags for empty draft, meaningful draft, meaningful version, and blank version sessions.
+- `tests/test_api.py`: cover workspace API serialization for a blank committed transcript version.
+- `docs/testing.md`, `docs/progress.md`: document the regression coverage and architecture checkpoint.
+
+### Tests
+
+- `python3 -m py_compile app/web/transcribe_workspace.py app/schemas/transcripts.py`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "marks_non_empty_sessions_for_delete_confirmation"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_content_flag or transcribe_workspace_endpoint_returns_owner_workspace_state"'`: passed.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated testing and progress docs.
+
+### Risks / assumptions
+
+- The flag means meaningful transcript text, not the existence of a transcript-version row. Empty structured-generation snapshots are intentionally treated as no transcript text.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript text is exposed in the session rail or response beyond existing owner-only fields.
+- Ownership rules preserved: only owner-scoped workspace transcripts are inspected.
+- Deletion semantics preserved: browser confirmation remains advisory; authorized transcript-root deletion still hard-deletes immediately.
+- Provider rules preserved: STT, LLM, and de-identification resolution are unchanged.
+- Structured-note contract preserved: no EMIS section keys or structured output shape changed.
+
+## 2026-04-20 Generated Note Copy Review Gate
+
+### Scope
+
+- Added a client-side generated-note review gate in the transcribe workspace.
+- Structured generated-note section copy now unlocks only after the owner has scrolled far enough for that section bottom to be visible.
+- Freeform generated-note copy now unlocks only after the generated note bottom is visible.
+- Hidden output panes no longer satisfy the review gate during initial workspace render.
+- Review sentinels are observed only after the editable note layout has stabilized.
+- A render-readiness guard prevents sentinels from unlocking copy during setup.
+- Review-required state now also uses the rendered generated draft id, not only the hidden latest-output dataset.
+- Viewing a later structured section bottom marks earlier structured sections reviewed too, so reaching the note bottom unlocks copy-all behavior.
+- Copy controls remain clickable while blocked and use a data marker plus toast feedback instead of silent disabled buttons.
+- Manual pre-generation note entry remains unrestricted.
+- Blocked copy attempts now surface as a toast instead of an inline alert.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: targeted pytest could not start because the test database connection failed during `tests/conftest.py` import.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: expose the copy review status hook in the note toolbar.
+- `app/static/js/transcribe/structured.js`: track generated-note review state, add bottom sentinels, derive review-required state from the rendered draft, ignore hidden review targets, delay observation until after layout, guard setup-time observation, and expose copy-blocker checks.
+- `app/static/js/transcribe/actions.js`: block generated-note copy actions when the relevant content has not been viewed.
+- `app/static/js/transcribe/app.js`: pass the copy button into the structured editor controller.
+- `tests/test_admin_ui.py`: assert the frontend review-gate hooks and blockers remain wired.
+- `docs/testing.md`, `docs/transcribe_brief.md`, `docs/transcript-capture.md`, `docs/progress.md`: document behavior and coverage.
+
+### Tests
+
+- `node --check app/static/js/transcribe/structured.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `git diff --check`: passed.
+- Browser check on `/transcribe?transcript_id=4a842a80-f10a-4047-9a9f-d28dc9d1c6a4`: blocked section copy and Copy Selected before review with toast feedback and no clipboard write; after scrolling the note body to the bottom, sections unlocked and Copy Selected wrote to the clipboard.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector or exposes_workspace_hooks_and_pane_controls"'`: not run to completion; database connection failed while loading `tests/conftest.py`.
+
+### Documentation
+
+- Updated testing, transcribe brief, transcript-capture, and progress docs.
+
+### Risks / assumptions
+
+- This is a browser-side data-validation control. It discourages blind copy/paste in the UI, but it is not a server-side content export policy.
+- A section is treated as reviewed once the section-bottom sentinel becomes visible in the viewport.
+- Hidden panes and zero-geometry review targets are not treated as reviewed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content readers, logs, or admin/leader views were added.
+- Ownership rules preserved: all generated-note content still comes from the existing owner-only transcribe workspace payload.
+- Deletion semantics preserved: no deletion or retention paths changed.
+- Provider rules preserved: STT, LLM, and de-identification provider resolution are unchanged.
+- Structured-note contract preserved: EMIS section keys, template validation, and generated-note JSON handling are unchanged.
+
+## 2026-04-20 Non-Empty Session Delete Confirmation
+
+### Scope
+
+- Added an owner-only `has_transcript_content` read-model flag for transcript list items.
+- Wired the transcribe session rail to require browser confirmation when deleting any selected session with non-empty transcript content.
+- Kept deletion on the existing owner-scoped immediate transcript-root delete API.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none for this slice.
+
+### Files changed
+
+- `app/schemas/transcripts.py`: add the derived `has_transcript_content` list/detail field.
+- `app/web/transcribe_workspace.py`: populate the field from decrypted owner draft text or committed transcript-version existence.
+- `app/templates/transcribe/_sidebar.html`: expose the boolean as a checkbox data attribute.
+- `app/static/js/transcribe/app.js`: refresh the checkbox data attribute from workspace payloads.
+- `app/static/js/transcribe/actions.js`: prompt before deleting selected non-empty sessions.
+- `tests/test_admin_ui.py`: cover sidebar flags and client confirmation wiring.
+- `tests/test_api.py`: cover workspace API content-flag serialization.
+- `docs/api.md`, `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document the behavior and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/schemas/transcripts.py app/web/transcribe_workspace.py`
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "bulk_delete_selected_sessions or marks_non_empty_sessions_for_delete_confirmation or transcribe_frontend_uses_global_template_selector"'`
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_returns_owner_workspace_state"'`
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_fields or transcribe_workspace_endpoint_uses_row_kek_metadata_for_dek_unwrap"'`
+
+### Documentation
+
+- Updated API, testing, transcript-capture, and progress docs.
+
+### Risks / assumptions
+
+- Confirmation is client-side, matching existing browser delete confirmations; direct API deletion remains immediate after an authorized request.
+- Non-empty means decrypted draft text has non-whitespace content or at least one committed transcript version exists.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: inactive session transcript text is not rendered; the rail receives only a boolean owned-content flag.
+- Ownership rules preserved: workspace and delete routes remain owner-scoped.
+- Deletion semantics preserved: confirmed deletion still hard-deletes the transcript root and cascades derived children immediately.
+- Provider rules preserved: provider resolution and credentials are unchanged.
+- Structured-note contract preserved: structured-note JSON handling is unchanged.
+
 ## 2026-04-19 Delete Confirmation Hardening
 
 ### Scope

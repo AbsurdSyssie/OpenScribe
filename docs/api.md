@@ -563,6 +563,7 @@ Current whole-file ingestion behavior:
   - queues file ingestion into the selected transcript root
   - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
+  - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
   - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected

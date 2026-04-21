@@ -142,6 +142,11 @@ export function attachTranscribeActions({
         }
         return;
       }
+      const copyReviewBlocker = structuredEditor.noteCopyReviewBlocker?.({ lines: checkedRows });
+      if (copyReviewBlocker) {
+        showFlash(copyReviewBlocker, 'error');
+        return;
+      }
       const grouped = new Map();
       checkedRows.forEach(({ label, text }) => {
         const lines = grouped.get(label) || [];
@@ -177,6 +182,11 @@ export function attachTranscribeActions({
 
       const section = copyButton.closest('[data-generated-structured-section]');
       const label = section?.dataset?.sectionLabel || '';
+      const copyReviewBlocker = structuredEditor.noteCopyReviewBlocker?.({ section });
+      if (copyReviewBlocker) {
+        showFlash(copyReviewBlocker, 'error');
+        return;
+      }
       const lines = structuredEditor.collectStructuredSectionLines(section);
       if (lines.length === 0) {
         if (dom.structuredCopyStatus) {
@@ -318,8 +328,15 @@ export function attachTranscribeActions({
   if (dom.bulkDeleteForm) {
     dom.bulkDeleteForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const selectedIds = dom.selectionBoxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+      const selectedBoxes = dom.selectionBoxes.filter((checkbox) => checkbox.checked);
+      const selectedIds = selectedBoxes.map((checkbox) => checkbox.value);
       if (selectedIds.length === 0) return;
+      if (selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')) {
+        const message = selectedIds.length === 1
+          ? 'This consultation has transcript text. Delete it permanently?'
+          : 'One or more selected consultations have transcript text. Delete them permanently?';
+        if (!window.confirm(message)) return;
+      }
       try {
         await Promise.all(selectedIds.map(async (selectedId) => {
           const response = await fetch(`/api/v1/transcripts/${selectedId}`, {

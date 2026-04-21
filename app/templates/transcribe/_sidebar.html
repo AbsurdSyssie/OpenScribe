@@ -74,6 +74,7 @@
                     type="checkbox"
                     name="transcript_ids"
                     value="{{ transcript.id }}"
+                    data-has-transcript-content="{{ 'true' if transcript.has_transcript_content else 'false' }}"
                     data-session-select>
                   <a
                     class="flex-1 min-w-0"

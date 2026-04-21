@@ -41,6 +41,7 @@ class TranscriptListItem(BaseModel):
     title: str | None
     ingestion_mode: TranscriptIngestionMode
     status: TranscriptStatus
+    has_transcript_content: bool = False
     retention_days_applied: int
     retention_expires_at: datetime
     created_at: datetime

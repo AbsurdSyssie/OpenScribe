@@ -318,7 +318,7 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 class="note-editor-toolbar"
 data-note-editor-toolbar
 {% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted)) %}hidden{% endif %}>
-<span class="text-sm text-slate" data-structured-copy-status>Select the note lines you want to copy.</span>
+<span class="text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite">Select the note lines you want to copy.</span>
 <div class="flex items-center gap-2">
 <button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
 <button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>

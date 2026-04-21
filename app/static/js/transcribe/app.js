@@ -1089,6 +1089,7 @@ import { createGuidedTour } from './tour.js';
           generatedStructuredPanel,
           freeformNoteEmptyState,
           generatedStructuredSections,
+          copyStructuredLinesButton,
           latestGeneratedOutput,
           noteEditorToolbar,
           structuredContextHiddenInputs,
@@ -1393,6 +1394,8 @@ import { createGuidedTour } from './tour.js';
           if (node) node.textContent = displayStatusLabel(item.status, item.ingestion_mode);
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           if (titleNode) titleNode.textContent = item.title || 'Untitled session';
+          const checkbox = selectionBoxes.find((input) => input.value === item.id);
+          if (checkbox) checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
         });
 
         if (transcript) {

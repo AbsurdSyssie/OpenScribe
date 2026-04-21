@@ -238,6 +238,7 @@ Implemented now for manual browser testing:
 - the workspace now creates explicit transcript-root sessions from the session rail rather than treating upload as the only session-creation path
 - session title currently maps directly to `transcripts.title`
 - the session rail now supports multi-select and bulk-delete for owner transcript roots
+- deleting selected sessions with non-empty transcript content now requires a browser confirmation; the rail uses an owner-only boolean content flag and does not render transcript text for inactive sessions
 - the upload form targets the currently selected transcript session and queues whole-file ingestion
 - the workspace presents file upload and microphone batch as options inside the active `whole_file` session instead of as separate session-creation paths
 - the browser workspace currently creates `whole_file` sessions by default and can switch a blank `live_chunked` session back to `whole_file`
@@ -324,6 +325,7 @@ Implemented now for manual browser testing:
   - renders the full note text onto the generated document
   - persists individual section rows for section-by-section display
   - the workspace shows line-selectable EMIS section output with clearer row separation and a copy-selected-lines action, including after workspace API refreshes and polling
+  - generated-note copy controls now require the owner to view the relevant generated content first: structured section copy unlocks per section after its bottom is visible, reaching a later structured section bottom marks earlier sections reviewed, and generated freeform copy unlocks after the note bottom is visible; hidden output panes do not count as reviewed; blocked copy controls remain clickable and surface a toast instead of an inline alert
 - when the owner edits a generated note in the browser and switches to another note version before autosave fires, the UI now saves the dirty note first and only switches versions if that save succeeds
 - before the worker sends transcript-derived text to an external LLM:
   - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row

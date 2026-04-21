@@ -6201,6 +6201,8 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
         "tasks": ["Peak flow diary"],
     }
     assert [item["id"] for item in payload["recent_transcripts"]] == [str(transcript.id)]
+    assert payload["recent_transcripts"][0]["has_transcript_content"] is True
+    assert payload["active_transcript"]["has_transcript_content"] is True
     assert [item["name"] for item in payload["available_templates"]] == ["My note"]
     assert [item["name"] for item in payload["available_quick_actions"]] == ["Send SMS"]
     assert [item["id"] for item in payload["generated_documents"]] == [str(generated.id)]
@@ -6215,6 +6217,44 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
     assert forbidden.status_code == 200
     assert forbidden.json()["active_transcript"] is None
+
+
+def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_content_flag(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Workspace Blank Version Team")
+    owner = make_user(email="owner-blank-version@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Blank saved session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.add(
+        TranscriptVersion(
+            transcript_id=transcript.id,
+            version_no=1,
+            text_encrypted="   ",
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-blank-version@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_transcript"]["has_transcript_content"] is False
+    assert payload["recent_transcripts"][0]["has_transcript_content"] is False
 
 
 def test_transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_fields(

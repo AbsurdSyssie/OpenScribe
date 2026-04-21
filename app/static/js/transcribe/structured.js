@@ -12,6 +12,11 @@ export function createStructuredEditor({
   let emisSaveTimer = null;
   let lastSavedStructuredContext = null;
   const rowSelectionState = new Map();
+  let copyReviewDocumentId = null;
+  let copyReviewObserver = null;
+  let reviewedStructuredSectionKeys = new Set();
+  let freeformNoteReviewed = false;
+  let copyReviewObservationReady = false;
 
   const noteCopyStatusDefault = 'Select the note lines you want to copy.';
 
@@ -122,6 +127,182 @@ export function createStructuredEditor({
 
   const activeGeneratedDocumentMode = () => dom.latestGeneratedOutput?.dataset?.latestGeneratedMode || '';
   const activeGeneratedDocumentId = () => dom.latestGeneratedOutput?.dataset?.latestGeneratedId || '';
+  const activeRenderedGeneratedDocumentId = () => (
+    activeGeneratedDocumentId()
+    || generatedStructuredDraft?.documentId
+    || generatedFreeformDraft?.documentId
+    || ''
+  );
+  const generatedCopyReviewRequired = () => Boolean(activeRenderedGeneratedDocumentId());
+
+  const setCopyReviewStatus = (message = '') => {
+    if (dom.structuredCopyStatus) {
+      dom.structuredCopyStatus.textContent = message || noteCopyStatusDefault;
+    }
+  };
+
+  const setStructuredSectionCopyReviewState = (section, reviewed) => {
+    if (!(section instanceof HTMLElement)) return;
+    const isReviewed = Boolean(reviewed);
+    section.dataset.copyReviewViewed = isReviewed ? 'true' : 'false';
+    const button = section.querySelector('[data-copy-structured-section]');
+    if (button instanceof HTMLButtonElement) {
+      const blocked = generatedCopyReviewRequired() && !isReviewed;
+      button.disabled = false;
+      button.dataset.copyReviewBlocked = blocked ? 'true' : 'false';
+      button.title = blocked ? 'Scroll to the bottom of this section before copying it' : 'Copy section';
+    }
+  };
+
+  const setFreeformCopyReviewState = (reviewed) => {
+    freeformNoteReviewed = Boolean(reviewed);
+    if (dom.generatedFreeformPanel) {
+      dom.generatedFreeformPanel.dataset.copyReviewViewed = freeformNoteReviewed ? 'true' : 'false';
+    }
+  };
+
+  const visibleBottomReached = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    if (element.closest('[hidden]') || element.getClientRects().length === 0) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    return rect.bottom <= viewportHeight + 2 && rect.top < viewportHeight;
+  };
+
+  const syncCopyReviewUi = () => {
+    if (!generatedCopyReviewRequired()) {
+      document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
+        setStructuredSectionCopyReviewState(section, true);
+      });
+      if (dom.copyStructuredLinesButton) {
+        dom.copyStructuredLinesButton.disabled = false;
+        dom.copyStructuredLinesButton.title = '';
+      }
+      setFreeformCopyReviewState(true);
+      setCopyReviewStatus();
+      return;
+    }
+
+    document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
+      setStructuredSectionCopyReviewState(section, reviewedStructuredSectionKeys.has(section.dataset.sectionKey || ''));
+    });
+    if (dom.copyStructuredLinesButton instanceof HTMLButtonElement) {
+      const mode = activeGeneratedDocumentMode();
+      const blocked = mode === 'freeform' && !freeformNoteReviewed;
+      dom.copyStructuredLinesButton.disabled = false;
+      dom.copyStructuredLinesButton.dataset.copyReviewBlocked = blocked ? 'true' : 'false';
+      dom.copyStructuredLinesButton.title = blocked
+        ? 'Scroll to the bottom of the generated note before copying'
+        : '';
+    }
+  };
+
+  const resetCopyReviewStateForDocument = () => {
+    const documentId = activeGeneratedDocumentId();
+    if (copyReviewDocumentId === documentId) return;
+    copyReviewDocumentId = documentId;
+    reviewedStructuredSectionKeys = new Set();
+    freeformNoteReviewed = false;
+    if (!documentId) {
+      setFreeformCopyReviewState(true);
+    }
+  };
+
+  const markCopyReviewTargetViewed = (target) => {
+    if (!(target instanceof HTMLElement)) return;
+    if (!copyReviewObservationReady) return;
+    const section = target.closest('[data-generated-structured-section]');
+    if (section instanceof HTMLElement) {
+      const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
+      const viewedThroughIndex = sections.indexOf(section);
+      sections.forEach((candidate, index) => {
+        if (viewedThroughIndex >= 0 && index > viewedThroughIndex) return;
+        const sectionKey = candidate.dataset.sectionKey || '';
+        if (sectionKey) {
+          reviewedStructuredSectionKeys.add(sectionKey);
+        }
+        setStructuredSectionCopyReviewState(candidate, true);
+      });
+      setCopyReviewStatus();
+      syncCopyReviewUi();
+      return;
+    }
+    if (target.hasAttribute('data-freeform-copy-review-sentinel')) {
+      setFreeformCopyReviewState(true);
+      setCopyReviewStatus();
+      syncCopyReviewUi();
+    }
+  };
+
+  const observeCopyReviewTargets = () => {
+    copyReviewObserver?.disconnect();
+    copyReviewObserver = null;
+    if (!generatedCopyReviewRequired()) {
+      syncCopyReviewUi();
+      return;
+    }
+    const targets = [
+      ...document.querySelectorAll('[data-structured-copy-review-sentinel]'),
+      ...document.querySelectorAll('[data-freeform-copy-review-sentinel]'),
+    ];
+    if (!targets.length) {
+      syncCopyReviewUi();
+      return;
+    }
+    copyReviewObservationReady = true;
+    if ('IntersectionObserver' in window) {
+      copyReviewObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && visibleBottomReached(entry.target)) {
+            markCopyReviewTargetViewed(entry.target);
+          }
+        });
+      }, { threshold: 1 });
+      targets.forEach((target) => copyReviewObserver.observe(target));
+    }
+    window.requestAnimationFrame(() => {
+      targets.forEach((target) => {
+        if (visibleBottomReached(target)) {
+          markCopyReviewTargetViewed(target);
+        }
+      });
+      syncCopyReviewUi();
+    });
+  };
+
+  const noteCopyReviewBlocker = ({ lines = [], section = null } = {}) => {
+    if (!generatedCopyReviewRequired()) {
+      return null;
+    }
+    if (section instanceof HTMLElement) {
+      if (section.dataset.copyReviewViewed !== 'true') {
+        return `Scroll to the bottom of ${section.dataset.sectionLabel || 'this section'} before copying it.`;
+      }
+      return null;
+    }
+    const mode = activeGeneratedDocumentMode();
+    if (mode === 'freeform' && !freeformNoteReviewed) {
+      return 'Scroll to the bottom of the generated note before copying it.';
+    }
+    if (mode === 'structured') {
+      const blockedLabels = new Set();
+      lines.forEach((line) => {
+        const sectionKey = line.sectionKey || '';
+        if (sectionKey && !reviewedStructuredSectionKeys.has(sectionKey)) {
+          blockedLabels.add(line.label || 'section');
+        }
+      });
+      if (blockedLabels.size > 0) {
+        return `Scroll to the bottom of ${[...blockedLabels].join(', ')} before copying selected lines.`;
+      }
+    }
+    return null;
+  };
 
   const structuredSectionDefinitionsFromDocument = (generatedDocument) => {
     const snapshot = generatedDocument?.structured_section_definitions_json;
@@ -317,6 +498,7 @@ export function createStructuredEditor({
 
   const createStatementRow = ({
     sectionLabel = 'section',
+    sectionKey = '',
     value = '',
     checked = true,
     disabled = false,
@@ -340,6 +522,7 @@ export function createStructuredEditor({
     checkbox.checked = checked;
     checkbox.disabled = disabled;
     checkbox.setAttribute(lineCheckboxAttr, '');
+    checkbox.dataset.sectionKey = sectionKey;
     checkbox.dataset.sectionLabel = sectionLabel;
     checkbox.setAttribute('aria-label', `Select ${sectionLabel} statement`);
     checkboxLabel.appendChild(checkbox);
@@ -354,6 +537,7 @@ export function createStructuredEditor({
     textarea.value = value;
     textarea.disabled = disabled;
     textarea.setAttribute(lineInputAttr, '');
+    textarea.dataset.sectionKey = sectionKey;
     textarea.dataset.sectionLabel = sectionLabel;
 
     row.appendChild(checkboxLabel);
@@ -567,6 +751,7 @@ export function createStructuredEditor({
     if (!rows) return null;
     const row = createStatementRow({
       sectionLabel: sectionContainer.dataset.sectionLabel || 'Section',
+      sectionKey: sectionContainer.dataset.sectionKey || '',
       value,
       checked,
       disabled: false,
@@ -633,6 +818,7 @@ export function createStructuredEditor({
     if (!dom.generatedFreeformRows) return null;
     const row = createStatementRow({
       sectionLabel: 'note',
+      sectionKey: '',
       value,
       checked,
       disabled: false,
@@ -687,6 +873,7 @@ export function createStructuredEditor({
   const renderStructuredSections = (draft) => {
     if (!dom.generatedStructuredSections || !dom.generatedStructuredPanel) return;
     const focusState = captureEditorFocusState();
+    copyReviewObservationReady = false;
     dom.generatedStructuredSections.innerHTML = '';
     if (!draft || !Array.isArray(draft.sections) || draft.sections.length === 0) {
       dom.generatedStructuredPanel.hidden = true;
@@ -735,19 +922,29 @@ export function createStructuredEditor({
       } else {
         addGeneratedStructuredLine(card, '', null, true);
       }
+      const sentinel = document.createElement('div');
+      sentinel.setAttribute('data-structured-copy-review-sentinel', '');
+      sentinel.setAttribute('aria-hidden', 'true');
+      sentinel.style.cssText = 'width:1px;height:1px;';
+      body.appendChild(sentinel);
       window.refreshLucideIcons?.(card);
     });
     syncGeneratedStructuredDraftFromDom();
     syncStructuredContextHiddenInputs();
     syncStructuredEditorAvailability();
     dom.generatedStructuredPanel.hidden = false;
-    window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedStructuredPanel));
+    syncCopyReviewUi();
+    window.requestAnimationFrame(() => {
+      autosizeStatementEditorsIn(dom.generatedStructuredPanel);
+      window.requestAnimationFrame(() => observeCopyReviewTargets());
+    });
     restoreEditorFocusState(focusState?.mode === 'structured' ? focusState : null);
   };
 
   const renderFreeformLines = (draft) => {
     if (!dom.generatedFreeformRows || !dom.generatedFreeformPanel) return;
     const focusState = captureEditorFocusState();
+    copyReviewObservationReady = false;
     dom.generatedFreeformRows.innerHTML = '';
     if (!draft || !Array.isArray(draft.lines) || draft.lines.length === 0) {
       dom.generatedFreeformPanel.hidden = true;
@@ -756,10 +953,19 @@ export function createStructuredEditor({
     draft.lines.forEach((line, lineIndex) => {
       addGeneratedFreeformLine(line.text || '', null, readRememberedRowSelectionState({ mode: 'freeform', lineIndex, fallback: line.checked !== false }));
     });
+    const sentinel = document.createElement('div');
+    sentinel.setAttribute('data-freeform-copy-review-sentinel', '');
+    sentinel.setAttribute('aria-hidden', 'true');
+    sentinel.style.cssText = 'width:1px;height:1px;';
+    dom.generatedFreeformRows.appendChild(sentinel);
     syncGeneratedFreeformDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedFreeformPanel.hidden = false;
-    window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedFreeformPanel));
+    syncCopyReviewUi();
+    window.requestAnimationFrame(() => {
+      autosizeStatementEditorsIn(dom.generatedFreeformPanel);
+      window.requestAnimationFrame(() => observeCopyReviewTargets());
+    });
     restoreEditorFocusState(focusState?.mode === 'freeform' ? focusState : null);
   };
 
@@ -772,7 +978,8 @@ export function createStructuredEditor({
 
   const renderGeneratedOutput = (generatedDocument, structuredContext = {}) => {
     if (!dom.latestGeneratedOutput || !dom.generatedStructuredPanel || !dom.generatedFreeformPanel) return;
-    if (dom.structuredCopyStatus) dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
+    resetCopyReviewStateForDocument();
+    setCopyReviewStatus();
     dom.latestGeneratedOutput.hidden = false;
     renderStructuredSections(null);
     renderFreeformLines(null);
@@ -787,6 +994,7 @@ export function createStructuredEditor({
       generatedFreeformDraft = null;
       dom.latestGeneratedOutput.hidden = true;
       renderStructuredSections(generatedStructuredDraft);
+      setCopyReviewStatus();
       syncNoteEditorToolbar();
       return;
     }
@@ -795,11 +1003,13 @@ export function createStructuredEditor({
       generatedFreeformDraft = buildFreeformDraft(generatedDocument);
       dom.latestGeneratedOutput.hidden = true;
       renderFreeformLines(generatedFreeformDraft);
+      setCopyReviewStatus();
       syncNoteEditorToolbar();
       return;
     }
     generatedStructuredDraft = null;
     generatedFreeformDraft = null;
+    observeCopyReviewTargets();
     if (!generatedDocument) {
       syncStructuredTemplateUi();
       syncNoteEmptyState();
@@ -871,6 +1081,8 @@ export function createStructuredEditor({
   };
 
   const bootstrapFromDom = () => {
+    resetCopyReviewStateForDocument();
+    setCopyReviewStatus();
     if (dom.generatedStructuredPanel && !dom.generatedStructuredPanel.hidden) {
       generatedStructuredDraft = buildGeneratedStructuredDraftFromDom();
       if (generatedStructuredDraft) {
@@ -893,7 +1105,7 @@ export function createStructuredEditor({
       syncStatementRowVisualState(checkbox.closest('[data-structured-statement-row], [data-freeform-note-row]'));
     });
     if (dom.structuredCopyStatus) {
-      dom.structuredCopyStatus.textContent = 'Selection cleared.';
+      dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
     }
     syncGeneratedStructuredDraftFromDom();
     syncGeneratedFreeformDraftFromDom();
@@ -905,7 +1117,7 @@ export function createStructuredEditor({
       syncStatementRowVisualState(checkbox.closest('[data-structured-statement-row], [data-freeform-note-row]'));
     });
     if (dom.structuredCopyStatus) {
-      dom.structuredCopyStatus.textContent = 'Selection added.';
+      dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
     }
     syncGeneratedStructuredDraftFromDom();
     syncGeneratedFreeformDraftFromDom();
@@ -922,6 +1134,7 @@ export function createStructuredEditor({
         if ((!includeUnselected && !checked) || !text) return;
         rows.push({
           checked,
+          sectionKey: checkbox?.dataset.sectionKey || textarea?.dataset.sectionKey || '',
           label: checkbox?.dataset.sectionLabel || textarea?.dataset.sectionLabel || '',
           text,
         });
@@ -969,6 +1182,7 @@ export function createStructuredEditor({
     hasNoteInputContent,
     renderGeneratedOutput,
     renderStructuredSections,
+    noteCopyReviewBlocker,
     selectedOutputTemplateMode,
     selectStructuredSelection,
     setGeneratedStructuredDraft: (draft) => {

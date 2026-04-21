@@ -20,6 +20,7 @@ from ..models import (
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptStatus,
+    TranscriptVersion,
     User,
     UserSession,
     UserStatus,
@@ -57,6 +58,7 @@ from ..services.transcripts import (
     reconcile_transcript_status as reconcile_transcript_status_service,
     transcript_draft_text as transcript_draft_text_service,
     transcript_structured_context as transcript_structured_context_service,
+    transcript_version_text as transcript_version_text_service,
 )
 from .presentation import generated_document_response, quick_action_response, template_response
 from .templates import templates
@@ -276,6 +278,23 @@ def _generated_note_has_content(db: Session, document: GeneratedDocument | None)
     return bool(raw_text.strip())
 
 
+def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
+    draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
+    if draft_text.strip():
+        return True
+    versions = db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+    )
+    return any((transcript_version_text_service(db, transcript_version=version) or "").strip() for version in versions)
+
+
+def transcript_list_item_response(db: Session, transcript: Transcript) -> TranscriptListItem:
+    payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
+    payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+    return TranscriptListItem.model_validate(payload)
+
+
 def resolve_transcribe_workspace(
     db: Session,
     *,
@@ -493,7 +512,7 @@ def resolve_transcribe_workspace(
 def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
     transcript = reconcile_transcript_status_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
-    payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
+    payload = transcript_list_item_response(db, transcript).model_dump()
     payload["current_draft_text_encrypted"] = transcript_draft_text_service(db, transcript=transcript)
     payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
     if latest_job is not None:
@@ -524,7 +543,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     available_templates = workspace.get("available_templates") or []
     available_quick_actions = workspace.get("available_quick_actions") or []
     return TranscribeWorkspaceDetail(
-        recent_transcripts=[TranscriptListItem.model_validate(transcript, from_attributes=True) for transcript in recent_transcripts],
+        recent_transcripts=[transcript_list_item_response(db, transcript) for transcript in recent_transcripts],
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
         post_consultation_dictation=(
             dictation_detail_response(db, dictation=post_consultation_dictation)
@@ -604,6 +623,12 @@ def render_transcribe(
         workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
+    recent_transcripts = workspace.get("recent_transcripts") or []
+    workspace["recent_transcripts"] = [
+        transcript_list_item_response(db, transcript)
+        for transcript in recent_transcripts
+        if isinstance(transcript, Transcript)
+    ]
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     if post_consultation_dictation is not None:
         workspace["post_consultation_dictation"] = dictation_detail_response(db, dictation=post_consultation_dictation)

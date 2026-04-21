@@ -2425,6 +2425,80 @@ def test_user_transcribe_page_can_bulk_delete_selected_sessions(client, db_sessi
     assert db_session.get(Transcript, delete_two.id) is None
 
 
+def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Delete Confirmation")
+    member = make_user(email="member-delete-confirm@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    empty = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Empty session",
+        current_draft_text_encrypted="   ",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    draft = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Draft session",
+        current_draft_text_encrypted="Private transcript detail",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    version_only = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Saved session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    blank_version_only = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Blank saved session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add_all([empty, draft, version_only, blank_version_only])
+    db_session.commit()
+    db_session.add_all([
+        TranscriptVersion(
+            transcript_id=version_only.id,
+            version_no=1,
+            text_encrypted="Saved transcript text",
+        ),
+        TranscriptVersion(
+            transcript_id=blank_version_only.id,
+            version_no=1,
+            text_encrypted="   ",
+        ),
+    ])
+    db_session.commit()
+
+    client.post(
+        "/login",
+        data={"email": "member-delete-confirm@example.com", "password": "password-3"},
+        follow_redirects=False,
+    )
+    page = client.get(f"/transcribe?transcript_id={empty.id}")
+
+    assert page.status_code == 200
+    assert page.text.count('data-has-transcript-content="true"') == 2
+    assert page.text.count('data-has-transcript-content="false"') == 2
+    assert "Private transcript detail" not in page.text
+    assert "Saved transcript text" not in page.text
+
+
 def test_user_transcribe_upload_targets_active_session_when_selected(client, db_session, monkeypatch, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -2791,6 +2865,21 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "collectStructuredSectionLines" in structured_js
     assert "dom.generatedStructuredPanel.addEventListener('click'" in actions_js
     assert "navigator.clipboard.writeText(textToCopy);" in actions_js
+    assert "data-structured-copy-review-sentinel" in structured_js
+    assert "data-freeform-copy-review-sentinel" in structured_js
+    assert "noteCopyReviewBlocker" in structured_js
+    assert "const activeRenderedGeneratedDocumentId = () => (" in structured_js
+    assert "generatedStructuredDraft?.documentId" in structured_js
+    assert "element.closest('[hidden]') || element.getClientRects().length === 0" in structured_js
+    assert "entry.isIntersecting && visibleBottomReached(entry.target)" in structured_js
+    assert "window.requestAnimationFrame(() => observeCopyReviewTargets())" in structured_js
+    assert "copyReviewObservationReady = false;" in structured_js
+    assert "if (!copyReviewObservationReady) return;" in structured_js
+    assert "const viewedThroughIndex = sections.indexOf(section);" in structured_js
+    assert "button.dataset.copyReviewBlocked = blocked ? 'true' : 'false';" in structured_js
+    assert "dom.copyStructuredLinesButton.dataset.copyReviewBlocked = blocked ? 'true' : 'false';" in structured_js
+    assert "showFlash(copyReviewBlocker, 'error');" in actions_js
+    assert "data-copy-review-status" in workspace_html
     assert "const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);" in structured_js
     assert "const templatePickerButton = document.querySelector('[data-template-picker-button]');" in app_js
     assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
@@ -2816,6 +2905,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const noteDeleteButton = document.querySelector('[data-note-delete]');" in app_js
     assert "dom.noteDeleteButton?.addEventListener('click'" in actions_js
     assert "Delete this note permanently?" in actions_js
+    assert "This consultation has transcript text. Delete it permanently?" in actions_js
+    assert "One or more selected consultations have transcript text. Delete them permanently?" in actions_js
+    assert "checkbox.dataset.hasTranscriptContent" in app_js
     assert "Could not delete the note." in actions_js
     assert "const buildNoteSavePayload = () => {" in app_js
     assert "method: 'PATCH'" in app_js

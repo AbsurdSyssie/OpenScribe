@@ -67,6 +67,7 @@ What it does:
 - the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
+- generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
 
 ## Main.py refactor guardrails
 
@@ -210,6 +211,7 @@ What it does:
 - `/transcribe` header-only audio controls still exposing the upload form hook, the large editable session title control, and the split `New consultation` mode chooser
 - owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
+- owner transcription workspace marking non-empty transcript sessions for client-side delete confirmation without rendering transcript text in the session rail
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active
@@ -270,6 +272,7 @@ What it does:
 - home tabs initializing after the navigation moved above the tab shell
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace
+- transcribe session delete confirmation marking only meaningful transcript draft/version text as content
 - MFA challenge page and remember-browser option for completed users
 - login form rate-limiting returning `429`
 - login form rate-limiting returning a generic wait-and-retry page

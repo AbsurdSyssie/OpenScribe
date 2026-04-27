@@ -58,9 +58,12 @@ Browser navigation behavior:
 - `DELETE /api/v1/transcripts/{transcript_id}`
 - `GET /api/v1/transcripts/{transcript_id}`
 - `POST /api/v1/transcripts/{transcript_id}/commit`
+- `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture`
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/manual-pii`
+- `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}`
 - `GET /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
 - `PATCH /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
 - `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
@@ -124,6 +127,7 @@ Browser navigation behavior:
 
 - `GET /api/v1/deidentification-providers`
 - `POST /api/v1/deidentification-providers`
+- `POST /api/v1/deidentification-providers/inspect`
 - `DELETE /api/v1/deidentification-providers/{provider_id}`
 - `GET /api/v1/deidentification-provider-assignments`
 - `POST /api/v1/deidentification-provider-assignments`
@@ -134,6 +138,12 @@ Browser navigation behavior:
 - `DELETE /api/v1/deidentification-selection`
 - built-in native provider remains selectable for every team by default
 - external providers require explicit admin assignment before team selection
+- inspect can load `/docs`, `/redoc`, or OpenAPI JSON paths to infer detect path, request text/language fields, extra body defaults, and response entity fields before saving
+- inspect separates `openapi_path` (docs/schema discovery, not saved for runtime) from `detect_path` (selected POST endpoint saved and used for runtime redaction)
+- after docs discovery, callers may pass `openapi_path` plus a selected `detect_path` from `candidate_paths` to infer and ping that specific endpoint contract
+- inspect pings against a concrete or inferred detect path use caller-supplied synthetic sample text only and return parsed entity spans plus the raw provider JSON response for admin testing
+- raw inspect responses are for synthetic provider tests only; runtime redaction does not expose provider responses or transcript-derived content in admin routes
+- runtime generic REST parsing accepts either offset entities (`start`, `end`, label/type, optional score) or value-only entities with detected text plus label; value-only entities are matched back into the submitted source text to derive offsets
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ## Error envelope
@@ -461,7 +471,19 @@ Current transcript-start behavior:
 - `PATCH /api/v1/transcripts/{transcript_id}` currently supports owner-only title updates
 - `PATCH /api/v1/transcripts/{transcript_id}` also supports owner-only `ingestion_mode` switching between `whole_file` and `live_chunked`
 - mode switching is allowed only while the session is still blank and idle
-- `DELETE /api/v1/transcripts/{transcript_id}` hard-deletes the owner transcript root immediately and cascades to transcript versions and ingestion jobs
+- `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture` is owner-only and valid only for `live_chunked` transcripts:
+  - moves an active live transcript out of `recording`
+  - applies completed chunks in sequence
+  - returns `transcribing` without creating a redaction run if chunks are still queued or processing
+  - creates or reuses a transcript version and owner-scoped redaction run once the final draft is `ready`
+- `DELETE /api/v1/transcripts/{transcript_id}` hard-deletes the owner transcript root immediately and cascades to transcript versions, ingestion jobs, generated documents, post-consultation dictation, redaction runs, and manual PII rows
+- `POST /api/v1/transcripts/{transcript_id}/manual-pii` lets the owning user persist a missed PII item for transcript review/highlighting:
+  - JSON body: `entity_type`, `value`, optional `occurrence_count`
+  - response: owner-only PII row with `id`, `entity_type`, plaintext `value`, `placeholder = "Manual"`, `occurrence_count`, and `source = "manual"`
+  - stored value is encrypted with the owner content DEK
+  - duplicate type/value rows for the same transcript return/update the existing row rather than creating another
+  - saved manual PII is also applied as an outbound redaction layer for LLM generation and added to the PHI placeholder index for output validation/reidentification
+- `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}` hard-deletes one owner-created manual PII row
 - system-admin accounts are blocked from owning transcript content
 - `ingestion_mode` is persisted on the transcript root and currently supports:
   - `whole_file`
@@ -545,6 +567,8 @@ Current whole-file ingestion behavior:
 - `GET /api/v1/transcribe/workspace` now exposes the owner-facing read model for the `/transcribe` page:
   - `recent_transcripts`
   - `active_transcript`
+  - `active_transcript_pii_entities`
+  - `active_transcript_redaction_status` with latest owner-visible redaction status, entity count, and safe error code
   - `generated_documents`
   - `available_templates`
   - `available_quick_actions`
@@ -564,6 +588,8 @@ Current whole-file ingestion behavior:
   - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
   - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
+  - exposes `active_transcript_pii_entities` as owner-only detected PII rows from the latest successful redaction run plus owner-created manual PII rows for the active transcript
+  - includes note-level `generated_documents[].pii_entities` so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
   - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected

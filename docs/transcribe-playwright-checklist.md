@@ -74,6 +74,7 @@ Recommended seeded account:
 - verify:
   - structured sections render
   - line checkboxes render
+  - the note selection controls sit in the note header action row beside `Create`
   - `Copy selected lines` copies only checked lines
   - `Clear selection` unchecks all lines
 

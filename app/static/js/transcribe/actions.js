@@ -41,6 +41,12 @@ export function attachTranscribeActions({
     selectDocumentFromUi('note', button.dataset.documentId || '');
   });
 
+  dom.noteHistory?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-document-id]');
+    if (!button) return;
+    selectDocumentFromUi('note', button.dataset.documentId || '');
+  });
+
   dom.followupSelector?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-document-id]');
     if (!button) return;

@@ -16,7 +16,7 @@ Add a first transcript capture flow with:
 - client-side chunking with VAD
 - backend forwarding of audio chunks to the team transcription endpoint
 - backend-owned draft text updates into `transcripts.current_draft_text_encrypted`
-- transcript draft text, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document section text, follow-up prompt text, redaction output text, and redaction entity values encrypted at rest before Postgres persistence
+- transcript draft text, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document section text, follow-up prompt text, redaction output text, detected redaction entity values, and owner-entered manual PII values encrypted at rest before Postgres persistence
 - existing commit/version behavior preserved
 
 Longer-term capture modes to support on the same foundation:
@@ -81,6 +81,8 @@ Characteristics:
 - client-side VAD prunes silence
 - pauses in speech and a configured max chunk length trigger chunk submission
 - backend updates the current transcript draft incrementally
+- stopping live capture calls a server-side finalize step that applies completed chunks, moves the transcript out of `recording`, and creates/reuses a version-linked redaction run once no chunks remain pending
+- if queued or processing chunks still exist, finalize leaves the transcript `transcribing`; completion/reconciliation creates the redaction preview once the transcript becomes `ready`
 - this is the first live-oriented mode we expect to implement
 
 ## Shared backend foundation
@@ -256,6 +258,8 @@ Implemented now for manual browser testing:
 - the transcribe page now keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates can arrive without constant request polling when the stream is healthy
 - if SSE is unavailable or disconnected, fallback polling is now limited to active live-recording/restart windows instead of continuing for the broader workspace
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
+- the transcript history pane now shows owner-visible detected PII from the latest successful redaction run in a bounded right-side table beside the transcript text
+- the browser highlights matching PII values in the transcript and lets the owner add/remove missed PII values that persist as owner-only encrypted transcript children
 - the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
 - failed whole-file STT attempts now expose a retry control in the workspace when stored retry audio is still available and the team still has a usable STT selection
 - failed live chunks no longer permanently block later successful chunks; the owner workspace reconciles completed live chunks past failed sequence gaps as soon as later results exist

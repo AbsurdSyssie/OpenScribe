@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
@@ -268,6 +269,7 @@ class User(Base):
         foreign_keys="QuickAction.created_by_user_id",
     )
     generated_documents: Mapped[list["GeneratedDocument"]] = relationship(back_populates="owner")
+    manual_pii_entities: Mapped[list["TranscriptManualPiiEntity"]] = relationship(back_populates="owner")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="owner")
     encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
@@ -496,7 +498,7 @@ class DeidentificationProvider(Base):
     request_text_field: Mapped[str] = mapped_column(String(255), default="text", nullable=False)
     request_language_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     extra_headers_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
-    extra_body_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    extra_body_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     response_entities_path: Mapped[str] = mapped_column(String(255), default="entities", nullable=False)
     response_start_field: Mapped[str] = mapped_column(String(255), default="start", nullable=False)
     response_end_field: Mapped[str] = mapped_column(String(255), default="end", nullable=False)
@@ -791,6 +793,11 @@ class Transcript(Base):
         back_populates="transcript",
         cascade="all, delete-orphan",
     )
+    manual_pii_entities: Mapped[list["TranscriptManualPiiEntity"]] = relationship(
+        back_populates="transcript",
+        cascade="all, delete-orphan",
+        order_by="TranscriptManualPiiEntity.created_at.asc()",
+    )
     ingestion_jobs: Mapped[list["TranscriptIngestionJob"]] = relationship(
         back_populates="transcript",
         cascade="all, delete-orphan",
@@ -928,6 +935,33 @@ class RedactionEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     redaction_run: Mapped[RedactionRun] = relationship(back_populates="entities")
+
+
+class TranscriptManualPiiEntity(Base):
+    __tablename__ = "transcript_manual_pii_entities"
+    __table_args__ = (
+        UniqueConstraint("transcript_id", "entity_type", "normalized_value_hash", name="uq_transcript_manual_pii_entity_value"),
+        CheckConstraint("occurrence_count > 0", name="ck_transcript_manual_pii_occurrence_count_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transcripts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_value_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="manual_pii_entities")
+    owner: Mapped[User] = relationship(back_populates="manual_pii_entities")
+    team: Mapped[Team] = relationship()
 
 
 class TranscriptIngestionJob(Base):

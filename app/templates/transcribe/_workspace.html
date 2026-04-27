@@ -209,6 +209,18 @@ aria-expanded="false">
 {% endif %}
 </div>
 <div class="note-header-right">
+<div
+class="note-editor-toolbar note-editor-toolbar--header"
+data-note-editor-toolbar
+data-note-editor-header-toolbar
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted)) %}hidden{% endif %}>
+<span class="note-editor-toolbar__status text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite">Select the note lines you want to copy.</span>
+<div class="note-editor-toolbar__actions flex items-center gap-2">
+<button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
+<button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
+<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy selected</button>
+</div>
+</div>
 <form method="post" action="/transcribe/generate-output" data-generate-output-form class="inline-form">
 {% if active_transcript %}
 <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
@@ -312,18 +324,6 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 <div class="empty-state__text">Add note lines here as the consultation unfolds.</div>
 </div>
 {% endif %}
-</div>
-
-<div
-class="note-editor-toolbar"
-data-note-editor-toolbar
-{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted)) %}hidden{% endif %}>
-<span class="text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite">Select the note lines you want to copy.</span>
-<div class="flex items-center gap-2">
-<button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
-<button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
-<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy Selected</button>
-</div>
 </div>
 
 <div class="template-picker-modal" data-template-picker-modal hidden>
@@ -648,14 +648,14 @@ Create
 <div class="flex items-center justify-between gap-4">
 <div class="min-w-0">
 <span class="text-sm font-medium text-ink">Consultation sources</span>
-<p class="text-xs text-slate mt-1">Transcript left. Post-consultation dictation right.</p>
+<p class="text-xs text-slate mt-1">Transcript, identified PII, and post-consultation dictation.</p>
 </div>
 <button type="button" class="btn-ghost-sm" data-copy-transcript>Copy transcript</button>
 </div>
 </div>
 <div class="structured-workspace__body">
-<div class="flex flex-col lg:flex-row h-full min-h-0 gap-0 border-t border-stone">
-<section class="flex-[3] min-w-0 flex flex-col border-r border-stone bg-white overflow-hidden">
+<div class="transcript-review-grid">
+<section class="transcript-review-grid__transcript">
 <div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
 {% if active_transcript and active_transcript.current_draft_text_encrypted %}
 {{ active_transcript.current_draft_text_encrypted }}
@@ -664,7 +664,68 @@ Create
 {% endif %}
 </div>
 </section>
-<section class="flex-[1.15] min-w-0 flex flex-col bg-white overflow-hidden">
+<aside class="pii-sidebar" data-pii-sidebar>
+<div class="pii-sidebar__header">
+<div>
+<div class="pii-sidebar__kicker">PII</div>
+<h3 class="pii-sidebar__title">Review items</h3>
+</div>
+<span class="pii-sidebar__count" data-pii-count>{{ active_transcript_pii_entities|length if active_transcript_pii_entities else 0 }}</span>
+</div>
+<form class="pii-add-form" data-pii-add-form>
+<label class="sr-only" for="pii-add-type">PII type</label>
+<input id="pii-add-type" type="text" class="pii-add-input pii-add-input--type" placeholder="Type" data-pii-add-type>
+<label class="sr-only" for="pii-add-value">PII value</label>
+<input id="pii-add-value" type="text" class="pii-add-input" placeholder="Add missed PII" data-pii-add-value>
+<button type="submit" class="pii-add-button" aria-label="Add PII">Add</button>
+</form>
+{% set redaction_status = active_transcript_redaction_status.status if active_transcript_redaction_status else 'not_run' %}
+{% set redaction_error_code = active_transcript_redaction_status.error_code if active_transcript_redaction_status else none %}
+<div class="pii-status{% if redaction_status == 'failed' %} pii-status--error{% endif %}" data-pii-status>
+{% if redaction_status == 'succeeded' %}
+Redaction check complete.
+{% elif redaction_status == 'failed' %}
+Redaction check failed{% if redaction_error_code %}: {{ redaction_error_code }}{% endif %}.
+{% else %}
+Redaction check has not run for this transcript yet.
+{% endif %}
+</div>
+<div class="pii-sidebar__body" data-pii-table-wrap>
+{% if active_transcript_pii_entities %}
+<table class="pii-table">
+<thead>
+<tr>
+<th scope="col">Type</th>
+<th scope="col">Value</th>
+<th scope="col">Count</th>
+</tr>
+</thead>
+<tbody data-pii-table-body>
+{% for entity in active_transcript_pii_entities %}
+<tr>
+<td><span class="pii-type">{{ entity.entity_type|replace('_', ' ') }}</span></td>
+<td>
+<span class="pii-value">{{ entity.value }}</span>
+<span class="pii-placeholder">{{ entity.placeholder }}</span>
+</td>
+<td class="pii-count-cell">
+<span>{{ entity.occurrence_count }}</span>
+{% if entity.source == 'manual' and entity.id %}
+<button type="button" class="pii-row-delete" data-pii-delete="{{ entity.id }}" aria-label="Remove manual PII">
+<i class="w-3.5 h-3.5" data-lucide="trash-2"></i>
+</button>
+{% endif %}
+</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<div class="pii-empty" data-pii-empty>{% if redaction_status == 'succeeded' %}No PII identified in the latest redaction check.{% elif redaction_status == 'failed' %}Redaction check failed. You can add missed PII manually before generating notes.{% else %}No PII identified yet. Finish capture or save the transcript to run redaction.{% endif %}</div>
+{% endif %}
+</div>
+</aside>
+<section class="transcript-review-grid__dictation">
 <div class="flex-1 overflow-y-auto p-0">
 <div class="border-b border-stone px-3 py-3 space-y-3">
 <div class="flex flex-wrap items-center gap-2">

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from ..errors import AppError
 from ..models import (
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
     GeneratedDocument,
     LlmAdapterKind,
     PromptTemplate,
@@ -23,12 +25,14 @@ from ..models import (
     UserStatus,
 )
 from ..schemas import (
+    DeidentificationInspectResult,
     DeidentificationProviderAssignmentDetail,
     DeidentificationProviderDetail,
     DeidentificationSelectionDetail,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
     GeneratedDocumentDetail,
+    GeneratedDocumentPiiEntityDetail,
     GeneratedDocumentRedactionDebugDetail,
     GeneratedDocumentSectionDetail,
     LlmConfigDetail,
@@ -65,7 +69,10 @@ from ..services.deidentification import (
     list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
     list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
 )
-from ..services.redaction import redaction_run_text as redaction_run_text_service
+from ..services.redaction import (
+    redaction_entity_original_value as redaction_entity_original_value_service,
+    redaction_run_text as redaction_run_text_service,
+)
 from ..services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
     get_team_stt_selection as get_team_stt_selection_service,
@@ -359,6 +366,16 @@ def generated_document_response(db: Session, document: GeneratedDocument) -> Gen
         )
         for section in getattr(document, "sections", [])
     ]
+    redaction_run = document.redaction_run
+    payload["pii_entities"] = [
+        GeneratedDocumentPiiEntityDetail(
+            entity_type=entity.entity_type,
+            value=redaction_entity_original_value_service(db, entity=entity),
+            placeholder=entity.placeholder,
+            occurrence_count=entity.occurrence_count,
+        ).model_dump()
+        for entity in sorted(getattr(redaction_run, "entities", []) or [], key=lambda item: item.entity_order)
+    ] if redaction_run is not None else []
     return GeneratedDocumentDetail.model_validate(payload)
 
 
@@ -495,6 +512,58 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
     }
 
 
+def deidentification_form_defaults(provider) -> dict[str, object]:
+    if provider is not None:
+        return {
+            "provider_id": str(provider.id),
+            "label": provider.label,
+            "adapter_kind": provider.adapter_kind.value,
+            "base_url": provider.base_url,
+            "detect_path": provider.detect_path,
+            "openapi_path": "",
+            "auth_mode": provider.auth_mode.value,
+            "request_text_field": provider.request_text_field,
+            "request_language_field": provider.request_language_field or "",
+            "extra_headers_json": json.dumps(provider.extra_headers_json) if provider.extra_headers_json else "",
+            "extra_body_json": json.dumps(provider.extra_body_json) if provider.extra_body_json else "",
+            "response_entities_path": provider.response_entities_path,
+            "response_start_field": provider.response_start_field,
+            "response_end_field": provider.response_end_field,
+            "response_type_field": provider.response_type_field,
+            "response_score_field": provider.response_score_field or "",
+            "response_model_version_path": provider.response_model_version_path or "",
+            "entity_type_map_json": json.dumps(provider.entity_type_map_json) if provider.entity_type_map_json else "",
+            "sample_text": "Jane Smith attended on 22 April 2026.",
+            "is_active": provider.is_active,
+            "preserved_bearer_token": "",
+            "candidate_paths": [],
+        }
+    return {
+        "provider_id": "",
+        "label": "",
+        "adapter_kind": DeidentificationAdapterKind.generic_rest.value,
+        "base_url": "",
+        "detect_path": "/detect",
+        "openapi_path": "",
+        "auth_mode": DeidentificationAuthMode.none.value,
+        "request_text_field": "text",
+        "request_language_field": "",
+        "extra_headers_json": "",
+        "extra_body_json": "",
+        "response_entities_path": "entities",
+        "response_start_field": "start",
+        "response_end_field": "end",
+        "response_type_field": "entity_type",
+        "response_score_field": "",
+        "response_model_version_path": "",
+        "entity_type_map_json": "",
+        "sample_text": "Jane Smith attended on 22 April 2026.",
+        "is_active": True,
+        "preserved_bearer_token": "",
+        "candidate_paths": [],
+    }
+
+
 def render_auth_page(
     request,
     db: Session,
@@ -534,6 +603,7 @@ def render_admin(
     selected_team_id: str | None = None,
     selected_stt_config_id: str | None = None,
     selected_llm_config_id: str | None = None,
+    selected_deidentification_provider_id: str | None = None,
     selected_default_template_id: str | None = None,
     selected_default_quick_action_id: str | None = None,
     stt_inspection: SttInspectResult | None = None,
@@ -541,6 +611,8 @@ def render_admin(
     stt_test_result: dict[str, object] | None = None,
     llm_inspection: LlmConfigInspectResult | None = None,
     llm_form_override: dict[str, object] | None = None,
+    deidentification_inspection: DeidentificationInspectResult | None = None,
+    deidentification_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
@@ -566,6 +638,15 @@ def render_admin(
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    deidentification_providers = list_deidentification_providers_service(db, current_user)
+    edit_deidentification_provider = next(
+        (provider for provider in deidentification_providers if str(provider.id) == selected_deidentification_provider_id),
+        None,
+    )
+    deidentification_assignments = (
+        list_team_deidentification_provider_assignments_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+    )
+    deidentification_selection = get_team_deidentification_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     default_templates = list_default_templates_service(db, current_user)
     default_quick_actions = list_default_quick_actions_service(db, current_user)
     selected_default_template = next((template for template in default_templates if str(template.id) == selected_default_template_id), None)
@@ -596,6 +677,7 @@ def render_admin(
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
         "selected_llm_config_id": selected_llm_config_id,
+        "selected_deidentification_provider_id": selected_deidentification_provider_id,
         "selected_default_template_id": selected_default_template_id,
         "selected_default_quick_action_id": selected_default_quick_action_id,
         "stt_configs": stt_configs,
@@ -612,6 +694,15 @@ def render_admin(
         "llm_inspection": llm_inspection,
         "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),
         "selectable_llm_configs": list_selectable_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
+        "deidentification_providers": deidentification_providers,
+        "deidentification_provider": edit_deidentification_provider,
+        "deidentification_inspection": deidentification_inspection,
+        "deidentification_form": deidentification_form_override or deidentification_form_defaults(edit_deidentification_provider),
+        "deidentification_assignments": deidentification_assignments,
+        "deidentification_selection": deidentification_selection,
+        "selectable_deidentification_providers": (
+            list_selectable_deidentification_providers_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+        ),
         "default_templates": default_templates,
         "default_template": selected_default_template,
         "default_template_latest_version": default_template_latest_version,
@@ -651,6 +742,7 @@ def admin_redirect_url(
     team_id: str | None = None,
     stt_config_id: str | None = None,
     llm_config_id: str | None = None,
+    deidentification_provider_id: str | None = None,
 ) -> str:
     base = admin_page_route_from_return_view(return_view)
     params: dict[str, str] = {}
@@ -660,6 +752,8 @@ def admin_redirect_url(
         params["stt_config_id"] = stt_config_id
     if llm_config_id:
         params["llm_config_id"] = llm_config_id
+    if deidentification_provider_id:
+        params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
         params["tab"] = return_tab
     return f"{base}?{urlencode(params)}" if params else base
@@ -718,6 +812,13 @@ def render_home(
         except AppError:
             llm_selection = get_team_llm_selection_service(db, current_user) if is_manager else None
     selectable_llm_configs = list_selectable_llm_configs_service(db, current_user) if is_manager else []
+    deidentification_selection = None
+    if current_user.team_id is not None:
+        try:
+            deidentification_selection = get_team_deidentification_selection_service(db, current_user)
+        except AppError:
+            deidentification_selection = None
+    selectable_deidentification_providers = list_selectable_deidentification_providers_service(db, current_user) if is_manager else []
     user_llm_preference = None
     resolved_user_llm_model = None
     if not current_user.is_system_admin and current_user.team_id is not None:
@@ -771,6 +872,7 @@ def render_home(
         "team-quick-action",
         "stt-settings",
         "llm-settings",
+        "deidentification-settings",
     }
     resolved_home_modal = active_home_modal if active_home_modal in allowed_home_modals else None
 
@@ -785,6 +887,8 @@ def render_home(
         "selectable_stt_configs": selectable_stt_configs,
         "llm_selection": llm_selection,
         "selectable_llm_configs": selectable_llm_configs,
+        "deidentification_selection": deidentification_selection,
+        "selectable_deidentification_providers": selectable_deidentification_providers,
         "user_llm_preference": user_llm_preference,
         "resolved_user_llm_model": resolved_user_llm_model,
         "team_leader_email": team_leader_email,
@@ -944,3 +1048,30 @@ def parse_extra_form_fields_json(raw_value: str) -> dict[str, str]:
     for key, value in parsed.items():
         cleaned[str(key)] = str(value)
     return cleaned
+
+
+def parse_string_map_json(raw_value: str, *, field_name: str, label: str) -> dict[str, str]:
+    if not raw_value.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise AppError(422, "business_rule_violation", f"{label} must be valid JSON", {"field": field_name}) from exc
+    if not isinstance(parsed, dict):
+        raise AppError(422, "business_rule_violation", f"{label} must be a JSON object", {"field": field_name})
+    cleaned: dict[str, str] = {}
+    for key, value in parsed.items():
+        cleaned[str(key)] = str(value)
+    return cleaned
+
+
+def parse_json_object(raw_value: str, *, field_name: str, label: str) -> dict[str, object]:
+    if not raw_value.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise AppError(422, "business_rule_violation", f"{label} must be valid JSON", {"field": field_name}) from exc
+    if not isinstance(parsed, dict):
+        raise AppError(422, "business_rule_violation", f"{label} must be a JSON object", {"field": field_name})
+    return {str(key): value for key, value in parsed.items()}

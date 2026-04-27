@@ -1,10 +1,10 @@
-import { attachTranscribeActions } from './actions.js';
-import { readTranscribeBootstrap } from './bootstrap.js';
-import { createDocumentNavigator } from './documents.js';
-import { createTranscribeLayout } from './layout.js';
-import { createAudioCaptureController } from './media.js';
-import { createStructuredEditor } from './structured.js';
-import { createGuidedTour } from './tour.js';
+import { attachTranscribeActions } from './actions.js?v=20260421-pii-refresh';
+import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
+import { createDocumentNavigator } from './documents.js?v=20260421-pii-refresh';
+import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
+import { createAudioCaptureController } from './media.js?v=20260421-pii-refresh';
+import { createStructuredEditor } from './structured.js?v=20260421-pii-refresh';
+import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -50,6 +50,10 @@ import { createGuidedTour } from './tour.js';
       let dictationSaveInFlight = null;
       let dictationSaveQueued = false;
       let lastSavedDictationText = '';
+      let currentDraftText = '';
+      let currentPiiEntities = [];
+      let workspaceTranscriptPiiEntities = Array.isArray(bootstrap.activeTranscriptPiiEntities) ? [...bootstrap.activeTranscriptPiiEntities] : [];
+      let workspaceRedactionStatus = bootstrap.activeTranscriptRedactionStatus || { status: 'not_run', entity_count: 0, error_code: null };
       const showRedactionDebug = bootstrap.showRedactionDebug;
       const initialTranscriptErrorMessage = bootstrap.initialTranscriptErrorMessage;
 
@@ -60,6 +64,12 @@ import { createGuidedTour } from './tour.js';
       const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
       const activeDraft = document.querySelector('[data-active-draft]');
       const transcriptStats = document.querySelector('[data-transcript-stats]');
+      const piiCount = document.querySelector('[data-pii-count]');
+      const piiStatus = document.querySelector('[data-pii-status]');
+      const piiTableWrap = document.querySelector('[data-pii-table-wrap]');
+      const piiAddForm = document.querySelector('[data-pii-add-form]');
+      const piiAddTypeInput = document.querySelector('[data-pii-add-type]');
+      const piiAddValueInput = document.querySelector('[data-pii-add-value]');
       const activeProgress = document.querySelector('[data-session-progress]');
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
@@ -704,6 +714,7 @@ import { createGuidedTour } from './tour.js';
       };
 
       const readActiveDraftText = () => {
+        if (currentDraftText) return currentDraftText;
         if (!activeDraft) return '';
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
           return activeDraft.value || '';
@@ -711,20 +722,62 @@ import { createGuidedTour } from './tour.js';
         return activeDraft.textContent || '';
       };
 
+      const uniquePiiEntities = (entities = []) => {
+        const seen = new Set();
+        return (Array.isArray(entities) ? entities : [])
+          .map((entity) => ({
+            entity_type: String(entity?.entity_type || 'PII').trim() || 'PII',
+            value: String(entity?.value || '').trim(),
+            placeholder: String(entity?.placeholder || '').trim(),
+            occurrence_count: Number.parseInt(entity?.occurrence_count ?? 1, 10) || 1,
+            source: entity?.source || 'detected',
+            id: entity?.id || null,
+          }))
+          .filter((entity) => entity.value.length > 0)
+          .filter((entity) => {
+            const key = `${entity.entity_type.toLowerCase()}\u0000${entity.value.toLowerCase()}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+      };
+
+      const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      const renderHighlightedTranscript = (text, entities = []) => {
+        if (!activeDraft) return;
+        if (!text.trim()) {
+          activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
+          return;
+        }
+        const values = [...new Set(uniquePiiEntities(entities).map((entity) => entity.value))]
+          .sort((left, right) => right.length - left.length);
+        if (values.length === 0) {
+          activeDraft.textContent = text;
+          return;
+        }
+        const pattern = new RegExp(`(${values.map(escapeRegExp).join('|')})`, 'gi');
+        activeDraft.innerHTML = text
+          .split(pattern)
+          .map((part) => (
+            values.some((value) => value.toLowerCase() === part.toLowerCase())
+              ? `<mark class="pii-highlight">${escapeHtml(part)}</mark>`
+              : escapeHtml(part)
+          ))
+          .join('');
+      };
+
       const renderDraft = (text) => {
         if (!activeDraft) return;
         const nextText = text || '';
+        currentDraftText = nextText;
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
           activeDraft.value = nextText;
           activeDraft.placeholder = 'No transcript text yet. Upload a recording or use the microphone to begin.';
           renderTranscriptStats(nextText);
           return;
         }
-        if (nextText.trim()) {
-          activeDraft.textContent = nextText;
-        } else {
-          activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
-        }
+        renderHighlightedTranscript(nextText, currentPiiEntities);
         renderTranscriptStats(nextText);
       };
 
@@ -988,6 +1041,18 @@ import { createGuidedTour } from './tour.js';
         },
         getDefaultMicStatusState: defaultMicStatusState,
         syncTranscriptTitleIfNeeded,
+        finalizeLiveCapture: async () => {
+          if (!transcriptId) return null;
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
+            method: 'POST',
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not finalize live capture.'));
+          }
+          await fetchWorkspace();
+          return response.json();
+        },
         fetchWorkspace,
         pollWorkspace,
         scheduleWorkspaceRefreshBurst,
@@ -1055,6 +1120,7 @@ import { createGuidedTour } from './tour.js';
         setNextLiveChunkSequenceNo: () => {},
         getDefaultMicStatusState: defaultDictationMicStatusState,
         syncTranscriptTitleIfNeeded: async () => {},
+        finalizeLiveCapture: async () => null,
         fetchWorkspace,
         pollWorkspace,
         scheduleWorkspaceRefreshBurst,
@@ -1169,7 +1235,7 @@ import { createGuidedTour } from './tour.js';
         if (!slot) return;
         slot.innerHTML = '';
         if (!showRedactionDebug || !document) return;
-        const wrapper = document.createElement('details');
+        const wrapper = window.document.createElement('details');
         wrapper.className = 'border border-stone bg-parchment/40 p-3';
         wrapper.setAttribute('data-redaction-debug-panel', '');
         wrapper.dataset.generatedDocumentId = document.id;
@@ -1194,6 +1260,132 @@ import { createGuidedTour } from './tour.js';
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&#39;');
       };
+
+      const renderPiiEntities = (entities = [], options = {}) => {
+        if (!piiCount || !piiTableWrap) return;
+        const rawBaseEntities = Array.isArray(entities) ? entities : [];
+        const baseEntities = rawBaseEntities.length === 0 && options.useWorkspaceWhenEmpty
+          ? workspaceTranscriptPiiEntities
+          : rawBaseEntities;
+        const manualWorkspaceEntities = options.includeWorkspaceManual === false
+          ? []
+          : workspaceTranscriptPiiEntities.filter((entity) => entity.source === 'manual');
+        const rows = uniquePiiEntities([...baseEntities, ...manualWorkspaceEntities]);
+        currentPiiEntities = rows;
+        renderHighlightedTranscript(currentDraftText || readActiveDraftText(), rows);
+        piiCount.textContent = String(rows.length);
+        const redactionStatus = workspaceRedactionStatus?.status || 'not_run';
+        if (piiStatus) {
+          piiStatus.classList.toggle('pii-status--error', redactionStatus === 'failed');
+          if (redactionStatus === 'succeeded') {
+            piiStatus.textContent = 'Redaction check complete.';
+          } else if (redactionStatus === 'failed') {
+            const errorCode = workspaceRedactionStatus?.error_code;
+            piiStatus.textContent = `Redaction check failed${errorCode ? `: ${errorCode}` : ''}.`;
+          } else {
+            piiStatus.textContent = 'Redaction check has not run for this transcript yet.';
+          }
+        }
+        if (rows.length === 0) {
+          const emptyText = redactionStatus === 'succeeded'
+            ? 'No PII identified in the latest redaction check.'
+            : (redactionStatus === 'failed'
+              ? 'Redaction check failed. You can add missed PII manually before generating notes.'
+              : 'No PII identified yet. Finish capture or save the transcript to run redaction.');
+          piiTableWrap.innerHTML = `<div class="pii-empty" data-pii-empty>${escapeHtml(emptyText)}</div>`;
+          return;
+        }
+        piiTableWrap.innerHTML = `
+          <table class="pii-table">
+            <thead>
+              <tr>
+                <th scope="col">Type</th>
+                <th scope="col">Value</th>
+                <th scope="col">Count</th>
+              </tr>
+            </thead>
+            <tbody data-pii-table-body>
+              ${rows.map((entity) => `
+                <tr data-pii-source="${escapeHtml(entity.source || '')}" data-pii-entity-id="${escapeHtml(entity.id || '')}">
+                  <td><span class="pii-type">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
+                  <td>
+                    <span class="pii-value">${escapeHtml(entity.value || '')}</span>
+                    <span class="pii-placeholder">${escapeHtml(entity.placeholder || (entity.source === 'manual' ? 'Manual' : ''))}</span>
+                  </td>
+                  <td class="pii-count-cell">
+                    <span>${escapeHtml(entity.occurrence_count ?? 0)}</span>
+                    ${entity.source === 'manual' && entity.id ? `
+                      <button type="button" class="pii-row-delete" data-pii-delete="${escapeHtml(entity.id)}" aria-label="Remove manual PII">
+                        <i class="w-3.5 h-3.5" data-lucide="trash-2"></i>
+                      </button>
+                    ` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+        refreshIcons(piiTableWrap);
+      };
+
+      piiAddForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!transcriptId) {
+          showFlash('Open consultation before adding PII.', 'error');
+          return;
+        }
+        const value = String(piiAddValueInput?.value || '').trim();
+        if (!value) return;
+        const submitButton = piiAddForm.querySelector('button[type="submit"]');
+        if (submitButton) submitButton.disabled = true;
+        try {
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              entity_type: String(piiAddTypeInput?.value || 'PII').trim() || 'PII',
+              value,
+              occurrence_count: 1,
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not add PII.'));
+          }
+          const savedEntity = await response.json();
+          workspaceTranscriptPiiEntities = uniquePiiEntities([...workspaceTranscriptPiiEntities, savedEntity]);
+          if (piiAddValueInput) piiAddValueInput.value = '';
+          renderPiiEntities(currentPiiEntities);
+          void fetchWorkspace(transcriptId);
+        } catch (error) {
+          showFlash(error instanceof Error ? error.message : 'Could not add PII.', 'error');
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+
+      piiTableWrap?.addEventListener('click', async (event) => {
+        const trigger = event.target instanceof Element ? event.target.closest('[data-pii-delete]') : null;
+        if (!trigger || !transcriptId) return;
+        const entityId = trigger.dataset.piiDelete || '';
+        if (!entityId) return;
+        trigger.disabled = true;
+        try {
+          const response = await fetch(`/api/v1/transcripts/${transcriptId}/manual-pii/${entityId}`, {
+            method: 'DELETE',
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not remove PII.'));
+          }
+          workspaceTranscriptPiiEntities = workspaceTranscriptPiiEntities.filter((entity) => entity.id !== entityId);
+          renderPiiEntities(currentPiiEntities.filter((entity) => entity.id !== entityId));
+          void fetchWorkspace(transcriptId);
+        } catch (error) {
+          showFlash(error instanceof Error ? error.message : 'Could not remove PII.', 'error');
+          trigger.disabled = false;
+        }
+      });
 
       const {
         selectedDocumentFromList,
@@ -1221,6 +1413,7 @@ import { createGuidedTour } from './tour.js';
           escapeHtml,
           renderGeneratedOutput: (...args) => structuredEditor.renderGeneratedOutput(...args),
           renderFollowupOutput,
+          renderPiiEntities,
           renderRedactionDebugPanel,
           refreshIcons,
           setTab,
@@ -1359,8 +1552,9 @@ import { createGuidedTour } from './tour.js';
         const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
         const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
         const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
-
         transcriptId = transcript?.id || null;
+        workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
+        workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
         currentTranscriptStatus = transcript?.status || null;
         activeIngestionMode = transcript?.ingestion_mode || null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
@@ -1416,6 +1610,7 @@ import { createGuidedTour } from './tour.js';
         } else {
           currentTranscriptStatus = null;
           renderDraft('');
+          renderPiiEntities([]);
           syncGenerationAvailability('');
           if (sessionTitleDisplay) sessionTitleDisplay.value = '';
           if (renameTitleInput) renameTitleInput.value = '';

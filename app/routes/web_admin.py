@@ -16,6 +16,7 @@ def admin_page(
     team_id: str | None = None,
     stt_config_id: str | None = None,
     llm_config_id: str | None = None,
+    deidentification_provider_id: str | None = None,
     default_template_id: str | None = None,
     default_quick_action_id: str | None = None,
     tab: str | None = None,
@@ -33,6 +34,7 @@ def admin_page(
         selected_team_id=team_id,
         selected_stt_config_id=stt_config_id,
         selected_llm_config_id=llm_config_id,
+        selected_deidentification_provider_id=deidentification_provider_id,
         selected_default_template_id=default_template_id,
         selected_default_quick_action_id=default_quick_action_id,
         active_admin_tab=tab,
@@ -47,6 +49,7 @@ def admin_restyled_page(
     team_id: str | None = None,
     stt_config_id: str | None = None,
     llm_config_id: str | None = None,
+    deidentification_provider_id: str | None = None,
     default_template_id: str | None = None,
     default_quick_action_id: str | None = None,
     tab: str | None = None,
@@ -64,6 +67,7 @@ def admin_restyled_page(
         selected_team_id=team_id,
         selected_stt_config_id=stt_config_id,
         selected_llm_config_id=llm_config_id,
+        selected_deidentification_provider_id=deidentification_provider_id,
         selected_default_template_id=default_template_id,
         selected_default_quick_action_id=default_quick_action_id,
         active_admin_tab=tab,
@@ -1035,6 +1039,445 @@ def admin_clear_llm_selection(
         clear_team_llm_selection_service(db, context.user, team_id=UUID(team_id))
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-providers/inspect", response_class=HTMLResponse)
+def admin_inspect_deidentification_provider(
+    request: Request,
+    team_id: str = Form(""),
+    provider_id: str = Form(""),
+    label: str = Form(...),
+    adapter_kind: str = Form(DeidentificationAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    detect_path: str = Form(""),
+    openapi_path: str = Form(""),
+    auth_mode: str = Form(DeidentificationAuthMode.none.value),
+    bearer_token: str = Form(""),
+    request_text_field: str = Form("text"),
+    request_language_field: str = Form(""),
+    extra_headers_json: str = Form(""),
+    extra_body_json: str = Form(""),
+    response_entities_path: str = Form("entities"),
+    response_start_field: str = Form("start"),
+    response_end_field: str = Form("end"),
+    response_type_field: str = Form("entity_type"),
+    response_score_field: str = Form(""),
+    response_model_version_path: str = Form(""),
+    entity_type_map_json: str = Form(""),
+    sample_text: str = Form("Jane Smith attended on 22 April 2026."),
+    is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    resolved_bearer_token = bearer_token or None
+    form_override = {
+        "provider_id": provider_id,
+        "label": label,
+        "adapter_kind": adapter_kind,
+        "base_url": base_url,
+        "detect_path": detect_path,
+        "openapi_path": openapi_path,
+        "auth_mode": auth_mode,
+        "request_text_field": request_text_field,
+        "request_language_field": request_language_field,
+        "extra_headers_json": extra_headers_json,
+        "extra_body_json": extra_body_json,
+        "response_entities_path": response_entities_path,
+        "response_start_field": response_start_field,
+        "response_end_field": response_end_field,
+        "response_type_field": response_type_field,
+        "response_score_field": response_score_field,
+        "response_model_version_path": response_model_version_path,
+        "entity_type_map_json": entity_type_map_json,
+        "sample_text": sample_text,
+        "is_active": is_active == "true",
+        "preserved_bearer_token": "",
+    }
+    try:
+        inspection = inspect_deidentification_provider_service(
+            db,
+            context.user,
+            DeidentificationProviderInspectRequest(
+                provider_id=UUID(provider_id) if provider_id else None,
+                label=label,
+                adapter_kind=DeidentificationAdapterKind(adapter_kind),
+                base_url=base_url,
+                detect_path=detect_path,
+                openapi_path=openapi_path or None,
+                auth_mode=DeidentificationAuthMode(auth_mode),
+                bearer_token=resolved_bearer_token,
+                request_text_field=request_text_field,
+                request_language_field=request_language_field or None,
+                extra_headers_json=parse_string_map_json(extra_headers_json, field_name="extra_headers_json", label="Extra headers"),
+                extra_body_json=parse_json_object(extra_body_json, field_name="extra_body_json", label="Extra body fields"),
+                response_entities_path=response_entities_path,
+                response_start_field=response_start_field,
+                response_end_field=response_end_field,
+                response_type_field=response_type_field,
+                response_score_field=response_score_field or None,
+                response_model_version_path=response_model_version_path or None,
+                entity_type_map_json=parse_string_map_json(entity_type_map_json, field_name="entity_type_map_json", label="Entity type map"),
+                sample_text=sample_text,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification provider inspection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id or None,
+            selected_deidentification_provider_id=provider_id or None,
+            deidentification_form_override=form_override,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    form_override.update(
+        {
+            "detect_path": inspection.detect_path,
+            "openapi_path": inspection.openapi_path or openapi_path,
+            "request_text_field": inspection.request_text_field,
+            "request_language_field": inspection.request_language_field or "",
+            "extra_body_json": json.dumps(inspection.extra_body_json) if inspection.extra_body_json else extra_body_json,
+            "response_entities_path": inspection.response_entities_path,
+            "response_start_field": inspection.response_start_field,
+            "response_end_field": inspection.response_end_field,
+            "response_type_field": inspection.response_type_field,
+            "response_score_field": inspection.response_score_field or "",
+            "response_model_version_path": inspection.response_model_version_path or "",
+            "candidate_paths": inspection.candidate_paths,
+        }
+    )
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id or None,
+        selected_deidentification_provider_id=provider_id or None,
+        deidentification_inspection=inspection,
+        deidentification_form_override=form_override,
+        message="De-identification provider ping succeeded.",
+        message_kind="success",
+        active_admin_tab=return_tab or "providers",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
+    )
+
+
+@app.post("/admin/deidentification-providers", response_class=HTMLResponse)
+def admin_upsert_deidentification_provider(
+    request: Request,
+    team_id: str = Form(""),
+    provider_id: str = Form(""),
+    label: str = Form(...),
+    adapter_kind: str = Form(DeidentificationAdapterKind.generic_rest.value),
+    base_url: str = Form(""),
+    detect_path: str = Form(""),
+    auth_mode: str = Form(DeidentificationAuthMode.none.value),
+    bearer_token: str = Form(""),
+    request_text_field: str = Form("text"),
+    request_language_field: str = Form(""),
+    extra_headers_json: str = Form(""),
+    extra_body_json: str = Form(""),
+    response_entities_path: str = Form("entities"),
+    response_start_field: str = Form("start"),
+    response_end_field: str = Form("end"),
+    response_type_field: str = Form("entity_type"),
+    response_score_field: str = Form(""),
+    response_model_version_path: str = Form(""),
+    entity_type_map_json: str = Form(""),
+    is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    resolved_bearer_token = bearer_token or None
+    try:
+        provider = upsert_deidentification_provider_service(
+            db,
+            context.user,
+            DeidentificationProviderUpsert(
+                provider_id=UUID(provider_id) if provider_id else None,
+                label=label,
+                adapter_kind=DeidentificationAdapterKind(adapter_kind),
+                base_url=base_url,
+                detect_path=detect_path,
+                auth_mode=DeidentificationAuthMode(auth_mode),
+                bearer_token=resolved_bearer_token,
+                request_text_field=request_text_field,
+                request_language_field=request_language_field or None,
+                extra_headers_json=parse_string_map_json(
+                    extra_headers_json,
+                    field_name="extra_headers_json",
+                    label="Extra headers",
+                ),
+                extra_body_json=parse_json_object(
+                    extra_body_json,
+                    field_name="extra_body_json",
+                    label="Extra body fields",
+                ),
+                response_entities_path=response_entities_path,
+                response_start_field=response_start_field,
+                response_end_field=response_end_field,
+                response_type_field=response_type_field,
+                response_score_field=response_score_field or None,
+                response_model_version_path=response_model_version_path or None,
+                entity_type_map_json=parse_string_map_json(
+                    entity_type_map_json,
+                    field_name="entity_type_map_json",
+                    label="Entity type map",
+                ),
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification provider"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id or None,
+            selected_deidentification_provider_id=provider_id or None,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "providers",
+            team_id=team_id or None,
+            deidentification_provider_id=str(provider.id),
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-providers/{provider_id}/delete", response_class=HTMLResponse)
+def admin_delete_deidentification_provider(
+    request: Request,
+    provider_id: UUID,
+    team_id: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        delete_deidentification_provider_service(db, context.user, provider_id=provider_id)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id or None,
+            selected_deidentification_provider_id=str(provider_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-provider-assignments", response_class=HTMLResponse)
+def admin_assign_deidentification_provider(
+    request: Request,
+    team_id: str = Form(...),
+    provider_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        assign_deidentification_provider_to_team_service(
+            db,
+            context.user,
+            DeidentificationProviderAssignmentUpsert(
+                team_id=UUID(team_id),
+                provider_id=UUID(provider_id),
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification provider assignment"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-selection", response_class=HTMLResponse)
+def admin_set_deidentification_selection(
+    request: Request,
+    team_id: str = Form(...),
+    provider_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_team_deidentification_selection_service(
+            db,
+            context.user,
+            DeidentificationSelectionUpsert(team_id=UUID(team_id), provider_id=UUID(provider_id)),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-selection/clear", response_class=HTMLResponse)
+def admin_clear_deidentification_selection(
+    request: Request,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        clear_team_deidentification_selection_service(db, context.user, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification selection clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/deidentification-provider-assignments/remove", response_class=HTMLResponse)
+def admin_remove_deidentification_provider_assignment(
+    request: Request,
+    team_id: str = Form(...),
+    provider_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        remove_deidentification_provider_assignment_service(
+            db,
+            context.user,
+            team_id=UUID(team_id),
+            provider_id=UUID(provider_id),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification provider assignment removal"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
         return render_admin(
             request,

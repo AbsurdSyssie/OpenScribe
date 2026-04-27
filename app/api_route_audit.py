@@ -185,6 +185,52 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("GET", "/api/v1/llm-preference", AccessTier.full),
     AuditCase("POST", "/api/v1/llm-preference", AccessTier.full, json_body=_json(preferred_model_name="gpt-4o-mini")),
     AuditCase("DELETE", "/api/v1/llm-preference", AccessTier.full),
+    AuditCase("GET", "/api/v1/deidentification-providers", AccessTier.system_admin),
+    AuditCase(
+        "POST",
+        "/api/v1/deidentification-providers",
+        AccessTier.system_admin,
+        json_body=_json(
+            label="Audit De-id",
+            adapter_kind="generic_rest",
+            base_url="http://127.0.0.1:9300",
+            detect_path="/detect",
+            auth_mode="none",
+        ),
+    ),
+    AuditCase(
+        "POST",
+        "/api/v1/deidentification-providers/inspect",
+        AccessTier.system_admin,
+        json_body=_json(
+            label="Audit De-id Inspect",
+            adapter_kind="generic_rest",
+            base_url="http://127.0.0.1:9300",
+            detect_path="/detect",
+            auth_mode="none",
+        ),
+    ),
+    AuditCase("DELETE", f"/api/v1/deidentification-providers/{PLACEHOLDER_UUID}", AccessTier.system_admin),
+    AuditCase("GET", "/api/v1/deidentification-provider-assignments", AccessTier.system_admin, query_params=_json(team_id=PLACEHOLDER_UUID)),
+    AuditCase(
+        "POST",
+        "/api/v1/deidentification-provider-assignments",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, provider_id=PLACEHOLDER_UUID_2),
+    ),
+    AuditCase(
+        "DELETE",
+        "/api/v1/deidentification-provider-assignments",
+        AccessTier.system_admin,
+        query_params=_json(team_id=PLACEHOLDER_UUID, provider_id=PLACEHOLDER_UUID_2),
+    ),
+    AuditCase("GET", "/api/v1/deidentification-selection", AccessTier.manager),
+    AuditCase("GET", "/api/v1/deidentification-selection/options", AccessTier.manager),
+    AuditCase("POST", "/api/v1/deidentification-selection", AccessTier.manager, json_body=_json(provider_id=PLACEHOLDER_UUID)),
+    AuditCase("DELETE", "/api/v1/deidentification-selection", AccessTier.manager),
+    AuditCase("GET", "/api/v1/app-preferences", AccessTier.full),
+    AuditCase("POST", "/api/v1/app-preferences", AccessTier.full, json_body=_json(preferred_transcribe_tab="output")),
+    AuditCase("DELETE", "/api/v1/app-preferences", AccessTier.full),
     AuditCase("GET", "/api/v1/templates/available", AccessTier.full),
     AuditCase("GET", "/api/v1/templates/team", AccessTier.manager),
     AuditCase(
@@ -230,8 +276,16 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     ),
     AuditCase("POST", "/api/v1/transcripts/start", AccessTier.full, json_body=_json(title="Audit Transcript")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/commit", AccessTier.full, json_body=_json(text_encrypted="ciphertext")),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/finalize-live-capture", AccessTier.full),
     AuditCase("PATCH", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full, json_body=_json(title="Updated Transcript")),
     AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/manual-pii",
+        AccessTier.full,
+        json_body=_json(entity_type="PERSON", value="Audit Patient", occurrence_count=1),
+    ),
+    AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/manual-pii/{PLACEHOLDER_UUID_2}", AccessTier.full),
     AuditCase(
         "POST",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/audio-chunks",
@@ -264,6 +318,13 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generated-documents", AccessTier.full),
     AuditCase("GET", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/redaction-debug", AccessTier.local_debug),
+    AuditCase(
+        "PATCH",
+        f"/api/v1/generated-documents/{PLACEHOLDER_UUID}",
+        AccessTier.full,
+        json_body=_json(expected_updated_at="2026-01-01T00:00:00Z", edited_output_text="Updated"),
+    ),
+    AuditCase("DELETE", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase(
         "POST",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generate-output",
@@ -350,10 +411,12 @@ def missing_route_specs() -> set[tuple[str, str]]:
             method,
             path.replace("{request_id}", "{id}")
             .replace("{config_id}", "{id}")
+            .replace("{provider_id}", "{id}")
             .replace("{template_id}", "{id}")
             .replace("{quick_action_id}", "{id}")
             .replace("{user_id}", "{id}")
             .replace("{transcript_id}", "{id}")
+            .replace("{entity_id}", "{id}")
             .replace("{generated_document_id}", "{id}"),
         )
         for method, path in route_inventory()

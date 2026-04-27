@@ -163,6 +163,7 @@ class GeneratedDocumentDetail(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     sections: list["GeneratedDocumentSectionDetail"] = []
+    pii_entities: list["GeneratedDocumentPiiEntityDetail"] = []
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
 
@@ -177,6 +178,13 @@ class GeneratedDocumentSectionDetail(BaseModel):
     is_edited: bool
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class GeneratedDocumentPiiEntityDetail(BaseModel):
+    entity_type: str
+    value: str
+    placeholder: str
+    occurrence_count: int
 
 
 class GeneratedDocumentSectionUpdate(BaseModel):

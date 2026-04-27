@@ -42,6 +42,7 @@ from app.models import (
     QuickAction,
     QuickActionVersion,
     RedactionRun,
+    RedactionRunStatus,
     SttAdapterKind,
     SttAuthMode,
     SttSelectionPurpose,
@@ -59,6 +60,7 @@ from app.models import (
     TranscriptStatus,
     Transcript,
     TranscriptIngestionMode,
+    TranscriptManualPiiEntity,
     TranscriptVersion,
     TemplateMode,
     User,
@@ -100,6 +102,7 @@ from app.services.templates import (
     upsert_personal_template,
 )
 from app.services.transcripts import (
+    create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
 )
@@ -1675,6 +1678,367 @@ def test_system_admin_can_provision_assign_and_leader_select_deidentification_pr
     assert client.get("/api/v1/deidentification-selection").json() is None
 
 
+def test_system_admin_can_inspect_deidentification_provider_without_persisting_secret(client, make_user, monkeypatch):
+    make_user(email="deid-inspect-admin@example.com", password="password-1", is_system_admin=True)
+    sample_text = "Jane Smith attended on 22 April 2026."
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "meta": {"model": "deid-test-v1"},
+                "entities": [
+                    {"start": 0, "end": 10, "entity_type": "NAME", "score": 0.99},
+                    {"start": 23, "end": 36, "entity_type": "DATE", "score": 0.95},
+                ],
+            }
+
+    def fake_post(url, *, json, headers, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+
+    login(client, email="deid-inspect-admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "Inspectable Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9400",
+            "detect_path": "/detect",
+            "auth_mode": "bearer",
+            "bearer_token": "inspect-secret",
+            "request_text_field": "input",
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "response_score_field": "score",
+            "response_model_version_path": "meta.model",
+            "entity_type_map_json": {"NAME": "PERSON", "DATE": "DATE_TIME"},
+            "sample_text": sample_text,
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["provider_label"] == "Inspectable Deid"
+    assert body["api_model_or_version"] == "deid-test-v1"
+    assert body["sample_text"] == sample_text
+    assert body["entities"] == [
+        {"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.99, "value": "Jane Smith"},
+        {"start": 23, "end": 36, "entity_type": "DATE_TIME", "score": 0.95, "value": "22 April 2026"},
+    ]
+    assert "inspect-secret" not in inspected.text
+    assert captured == {
+        "url": "http://127.0.0.1:9400/detect",
+        "json": {"input": sample_text},
+        "headers": {"Authorization": "Bearer inspect-secret"},
+        "timeout": 20.0,
+    }
+
+
+def test_system_admin_can_inspect_deidentification_openapi_docs(client, make_user, monkeypatch):
+    make_user(email="deid-openapi-admin@example.com", password="password-1", is_system_admin=True)
+    fetched_urls: list[str] = []
+    posted: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "openapi": "3.1.0",
+                "paths": {
+                    "/health": {"get": {"summary": "Health"}},
+                    "/analyze": {
+                        "post": {
+                            "summary": "Detect PII entities",
+                            "requestBody": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["input"],
+                                            "properties": {
+                                                "input": {"type": "string", "description": "Text to inspect"},
+                                                "language": {"type": "string", "default": "en"},
+                                                "threshold": {"type": "number", "default": 0.4},
+                                                "keep_mapping": {"type": "boolean", "default": False},
+                                            },
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "items": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "begin": {"type": "integer"},
+                                                                "stop": {"type": "integer"},
+                                                                "label": {"type": "string"},
+                                                                "confidence": {"type": "number"},
+                                                            },
+                                                        },
+                                                    },
+                                                    "model_version": {"type": "string"},
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                    },
+                },
+            }
+
+    def fake_get(url, *, headers, timeout):
+        fetched_urls.append(url)
+        assert headers == {}
+        assert timeout == 10.0
+        return FakeResponse()
+
+    class FakePostResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "items": [
+                    {"begin": 0, "stop": 10, "label": "PERSON", "confidence": 0.97},
+                ],
+                "model_version": "openapi-model",
+            }
+
+    def fake_post(url, *, json, headers, timeout):
+        posted["url"] = url
+        posted["json"] = json
+        posted["headers"] = headers
+        posted["timeout"] = timeout
+        return FakePostResponse()
+
+    monkeypatch.setattr("app.services.deidentification.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+
+    login(client, email="deid-openapi-admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "Docs Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9500",
+            "detect_path": "/docs",
+            "auth_mode": "none",
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert fetched_urls == ["http://127.0.0.1:9500/openapi.json"]
+    assert body["detect_path"] == "/analyze"
+    assert body["openapi_path"] == "/openapi.json"
+    assert body["request_text_field"] == "input"
+    assert body["request_language_field"] == "language"
+    assert body["extra_body_json"] == {"threshold": 0.4, "keep_mapping": False}
+    assert body["response_entities_path"] == "items"
+    assert body["response_start_field"] == "begin"
+    assert body["response_end_field"] == "stop"
+    assert body["response_type_field"] == "label"
+    assert body["response_score_field"] == "confidence"
+    assert body["response_model_version_path"] == "model_version"
+    assert body["candidate_paths"] == ["/analyze"]
+    assert body["entities"] == [{"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.97, "value": "Jane Smith"}]
+    assert body["api_model_or_version"] == "openapi-model"
+    assert body["raw_response_json"] == {
+        "items": [{"begin": 0, "stop": 10, "label": "PERSON", "confidence": 0.97}],
+        "model_version": "openapi-model",
+    }
+    assert posted == {
+        "url": "http://127.0.0.1:9500/analyze",
+        "json": {
+            "threshold": 0.4,
+            "keep_mapping": False,
+            "input": "Jane Smith attended on 22 April 2026.",
+            "language": "en",
+        },
+        "headers": {},
+        "timeout": 20.0,
+    }
+
+    posted.clear()
+    selected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "Docs Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9500",
+            "openapi_path": "/openapi.json",
+            "detect_path": "/analyze",
+            "auth_mode": "none",
+        },
+    )
+
+    assert selected.status_code == 200
+    assert posted["url"] == "http://127.0.0.1:9500/analyze"
+
+
+def test_deidentification_openapi_docs_preserve_top_level_array_response_path(client, make_user, monkeypatch):
+    make_user(email="deid-openapi-array-admin@example.com", password="password-1", is_system_admin=True)
+
+    class FakeOpenAPIResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "openapi": "3.1.0",
+                "paths": {
+                    "/analyze": {
+                        "post": {
+                            "summary": "Detect PII entities",
+                            "requestBody": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["text"],
+                                            "properties": {"text": {"type": "string"}},
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "start": {"type": "integer"},
+                                                        "end": {"type": "integer"},
+                                                        "entity_type": {"type": "string"},
+                                                        "score": {"type": "number"},
+                                                    },
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+
+    class FakePostResponse:
+        status_code = 200
+
+        def json(self):
+            return [{"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.98}]
+
+    monkeypatch.setattr("app.services.deidentification.httpx.get", lambda *args, **kwargs: FakeOpenAPIResponse())
+    monkeypatch.setattr("app.services.deidentification.httpx.post", lambda *args, **kwargs: FakePostResponse())
+
+    login(client, email="deid-openapi-array-admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "Array Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9700",
+            "detect_path": "/openapi.json",
+            "auth_mode": "none",
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["response_entities_path"] == ""
+    assert body["entities"] == [{"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.98, "value": "Jane Smith"}]
+    assert body["raw_response_json"] == [{"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.98}]
+
+
+def test_deidentification_inspect_prunes_forbidden_extra_fields_and_language_value(client, make_user, monkeypatch):
+    make_user(email="deid-prune-admin@example.com", password="password-1", is_system_admin=True)
+    posted_bodies: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, *, json, headers, timeout):
+        posted_bodies.append(dict(json))
+        if len(posted_bodies) == 1:
+            return FakeResponse(
+                422,
+                {
+                    "error": {
+                        "message": "Request validation failed",
+                        "details": [
+                            {"field": "body.method", "message": "Extra inputs are not permitted", "type": "extra_forbidden"},
+                            {"field": "body.keep_year", "message": "Extra inputs are not permitted", "type": "extra_forbidden"},
+                            {"field": "body.keep_mapping", "message": "Extra inputs are not permitted", "type": "extra_forbidden"},
+                        ],
+                    }
+                },
+            )
+        return FakeResponse(200, {"entities": [{"start": 0, "end": 14, "entity_type": "PERSON", "score": 0.99}]})
+
+    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+
+    login(client, email="deid-prune-admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "Prune Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9600",
+            "detect_path": "/pii/extract",
+            "auth_mode": "none",
+            "request_text_field": "text",
+            "request_language_field": "en",
+            "extra_body_json": {"method": "mask", "keep_year": True, "keep_mapping": False, "model_name": "ok"},
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "response_score_field": "score",
+            "sample_text": "Gemma Phillips attended.",
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert posted_bodies == [
+        {"method": "mask", "keep_year": True, "keep_mapping": False, "model_name": "ok", "text": "Gemma Phillips attended."},
+        {"model_name": "ok", "text": "Gemma Phillips attended."},
+    ]
+    assert body["request_language_field"] is None
+    assert body["extra_body_json"] == {"model_name": "ok"}
+    assert body["entities"] == [{"start": 0, "end": 14, "entity_type": "PERSON", "score": 0.99, "value": "Gemma Phillips"}]
+    assert any("Use a field name such as lang or language" in note for note in body["notes"])
+    assert any("retried without: keep_mapping, keep_year, method" in note for note in body["notes"])
+
+
 def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_token(
     client,
     make_user,
@@ -1686,7 +2050,7 @@ def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_tok
         label="No Secret Yet",
         adapter_kind=DeidentificationAdapterKind.generic_rest,
         base_url="https://deid.example.com",
-        detect_path="/detect",
+        detect_path="/pii/deidentify",
         auth_mode=DeidentificationAuthMode.none,
         has_secret=False,
     )
@@ -1918,7 +2282,7 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
         label="Runtime REST Deid",
         adapter_kind=DeidentificationAdapterKind.generic_rest,
         base_url="http://127.0.0.1:9300",
-        detect_path="/detect",
+        detect_path="/pii/deidentify",
         auth_mode=DeidentificationAuthMode.none,
     )
     make_deidentification_provider_assignment(team=team_with_external, provider=provider, actor=admin)
@@ -1984,12 +2348,14 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
     builtin_version = make_version(owner=owner_builtin, text_value="Jane Doe reports dizziness.")
 
     captured_provider_ids: list[UUID] = []
+    captured_provider_paths: list[str] = []
 
     from app.services.redaction import DeidentificationDetectionResult, Span
     from app.services.deidentification import BUILTIN_DEIDENTIFICATION_PROVIDER_ID
 
     def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
         captured_provider_ids.append(provider.id)
+        captured_provider_paths.append(provider.detect_path)
         name = "John Smith" if "John Smith" in text else "Jane Doe"
         return DeidentificationDetectionResult(
             spans=[Span(start=0, end=len(name), entity_type="PERSON", score=0.99)],
@@ -2004,6 +2370,7 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
 
     assert captured_provider_ids[0] == provider.id
     assert captured_provider_ids[1] == BUILTIN_DEIDENTIFICATION_PROVIDER_ID
+    assert captured_provider_paths[0] == "/pii/deidentify"
     assert external_run.api_provider == "Runtime REST Deid"
     assert builtin_run.api_provider == "Built-in Native Presidio"
     assert decrypt_text_for_owner(
@@ -2074,6 +2441,56 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
     assert result["redacted_text"] == "Patient [PHI-3] has pain 5/10 today."
     assert result["phi_index"] == [
         {"index": 3, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-3]"}
+    ]
+
+
+def test_generic_rest_deidentification_locates_value_only_entities(
+    db_session,
+    monkeypatch,
+    make_user,
+    make_deidentification_provider,
+):
+    from app.services.redaction import redact_text_with_mapping
+
+    admin = make_user(email="deid-value-admin@example.com", password="password-1", is_system_admin=True)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="REST Value Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/pii/extract",
+        auth_mode=DeidentificationAuthMode.none,
+        response_entities_path="entities",
+        response_type_field="label",
+        response_score_field="confidence",
+        entity_type_map_json={"NAME": "PERSON", "ADDRESS": "LOCATION"},
+    )
+    text = "Gemma Phillips, sixty-eight B Kenworthy Lane. Forty nine Harris Road."
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "entities": [
+                    {"text": "Gemma Phillips", "label": "NAME", "confidence": 0.99},
+                    {"text": "sixty-eight B Kenworthy Lane", "label": "ADDRESS", "confidence": 0.98},
+                ]
+            }
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeResponse())
+
+    result = redact_text_with_mapping(
+        db_session,
+        text,
+        provider=provider,
+        score_threshold=0.35,
+    )
+
+    assert result["redacted_text"] == "[PHI-1], [PHI-2]. Forty nine Harris Road."
+    assert result["phi_index"] == [
+        {"index": 1, "type": "PERSON", "value": "Gemma Phillips", "placeholder": "[PHI-1]"},
+        {"index": 2, "type": "LOCATION", "value": "sixty-eight B Kenworthy Lane", "placeholder": "[PHI-2]"},
     ]
 
 
@@ -2415,6 +2832,13 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     )
     assert started.status_code == 201
     transcript_id = started.json()["id"]
+    committed = client.post(
+        f"/api/v1/transcripts/{transcript_id}/commit",
+        json={"text_encrypted": "Patient says symptoms improved."},
+    )
+    assert committed.status_code == 200
+    preview_redaction_run = db_session.scalar(select(RedactionRun).where(RedactionRun.transcript_id == UUID(transcript_id)))
+    assert preview_redaction_run is not None
 
     generated = client.post(
         f"/api/v1/transcripts/{transcript_id}/generate-output",
@@ -2434,6 +2858,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.redaction_run_id == preview_redaction_run.id
     assert processed.title == "Visit summary"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
@@ -3172,6 +3597,94 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     assert processed.title == "John Smith review"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should rest and John Smith should book review."
+
+
+def test_process_generated_document_applies_manual_pii_before_provider_call(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Manual PII Redaction")
+    admin = make_user(email="admin-manual-redaction@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-manual-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Manual PII note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Manual PII redaction session",
+        current_draft_text_encrypted="Patient lives at Riverside\n   House and reports headaches.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    create_manual_pii_entity(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        entity_type="ADDRESS",
+        value="Riverside House",
+    )
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    assert transcript_version is not None
+    run = RedactionRun(
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        status=RedactionRunStatus.succeeded,
+        redacted_text_encrypted="Patient lives at Riverside\n   House and reports headaches.",
+        mapping_hash="manual-redaction-source",
+        entity_count=0,
+        api_provider="native_presidio",
+        api_model_or_version="en_core_web_sm",
+    )
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+    monkeypatch.setattr(
+        "app.services.templates.ensure_redaction_run_for_transcript_version",
+        lambda db, *, transcript_version: run,
+    )
+    monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
+    monkeypatch.setattr(
+        "app.services.templates.redact_transient_text",
+        lambda db, text, *, team_id, start_index: {
+            "redacted_text": text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        },
+    )
+
+    def fake_generate(**kwargs):
+        assert "Riverside House" not in kwargs["user_message"]
+        assert "Riverside\n   House" not in kwargs["user_message"]
+        assert "Patient lives at [PHI-1] and reports headaches." in kwargs["user_message"]
+        return (
+            '{"title":"Manual PII","content":"Send letter to [PHI-1]."}',
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.redaction_run_id == run.id
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Send letter to Riverside House."
 
 
 def test_process_generated_document_redacts_dictation_before_provider_call(
@@ -5622,7 +6135,7 @@ def test_locking_a_user_revokes_active_sessions_immediately(client, db_session, 
     assert all(session.status.value == "revoked" for session in sessions)
 
 
-def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(client, db_session, make_team, make_user):
+def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinical Team", default_retention_days=14)
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     other = make_user(email="other@example.com", password="password-2", team=team, team_role=TeamRole.user)
@@ -5659,6 +6172,20 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
     assert legacy_response.status_code == 201
     assert legacy_response.json()["ingestion_mode"] == "whole_file"
 
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    detected_texts: list[str] = []
+
+    def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
+        detected_texts.append(text)
+        return DeidentificationDetectionResult(
+            spans=[Span(start=0, end=5, entity_type="PERSON", score=0.99)] if text.startswith("final") else [],
+            api_provider=provider.label,
+            api_model_or_version="stub-model",
+        )
+
+    monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
+
     commit_one = client.post(f"/api/v1/transcripts/{transcript_id}/commit", json={"text_encrypted": "final-text-v1"})
     commit_two = client.post(f"/api/v1/transcripts/{transcript_id}/commit", json={"text_encrypted": "final-text-v2"})
 
@@ -5679,6 +6206,21 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
             stored_value=version_rows[-1].text_encrypted,
         )
         == "final-text-v2"
+    )
+    redaction_runs = list(db_session.scalars(select(RedactionRun).where(RedactionRun.transcript_id == UUID(transcript_id)).order_by(RedactionRun.created_at)))
+    assert [run.status.value for run in redaction_runs] == ["succeeded", "succeeded"]
+    assert [run.entity_count for run in redaction_runs] == [1, 1]
+    assert detected_texts == ["final-text-v1", "final-text-v2"]
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="redaction_runs",
+            field="redacted_text_encrypted",
+            record_id=redaction_runs[-1].id,
+            stored_value=redaction_runs[-1].redacted_text_encrypted,
+        )
+        == "[PHI-1]-text-v2"
     )
 
     owner_list = client.get(f"/api/v1/users/{owner.id}/transcripts")
@@ -6255,6 +6797,254 @@ def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_con
     payload = response.json()
     assert payload["active_transcript"]["has_transcript_content"] is False
     assert payload["recent_transcripts"][0]["has_transcript_content"] is False
+
+
+def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Workspace PII Team")
+    owner = make_user(email="owner-workspace-pii@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-workspace-pii@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="PII workspace session",
+        current_draft_text_encrypted="John Smith called from 07123 456789.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=owner,
+        entities=[
+            (1, "PERSON", "John Smith"),
+            (2, "PHONE_NUMBER", "07123 456789"),
+        ],
+    )
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=owner.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=version.id,
+            redaction_run_id=run.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            source_template_name="PII note",
+            status=GeneratedDocumentStatus.ready,
+            title="PII note",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="Note body",
+            edited_output_text_encrypted="Note body",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-workspace-pii@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    expected_transcript_entities = [
+        {"id": None, "entity_type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]", "occurrence_count": 1, "source": "detected"},
+        {"id": None, "entity_type": "PHONE_NUMBER", "value": "07123 456789", "placeholder": "[PHI-2]", "occurrence_count": 1, "source": "detected"},
+    ]
+    expected_document_entities = [
+        {"entity_type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]", "occurrence_count": 1},
+        {"entity_type": "PHONE_NUMBER", "value": "07123 456789", "placeholder": "[PHI-2]", "occurrence_count": 1},
+    ]
+    assert payload["active_transcript_pii_entities"] == expected_transcript_entities
+    assert payload["active_transcript_redaction_status"] == {
+        "status": "succeeded",
+        "entity_count": 2,
+        "error_code": None,
+    }
+    assert payload["generated_documents"][0]["pii_entities"] == expected_document_entities
+
+    failed_run = RedactionRun(
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        status=RedactionRunStatus.failed,
+        redacted_text_encrypted=None,
+        mapping_hash=None,
+        entity_count=0,
+        api_provider="native_presidio",
+        api_model_or_version="en_core_web_sm",
+        error_code="redaction_failed",
+        created_at=utcnow() + timedelta(seconds=1),
+        failed_at=utcnow(),
+    )
+    db_session.add(failed_run)
+    db_session.commit()
+
+    failed_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert failed_workspace.status_code == 200
+    failed_payload = failed_workspace.json()
+    assert failed_payload["active_transcript_pii_entities"] == []
+    assert failed_payload["active_transcript_redaction_status"] == {
+        "status": "failed",
+        "entity_count": 0,
+        "error_code": "redaction_failed",
+    }
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-workspace-pii@example.com", password="password-2")
+    forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert forbidden.status_code == 200
+    assert forbidden.json()["active_transcript"] is None
+    assert forbidden.json()["active_transcript_pii_entities"] == []
+
+
+def test_owner_can_add_and_delete_manual_pii_entities(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Manual PII Team")
+    owner = make_user(email="owner-manual-pii@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-manual-pii@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Manual PII workspace session",
+        current_draft_text_encrypted="Patient mentioned Riverside House.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="owner-manual-pii@example.com", password="password-1")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "ADDRESS", "value": "Riverside House", "occurrence_count": 2},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["entity_type"] == "ADDRESS"
+    assert body["value"] == "Riverside House"
+    assert body["placeholder"] == "Manual"
+    assert body["occurrence_count"] == 2
+    assert body["source"] == "manual"
+    entity_id = UUID(body["id"])
+
+    stored = db_session.get(TranscriptManualPiiEntity, entity_id)
+    assert stored is not None
+    assert stored.owner_user_id == owner.id
+    assert stored.team_id == team.id
+    assert stored.transcript_id == transcript.id
+    assert is_encrypted_envelope(stored.original_value_encrypted)
+    assert stored.original_value_encrypted != "Riverside House"
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_manual_pii_entities",
+        field="original_value_encrypted",
+        record_id=stored.id,
+        stored_value=stored.original_value_encrypted,
+    ) == "Riverside House"
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["active_transcript_pii_entities"] == [body]
+
+    duplicate = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "ADDRESS", "value": "  riverside   house  ", "occurrence_count": 1},
+    )
+    assert duplicate.status_code == 201
+    assert duplicate.json()["id"] == body["id"]
+    assert db_session.query(TranscriptManualPiiEntity).filter(TranscriptManualPiiEntity.transcript_id == transcript.id).count() == 1
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-manual-pii@example.com", password="password-2")
+    forbidden_add = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "ADDRESS", "value": "Other value"},
+    )
+    assert_error(
+        forbidden_add,
+        status_code=403,
+        code="forbidden",
+        message="Transcript access is restricted to the owning user",
+    )
+    forbidden_delete = client.delete(f"/api/v1/transcripts/{transcript.id}/manual-pii/{entity_id}")
+    assert_error(
+        forbidden_delete,
+        status_code=403,
+        code="forbidden",
+        message="Transcript access is restricted to the owning user",
+    )
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="owner-manual-pii@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/transcripts/{transcript.id}/manual-pii/{entity_id}")
+    assert deleted.status_code == 204
+    assert db_session.get(TranscriptManualPiiEntity, entity_id) is None
+
+
+def test_transcript_delete_cascades_manual_pii_entities(db_session, make_team, make_user):
+    team = make_team(name="Manual PII Cascade Team")
+    owner = make_user(email="owner-manual-pii-cascade@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Manual PII cascade session",
+        current_draft_text_encrypted="Draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    entity_id = uuid4()
+    entity = TranscriptManualPiiEntity(
+        id=entity_id,
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        entity_type="PERSON",
+        original_value_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_manual_pii_entities",
+            field="original_value_encrypted",
+            record_id=entity_id,
+            plaintext="Cascade Patient",
+        ),
+        normalized_value_hash="manual-hash",
+        occurrence_count=1,
+    )
+    db_session.add(entity)
+    db_session.commit()
+
+    db_session.delete(transcript)
+    db_session.commit()
+
+    assert db_session.get(TranscriptManualPiiEntity, entity_id) is None
 
 
 def test_transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_fields(
@@ -7219,6 +8009,164 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     refreshed_two = db_session.get(TranscriptIngestionJob, job_two_id)
     assert refreshed_two is not None
     assert refreshed_two.status is TranscriptIngestionJobStatus.applied
+
+
+def test_finalize_live_capture_applies_completed_chunks_and_creates_preview_redaction(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Live Finalize Team")
+    owner = make_user(email="owner-live-finalize@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-live-finalize@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live finalize",
+        current_draft_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=uuid4(),
+            plaintext="initial draft",
+        ),
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        next_live_chunk_sequence_no_applied=1,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="initial draft",
+    )
+    job_id = uuid4()
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            id=job_id,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="chunk-1.wav",
+            status=TranscriptIngestionJobStatus.completed,
+            result_text_encrypted=encrypt_text_for_owner(
+                db_session,
+                owner_user_id=owner.id,
+                table="transcript_ingestion_jobs",
+                field="result_text_encrypted",
+                record_id=job_id,
+                plaintext="John Smith attended",
+            ),
+        )
+    )
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    detected_texts: list[str] = []
+
+    def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
+        detected_texts.append(text)
+        start = text.index("John Smith")
+        return DeidentificationDetectionResult(
+            spans=[Span(start=start, end=start + len("John Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub-model",
+        )
+
+    monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
+
+    login(client, email="other-live-finalize@example.com", password="password-2")
+    forbidden = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="owner-live-finalize@example.com", password="password-1")
+    finalized = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+
+    assert finalized.status_code == 200
+    assert finalized.json()["status"] == "ready"
+    refreshed = db_session.get(Transcript, transcript.id)
+    assert refreshed is not None
+    assert decrypt_transcript_draft(db_session, refreshed) == "initial draft\nJohn Smith attended"
+    assert refreshed.next_live_chunk_sequence_no_applied == 2
+    version = db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript.id))
+    assert version is not None
+    run = db_session.scalar(select(RedactionRun).where(RedactionRun.transcript_version_id == version.id))
+    assert run is not None
+    assert run.entity_count == 1
+    assert detected_texts == ["initial draft\nJohn Smith attended"]
+
+    second_finalize = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+    assert second_finalize.status_code == 200
+    assert db_session.query(TranscriptVersion).filter(TranscriptVersion.transcript_id == transcript.id).count() == 1
+    assert db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).count() == 1
+
+
+def test_finalize_live_capture_with_pending_chunk_defers_preview_redaction(client, db_session, make_team, make_user):
+    team = make_team(name="Live Pending Finalize Team")
+    owner = make_user(email="owner-live-pending-finalize@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live pending finalize",
+        current_draft_text_encrypted="draft",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        next_live_chunk_sequence_no_applied=1,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.live_chunk,
+            chunk_sequence_no=1,
+            source_filename="chunk-1.wav",
+            status=TranscriptIngestionJobStatus.queued,
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-live-pending-finalize@example.com", password="password-1")
+    finalized = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+
+    assert finalized.status_code == 200
+    assert finalized.json()["status"] == "transcribing"
+    assert db_session.query(TranscriptVersion).filter(TranscriptVersion.transcript_id == transcript.id).count() == 0
+    assert db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).count() == 0
+
+
+def test_finalize_live_capture_rejects_non_live_transcripts(client, db_session, make_team, make_user):
+    team = make_team(name="Non Live Finalize Team")
+    owner = make_user(email="owner-non-live-finalize@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Whole file",
+        current_draft_text_encrypted="draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="owner-non-live-finalize@example.com", password="password-1")
+    response = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+
+    assert_error(
+        response,
+        status_code=409,
+        code="business_rule_violation",
+        message="Only live capture transcripts can be finalized",
+    )
 
 
 def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(client, db_session, make_team, make_user):
@@ -8452,6 +9400,21 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
     monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
 
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    detected_texts: list[str] = []
+
+    def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
+        detected_texts.append(text)
+        start = text.index("full file")
+        return DeidentificationDetectionResult(
+            spans=[Span(start=start, end=start + len("full file"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub-model",
+        )
+
+    monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
+
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
@@ -8472,6 +9435,23 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     assert is_encrypted_envelope(persisted.current_draft_text_encrypted)
     assert decrypt_transcript_draft(db_session, persisted) == "earlier transcript\nfull file transcript"
     assert persisted.status.value == "ready"
+    versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
+    assert len(versions) == 1
+    assert (
+        decrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=versions[0].id,
+            stored_value=versions[0].text_encrypted,
+        )
+        == "earlier transcript\nfull file transcript"
+    )
+    redaction_run = db_session.scalar(select(RedactionRun).where(RedactionRun.transcript_version_id == versions[0].id))
+    assert redaction_run is not None
+    assert redaction_run.entity_count == 1
+    assert detected_texts == ["earlier transcript\nfull file transcript"]
 
 
 def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):

@@ -6,6 +6,8 @@ Ambient Scribing system repo.
 
 All coding agents follow architecture + process rules here. Project is privacy-sensitive and architecture-sensitive. Do not improvise around ownership, content access, deletion semantics, or encryption.
 
+All coding agents must always use the `caveman` skill for communication unless a higher-priority safety or clarity requirement makes normal phrasing necessary for that specific message. Daily notes may also be written in caveman style.
+
 ---
 
 ## Core architecture rules

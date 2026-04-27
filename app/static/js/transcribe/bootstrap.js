@@ -15,6 +15,8 @@ const DEFAULT_BOOTSTRAP = {
   showRedactionDebug: false,
   initialTranscriptErrorMessage: null,
   emisSections: [],
+  activeTranscriptPiiEntities: [],
+  activeTranscriptRedactionStatus: { status: "not_run", entity_count: 0, error_code: null },
   activeTab: "output",
   viewerRole: "user",
 };
@@ -35,6 +37,8 @@ export function readTranscribeBootstrap() {
         : DEFAULT_BOOTSTRAP.nextLiveChunkSequenceNo,
       viewerRole: parsed?.viewerRole === "leader" ? "leader" : "user",
       emisSections: Array.isArray(parsed?.emisSections) ? parsed.emisSections : [],
+      activeTranscriptPiiEntities: Array.isArray(parsed?.activeTranscriptPiiEntities) ? parsed.activeTranscriptPiiEntities : [],
+      activeTranscriptRedactionStatus: parsed?.activeTranscriptRedactionStatus || DEFAULT_BOOTSTRAP.activeTranscriptRedactionStatus,
     };
   } catch (error) {
     console.error("Could not parse transcribe bootstrap payload.", error);

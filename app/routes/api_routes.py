@@ -308,6 +308,11 @@ def upsert_deidentification_provider(payload: DeidentificationProviderUpsert, co
     return deidentification_provider_response(upsert_deidentification_provider_service(db, context.user, payload))
 
 
+@api.post("/deidentification-providers/inspect", response_model=DeidentificationInspectResult, responses=error_responses)
+def inspect_deidentification_provider(payload: DeidentificationProviderInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return inspect_deidentification_provider_service(db, context.user, payload)
+
+
 @api.delete("/deidentification-providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
 def delete_deidentification_provider(provider_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     delete_deidentification_provider_service(db, context.user, provider_id=provider_id)
@@ -530,6 +535,45 @@ def delete_transcript(
     db: Session = Depends(get_db),
 ):
     delete_transcripts_service(db, context.user, transcript_ids=[transcript_id])
+
+
+@api.post("/transcripts/{transcript_id}/finalize-live-capture", response_model=TranscriptDetail, responses=error_responses)
+def finalize_transcript_live_capture(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = finalize_live_capture_service(db, context.user, transcript_id=transcript_id)
+    return transcript_detail_response(db, transcript)
+
+
+@api.post("/transcripts/{transcript_id}/manual-pii", response_model=TranscriptPiiEntityDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
+def create_transcript_manual_pii(
+    transcript_id: UUID,
+    payload: TranscriptManualPiiEntityCreate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    entity = create_manual_pii_entity_service(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        entity_type=payload.entity_type,
+        value=payload.value,
+        occurrence_count=payload.occurrence_count,
+    )
+    return transcript_manual_pii_entity_response(db, entity)
+
+
+@api.delete("/transcripts/{transcript_id}/manual-pii/{entity_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_transcript_manual_pii(
+    transcript_id: UUID,
+    entity_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    delete_manual_pii_entity_service(db, context.user, transcript_id=transcript_id, entity_id=entity_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)

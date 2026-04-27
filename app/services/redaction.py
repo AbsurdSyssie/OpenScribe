@@ -175,6 +175,92 @@ def _normalize_entity_type(raw_type: str, *, entity_type_map: dict[str, str]) ->
     return entity_type_map.get(trimmed, trimmed)
 
 
+ENTITY_VALUE_FIELD_CANDIDATES = (
+    "value",
+    "text",
+    "entity_text",
+    "entity",
+    "word",
+    "match",
+    "matched_text",
+    "source_text",
+    "original",
+    "pii",
+    "span",
+)
+
+
+def _provider_span_from_item(
+    text: str,
+    raw_item: dict[str, Any],
+    *,
+    provider: DeidentificationProvider,
+    search_start: int,
+) -> tuple[Span, int]:
+    score = 1.0
+    if provider.response_score_field:
+        raw_score = raw_item.get(provider.response_score_field)
+        if raw_score is not None:
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError) as exc:
+                raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
+    entity_type = _normalize_entity_type(
+        _coerce_span_field(raw_item, provider.response_type_field, kind=str),
+        entity_type_map={str(key): str(value) for key, value in (provider.entity_type_map_json or {}).items()},
+    )
+    if provider.response_start_field in raw_item and provider.response_end_field in raw_item:
+        start = _coerce_span_field(raw_item, provider.response_start_field, kind=int)
+        end = _coerce_span_field(raw_item, provider.response_end_field, kind=int)
+        return Span(start=start, end=end, entity_type=entity_type, score=score), int(end)
+    for value_field in ENTITY_VALUE_FIELD_CANDIDATES:
+        raw_value = raw_item.get(value_field)
+        if raw_value is None:
+            continue
+        value = str(raw_value)
+        if not value:
+            continue
+        start = text.find(value, search_start)
+        if start < 0:
+            start = text.find(value)
+        if start < 0:
+            lowered_text = text.lower()
+            lowered_value = value.lower()
+            start = lowered_text.find(lowered_value, search_start)
+            if start < 0:
+                start = lowered_text.find(lowered_value)
+        if start >= 0:
+            end = start + len(value)
+            return Span(start=start, end=end, entity_type=entity_type, score=score), end
+    raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+
+
+def _provider_spans_from_payload(
+    text: str,
+    payload: Any,
+    *,
+    provider: DeidentificationProvider,
+    score_threshold: float,
+    entities: list[str] | None,
+) -> list[Span]:
+    entities_payload = _extract_path(payload, provider.response_entities_path)
+    if not isinstance(entities_payload, list):
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+    spans: list[Span] = []
+    search_start = 0
+    for raw_item in entities_payload:
+        if not isinstance(raw_item, dict):
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
+        span, search_start = _provider_span_from_item(
+            text,
+            raw_item,
+            provider=provider,
+            search_start=search_start,
+        )
+        spans.append(span)
+    return _resolve_overlaps(_filter_provider_spans(text, spans, score_threshold=score_threshold, entities=entities))
+
+
 def _detect_with_presidio(text: str, *, language: str, score_threshold: float, entities: list[str] | None) -> DeidentificationDetectionResult:
     analyzer, config = _redaction_runtime()
     try:
@@ -201,6 +287,7 @@ def _detect_with_generic_rest(
     language: str,
     score_threshold: float,
     entities: list[str] | None,
+    bearer_token_override: str | None = None,
 ) -> DeidentificationDetectionResult:
     body: dict[str, Any] = dict(provider.extra_body_json or {})
     body[provider.request_text_field] = text
@@ -208,7 +295,8 @@ def _detect_with_generic_rest(
         body[provider.request_language_field] = language
     headers = {key: str(value) for key, value in (provider.extra_headers_json or {}).items()}
     if provider.auth_mode.value == "bearer":
-        headers["Authorization"] = f"Bearer {read_deidentification_provider_bearer_token(db, provider_id=provider.id)}"
+        token = bearer_token_override or read_deidentification_provider_bearer_token(db, provider_id=provider.id)
+        headers["Authorization"] = f"Bearer {token}"
     url = f"{provider.base_url.rstrip('/')}{provider.detect_path}"
     try:
         response = httpx.post(url, json=body, headers=headers, timeout=20.0)
@@ -220,38 +308,13 @@ def _detect_with_generic_rest(
         payload = response.json()
     except ValueError as exc:
         raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
-    entities_payload = _extract_path(payload, provider.response_entities_path)
-    if not isinstance(entities_payload, list):
-        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
-    spans: list[Span] = []
-    for raw_item in entities_payload:
-        if not isinstance(raw_item, dict):
-            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response")
-        score = 1.0
-        if provider.response_score_field:
-            raw_score = raw_item.get(provider.response_score_field)
-            if raw_score is not None:
-                try:
-                    score = float(raw_score)
-                except (TypeError, ValueError) as exc:
-                    raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
-        spans.append(
-            Span(
-                start=_coerce_span_field(raw_item, provider.response_start_field, kind=int),
-                end=_coerce_span_field(raw_item, provider.response_end_field, kind=int),
-                entity_type=_normalize_entity_type(
-                    _coerce_span_field(raw_item, provider.response_type_field, kind=str),
-                    entity_type_map={str(key): str(value) for key, value in (provider.entity_type_map_json or {}).items()},
-                ),
-                score=score,
-            )
-        )
+    spans = _provider_spans_from_payload(text, payload, provider=provider, score_threshold=score_threshold, entities=entities)
     model_or_version = None
     if provider.response_model_version_path:
         resolved_value = _extract_path(payload, provider.response_model_version_path)
         model_or_version = str(resolved_value) if resolved_value is not None else None
     return DeidentificationDetectionResult(
-        spans=_resolve_overlaps(_filter_provider_spans(text, spans, score_threshold=score_threshold, entities=entities)),
+        spans=spans,
         api_provider=provider.label,
         api_model_or_version=model_or_version,
     )
@@ -265,6 +328,7 @@ def _detect_phi(
     language: str,
     score_threshold: float,
     entities: list[str] | None,
+    bearer_token_override: str | None = None,
 ) -> DeidentificationDetectionResult:
     if provider.adapter_kind is DeidentificationAdapterKind.native_presidio:
         return _detect_with_presidio(text, language=language, score_threshold=score_threshold, entities=entities)
@@ -276,6 +340,7 @@ def _detect_phi(
             language=language,
             score_threshold=score_threshold,
             entities=entities,
+            bearer_token_override=bearer_token_override,
         )
     raise AppError(422, "business_rule_violation", "Unsupported de-identification adapter")
 
@@ -305,15 +370,18 @@ def redact_text_with_mapping(
     score_threshold: float = 0.35,
     entities: list[str] | None = None,
     start_index: int = 1,
+    bearer_token_override: str | None = None,
 ) -> dict[str, Any]:
-    detection = _detect_phi(
-        db,
-        provider=provider,
-        text=text,
-        language=language,
-        score_threshold=score_threshold,
-        entities=entities,
-    )
+    detect_kwargs: dict[str, Any] = {
+        "provider": provider,
+        "text": text,
+        "language": language,
+        "score_threshold": score_threshold,
+        "entities": entities,
+    }
+    if bearer_token_override is not None:
+        detect_kwargs["bearer_token_override"] = bearer_token_override
+    detection = _detect_phi(db, **detect_kwargs)
     spans = detection.spans
 
     parts: list[str] = []

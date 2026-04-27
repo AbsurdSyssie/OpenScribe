@@ -1276,6 +1276,309 @@
           </label>
           <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
         </form>
+
+        <hr style="margin: 24px 0; border: 0; border-top: 1px solid rgba(212, 199, 171, 0.8);">
+
+        <h3>Team de-identification selection</h3>
+        {% if deidentification_selection %}
+        <p><span class="pill">{{ deidentification_selection.provider.label }}</span> <span class="pill">{{ deidentification_selection.provider.adapter_kind.value }}</span></p>
+        <p><small>{% if deidentification_selection.provider.is_builtin %}Built-in fallback provider selected for this team.{% else %}Selected provider for lazy redaction runs{% if deidentification_selection.provider.base_url %}: {{ deidentification_selection.provider.base_url }}{{ deidentification_selection.provider.detect_path }}{% endif %}.{% endif %}</small></p>
+        <form method="post" action="/admin/deidentification-selection/clear" onsubmit="return confirm('Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.');">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <button type="submit">Clear selection</button>
+        </form>
+        {% else %}
+        <p><small>No explicit de-identification selection is set for this team. Built-in Native Presidio will be used as the fallback.</small></p>
+        {% endif %}
+
+        <h3>Assigned de-identification providers</h3>
+        {% if deidentification_assignments %}
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Assigned</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for assignment in deidentification_assignments %}
+            <tr>
+              <td>
+                <strong>{{ assignment.provider.label }}</strong><br>
+                <small>{{ assignment.provider.adapter_kind.value }}{% if assignment.provider.base_url %} · {{ assignment.provider.base_url }}{{ assignment.provider.detect_path }}{% endif %}</small>
+              </td>
+              <td><small>{{ assignment.created_at.strftime('%Y-%m-%d %H:%M') if assignment.created_at else '' }}</small></td>
+              <td>
+                <form method="post" action="/admin/deidentification-provider-assignments/remove" onsubmit="return confirm('Remove this team assignment? If it is selected, the team will fall back to Built-in Native Presidio.');">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="provider_id" value="{{ assignment.provider_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Remove assignment</button>
+                </form>
+                <form method="post" action="/admin/deidentification-selection">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="provider_id" value="{{ assignment.provider_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Use for team</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No non-builtin de-identification providers are assigned to this team yet.</small></p>
+        {% endif %}
+
+        {% set assignable_deidentification_providers = deidentification_providers | rejectattr('is_builtin') | list %}
+        {% if assignable_deidentification_providers %}
+        <h3>Assign provider to team</h3>
+        <form method="post" action="/admin/deidentification-provider-assignments">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>
+            Provisioned provider
+            <select name="provider_id" required>
+              {% for provider in assignable_deidentification_providers %}
+              <option value="{{ provider.id }}">{{ provider.label }} ({{ provider.adapter_kind.value }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Assign provider</button>
+        </form>
+        {% endif %}
+
+        <h3>Provisioned de-identification providers</h3>
+        {% if deidentification_providers %}
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Contract</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for provider in deidentification_providers %}
+            <tr>
+              <td>
+                <strong>{{ provider.label }}</strong><br>
+                <small>{{ provider.adapter_kind.value }}{% if provider.base_url %} · {{ provider.base_url }}{{ provider.detect_path }}{% endif %}</small><br>
+                <small>Secret configured: {{ "yes" if provider.vault_secret_ref else "no" }}</small>
+              </td>
+              <td>
+                <small>Text field: {{ provider.request_text_field }}</small><br>
+                <small>Entity path: {{ provider.response_entities_path }}</small>
+              </td>
+              <td>
+                {% if not provider.is_builtin %}
+                <form method="get" action="{{ admin_page_route }}">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="deidentification_provider_id" value="{{ provider.id }}">
+                  <input type="hidden" name="tab" value="providers">
+                  <button type="submit">Edit</button>
+                </form>
+                <form method="post" action="/admin/deidentification-providers/{{ provider.id }}/delete" onsubmit="return confirm('Delete this de-identification provider and its saved secret?');">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Delete</button>
+                </form>
+                {% else %}
+                <small>Built-in fallback</small>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No de-identification providers are provisioned yet.</small></p>
+        {% endif %}
+
+        <h3>{% if deidentification_provider %}Edit de-identification provider{% else %}Add de-identification provider{% endif %}</h3>
+        <p><small>Only generic REST providers are configurable here. The built-in native Presidio provider remains available as the global fallback.</small></p>
+        <form method="post" action="/admin/deidentification-providers">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="provider_id" value="{{ deidentification_form.provider_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>
+            Label
+            <input type="text" name="label" required maxlength="255" value="{{ deidentification_form.label }}">
+          </label>
+          <label>
+            Adapter family
+            <select name="adapter_kind">
+              <option value="generic_rest" {% if deidentification_form.adapter_kind == "generic_rest" %}selected{% endif %}>generic_rest</option>
+            </select>
+          </label>
+          <label>
+            Base URL
+            <input type="url" name="base_url" required value="{{ deidentification_form.base_url }}">
+          </label>
+          <label>
+            OpenAPI/docs path
+            <input type="text" name="openapi_path" value="{{ deidentification_form.openapi_path }}" placeholder="/docs or /openapi.json">
+          </label>
+          <p><small>Use this to discover endpoints from provider docs. Leave blank when directly pinging a known endpoint.</small></p>
+          <label>
+            Detect path / selected endpoint
+            <input type="text" name="detect_path" required value="{{ deidentification_form.detect_path }}" list="deidentification-candidate-paths">
+          </label>
+          {% if deidentification_form.candidate_paths %}
+          <datalist id="deidentification-candidate-paths">
+            {% for candidate_path in deidentification_form.candidate_paths %}
+            <option value="{{ candidate_path }}"></option>
+            {% endfor %}
+          </datalist>
+          <p><small>Candidate endpoints are available in the detect-path dropdown. Pick one, then ping again to infer and test that endpoint.</small></p>
+          {% endif %}
+          <label>
+            Auth mode
+            <select name="auth_mode">
+              <option value="none" {% if deidentification_form.auth_mode == "none" %}selected{% endif %}>none</option>
+              <option value="bearer" {% if deidentification_form.auth_mode == "bearer" %}selected{% endif %}>bearer</option>
+            </select>
+          </label>
+          <label>
+            Bearer token
+            <input type="password" name="bearer_token">
+          </label>
+          <p><small>The bearer token is used for this request, written to Vault only when saving, and is never shown again.</small></p>
+          <label>
+            Request text field
+            <input type="text" name="request_text_field" required value="{{ deidentification_form.request_text_field }}">
+          </label>
+          <label>
+            Request language field
+            <input type="text" name="request_language_field" value="{{ deidentification_form.request_language_field }}">
+          </label>
+          <p><small>Optional field name for language, for example `lang` or `language`. Do not enter the language value `en` here.</small></p>
+          <label>
+            Extra headers JSON
+            <textarea name="extra_headers_json">{{ deidentification_form.extra_headers_json }}</textarea>
+          </label>
+          <label>
+            Extra body JSON
+            <textarea name="extra_body_json">{{ deidentification_form.extra_body_json }}</textarea>
+          </label>
+          <label>
+            Response entities path
+            <input type="text" name="response_entities_path" required value="{{ deidentification_form.response_entities_path }}">
+          </label>
+          <label>
+            Response start field
+            <input type="text" name="response_start_field" required value="{{ deidentification_form.response_start_field }}">
+          </label>
+          <label>
+            Response end field
+            <input type="text" name="response_end_field" required value="{{ deidentification_form.response_end_field }}">
+          </label>
+          <label>
+            Response type field
+            <input type="text" name="response_type_field" required value="{{ deidentification_form.response_type_field }}">
+          </label>
+          <label>
+            Response score field
+            <input type="text" name="response_score_field" value="{{ deidentification_form.response_score_field }}">
+          </label>
+          <label>
+            Response model/version path
+            <input type="text" name="response_model_version_path" value="{{ deidentification_form.response_model_version_path }}">
+          </label>
+          <label>
+            Ping sample text
+            <input type="text" name="sample_text" maxlength="500" value="{{ deidentification_form.sample_text or 'Jane Smith attended on 22 April 2026.' }}">
+          </label>
+          <label>
+            Entity type map JSON
+            <textarea name="entity_type_map_json">{{ deidentification_form.entity_type_map_json }}</textarea>
+          </label>
+          <label>
+            <input type="checkbox" name="is_active" value="true" {% if deidentification_form.is_active %}checked{% endif %}>
+            Active
+          </label>
+          <div class="stack">
+            <button type="submit" formaction="/admin/deidentification-providers/inspect" formmethod="post">Ping provider</button>
+            <button type="submit">{% if deidentification_form.provider_id %}Save provider{% else %}Add provider{% endif %}</button>
+          </div>
+        </form>
+        {% if deidentification_inspection %}
+        <div class="result success">
+          <div class="stack">
+            <strong>De-identification provider ping</strong>
+            <span class="pill">{{ deidentification_inspection.api_provider }}</span>
+            {% if deidentification_inspection.api_model_or_version %}<span class="pill">{{ deidentification_inspection.api_model_or_version }}</span>{% endif %}
+          </div>
+          {% if deidentification_inspection.operation_summary %}
+          <p><small>Operation: {{ deidentification_inspection.operation_summary }}</small></p>
+          {% endif %}
+          {% if deidentification_inspection.candidate_paths %}
+          <p><small>Candidate endpoints: {{ deidentification_inspection.candidate_paths | join(", ") }}.</small></p>
+          {% endif %}
+          <p><small>{% if deidentification_inspection.openapi_path %}OpenAPI/docs path: {{ deidentification_inspection.openapi_path }}. {% endif %}Selected endpoint: {{ deidentification_inspection.detect_path }}. Text field: {{ deidentification_inspection.request_text_field }}. Entities path: {{ deidentification_inspection.response_entities_path }}.</small></p>
+          <p><small>Sample sent: {{ deidentification_inspection.sample_text }}</small></p>
+          {% if deidentification_inspection.field_tips %}
+          <div class="tips">
+            {% for tip in deidentification_inspection.field_tips %}
+            <div class="tip">
+              <div>
+                <strong>{{ tip.name }}</strong>
+                <span class="pill">{{ tip.role }}</span>
+                {% if tip.required %}<span class="pill">required</span>{% endif %}
+              </div>
+              {% if tip.default_value %}<p><small>Default: {{ tip.default_value }}</small></p>{% endif %}
+              {% if tip.description %}<p><small>{{ tip.description }}</small></p>{% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+          {% if deidentification_inspection.entities %}
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Value</th>
+                <th>Span</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for entity in deidentification_inspection.entities %}
+              <tr>
+                <td>{{ entity.entity_type }}</td>
+                <td>{{ entity.value }}</td>
+                <td>{{ entity.start }}-{{ entity.end }}</td>
+                <td>{{ '%.2f'|format(entity.score) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p><small>No entities returned for sample text.</small></p>
+          {% endif %}
+          {% if deidentification_inspection.raw_response_json is not none %}
+          <details>
+            <summary>Raw provider response from synthetic ping</summary>
+            <pre><code>{{ deidentification_inspection.raw_response_json | tojson(indent=2) }}</code></pre>
+          </details>
+          {% endif %}
+          {% if deidentification_inspection.notes %}
+          <ul>
+            {% for note in deidentification_inspection.notes %}
+            <li><small>{{ note }}</small></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </div>
+        {% endif %}
         {% endif %}
       </div>
 

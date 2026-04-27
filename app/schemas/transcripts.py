@@ -59,6 +59,21 @@ class TranscriptDetail(TranscriptListItem):
     latest_ingestion_retry_available: bool = False
 
 
+class TranscriptPiiEntityDetail(BaseModel):
+    id: UUID | None = None
+    entity_type: str
+    value: str
+    placeholder: str
+    occurrence_count: int
+    source: str = "detected"
+
+
+class TranscriptManualPiiEntityCreate(BaseModel):
+    entity_type: str = Field(default="PII", min_length=1, max_length=255)
+    value: str = Field(min_length=1, max_length=4096)
+    occurrence_count: int = Field(default=1, ge=1, le=999)
+
+
 class TranscriptIngestionJobDetail(BaseModel):
     id: UUID
     transcript_id: UUID

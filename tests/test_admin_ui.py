@@ -10,6 +10,7 @@ from app.errors import AppError
 from app.models import (
     AccountRequest,
     DeidentificationAdapterKind,
+    DeidentificationProvider,
     DefaultPromptTemplate,
     DefaultPromptTemplateVersion,
     DefaultQuickAction,
@@ -317,6 +318,235 @@ def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team
     assert 'data-service-body="llm"' in response.text
     assert 'data-service-body="llm" hidden' not in response.text
     assert 'data-service-toggle="llm">Close<' in response.text
+
+
+def test_admin_providers_panel_renders_deidentification_management(client, make_team, make_user, make_deidentification_provider):
+    team = make_team(name="Clinic Deid Admin")
+    admin = make_user(email="deid-panel-admin@example.com", password="password-1", is_system_admin=True)
+    make_deidentification_provider(
+        actor=admin,
+        label="Clinic REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+    )
+
+    client.post("/login", data={"email": "deid-panel-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?tab=providers&team_id={team.id}")
+
+    assert page.status_code == 200
+    assert "Team de-identification selection" in page.text
+    assert "Assign provider to team" in page.text
+    assert "Provisioned de-identification providers" in page.text
+    assert "Built-in Native Presidio" in page.text
+    assert "Clinic REST Deid" in page.text
+
+
+def test_admin_can_provision_and_assign_deidentification_provider_from_web(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Deid Assign")
+    make_user(email="deid-web-admin@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "deid-web-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    created = client.post(
+        "/admin/deidentification-providers",
+        data={
+            "team_id": str(team.id),
+            "label": "Web REST Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://deid.example.com",
+            "detect_path": "/detect",
+            "auth_mode": "none",
+            "request_text_field": "text",
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "is_active": "true",
+            "return_tab": "providers",
+        },
+        follow_redirects=False,
+    )
+
+    assert created.status_code == 303
+    provider = db_session.scalar(select(DeidentificationProvider).where(DeidentificationProvider.label == "Web REST Deid"))
+    assert provider is not None
+
+    assigned = client.post(
+        "/admin/deidentification-provider-assignments",
+        data={"team_id": str(team.id), "provider_id": str(provider.id), "return_tab": "providers"},
+        follow_redirects=False,
+    )
+
+    assert assigned.status_code == 303
+    assignment = db_session.scalar(
+        select(TeamDeidentificationProviderAssignment).where(
+            TeamDeidentificationProviderAssignment.team_id == team.id,
+            TeamDeidentificationProviderAssignment.provider_id == provider.id,
+        )
+    )
+    assert assignment is not None
+
+    selected = client.post(
+        "/admin/deidentification-selection",
+        data={"team_id": str(team.id), "provider_id": str(provider.id), "return_tab": "providers"},
+        follow_redirects=False,
+    )
+
+    assert selected.status_code == 303
+    selection = db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id))
+    assert selection is not None
+    assert selection.provider_id == provider.id
+
+    page = client.get(f"/admin?tab=providers&team_id={team.id}")
+    assert page.status_code == 200
+    assert "Selected provider for lazy redaction runs: https://deid.example.com/detect." in page.text
+
+    cleared = client.post(
+        "/admin/deidentification-selection/clear",
+        data={"team_id": str(team.id), "return_tab": "providers"},
+        follow_redirects=False,
+    )
+
+    assert cleared.status_code == 303
+    assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
+
+
+def test_admin_deidentification_inspect_does_not_render_bearer_token(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Deid Inspect")
+    make_user(email="deid-inspect-web-admin@example.com", password="password-1", is_system_admin=True)
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "entities": [
+                    {"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.99},
+                ],
+            }
+
+    def fake_post(url, *, json, headers, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+
+    client.post(
+        "/login",
+        data={"email": "deid-inspect-web-admin@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+    inspect = client.post(
+        "/admin/deidentification-providers/inspect",
+        data={
+            "team_id": str(team.id),
+            "label": "Web Inspect Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9400",
+            "detect_path": "/detect",
+            "auth_mode": "bearer",
+            "bearer_token": "secret-token",
+            "request_text_field": "text",
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "response_score_field": "score",
+            "sample_text": "Jane Smith attended on 22 April 2026.",
+            "is_active": "true",
+        },
+    )
+
+    assert inspect.status_code == 200
+    assert "De-identification provider ping succeeded." in inspect.text
+    assert "secret-token" not in inspect.text
+    assert 'name="preserved_bearer_token" value="secret-token"' not in inspect.text
+    assert captured["headers"] == {"Authorization": "Bearer secret-token"}
+
+    save_without_retyping = client.post(
+        "/admin/deidentification-providers",
+        data={
+            "team_id": str(team.id),
+            "label": "Web Inspect Deid",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:9400",
+            "detect_path": "/detect",
+            "auth_mode": "bearer",
+            "bearer_token": "",
+            "request_text_field": "text",
+            "response_entities_path": "entities",
+            "response_start_field": "start",
+            "response_end_field": "end",
+            "response_type_field": "entity_type",
+            "is_active": "true",
+        },
+    )
+
+    assert save_without_retyping.status_code == 400
+    assert "Invalid de-identification provider" in save_without_retyping.text
+    assert db_session.scalar(select(DeidentificationProvider).where(DeidentificationProvider.label == "Web Inspect Deid")) is None
+
+
+def test_leader_home_can_manage_deidentification_selection_inline(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+):
+    team = make_team(name="Clinic Deid Home")
+    admin = make_user(email="deid-home-admin@example.com", password="password-2", is_system_admin=True)
+    make_user(email="deid-home-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Leader REST Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+
+    client.post("/login", data={"email": "deid-home-leader@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home?tab=ai-services&modal=deidentification-settings")
+
+    assert page.status_code == 200
+    assert 'data-service-body="deidentification"' in page.text
+    assert 'data-service-body="deidentification" hidden' not in page.text
+    assert "Leader REST Deid" in page.text
+
+    selected = client.post(
+        "/home/deidentification-selection",
+        data={"provider_id": str(provider.id), "return_tab": "ai-services"},
+        follow_redirects=False,
+    )
+    assert selected.status_code == 303
+    persisted = db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id))
+    assert persisted is not None
+    assert persisted.provider_id == provider.id
+
+    cleared = client.post(
+        "/home/deidentification-selection/clear",
+        data={"return_tab": "ai-services"},
+        follow_redirects=False,
+    )
+    assert cleared.status_code == 303
+    assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
 
 
 def test_home_restyled_llm_preference_redirect_preserves_preview_route(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -1626,6 +1856,55 @@ def test_user_transcribe_glm_2_page_renders_workspace_values(
     assert "Continue Amlodipine and review in four weeks." in page.text
 
 
+def test_user_transcribe_page_shows_owner_pii_sidebar(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic PII Sidebar")
+    member = make_user(email="member-pii-sidebar@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="PII sidebar review",
+        current_draft_text_encrypted="John Smith called from 07123 456789.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(version)
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=member,
+        entities=[
+            (1, "PERSON", "John Smith"),
+            (2, "PHONE_NUMBER", "07123 456789"),
+        ],
+    )
+
+    client.post("/login", data={"email": "member-pii-sidebar@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert 'class="pii-sidebar" data-pii-sidebar' in page.text
+    assert 'data-pii-count>2</span>' in page.text
+    assert "John Smith" in page.text
+    assert "07123 456789" in page.text
+    assert "PHONE NUMBER" in page.text
+
+
 def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     client,
     db_session,
@@ -2836,6 +3115,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     root = Path(__file__).resolve().parents[1]
     app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
     actions_js = (root / "app" / "static" / "js" / "transcribe" / "actions.js").read_text(encoding="utf-8")
+    documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
     structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
     media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
     workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
@@ -2938,13 +3218,29 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="settings"' in workspace_html
     assert 'data-lucide="message-square-more"' in workspace_html
     assert 'data-lucide="sparkles"' in workspace_html
+    assert '<div class="transcript-review-grid">' in workspace_html
     assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>' in workspace_html
+    assert 'class="pii-sidebar" data-pii-sidebar' in workspace_html
+    assert 'data-pii-table-wrap' in workspace_html
+    assert 'data-pii-add-form' in workspace_html
+    assert 'data-pii-add-value' in workspace_html
+    assert "const piiCount = document.querySelector('[data-pii-count]');" in app_js
+    assert "const renderHighlightedTranscript = (text, entities = []) => {" in app_js
+    assert "activeDraft.innerHTML = text" in app_js
+    assert "const renderPiiEntities = (entities = [], options = {}) => {" in app_js
+    assert "piiAddForm?.addEventListener('submit'" in app_js
+    assert "fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
+    assert "data-pii-delete" in app_js
+    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true });" in documents_js
+    assert "renderPiiEntities," in app_js
+    assert "dom.noteHistory?.addEventListener('click'" in actions_js
+    assert "const wrapper = window.document.createElement('details');" in app_js
     assert "structuredEditor.renderStructuredSections(generatedStructuredDraft);" not in app_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform'" in structured_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform' && Boolean(generatedDocument.edited_output_text_encrypted)" not in structured_js
     assert "const autosizeStatementEditorsIn = (container) => {" in structured_js
-    assert "window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedStructuredPanel));" in structured_js
-    assert "window.requestAnimationFrame(() => autosizeStatementEditorsIn(dom.generatedFreeformPanel));" in structured_js
+    assert "autosizeStatementEditorsIn(dom.generatedStructuredPanel);" in structured_js
+    assert "autosizeStatementEditorsIn(dom.generatedFreeformPanel);" in structured_js
     assert "...((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || [])" in structured_js
     assert "renderStructuredSections(null);" in structured_js
     assert "renderFreeformLines(null);" in structured_js
@@ -3265,6 +3561,7 @@ def test_user_transcribe_page_renders_ready_freeform_note_editor(
     assert 'data-freeform-note-row' in page.text
     assert 'data-freeform-note-input' in page.text
     assert 'data-note-editor-toolbar' in page.text
+    assert 'data-note-editor-header-toolbar' in page.text
 
 
 def test_user_transcribe_page_reloads_persisted_structured_emis_context(

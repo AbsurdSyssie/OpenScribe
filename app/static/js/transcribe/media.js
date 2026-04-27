@@ -8,6 +8,7 @@ export function createAudioCaptureController({
   setNextLiveChunkSequenceNo,
   getDefaultMicStatusState,
   syncTranscriptTitleIfNeeded,
+  finalizeLiveCapture,
   fetchWorkspace,
   pollWorkspace,
   scheduleWorkspaceRefreshBurst,
@@ -421,6 +422,28 @@ export function createAudioCaptureController({
     scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
   };
 
+  const finalizeLiveCaptureIfNeeded = async () => {
+    const { transcriptId } = getState();
+    if (!transcriptId || typeof finalizeLiveCapture !== 'function') {
+      if (transcriptId) {
+        scheduleWorkspaceRefreshBurst({ attempts: 45, minimumAttempts: 4 });
+      }
+      return;
+    }
+    setVisibleStatus('transcribing');
+    setSessionProgress('Finalizing live capture and checking redaction...');
+    try {
+      await finalizeLiveCapture();
+      setSessionProgress('Live capture finalized. Review identified PII before generating notes.');
+      scheduleWorkspaceRefreshBurst({ attempts: 45, minimumAttempts: 4 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not finalize live capture.';
+      setMicStatus(message, 'error');
+      showFlash(message, 'error');
+      scheduleWorkspaceRefreshBurst({ attempts: 45, minimumAttempts: 4 });
+    }
+  };
+
   const buildLiveVadInstance = async () => {
     return window.vad.MicVAD.new({
       model: config.liveVadModel,
@@ -460,6 +483,7 @@ export function createAudioCaptureController({
             resetRecordingState();
             const micStatusState = getDefaultMicStatusState();
             setMicStatus(micStatusState.message, micStatusState.kind);
+            void finalizeLiveCaptureIfNeeded();
             return;
           }
           if (shouldResume) {
@@ -537,9 +561,7 @@ export function createAudioCaptureController({
         resetRecordingState();
         const micStatusState = getDefaultMicStatusState();
         setMicStatus(micStatusState.message, micStatusState.kind);
-        if (getState().transcriptId) {
-          scheduleWorkspaceRefreshBurst({ attempts: 45, minimumAttempts: 4 });
-        }
+        await finalizeLiveCaptureIfNeeded();
         return;
       }
       if (resumeAfterSegment) {
@@ -685,23 +707,26 @@ export function createAudioCaptureController({
     clearLiveChunkTimeout();
     setMicStatus('Stopping live recording...');
     setSessionProgress('Finishing the current speech segment...');
-    if (liveRestartPending && !liveSpeechActive) {
-      resetRecordingState();
-      const micStatusState = getDefaultMicStatusState();
-      setMicStatus(micStatusState.message, micStatusState.kind);
-      return;
-    }
+      if (liveRestartPending && !liveSpeechActive) {
+        resetRecordingState();
+        const micStatusState = getDefaultMicStatusState();
+        setMicStatus(micStatusState.message, micStatusState.kind);
+        void finalizeLiveCaptureIfNeeded();
+        return;
+      }
     try {
       liveVadInstance?.pause();
       if (!liveSpeechActive) {
         resetRecordingState();
         const micStatusState = getDefaultMicStatusState();
         setMicStatus(micStatusState.message, micStatusState.kind);
+        void finalizeLiveCaptureIfNeeded();
       }
     } catch (_) {
       resetRecordingState();
       const micStatusState = getDefaultMicStatusState();
       setMicStatus(micStatusState.message, micStatusState.kind);
+      void finalizeLiveCaptureIfNeeded();
     }
   };
 

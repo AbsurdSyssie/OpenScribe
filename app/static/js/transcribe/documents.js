@@ -28,6 +28,7 @@ export function createDocumentNavigator({
     escapeHtml,
     renderGeneratedOutput,
     renderFollowupOutput,
+    renderPiiEntities,
     renderRedactionDebugPanel,
     refreshIcons,
     setTab,
@@ -213,6 +214,7 @@ export function createDocumentNavigator({
       kind: "note",
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
+    renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true });
     renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };

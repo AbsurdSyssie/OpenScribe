@@ -1,9 +1,10 @@
 from datetime import datetime
 import ipaddress
+from typing import Any
 from uuid import UUID
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from app.models import DeidentificationAdapterKind, DeidentificationAuthMode
 
@@ -66,7 +67,7 @@ class DeidentificationProviderUpsert(BaseModel):
     request_text_field: str = Field(default="text", max_length=255)
     request_language_field: str | None = Field(default=None, max_length=255)
     extra_headers_json: dict[str, str] = Field(default_factory=dict)
-    extra_body_json: dict[str, str] = Field(default_factory=dict)
+    extra_body_json: dict[str, Any] = Field(default_factory=dict)
     response_entities_path: str = Field(default="entities", max_length=255)
     response_start_field: str = Field(default="start", max_length=255)
     response_end_field: str = Field(default="end", max_length=255)
@@ -134,13 +135,13 @@ class DeidentificationProviderUpsert(BaseModel):
 
     @field_validator("extra_headers_json", "extra_body_json", "entity_type_map_json")
     @classmethod
-    def validate_string_map(cls, value: dict[str, str]) -> dict[str, str]:
-        cleaned: dict[str, str] = {}
+    def validate_string_map(cls, value: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
+        cleaned: dict[str, Any] = {}
         for key, item in value.items():
             normalized_key = key.strip()
             if not normalized_key:
                 raise ValueError("Map keys must not be blank")
-            cleaned[normalized_key] = str(item)
+            cleaned[normalized_key] = item if info.field_name == "extra_body_json" else str(item)
         return cleaned
 
     @field_validator("extra_headers_json")
@@ -173,6 +174,60 @@ class DeidentificationProviderUpsert(BaseModel):
         return self
 
 
+class DeidentificationProviderInspectRequest(DeidentificationProviderUpsert):
+    openapi_path: str | None = Field(default=None, max_length=255)
+    sample_text: str = Field(default="Jane Smith attended on 22 April 2026.", min_length=1, max_length=500)
+
+    @field_validator("sample_text")
+    @classmethod
+    def validate_sample_text(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Sample text must not be blank")
+        return trimmed
+
+
+class DeidentificationInspectEntity(BaseModel):
+    start: int
+    end: int
+    entity_type: str
+    score: float
+    value: str
+
+
+class DeidentificationInspectFieldTip(BaseModel):
+    name: str
+    role: str
+    default_value: str | None = None
+    description: str | None = None
+    required: bool = False
+
+
+class DeidentificationInspectResult(BaseModel):
+    provider_label: str
+    adapter_kind: DeidentificationAdapterKind
+    openapi_path: str | None = None
+    detect_path: str
+    request_text_field: str
+    request_language_field: str | None = None
+    extra_body_json: dict[str, Any] = Field(default_factory=dict)
+    response_entities_path: str
+    response_start_field: str
+    response_end_field: str
+    response_type_field: str
+    response_score_field: str | None = None
+    response_model_version_path: str | None = None
+    api_provider: str
+    api_model_or_version: str | None = None
+    sample_text: str
+    entities: list[DeidentificationInspectEntity]
+    candidate_paths: list[str] = Field(default_factory=list)
+    operation_summary: str | None = None
+    field_tips: list[DeidentificationInspectFieldTip] = Field(default_factory=list)
+    raw_response_json: Any | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class DeidentificationProviderDetail(BaseModel):
     model_config = {"from_attributes": True, "protected_namespaces": ()}
 
@@ -185,7 +240,7 @@ class DeidentificationProviderDetail(BaseModel):
     request_text_field: str
     request_language_field: str | None
     extra_headers_json: dict[str, str]
-    extra_body_json: dict[str, str]
+    extra_body_json: dict[str, Any]
     response_entities_path: str
     response_start_field: str
     response_end_field: str

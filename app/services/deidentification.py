@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -18,7 +20,11 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    DeidentificationInspectEntity,
+    DeidentificationInspectFieldTip,
+    DeidentificationInspectResult,
     DeidentificationProviderAssignmentUpsert,
+    DeidentificationProviderInspectRequest,
     DeidentificationProviderUpsert,
     DeidentificationSelectionUpsert,
 )
@@ -31,6 +37,29 @@ from app.services.vault import (
 
 BUILTIN_DEIDENTIFICATION_PROVIDER_ID = UUID("00000000-0000-0000-0000-00000000d1d1")
 cleanup_logger = logging.getLogger("openscribe.cleanup")
+
+
+def _resolve_openapi_pointer(document: dict[str, Any], ref: str) -> dict[str, Any]:
+    if not ref.startswith("#/"):
+        raise AppError(422, "business_rule_violation", "Only local OpenAPI references are supported")
+    current: Any = document
+    for part in ref[2:].split("/"):
+        if not isinstance(current, dict) or part not in current:
+            raise AppError(422, "business_rule_violation", "OpenAPI document contains an invalid local reference")
+        current = current[part]
+    if not isinstance(current, dict):
+        raise AppError(422, "business_rule_violation", "OpenAPI reference did not resolve to an object")
+    return current
+
+
+def _dereference(document: dict[str, Any], value: Any) -> Any:
+    if isinstance(value, dict):
+        if "$ref" in value:
+            return _dereference(document, _resolve_openapi_pointer(document, str(value["$ref"])))
+        return {key: _dereference(document, item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_dereference(document, item) for item in value]
+    return value
 
 
 def _delete_deidentification_secret_best_effort(*, provider_id: UUID, secret_ref: str, event: str) -> None:
@@ -68,6 +97,429 @@ def _resolve_selection_scoped_team(db: Session, actor: User, *, team_id: UUID | 
     if team_id is not None and team_id != actor.team_id:
         raise AppError(403, "forbidden", "Leaders may only manage de-identification selection for their own team")
     return _resolve_team(db, team_id=actor.team_id)
+
+
+def _candidate_openapi_paths(detect_path: str) -> list[str]:
+    normalized = detect_path.strip() or "/openapi.json"
+    if normalized.endswith("/docs"):
+        prefix = normalized[: -len("/docs")]
+        return [f"{prefix or ''}/openapi.json"]
+    if normalized.endswith("/redoc"):
+        prefix = normalized[: -len("/redoc")]
+        return [f"{prefix or ''}/openapi.json"]
+    if normalized.endswith("/openapi.json") or normalized.endswith(".json"):
+        return [normalized]
+    return [normalized, "/openapi.json"]
+
+
+def _openapi_lookup_path(payload: DeidentificationProviderInspectRequest) -> str:
+    return (payload.openapi_path or payload.detect_path or "/openapi.json").strip()
+
+
+def _looks_like_openapi_path(path: str) -> bool:
+    normalized = path.strip().lower()
+    return normalized.endswith("/docs") or normalized.endswith("/redoc") or normalized.endswith("/openapi.json") or normalized.endswith(".json")
+
+
+def _fetch_openapi_document(payload: DeidentificationProviderInspectRequest) -> tuple[dict[str, Any], str]:
+    headers = {}
+    if payload.bearer_token:
+        headers["Authorization"] = f"Bearer {payload.bearer_token}"
+    last_status = None
+    for path in _candidate_openapi_paths(_openapi_lookup_path(payload)):
+        url = f"{payload.base_url.rstrip('/')}{path}"
+        try:
+            response = httpx.get(url, headers=headers, timeout=10.0)
+        except httpx.HTTPError:
+            continue
+        last_status = response.status_code
+        if response.status_code in {401, 403}:
+            raise AppError(401, "unauthorized", "De-identification OpenAPI document rejected the provided credentials")
+        if response.status_code >= 400:
+            continue
+        try:
+            document = response.json()
+        except ValueError:
+            continue
+        if isinstance(document, dict) and "paths" in document:
+            return document, path
+    details = {"status_code": last_status} if last_status is not None else None
+    raise AppError(422, "business_rule_violation", "Could not load a valid OpenAPI JSON document from the provided de-identification docs path", details)
+
+
+def _select_deidentification_operation(document: dict[str, Any], *, selected_path: str | None = None) -> tuple[str, dict[str, Any], list[str]]:
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    for path, path_item in (document.get("paths") or {}).items():
+        if not isinstance(path_item, dict):
+            continue
+        operation = path_item.get("post")
+        if not isinstance(operation, dict):
+            continue
+        resolved_operation = _dereference(document, operation)
+        request_body = _dereference(document, resolved_operation.get("requestBody") or {})
+        content = request_body.get("content") or {}
+        media_types = [media_type.lower() for media_type in content.keys()]
+        if "application/json" not in media_types and not any(media.endswith("+json") for media in media_types):
+            continue
+        score = 1
+        haystack = " ".join(
+            str(value).lower()
+            for value in (path, resolved_operation.get("summary"), resolved_operation.get("description"), resolved_operation.get("operationId"))
+            if value
+        )
+        for keyword in ("deid", "de-ident", "identify", "anonym", "pseudonym", "pii", "phi", "entity", "entities", "detect", "analyze", "redact"):
+            if keyword in haystack:
+                score += 3
+        candidates.append((score, str(path), resolved_operation))
+    if not candidates:
+        raise AppError(422, "business_rule_violation", "No candidate de-identification POST operation was found in the OpenAPI document")
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    if selected_path and not _looks_like_openapi_path(selected_path):
+        for _, path, operation in candidates:
+            if path == selected_path:
+                return path, operation, [candidate_path for _, candidate_path, _ in candidates[:8]]
+        raise AppError(422, "business_rule_violation", "Selected de-identification endpoint was not found in the OpenAPI document", {"detect_path": selected_path})
+    selected_score, selected_path, selected_operation = candidates[0]
+    if selected_score <= 1:
+        raise AppError(422, "business_rule_violation", "OpenAPI document did not contain a recognizable de-identification endpoint")
+    return selected_path, selected_operation, [path for _, path, _ in candidates[:5]]
+
+
+def _request_schema_for_operation(document: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
+    request_body = _dereference(document, operation.get("requestBody") or {})
+    content = request_body.get("content") or {}
+    schema = None
+    if "application/json" in content:
+        schema = content["application/json"].get("schema")
+    else:
+        for media_type, media in content.items():
+            if str(media_type).endswith("+json") and isinstance(media, dict):
+                schema = media.get("schema")
+                break
+    resolved = _dereference(document, schema) if schema else None
+    if not isinstance(resolved, dict):
+        raise AppError(422, "business_rule_violation", "The candidate de-identification request schema was invalid")
+    return resolved
+
+
+def _response_schema_for_operation(document: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any] | None:
+    responses = _dereference(document, operation.get("responses") or {})
+    success = None
+    for key in ("200", "201", "202", "default"):
+        candidate = responses.get(key)
+        if isinstance(candidate, dict):
+            success = candidate
+            break
+    if success is None:
+        return None
+    content = success.get("content") or {}
+    for media_type, media in content.items():
+        if (media_type == "application/json" or str(media_type).endswith("+json")) and isinstance(media, dict) and media.get("schema"):
+            return _dereference(document, media["schema"])
+    return None
+
+
+def _property_description(properties: dict[str, Any], key: str) -> str | None:
+    prop = properties.get(key)
+    if not isinstance(prop, dict):
+        return None
+    description = prop.get("description")
+    return str(description) if description else None
+
+
+def _pick_property_value(properties: dict[str, Any], key: str) -> Any | None:
+    prop = properties.get(key)
+    if not isinstance(prop, dict):
+        return None
+    for candidate_key in ("default", "example"):
+        value = prop.get(candidate_key)
+        if value is not None:
+            return value
+    enum_values = prop.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+    return None
+
+
+def _infer_request_text_field(properties: dict[str, Any]) -> str:
+    for preferred in ("text", "input", "content", "document", "value", "query"):
+        if preferred in properties:
+            return preferred
+    for key, prop in properties.items():
+        if isinstance(prop, dict) and prop.get("type") == "string":
+            return key
+    return "text"
+
+
+def _infer_request_language_field(properties: dict[str, Any]) -> str | None:
+    for preferred in ("language", "lang", "language_code", "locale"):
+        if preferred in properties:
+            return preferred
+    return None
+
+
+def _field_from_properties(properties: dict[str, Any], preferred: tuple[str, ...], fallback: str) -> str:
+    for key in preferred:
+        if key in properties:
+            return key
+    return fallback
+
+
+def _infer_response_contract(schema: dict[str, Any] | None) -> tuple[str, str, str, str, str | None, str | None]:
+    if not isinstance(schema, dict):
+        return "entities", "start", "end", "entity_type", "score", None
+    resolved_schema = schema
+    entities_path = "entities"
+    item_schema: dict[str, Any] = {}
+    if resolved_schema.get("type") == "array":
+        entities_path = ""
+        item_schema = resolved_schema.get("items") if isinstance(resolved_schema.get("items"), dict) else {}
+    else:
+        properties = resolved_schema.get("properties") if isinstance(resolved_schema.get("properties"), dict) else {}
+        for preferred in ("entities", "items", "results", "spans", "detections"):
+            prop = properties.get(preferred)
+            if isinstance(prop, dict) and prop.get("type") == "array":
+                entities_path = preferred
+                item_schema = prop.get("items") if isinstance(prop.get("items"), dict) else {}
+                break
+        else:
+            for key, prop in properties.items():
+                if isinstance(prop, dict) and prop.get("type") == "array":
+                    entities_path = key
+                    item_schema = prop.get("items") if isinstance(prop.get("items"), dict) else {}
+                    break
+    item_properties = item_schema.get("properties") if isinstance(item_schema.get("properties"), dict) else {}
+    start_field = _field_from_properties(item_properties, ("start", "begin", "start_offset", "offset"), "start")
+    end_field = _field_from_properties(item_properties, ("end", "stop", "end_offset"), "end")
+    type_field = _field_from_properties(item_properties, ("entity_type", "type", "label", "category", "entity"), "entity_type")
+    score_field = _field_from_properties(item_properties, ("score", "confidence", "probability"), "score") if item_properties else "score"
+    model_path = None
+    if isinstance(schema.get("properties"), dict):
+        for preferred in ("model", "model_version", "version", "meta", "metadata"):
+            if preferred in schema["properties"]:
+                model_path = preferred
+                break
+    return entities_path, start_field, end_field, type_field, score_field, model_path
+
+
+def _display_default(value: Any | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def _looks_like_language_value(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"en", "eng", "english", "cy", "welsh"}
+
+
+def _extra_forbidden_body_fields(raw_response: Any) -> set[str]:
+    if not isinstance(raw_response, dict):
+        return set()
+    error = raw_response.get("error")
+    details = error.get("details") if isinstance(error, dict) else raw_response.get("detail")
+    if not isinstance(details, list):
+        return set()
+    fields: set[str] = set()
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in {"extra_forbidden", "value_error.extra"}:
+            continue
+        field = item.get("field") or item.get("loc")
+        if isinstance(field, str) and field.startswith("body."):
+            fields.add(field.removeprefix("body."))
+        elif isinstance(field, list) and len(field) >= 2 and field[0] == "body":
+            fields.add(str(field[1]))
+    return fields
+
+
+def _inspect_provider_ping(
+    db: Session,
+    *,
+    provider: DeidentificationProvider,
+    sample_text: str,
+    bearer_token: str | None,
+) -> tuple[list[DeidentificationInspectEntity], str | None, Any | None, list[str]]:
+    from app.services.redaction import _extract_path, _provider_spans_from_payload
+
+    body: dict[str, Any] = dict(provider.extra_body_json or {})
+    body[provider.request_text_field] = sample_text
+    notes: list[str] = []
+    if _looks_like_language_value(provider.request_language_field):
+        notes.append("Request language field looked like a language value, so it was omitted. Use a field name such as lang or language, not en.")
+        provider.request_language_field = None
+    if provider.request_language_field:
+        body[provider.request_language_field] = body.get(provider.request_language_field) or "en"
+    headers = {key: str(value) for key, value in (provider.extra_headers_json or {}).items()}
+    if provider.auth_mode is DeidentificationAuthMode.bearer:
+        token = bearer_token or read_deidentification_provider_bearer_token(db, provider_id=provider.id)
+        headers["Authorization"] = f"Bearer {token}"
+    def post_body(request_body: dict[str, Any]):
+        try:
+            return httpx.post(f"{provider.base_url.rstrip('/')}{provider.detect_path}", json=request_body, headers=headers, timeout=20.0)
+        except httpx.HTTPError as exc:
+            raise AppError(502, "redaction_failed", "PHI redaction provider ping failed") from exc
+
+    response = post_body(body)
+    try:
+        raw_response = response.json()
+    except ValueError as exc:
+        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider ping did not return JSON") from exc
+    forbidden_fields = _extra_forbidden_body_fields(raw_response) if response.status_code == 422 else set()
+    retry_body = dict(body)
+    pruned_fields = sorted(field for field in forbidden_fields if field in retry_body and field != provider.request_text_field)
+    if pruned_fields:
+        for field in pruned_fields:
+            retry_body.pop(field, None)
+        provider.extra_body_json = {key: value for key, value in (provider.extra_body_json or {}).items() if key not in pruned_fields}
+        if provider.request_language_field in pruned_fields:
+            provider.request_language_field = None
+        notes.append(f"Provider rejected extra body fields, so synthetic ping retried without: {', '.join(pruned_fields)}.")
+        response = post_body(retry_body)
+        try:
+            raw_response = response.json()
+        except ValueError as exc:
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider ping did not return JSON") from exc
+    if response.status_code >= 400:
+        return [], None, raw_response, notes + [f"Provider ping returned HTTP {response.status_code}; inspect raw response to adjust request fields."]
+    spans = []
+    try:
+        spans = _provider_spans_from_payload(sample_text, raw_response, provider=provider, score_threshold=0.0, entities=None)
+    except (AppError, KeyError, TypeError, ValueError) as exc:
+        notes.append("Provider responded, but response could not be parsed with the current entity field settings.")
+        if isinstance(raw_response, dict):
+            notes.append(f"Top-level response keys: {', '.join(sorted(str(key) for key in raw_response.keys())) or 'none'}.")
+        spans = []
+    model_or_version = None
+    if provider.response_model_version_path:
+        try:
+            resolved_value = _extract_path(raw_response, provider.response_model_version_path)
+            model_or_version = str(resolved_value) if resolved_value is not None else None
+        except AppError:
+            pass
+    entities = [
+        DeidentificationInspectEntity(
+            start=span.start,
+            end=span.end,
+            entity_type=span.entity_type,
+            score=span.score,
+            value=sample_text[span.start:span.end],
+        )
+        for span in spans
+    ]
+    return entities, model_or_version, raw_response, notes
+
+
+def _inspect_deidentification_openapi(db: Session, actor: User, payload: DeidentificationProviderInspectRequest) -> DeidentificationInspectResult:
+    _ = (db, actor)
+    document, openapi_path = _fetch_openapi_document(payload)
+    selected_path = payload.detect_path if payload.openapi_path else None
+    detect_path, operation, candidate_paths = _select_deidentification_operation(document, selected_path=selected_path)
+    request_schema = _request_schema_for_operation(document, operation)
+    properties = request_schema.get("properties") if isinstance(request_schema.get("properties"), dict) else {}
+    required_fields = {str(item) for item in (request_schema.get("required") or []) if isinstance(item, str)}
+    request_text_field = _infer_request_text_field(properties)
+    request_language_field = _infer_request_language_field(properties)
+    extra_body = {}
+    for key, prop in properties.items():
+        if key in {request_text_field, request_language_field} or not isinstance(prop, dict):
+            continue
+        value = _pick_property_value(properties, key)
+        if value is not None:
+            extra_body[key] = value
+    entities_path, start_field, end_field, type_field, score_field, model_path = _infer_response_contract(_response_schema_for_operation(document, operation))
+    field_tips = [
+        DeidentificationInspectFieldTip(
+            name=request_text_field,
+            role="text",
+            default_value=_display_default(_pick_property_value(properties, request_text_field)),
+            description=_property_description(properties, request_text_field),
+            required=request_text_field in required_fields,
+        )
+    ]
+    if request_language_field:
+        field_tips.append(
+            DeidentificationInspectFieldTip(
+                name=request_language_field,
+                role="language",
+                default_value=_display_default(_pick_property_value(properties, request_language_field)),
+                description=_property_description(properties, request_language_field),
+                required=request_language_field in required_fields,
+            )
+        )
+    for key in sorted(extra_body):
+        field_tips.append(
+            DeidentificationInspectFieldTip(
+                name=key,
+                role="extra",
+                default_value=_display_default(extra_body[key]),
+                description=_property_description(properties, key),
+                required=key in required_fields,
+            )
+        )
+    provider = DeidentificationProvider(
+        id=uuid4(),
+        label=payload.label.strip(),
+        adapter_kind=payload.adapter_kind,
+        base_url=payload.base_url,
+        detect_path=detect_path,
+        auth_mode=payload.auth_mode,
+        request_text_field=request_text_field,
+        request_language_field=request_language_field,
+        extra_headers_json=payload.extra_headers_json,
+        extra_body_json=extra_body,
+        response_entities_path=entities_path,
+        response_start_field=start_field,
+        response_end_field=end_field,
+        response_type_field=type_field,
+        response_score_field=score_field,
+        response_model_version_path=model_path,
+        entity_type_map_json=payload.entity_type_map_json,
+        vault_secret_ref="",
+        is_active=payload.is_active,
+        is_builtin=False,
+        created_by_user_id=actor.id,
+        updated_by_user_id=actor.id,
+    )
+    ping_entities: list[DeidentificationInspectEntity] = []
+    ping_model_or_version = None
+    raw_response = None
+    ping_notes: list[str] = []
+    if payload.auth_mode is not DeidentificationAuthMode.bearer or payload.bearer_token:
+        ping_entities, ping_model_or_version, raw_response, ping_notes = _inspect_provider_ping(
+            db,
+            provider=provider,
+            sample_text=payload.sample_text,
+            bearer_token=payload.bearer_token,
+        )
+    else:
+        ping_notes.append("Inferred contract was not pinged because bearer auth requires a bearer token.")
+    return DeidentificationInspectResult(
+        provider_label=payload.label.strip(),
+        adapter_kind=payload.adapter_kind,
+        openapi_path=openapi_path,
+        detect_path=detect_path,
+        request_text_field=request_text_field,
+        request_language_field=provider.request_language_field,
+        extra_body_json=provider.extra_body_json or {},
+        response_entities_path=entities_path,
+        response_start_field=start_field,
+        response_end_field=end_field,
+        response_type_field=type_field,
+        response_score_field=score_field,
+        response_model_version_path=model_path,
+        api_provider=payload.label.strip(),
+        api_model_or_version=ping_model_or_version,
+        sample_text=payload.sample_text,
+        entities=ping_entities,
+        candidate_paths=candidate_paths,
+        operation_summary=str(operation.get("summary") or operation.get("operationId") or "OpenAPI de-identification operation"),
+        field_tips=field_tips,
+        raw_response_json=raw_response,
+        notes=[
+            f"Loaded OpenAPI JSON from {openapi_path}.",
+            "Inspection inferred fields and pinged the inferred detect path with synthetic sample text.",
+            "No transcript or note content was sent.",
+        ] + ping_notes,
+    )
 
 
 def ensure_builtin_deidentification_provider(db: Session) -> DeidentificationProvider:
@@ -119,6 +571,84 @@ def get_deidentification_provider(db: Session, actor: User, *, provider_id: UUID
     if provider is None:
         raise AppError(404, "not_found", "De-identification provider not found", {"resource": "deidentification_provider", "provider_id": str(provider_id)})
     return provider
+
+
+def inspect_deidentification_provider(
+    db: Session,
+    actor: User,
+    payload: DeidentificationProviderInspectRequest,
+) -> DeidentificationInspectResult:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin de-identification provisioning access required")
+    ensure_builtin_deidentification_provider(db)
+    existing_provider = db.get(DeidentificationProvider, payload.provider_id) if payload.provider_id is not None else None
+    if payload.provider_id is not None and existing_provider is None:
+        raise AppError(404, "not_found", "De-identification provider not found", {"resource": "deidentification_provider", "provider_id": str(payload.provider_id)})
+    if payload.adapter_kind is DeidentificationAdapterKind.native_presidio:
+        raise AppError(409, "conflict", "Built-in de-identification provider does not need remote inspection")
+    if payload.openapi_path or _looks_like_openapi_path(payload.detect_path):
+        return _inspect_deidentification_openapi(db, actor, payload)
+    if payload.auth_mode is DeidentificationAuthMode.bearer and not payload.bearer_token and not (existing_provider and existing_provider.vault_secret_ref):
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "Bearer token is required to inspect bearer-auth de-identification provider",
+            {"field": "bearer_token"},
+        )
+    provider = DeidentificationProvider(
+        id=existing_provider.id if existing_provider is not None else uuid4(),
+        label=payload.label.strip(),
+        adapter_kind=payload.adapter_kind,
+        base_url=payload.base_url,
+        detect_path=payload.detect_path,
+        auth_mode=payload.auth_mode,
+        request_text_field=payload.request_text_field.strip(),
+        request_language_field=payload.request_language_field,
+        extra_headers_json=payload.extra_headers_json,
+        extra_body_json=payload.extra_body_json,
+        response_entities_path=payload.response_entities_path.strip(),
+        response_start_field=payload.response_start_field.strip(),
+        response_end_field=payload.response_end_field.strip(),
+        response_type_field=payload.response_type_field.strip(),
+        response_score_field=payload.response_score_field,
+        response_model_version_path=payload.response_model_version_path,
+        entity_type_map_json=payload.entity_type_map_json,
+        vault_secret_ref=existing_provider.vault_secret_ref if existing_provider is not None else "",
+        is_active=payload.is_active,
+        is_builtin=False,
+        created_by_user_id=actor.id,
+        updated_by_user_id=actor.id,
+    )
+    entities, model_or_version, raw_response, ping_notes = _inspect_provider_ping(
+        db,
+        provider=provider,
+        sample_text=payload.sample_text,
+        bearer_token=payload.bearer_token,
+    )
+    notes = ["Ping used synthetic sample text only; no transcript or note content was sent."]
+    if not entities:
+        notes.append("Provider responded successfully but returned no entities for sample text.")
+    return DeidentificationInspectResult(
+        provider_label=provider.label,
+        adapter_kind=provider.adapter_kind,
+        openapi_path=payload.openapi_path,
+        detect_path=provider.detect_path,
+        request_text_field=provider.request_text_field,
+        request_language_field=provider.request_language_field,
+        extra_body_json=provider.extra_body_json or {},
+        response_entities_path=provider.response_entities_path,
+        response_start_field=provider.response_start_field,
+        response_end_field=provider.response_end_field,
+        response_type_field=provider.response_type_field,
+        response_score_field=provider.response_score_field,
+        response_model_version_path=provider.response_model_version_path,
+        api_provider=provider.label,
+        api_model_or_version=model_or_version,
+        sample_text=payload.sample_text,
+        entities=entities,
+        raw_response_json=raw_response,
+        notes=notes + ping_notes,
+    )
 
 
 def upsert_deidentification_provider(db: Session, actor: User, payload: DeidentificationProviderUpsert) -> DeidentificationProvider:

@@ -2,12 +2,14 @@ from pydantic import BaseModel
 
 from .dictation import PostConsultationDictationDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
-from .transcripts import TranscriptDetail, TranscriptListItem
+from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail
 
 
 class TranscribeWorkspaceDetail(BaseModel):
     recent_transcripts: list[TranscriptListItem]
     active_transcript: TranscriptDetail | None = None
+    active_transcript_pii_entities: list[TranscriptPiiEntityDetail] = []
+    active_transcript_redaction_status: dict | None = None
     post_consultation_dictation: PostConsultationDictationDetail | None = None
     generated_documents: list[GeneratedDocumentDetail]
     available_templates: list[PromptTemplateDetail]

@@ -68,6 +68,11 @@ What it does:
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
 - generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
+- transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
+- note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
+- transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
+- manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
+- manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation
 
 ## Main.py refactor guardrails
 
@@ -170,7 +175,11 @@ What it does:
 - the first successful note title auto-filling the transcript session title only when the session is still blank or `Untitled session`
 - owner-only follow-up generation now queues a generated-document job using the same async worker path
 - generated-document prompt snapshots surviving later template or quick-action deletion
-- generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version
+- transcript commit and completed whole-file ingestion proactively creating owner-scoped redaction runs for review before generation
+- live-capture finalize applying completed chunks, deferring preview redaction while chunks are still pending, and creating/reusing owner-scoped redaction once the transcript is ready
+- workspace redaction preview status distinguishing not-run, succeeded, and failed checks so an empty PII table is not ambiguous
+- workspace PII coverage verifies detected rows are hidden when the latest redaction run failed rather than falling back to stale older successful runs
+- generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version, including reuse of an existing matching transcript version
 - generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
 - generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
 - system-admin de-identification provider provisioning and team assignment
@@ -212,6 +221,7 @@ What it does:
 - owner transcription workspace exposing API-driven session-title, upload, and generation form hooks
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
 - owner transcription workspace marking non-empty transcript sessions for client-side delete confirmation without rendering transcript text in the session rail
+- owner transcription workspace rendering detected and owner-created manual PII in a bounded right-side table next to the transcript content
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active
@@ -265,10 +275,19 @@ What it does:
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
 - de-identification provider validation rejecting secret-bearing extra headers/body fields and bearer-auth providers without a Vault-backed token
+- de-identification provider inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, and no token echo
+- admin de-identification inspection UI using entered bearer tokens for the ping only and requiring re-entry for save instead of rendering tokens into hidden fields
+- de-identification provider OpenAPI/docs inspection inferring REST detect path, request fields, response entity fields including top-level array responses, typed extra body defaults, automatic synthetic ping, and raw response display
+- de-identification provider inspection separating docs discovery path from selected runtime endpoint and allowing candidate endpoint re-ping with the same OpenAPI document
+- de-identification provider synthetic ping pruning provider-rejected extra body fields and ignoring language values accidentally entered as field names
+- generic REST de-identification parsing supports provider entities with explicit start/end offsets or value-only text plus label, deriving spans from the source text when needed
+- admin providers UI selecting an assigned de-identification provider for the team so runtime redaction uses the saved endpoint rather than an older selection
 - de-identification provider Vault lifecycle keeping old secrets until DB commits and cleaning pending replacement secrets on failed commits
 - built-in de-identification provider fallback helper preserving caller transaction boundaries
 - generic REST de-identification span normalization/filtering before placeholder replacement
 - de-identification runtime fallback to the built-in global provider when a selected team provider is inactive or unavailable
+- admin providers UI exposing de-identification provider provisioning, edit/delete, and per-team assignment without revealing Vault-backed bearer tokens
+- leader home AI-services UI exposing team de-identification selection and clear-to-built-in-fallback behavior
 - home tabs initializing after the navigation moved above the tab shell
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace

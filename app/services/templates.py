@@ -31,6 +31,7 @@ from app.models import (
     TemplateMode,
     TemplateScope,
     Transcript,
+    TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
     User,
@@ -55,7 +56,12 @@ from app.services.redaction import (
     redact_transient_text,
     reidentify_text,
 )
-from app.services.transcripts import set_transcript_structured_context, transcript_structured_context, transcript_version_text
+from app.services.transcripts import (
+    manual_pii_entity_value,
+    set_transcript_structured_context,
+    transcript_structured_context,
+    transcript_version_text,
+)
 from app.services.vault import read_team_llm_bearer_token
 
 
@@ -1031,6 +1037,28 @@ def _snapshot_transcript_version(db: Session, *, transcript: Transcript, allow_e
     ).strip()
     if not current_text and not allow_empty:
         raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
+    existing_versions = db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+    )
+    for existing_version in existing_versions:
+        existing_text = (
+            decrypt_text_for_owner(
+                db,
+                owner_user_id=transcript.owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=existing_version.id,
+                stored_value=existing_version.text_encrypted,
+            )
+            or ""
+        ).strip()
+        if existing_text == current_text:
+            transcript.status = TranscriptStatus.ready
+            db.add(transcript)
+            db.flush()
+            return existing_version
     version_id = uuid4()
     current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
     version = TranscriptVersion(
@@ -1844,6 +1872,70 @@ def _redacted_generation_source_texts(
     return redacted_transcript_text.strip(), redacted_dictation_text.strip(), list(combined_source_redaction["phi_index"])
 
 
+def _manual_pii_entities_for_transcript(db: Session, *, transcript_id: UUID, owner_user_id: UUID) -> list[TranscriptManualPiiEntity]:
+    return list(
+        db.scalars(
+            select(TranscriptManualPiiEntity)
+            .where(
+                TranscriptManualPiiEntity.transcript_id == transcript_id,
+                TranscriptManualPiiEntity.owner_user_id == owner_user_id,
+            )
+            .order_by(TranscriptManualPiiEntity.created_at.asc(), TranscriptManualPiiEntity.id.asc())
+        )
+    )
+
+
+def _manual_pii_value_pattern(value: str) -> re.Pattern[str]:
+    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
+    return re.compile(r"\s+".join(re.escape(token) for token in tokens), re.IGNORECASE)
+
+
+def _apply_manual_pii_redaction(
+    db: Session,
+    *,
+    transcript_id: UUID,
+    owner_user_id: UUID,
+    transcript_text: str,
+    dictation_text: str,
+    start_index: int,
+) -> tuple[str, str, list[dict[str, str | int]]]:
+    manual_entities = _manual_pii_entities_for_transcript(db, transcript_id=transcript_id, owner_user_id=owner_user_id)
+    if not manual_entities:
+        return transcript_text, dictation_text, []
+
+    redacted_transcript_text = transcript_text
+    redacted_dictation_text = dictation_text
+    phi_index: list[dict[str, str | int]] = []
+    next_index = start_index
+    seen_values: set[str] = set()
+    manual_items: list[tuple[str, str]] = []
+    for entity in manual_entities:
+        value = manual_pii_entity_value(db, entity=entity).strip()
+        normalized_key = value.lower()
+        if not value or normalized_key in seen_values:
+            continue
+        seen_values.add(normalized_key)
+        manual_items.append((entity.entity_type, value))
+
+    for entity_type, value in sorted(manual_items, key=lambda item: len(item[1]), reverse=True):
+        pattern = _manual_pii_value_pattern(value)
+        if pattern.search(redacted_transcript_text) is None and pattern.search(redacted_dictation_text) is None:
+            continue
+        placeholder = f"[PHI-{next_index}]"
+        redacted_transcript_text = pattern.sub(placeholder, redacted_transcript_text)
+        redacted_dictation_text = pattern.sub(placeholder, redacted_dictation_text)
+        phi_index.append(
+            {
+                "index": next_index,
+                "type": entity_type,
+                "value": value,
+                "placeholder": placeholder,
+            }
+        )
+        next_index += 1
+    return redacted_transcript_text, redacted_dictation_text, phi_index
+
+
 def _build_followup_generation_messages(*, transcript_text: str, follow_up_prompt_text: str, dictation_text: str = "") -> tuple[str, str]:
     return (
         "You are a medical secretary writing in British English. "
@@ -2138,6 +2230,15 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         redaction_run=redaction_run,
         dictation_text=dictation_text,
     )
+    transcript_text, dictation_text, manual_phi_index = _apply_manual_pii_redaction(
+        db,
+        transcript_id=document.transcript_id,
+        owner_user_id=document.owner_user_id,
+        transcript_text=transcript_text,
+        dictation_text=dictation_text,
+        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+    )
+    extra_phi_index.extend(manual_phi_index)
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
@@ -2150,6 +2251,15 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
+        prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
+            db,
+            transcript_id=document.transcript_id,
+            owner_user_id=document.owner_user_id,
+            transcript_text=prompt_redaction["redacted_text"],
+            dictation_text="",
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(manual_prompt_phi_index)
         template_config = None
         if document.template_version_id:
             template_version = db.get(PromptTemplateVersion, document.template_version_id)
@@ -2174,9 +2284,19 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                     prefill_redaction = redact_transient_text(db, prefill_text, team_id=document.team_id, start_index=placeholder_index)
                     extra_phi_index.extend(list(prefill_redaction["phi_index"]))
                     placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
-                    context_lines.append(f'- "{section.section_key}": {prefill_redaction["redacted_text"]}')
+                    prefill_text_redacted, _, manual_prefill_phi_index = _apply_manual_pii_redaction(
+                        db,
+                        transcript_id=document.transcript_id,
+                        owner_user_id=document.owner_user_id,
+                        transcript_text=prefill_redaction["redacted_text"],
+                        dictation_text="",
+                        start_index=placeholder_index,
+                    )
+                    extra_phi_index.extend(manual_prefill_phi_index)
+                    placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
+                    context_lines.append(f'- "{section.section_key}": {prefill_text_redacted}')
             context_block = "\n".join(context_lines).strip()
-            prompt_with_context = prompt_redaction["redacted_text"]
+            prompt_with_context = prompt_text_redacted
             if context_block:
                 prompt_with_context = f"{prompt_with_context}\n\nExisting section context to preserve or refine:\n{context_block}"
             system_message, user_message = _build_structured_template_generation_messages(
@@ -2189,7 +2309,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         else:
             system_message, user_message = _build_template_generation_messages(
                 template_name=document.source_template_name,
-                prompt_text=prompt_redaction["redacted_text"],
+                prompt_text=prompt_text_redacted,
                 transcript_text=transcript_text,
                 dictation_text=dictation_text,
             )
@@ -2204,9 +2324,18 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
+        prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
+            db,
+            transcript_id=document.transcript_id,
+            owner_user_id=document.owner_user_id,
+            transcript_text=prompt_redaction["redacted_text"],
+            dictation_text="",
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(manual_prompt_phi_index)
         system_message, user_message = _build_followup_generation_messages(
             transcript_text=transcript_text,
-            follow_up_prompt_text=prompt_redaction["redacted_text"],
+            follow_up_prompt_text=prompt_text_redacted,
             dictation_text=dictation_text,
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.quick_action:
@@ -2220,9 +2349,18 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(list(prompt_redaction["phi_index"]))
+        prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
+            db,
+            transcript_id=document.transcript_id,
+            owner_user_id=document.owner_user_id,
+            transcript_text=prompt_redaction["redacted_text"],
+            dictation_text="",
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(manual_prompt_phi_index)
         system_message, user_message = _build_quick_action_generation_messages(
             transcript_text=transcript_text,
-            quick_action_text=prompt_redaction["redacted_text"],
+            quick_action_text=prompt_text_redacted,
             dictation_text=dictation_text,
         )
     else:  # pragma: no cover

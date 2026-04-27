@@ -240,6 +240,79 @@ def home_clear_llm_selection(
     )
 
 
+@app.post("/home/deidentification-selection", response_class=HTMLResponse)
+def home_set_deidentification_selection(
+    request: Request,
+    provider_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        set_team_deidentification_selection_service(
+            db,
+            context.user,
+            DeidentificationSelectionUpsert(provider_id=UUID(provider_id)),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_home_tab=return_tab or "ai-services",
+            active_home_modal="deidentification-settings",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/deidentification-selection/clear", response_class=HTMLResponse)
+def home_clear_deidentification_selection(
+    request: Request,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        clear_team_deidentification_selection_service(db, context.user)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_home_tab=return_tab or "ai-services",
+            active_home_modal="deidentification-settings",
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/home/llm-preference", response_class=HTMLResponse)
 def home_set_llm_preference(
     request: Request,

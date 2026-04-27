@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from app.models import (
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
+    TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
     User,
@@ -27,6 +29,7 @@ from app.services.audio import (
     probe_audio_duration_seconds,
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
+from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
@@ -39,6 +42,7 @@ LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS = float(os.getenv("LIVE_CHUNK_PROCESSI
 WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(250 * 1024 * 1024)))
 WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", "7200"))
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
+transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 
 
 def _retry_source_available(job: TranscriptIngestionJob) -> bool:
@@ -216,6 +220,109 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     if not normalized_chunk:
         return existing_text
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
+
+
+def _create_transcript_version_from_text(
+    db: Session,
+    *,
+    transcript: Transcript,
+    owner_user_id: UUID,
+    plaintext: str,
+) -> TranscriptVersion:
+    current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
+    version_id = uuid4()
+    version = TranscriptVersion(
+        id=version_id,
+        transcript_id=transcript.id,
+        version_no=(current_max or 0) + 1,
+        text_encrypted=encrypt_text_for_owner(
+            db,
+            owner_user_id=owner_user_id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext=plaintext,
+        ),
+    )
+    db.add(version)
+    return version
+
+
+def _latest_matching_transcript_version(
+    db: Session,
+    *,
+    transcript: Transcript,
+    plaintext: str,
+) -> TranscriptVersion | None:
+    versions = db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+    )
+    for version in versions:
+        existing_text = (
+            decrypt_text_for_owner(
+                db,
+                owner_user_id=transcript.owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=version.id,
+                stored_value=version.text_encrypted,
+            )
+            or ""
+        ).strip()
+        if existing_text == plaintext.strip():
+            return version
+    return None
+
+
+def _create_or_reuse_transcript_version_from_text(
+    db: Session,
+    *,
+    transcript: Transcript,
+    owner_user_id: UUID,
+    plaintext: str,
+) -> TranscriptVersion:
+    existing = _latest_matching_transcript_version(db, transcript=transcript, plaintext=plaintext)
+    if existing is not None:
+        return existing
+    return _create_transcript_version_from_text(
+        db,
+        transcript=transcript,
+        owner_user_id=owner_user_id,
+        plaintext=plaintext,
+    )
+
+
+def _attempt_preview_redaction(db: Session, *, transcript_version: TranscriptVersion) -> None:
+    try:
+        ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
+    except AppError as exc:
+        transcript_redaction_logger.warning(
+            "preview_redaction_failed",
+            extra={
+                "transcript_id": str(transcript_version.transcript_id),
+                "transcript_version_id": str(transcript_version.id),
+                "error_code": exc.code,
+            },
+        )
+
+
+def _preview_redact_current_draft_if_ready(db: Session, *, transcript: Transcript) -> None:
+    if transcript.status is not TranscriptStatus.ready:
+        return
+    current_draft = (transcript_draft_text(db, transcript=transcript) or "").strip()
+    if not current_draft:
+        return
+    version = _create_or_reuse_transcript_version_from_text(
+        db,
+        transcript=transcript,
+        owner_user_id=transcript.owner_user_id,
+        plaintext=current_draft,
+    )
+    db.add(transcript)
+    db.commit()
+    _attempt_preview_redaction(db, transcript_version=version)
 
 
 def transcript_draft_text(db: Session, *, transcript: Transcript) -> str | None:
@@ -454,6 +561,106 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
     return transcript
 
 
+def _normalize_manual_pii_type(value: str | None) -> str:
+    normalized = " ".join((value or "PII").strip().split())
+    return normalized[:255] or "PII"
+
+
+def _normalize_manual_pii_value(value: str) -> str:
+    return " ".join(value.strip().split())
+
+
+def _manual_pii_value_hash(value: str) -> str:
+    normalized = _normalize_manual_pii_value(value).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def manual_pii_entity_value(db: Session, *, entity: TranscriptManualPiiEntity) -> str:
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=entity.owner_user_id,
+            table="transcript_manual_pii_entities",
+            field="original_value_encrypted",
+            record_id=entity.id,
+            stored_value=entity.original_value_encrypted,
+        )
+        or ""
+    )
+
+
+def create_manual_pii_entity(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    entity_type: str,
+    value: str,
+    occurrence_count: int = 1,
+) -> TranscriptManualPiiEntity:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    normalized_type = _normalize_manual_pii_type(entity_type)
+    normalized_value = _normalize_manual_pii_value(value)
+    if not normalized_value:
+        raise AppError(422, "business_rule_violation", "PII value is required", {"field": "value"})
+    normalized_hash = _manual_pii_value_hash(normalized_value)
+    existing = db.scalar(
+        select(TranscriptManualPiiEntity)
+        .where(
+            TranscriptManualPiiEntity.transcript_id == transcript.id,
+            TranscriptManualPiiEntity.entity_type == normalized_type,
+            TranscriptManualPiiEntity.normalized_value_hash == normalized_hash,
+        )
+        .limit(1)
+    )
+    if existing is not None:
+        existing.occurrence_count = max(existing.occurrence_count, occurrence_count)
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    entity_id = uuid4()
+    entity = TranscriptManualPiiEntity(
+        id=entity_id,
+        transcript_id=transcript.id,
+        owner_user_id=transcript.owner_user_id,
+        team_id=transcript.team_id,
+        entity_type=normalized_type,
+        original_value_encrypted=encrypt_text_for_owner(
+            db,
+            owner_user_id=owner.id,
+            table="transcript_manual_pii_entities",
+            field="original_value_encrypted",
+            record_id=entity_id,
+            plaintext=normalized_value,
+        ),
+        normalized_value_hash=normalized_hash,
+        occurrence_count=occurrence_count,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def delete_manual_pii_entity(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    entity_id: UUID,
+) -> None:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    entity = db.get(TranscriptManualPiiEntity, entity_id)
+    if entity is None or entity.transcript_id != transcript.id:
+        raise AppError(404, "not_found", "Manual PII entity not found", {"resource": "transcript_manual_pii_entity", "entity_id": str(entity_id)})
+    if entity.owner_user_id != owner.id:
+        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    db.delete(entity)
+    db.commit()
+
+
 def _enforce_live_chunk_hourly_duration_budget(
     db: Session,
     *,
@@ -585,26 +792,17 @@ def commit_transcript_text(
     plaintext: str,
 ) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
-    current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
-    version_id = uuid4()
-    version = TranscriptVersion(
-        id=version_id,
-        transcript_id=transcript.id,
-        version_no=(current_max or 0) + 1,
-        text_encrypted=encrypt_text_for_owner(
-            db,
-            owner_user_id=owner.id,
-            table="transcript_versions",
-            field="text_encrypted",
-            record_id=version_id,
-            plaintext=plaintext,
-        ),
+    version = _create_transcript_version_from_text(
+        db,
+        transcript=transcript,
+        owner_user_id=owner.id,
+        plaintext=plaintext,
     )
     set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
     transcript.status = TranscriptStatus.ready
-    db.add(version)
     db.add(transcript)
     db.commit()
+    _attempt_preview_redaction(db, transcript_version=version)
     db.refresh(transcript)
     return transcript
 
@@ -960,6 +1158,8 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
     transcript.status = _resolved_transcript_status(db, transcript=transcript)
     db.add(transcript)
     db.commit()
+    db.refresh(transcript)
+    _preview_redact_current_draft_if_ready(db, transcript=transcript)
 
 
 def _mark_stale_live_chunk_jobs_failed(db: Session, *, transcript: Transcript) -> bool:
@@ -1027,6 +1227,34 @@ def reconcile_live_chunk_progress(
     return reconcile_transcript_status(db, transcript=transcript)
 
 
+def finalize_live_capture(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
+        raise AppError(
+            409,
+            "business_rule_violation",
+            "Only live capture transcripts can be finalized",
+            {"field": "ingestion_mode"},
+        )
+
+    if transcript.status is TranscriptStatus.recording:
+        transcript.status = TranscriptStatus.transcribing
+        db.add(transcript)
+        db.commit()
+        db.refresh(transcript)
+
+    transcript = reconcile_transcript_status(db, transcript=transcript)
+    if transcript.status is TranscriptStatus.ready:
+        _preview_redact_current_draft_if_ready(db, transcript=transcript)
+        db.refresh(transcript)
+    return transcript
+
+
 def process_transcript_ingestion_job(
     db: Session,
     *,
@@ -1088,10 +1316,17 @@ def process_transcript_ingestion_job(
                 transcript_text,
             )
             set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
+            transcript_version = _create_transcript_version_from_text(
+                db,
+                transcript=transcript,
+                owner_user_id=transcript.owner_user_id,
+                plaintext=updated_draft_text,
+            )
             transcript.status = TranscriptStatus.ready
             db.add(job)
             db.add(transcript)
             db.commit()
+            _attempt_preview_redaction(db, transcript_version=transcript_version)
             if job.source_audio_vault_ref:
                 try:
                     clear_ingestion_retry_source(

@@ -10,6 +10,8 @@ from ..errors import AppError
 from ..models import (
     GeneratedDocument,
     GeneratedDocumentGeneratorType,
+    RedactionRun,
+    RedactionRunStatus,
     SessionAuthLevel,
     SessionStatus,
     SttSelectionPurpose,
@@ -19,6 +21,7 @@ from ..models import (
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
+    TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
     User,
@@ -33,6 +36,7 @@ from ..schemas import (
     TranscriptIngestionAccepted,
     TranscriptIngestionJobDetail,
     TranscriptListItem,
+    TranscriptPiiEntityDetail,
     TranscribeWorkspaceDetail,
 )
 from ..services.auth import determine_auth_level, resolve_authenticated_session, revoke_session_by_token, session_token_hash
@@ -56,10 +60,12 @@ from ..services.transcripts import (
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     reconcile_transcript_status as reconcile_transcript_status_service,
+    manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_draft_text as transcript_draft_text_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
 )
+from ..services.redaction import redaction_entity_original_value as redaction_entity_original_value_service
 from .presentation import generated_document_response, quick_action_response, template_response
 from .templates import templates
 
@@ -295,6 +301,80 @@ def transcript_list_item_response(db: Session, transcript: Transcript) -> Transc
     return TranscriptListItem.model_validate(payload)
 
 
+def transcript_pii_entities_response(db: Session, transcript: Transcript | None) -> list[TranscriptPiiEntityDetail]:
+    if transcript is None:
+        return []
+    redaction_run = db.scalar(
+        select(RedactionRun)
+        .where(
+            RedactionRun.transcript_id == transcript.id,
+            RedactionRun.owner_user_id == transcript.owner_user_id,
+        )
+        .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+        .limit(1)
+    )
+    if redaction_run is None or redaction_run.status is not RedactionRunStatus.succeeded:
+        detected_entities = []
+    else:
+        detected_entities = [
+            TranscriptPiiEntityDetail(
+                id=None,
+                entity_type=entity.entity_type,
+                value=redaction_entity_original_value_service(db, entity=entity),
+                placeholder=entity.placeholder,
+                occurrence_count=entity.occurrence_count,
+                source="detected",
+            )
+            for entity in sorted(redaction_run.entities, key=lambda item: item.entity_order)
+        ]
+    manual_entities = list(
+        db.scalars(
+            select(TranscriptManualPiiEntity)
+            .where(
+                TranscriptManualPiiEntity.transcript_id == transcript.id,
+                TranscriptManualPiiEntity.owner_user_id == transcript.owner_user_id,
+            )
+            .order_by(TranscriptManualPiiEntity.created_at.asc(), TranscriptManualPiiEntity.id.asc())
+        )
+    )
+    return detected_entities + [
+        transcript_manual_pii_entity_response(db, entity)
+        for entity in manual_entities
+    ]
+
+
+def transcript_redaction_status_response(db: Session, transcript: Transcript | None) -> dict[str, object]:
+    if transcript is None:
+        return {"status": "unavailable", "entity_count": 0, "error_code": None}
+    latest_run = db.scalar(
+        select(RedactionRun)
+        .where(
+            RedactionRun.transcript_id == transcript.id,
+            RedactionRun.owner_user_id == transcript.owner_user_id,
+        )
+        .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+        .limit(1)
+    )
+    if latest_run is None:
+        return {"status": "not_run", "entity_count": 0, "error_code": None}
+    return {
+        "status": latest_run.status.value,
+        "entity_count": latest_run.entity_count,
+        "error_code": latest_run.error_code,
+    }
+
+
+def transcript_manual_pii_entity_response(db: Session, entity: TranscriptManualPiiEntity) -> TranscriptPiiEntityDetail:
+    return TranscriptPiiEntityDetail(
+        id=entity.id,
+        entity_type=entity.entity_type,
+        value=manual_pii_entity_value_service(db, entity=entity),
+        placeholder="Manual",
+        occurrence_count=entity.occurrence_count,
+        source="manual",
+    )
+
+
 def resolve_transcribe_workspace(
     db: Session,
     *,
@@ -501,6 +581,8 @@ def resolve_transcribe_workspace(
         ),
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
+        "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript),
+        "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
         "show_redaction_debug": show_redaction_debug,
         "emis_sections": _default_emis_section_definitions(),
@@ -545,6 +627,8 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     return TranscribeWorkspaceDetail(
         recent_transcripts=[transcript_list_item_response(db, transcript) for transcript in recent_transcripts],
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
+        active_transcript_pii_entities=list(workspace.get("active_transcript_pii_entities") or []),
+        active_transcript_redaction_status=dict(workspace.get("active_transcript_redaction_status") or {}),
         post_consultation_dictation=(
             dictation_detail_response(db, dictation=post_consultation_dictation)
             if post_consultation_dictation is not None
@@ -632,6 +716,14 @@ def render_transcribe(
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     if post_consultation_dictation is not None:
         workspace["post_consultation_dictation"] = dictation_detail_response(db, dictation=post_consultation_dictation)
+    workspace["active_transcript_pii_entities"] = [
+        entity.model_dump(mode="json")
+        for entity in transcript_pii_entities_response(db, active_transcript if isinstance(active_transcript, Transcript) else None)
+    ]
+    workspace["active_transcript_redaction_status"] = transcript_redaction_status_response(
+        db,
+        active_transcript if isinstance(active_transcript, Transcript) else None,
+    )
     generated_documents = workspace.get("generated_documents") or []
     if generated_documents:
         generated_document_details = [generated_document_response(db, document) for document in generated_documents]

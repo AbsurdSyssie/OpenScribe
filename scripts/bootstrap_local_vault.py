@@ -19,6 +19,8 @@ from app.services.vault import VAULT_ADDR, VAULT_KV_MOUNT, ensure_user_content_t
 LOCAL_VAULT_DIR = ROOT_DIR / ".local" / "vault"
 ROOT_TOKEN_FILE = LOCAL_VAULT_DIR / "root-token"
 UNSEAL_KEY_FILE = LOCAL_VAULT_DIR / "unseal-key"
+WAIT_TIMEOUT_SECONDS = float(os.getenv("LOCAL_VAULT_WAIT_TIMEOUT_SECONDS", "90"))
+WAIT_RETRY_INTERVAL_SECONDS = float(os.getenv("LOCAL_VAULT_WAIT_RETRY_INTERVAL_SECONDS", "1"))
 
 
 def _write_secret(path: Path, value: str) -> None:
@@ -38,7 +40,7 @@ def _read_secret(path: Path, *, label: str) -> str:
 
 
 def _wait_for_vault() -> None:
-    deadline = time.time() + 30
+    deadline = time.time() + WAIT_TIMEOUT_SECONDS
     last_error: Exception | None = None
     health_url = f"{VAULT_ADDR.rstrip('/')}/v1/sys/health"
     while time.time() < deadline:
@@ -48,18 +50,27 @@ def _wait_for_vault() -> None:
                 return
         except httpx.HTTPError as exc:
             last_error = exc
-        time.sleep(1)
+        time.sleep(WAIT_RETRY_INTERVAL_SECONDS)
     raise SystemExit(f"Vault did not become ready in time: {last_error}")
+
+
+def _retry_vault_call(label: str, fn):
+    deadline = time.time() + WAIT_TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            return fn()
+        except Exception as exc:
+            last_error = exc
+            time.sleep(WAIT_RETRY_INTERVAL_SECONDS)
+    raise SystemExit(f"Vault {label} failed after waiting {WAIT_TIMEOUT_SECONDS:.0f}s: {last_error}")
 
 
 def bootstrap_local_vault() -> None:
     _wait_for_vault()
     client = hvac.Client(url=VAULT_ADDR)
 
-    try:
-        initialized = client.sys.is_initialized()
-    except Exception as exc:
-        raise SystemExit(f"Vault initialization check failed: {exc}") from exc
+    initialized = _retry_vault_call("initialization check", client.sys.is_initialized)
 
     if not initialized:
         try:
@@ -74,7 +85,7 @@ def bootstrap_local_vault() -> None:
         root_token = _read_secret(ROOT_TOKEN_FILE, label="root token")
         unseal_key = _read_secret(UNSEAL_KEY_FILE, label="unseal key")
 
-    if client.sys.is_sealed():
+    if _retry_vault_call("seal status check", client.sys.is_sealed):
         try:
             client.sys.submit_unseal_key(unseal_key)
         except Exception as exc:

@@ -1,5 +1,598 @@
 # Progress
 
+## 2026-04-27 De-identification Inspect Token Handling
+
+### Scope
+
+- Stopped the admin de-identification inspection flow from rendering newly entered bearer tokens back into the browser as hidden form fields.
+- De-identification bearer tokens are now one-request values for Inspect; saving a new bearer-auth provider after inspection requires re-entry so Vault storage happens only on Save.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/routes/web_admin.py`: discard de-identification inspect bearer tokens after the request and ignore client-provided preserved tokens when saving.
+- `app/templates/admin.html`: remove the de-identification hidden preserved-token field and clarify one-request/save behavior.
+- `tests/test_admin_ui.py`: add regression coverage for no token echo and required re-entry on save.
+- `docs/testing.md`, `docs/progress.md`: document the browser UI secret-handling coverage and this fix.
+
+### Tests
+
+- `python3 -m py_compile app/routes/web_admin.py tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification_inspect_does_not_render_bearer_token"`: passed, 1 test.
+
+### Documentation
+
+- Updated testing coverage notes and daily progress.
+
+### Risks / assumptions
+
+- Admins must re-enter a bearer token when saving a new bearer-auth de-identification provider after Inspect. Existing saved providers can still inspect with their Vault-backed token.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: provider secrets are no longer exposed in rendered HTML; synthetic ping still sends only sample text.
+- Ownership rules preserved: no transcript-derived access paths changed; route remains system-admin only.
+- Deletion semantics preserved: no retention, cascade, or Vault cleanup behavior changed.
+- Provider rules preserved: raw de-identification secrets remain Vault-backed on save, with built-in fallback unchanged.
+- Structured-note contract preserved: no EMIS or generated-document behavior changed.
+
+## 2026-04-27 De-identification OpenAPI Array Response Path
+
+### Scope
+
+- Preserved the empty response entity path inferred from top-level array OpenAPI response schemas so generic REST providers returning an entity list directly can be parsed.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/deidentification.py`: keep the empty inferred path instead of falling back to `entities`.
+- `tests/test_api.py`: add OpenAPI/docs inspection regression coverage for top-level array responses.
+- `docs/testing.md`, `docs/progress.md`: document supported inspection coverage and this fix.
+
+### Tests
+
+- `python3 -m py_compile app/services/deidentification.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "openapi_docs_preserve_top_level_array_response_path or inspect_deidentification_openapi_docs"`: passed, 2 tests.
+
+### Documentation
+
+- Updated testing coverage notes and daily progress.
+
+### Risks / assumptions
+
+- Empty path remains the existing parser contract for "use the whole payload"; no provider resolution, ownership, deletion, or structured-note behavior changed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: synthetic admin ping still sends only configured sample text, not transcript/note content.
+- Ownership rules preserved: system-admin inspection flow only; no transcript-derived records touched.
+- Deletion semantics preserved: no persistence or cascade behavior changed.
+- Provider rules preserved: generic REST OpenAPI inference now supports another valid response shape while retaining fallback behavior.
+- Structured-note contract preserved: no EMIS or generated-document output behavior changed.
+
+## 2026-04-27 Value-Based De-identification Parsing
+
+### Scope
+
+- Added generic REST parsing fallback for PII provider responses that return detected text plus label instead of numeric start/end offsets.
+- Shared parser between runtime redaction and admin synthetic ping so successful admin parsing matches transcription behavior.
+- Added common entity value fields (`text`, `value`, `entity_text`, `entity`, `match`, etc.) and case-insensitive source-text lookup.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: repeated identical values are matched sequentially where possible; ambiguous duplicate occurrences may still require offset-capable provider output for perfect alignment.
+
+### Files changed
+
+- `app/services/redaction.py`: add shared provider payload parser with value-based span derivation.
+- `app/services/deidentification.py`: use shared parser for admin synthetic pings.
+- `tests/test_api.py`: cover value-only entity parsing and existing offset parsing.
+- `docs/admin_brief.md`, `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document setup workflow, parser behavior, and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/services/redaction.py app/services/deidentification.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "generic_rest_deidentification"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "inspect_deidentification or prunes_forbidden"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "deidentification_provider"`: passed, 8 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py -k "manifest"`: passed, 1 test.
+
+### Documentation
+
+- Updated admin setup guidance, API notes, testing notes, and this progress entry.
+
+### Risks / assumptions
+
+- Value-only parsing depends on matching provider-returned text back into the submitted source text. Exact offsets remain more reliable for duplicates and transformed text.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: parsing occurs only on owner runtime text or synthetic admin sample text; no new content readers/logging.
+- Ownership rules preserved: runtime redaction remains owner/transcript scoped through existing paths.
+- Deletion semantics preserved: no new persisted rows or cascade changes.
+- Provider rules preserved: selected generic REST provider contract remains explicit and team-scoped.
+- Structured-note contract preserved: no EMIS keys or structured JSON behavior changed.
+
+## 2026-04-27 Admin De-identification Team Selection
+
+### Scope
+
+- Added admin provider-tab controls to select an assigned de-identification provider for the current team and clear back to built-in fallback.
+- Displayed selected provider endpoint in the admin selection summary so stale runtime paths like `/detect` are visible before testing transcription redaction.
+- Added regression coverage that runtime redaction receives the selected provider's saved detect path.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: if an old provider remains selected, admin must click `Use for team` on the newly saved/assigned provider or clear selection.
+
+### Files changed
+
+- `app/templates/admin.html`: add `Use for team`, `Clear selection`, and selected endpoint display for de-identification providers.
+- `app/routes/web_admin.py`: add admin set/clear de-identification selection routes.
+- `tests/test_admin_ui.py`: cover admin assign/select/clear flow.
+- `tests/test_api.py`: assert runtime redaction receives the selected provider's non-default detect path.
+- `docs/testing.md`, `docs/progress.md`: document coverage and workflow.
+
+### Tests
+
+- `python3 -m py_compile app/routes/web_admin.py tests/test_admin_ui.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "redaction_run_uses_selected_team_deidentification_provider"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "inspect_deidentification"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "deidentification_provider"`: passed, 8 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py -k "manifest"`: passed, 1 test.
+
+### Documentation
+
+- Updated `docs/testing.md` and this progress entry.
+
+### Risks / assumptions
+
+- Provider ping/save and team selection remain distinct steps; runtime uses the selected provider row, not the last successful ping.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: admin controls only provider metadata/selection and expose no transcript-derived content.
+- Ownership rules preserved: no owner content access changed; team selection remains team-scoped metadata.
+- Deletion semantics preserved: clearing selection removes only the selection row and falls back to built-in provider.
+- Provider rules preserved: only assigned, active providers can be selected; fallback behavior remains unchanged.
+- Structured-note contract preserved: no EMIS keys or structured output behavior changed.
+
+## 2026-04-27 De-identification OpenAPI Inspection
+
+### Scope
+
+- Extended system-admin de-identification inspection so `/docs`, `/redoc`, and OpenAPI JSON paths load API metadata instead of being treated as detect endpoints.
+- Split OpenAPI/docs path from selected detect endpoint so admins can discover candidate endpoints, choose one, then infer and ping that endpoint's request/response contract.
+- Inferred generic REST detect path, request text/language fields, extra body defaults, response entity array path, span fields, score field, and model/version path from OpenAPI.
+- Preserved typed extra body defaults from OpenAPI so provider pings send booleans/numbers as JSON booleans/numbers rather than strings.
+- Ping now shows raw provider JSON response for the synthetic admin test only, helping diagnose providers that return redacted output/mapping instead of entity spans.
+- Synthetic ping now omits common language values accidentally entered as field names, and retries without body fields that FastAPI reports as `extra_forbidden`.
+- Updated admin provider form after inspection so inferred values can be pinged or saved without retyping.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: OpenAPI inference is heuristic; unusual provider schemas may still need manual field edits before ping/save.
+
+### Files changed
+
+- `app/schemas/deidentification.py`, `app/schemas/__init__.py`: add docs path plus inferred contract fields and field tips to inspect result.
+- `app/services/deidentification.py`: load OpenAPI JSON from docs paths, infer chosen generic REST de-identification contract, send synthetic ping, and return raw test response.
+- `app/routes/web_admin.py`: pass docs path separately and update form values with inferred contract fields after inspection.
+- `app/templates/admin.html`: show docs path, candidate endpoint choices, inferred operation, contract fields, request field tips, and raw synthetic ping response.
+- `tests/test_api.py`: add OpenAPI/docs inspection coverage and 422 extra-field pruning coverage.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document docs/OpenAPI inspection behavior.
+
+### Tests
+
+- `python3 -m py_compile app/schemas/deidentification.py app/schemas/__init__.py app/services/deidentification.py app/services/redaction.py app/routes/api_routes.py app/routes/web_admin.py app/web/presentation.py app/api_route_audit.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "inspect_deidentification or prunes_forbidden"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "deidentification_provider"`: passed, 8 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py -k "manifest"`: passed, 1 test.
+- `.venv/bin/python - <<'PY' ... templates.env.get_template('admin.html') ... PY`: passed.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated `docs/api.md`, `docs/testing.md`, and this progress entry.
+
+### Risks / assumptions
+
+- `/docs` is assumed to be FastAPI-style docs with `/openapi.json` at the same prefix; direct OpenAPI JSON paths are also supported.
+- Inference selects the highest scoring JSON POST operation using de-id/PII/entity keywords; admins can still manually adjust fields before ping/save.
+- If provider returns 422, inspect now returns raw synthetic response so admins can adjust selected endpoint/body fields without exposing transcript-derived content.
+- Raw provider response in admin is safe only because inspect sends synthetic sample text; runtime redaction remains non-debug and does not reveal transcript-derived provider responses.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: docs inspection fetches API metadata only and sends no transcript/note content.
+- Ownership rules preserved: inspection remains system-admin-only provider configuration.
+- Deletion semantics preserved: no persisted transcript-derived records and no cascade changes.
+- Provider rules preserved: generic REST validation, bearer auth, HTTPS/local URL rules, and Vault-backed saved secret behavior remain intact.
+- Structured-note contract preserved: no EMIS keys or structured JSON behavior changed.
+
+## 2026-04-27 De-identification Provider Ping
+
+### Scope
+
+- Added system-admin de-identification provider inspection/ping for generic REST providers before save.
+- Ping sends only admin-supplied synthetic sample text, parses configured response paths/fields, applies entity type mapping, and returns visible spans in API/UI.
+- Added browser admin `Ping provider` flow next to save so a new provider can be tested and then configured.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: ping uses current configured contract fields; it does not auto-discover provider schemas.
+
+### Files changed
+
+- `app/schemas/deidentification.py`, `app/schemas/__init__.py`: add inspect request/result contracts.
+- `app/services/deidentification.py`, `app/services/redaction.py`: add safe provider ping path with bearer override support and existing-secret reuse.
+- `app/routes/api_routes.py`, `app/routes/web_admin.py`, `app/main.py`: expose API and browser inspect handlers.
+- `app/templates/admin.html`, `app/web/presentation.py`: show ping control, sample text, parsed entities, and notes.
+- `app/api_route_audit.py`: cover new system-admin inspect endpoint.
+- `tests/test_api.py`: add de-identification provider inspect coverage.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document endpoint and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/schemas/deidentification.py app/schemas/__init__.py app/services/deidentification.py app/services/redaction.py app/routes/api_routes.py app/routes/web_admin.py app/web/presentation.py app/api_route_audit.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "deidentification_provider"`: passed, 8 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py -k "manifest"`: passed, 1 test.
+- `.venv/bin/python - <<'PY' ... templates.env.get_template('admin.html') ... PY`: passed.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated `docs/api.md`, `docs/testing.md`, and this progress entry.
+
+### Risks / assumptions
+
+- Inspection proves connectivity and configured parsing against sample text only; successful ping does not guarantee all real transcript formats are supported.
+- Hidden preserved bearer token follows existing admin inspect/save pattern so admins can ping then save without retyping, but secrets are still not returned by JSON API and saved credentials remain Vault-backed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: ping sends synthetic sample text only; no transcript/note content involved.
+- Ownership rules preserved: route is system-admin-only provider configuration, not owner content access.
+- Deletion semantics preserved: no new persisted transcript-derived records and no cascade changes.
+- Provider rules preserved: generic REST validation, bearer handling, HTTPS/local URL rules, and Vault-backed saved secrets remain intact.
+- Structured-note contract preserved: no EMIS keys or structured JSON behavior changed.
+
+## 2026-04-24 Live Capture Finalize Redaction
+
+### Scope
+
+- Added an owner-only live-capture finalize API that moves live transcripts out of `recording`, applies completed chunks, and triggers proactive redaction when the final draft is ready.
+- Deferred preview redaction while live chunks are still queued/processing so the PII review state is not created from an incomplete transcript.
+- Wired the browser live stop path to call finalize after the last VAD segment is flushed, then refresh the workspace so detected PII can appear before generation.
+- Exposed owner-only redaction preview status in the workspace so an empty PII table can distinguish not-run, succeeded-with-none, and failed checks.
+- Applied owner-entered manual PII as an extra outbound redaction layer for transcript, dictation, prompt, quick-action, follow-up, and structured-context text before LLM calls.
+- Made owner-entered manual PII matching whitespace-tolerant so repeated spaces, tabs, or newlines in transcript text do not bypass outbound redaction.
+- Stopped the workspace PII table from falling back to older successful detected PII when the newest redaction run for the transcript failed.
+- Updated the API route audit manifest for new redaction-review routes and previously missing de-identification/app-preference/generated-document routes.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known for the finalize lifecycle; live redaction still depends on the configured de-identification provider being available.
+
+### Files changed
+
+- `app/services/transcripts.py`: add live finalize service and ready-state preview redaction after completed chunks apply.
+- `app/services/templates.py`: merge owner manual PII into outbound redacted generation text and PHI index before provider calls, with whitespace-tolerant matching.
+- `app/routes/api_routes.py`, `app/main.py`: expose `POST /api/v1/transcripts/{id}/finalize-live-capture`.
+- `app/static/js/transcribe/media.js`, `app/static/js/transcribe/app.js`: call finalize when live recording stops and refresh workspace state.
+- `app/web/transcribe_workspace.py`, `app/schemas/workspace.py`, `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_head_assets.html`, `app/templates/transcribe/_shell_extras.html`: surface redaction preview status in owner workspace payload and UI.
+- `app/api_route_audit.py`: cover new and missing API route specs in the auth audit manifest.
+- `tests/test_api.py`: add finalize auth, pending-chunk, non-live, redaction preview, manual-PII outbound redaction including whitespace variants, and stale detected-PII coverage.
+- `docs/api.md`, `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document lifecycle, workspace fields, and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/services/transcripts.py app/services/templates.py app/routes/api_routes.py app/main.py app/web/transcribe_workspace.py app/schemas/workspace.py app/api_route_audit.py tests/test_api.py`: passed.
+- `python3 -m py_compile app/services/templates.py app/web/transcribe_workspace.py tests/test_api.py`: passed.
+- `node --check app/static/js/transcribe/media.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/python - <<'PY' ... missing_route_specs() ... PY`: passed, returned `[]`.
+- `git diff --check`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "manual_pii_before_provider or transcribe_workspace_endpoint_returns_owner_pii_entities or process_generated_document_redacts_transcript"'`: blocked by local test DB bootstrap (`psycopg.OperationalError` while connecting in `tests/conftest.py`).
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "finalize_live_capture or transcript_routes_require_full_auth_and_preserve_owner_only_access or team_and_personal_template_routes_enforce_scope_and_allow_generation or processing_audio_file_job_appends_transcript_draft_and_marks_ready or transcribe_workspace_endpoint_returns_owner_pii_entities"'`: blocked by local test DB bootstrap (`psycopg.OperationalError` while connecting in `tests/conftest.py`).
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api_route_audit.py -k "manifest"'`: blocked by local test DB bootstrap (`psycopg.OperationalError` while connecting in `tests/conftest.py`).
+
+### Documentation
+
+- Updated transcript capture and testing notes plus this progress entry.
+
+### Risks / assumptions
+
+- The client finalize call is best-effort after local VAD stop; backend generation still has lazy redaction fallback if preview redaction is absent.
+- Finalize returns `transcribing` and creates no redaction run while chunks remain pending.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content readers; finalize is owner-only and logs no transcript content.
+- Ownership rules preserved: route uses owner transcript lookup and system-admin transcript ownership remains blocked.
+- Deletion semantics preserved: preview runs remain version-linked transcript-derived children under transcript-root cascade.
+- Provider rules preserved: redaction still resolves de-identification through the existing provider fallback path.
+- Structured-note contract preserved: no EMIS keys or structured JSON behavior changed.
+
+## 2026-04-24 Proactive Redaction Preview
+
+### Scope
+
+- Added proactive redaction after owner transcript commits and completed whole-file ingestion so detected PII can appear before LLM generation.
+- Updated generation snapshotting to reuse an existing latest transcript version when its text matches the current draft, preserving the preview redaction run as the generation provenance.
+- Kept generated-document lazy redaction as a fallback when no successful preview run exists.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: live chunked capture still avoids per-chunk version/redaction churn; a dedicated stop/finalize endpoint should trigger the same preview path when added.
+
+### Files changed
+
+- `app/services/transcripts.py`: create stable transcript versions and attempt preview redaction on commit and whole-file ingestion completion.
+- `app/services/templates.py`: reuse matching transcript versions during generation instead of duplicating a just-reviewed snapshot.
+- `tests/test_api.py`: cover proactive redaction on commit/whole-file ingestion and generation reuse of the preview run.
+- `docs/testing.md`, `docs/progress.md`: document the new expected redaction timing and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/services/transcripts.py app/services/templates.py`: passed.
+- `python3 -m py_compile tests/test_api.py`: passed.
+- `git diff --check`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation or transcript_routes_require_full_auth_and_preserve_owner_only_access or processing_audio_file_job_appends_transcript_draft_and_marks_ready"'`: blocked by local test DB bootstrap (`psycopg.OperationalError` while connecting in `tests/conftest.py`).
+
+### Documentation
+
+- Updated testing notes and this progress entry.
+
+### Risks / assumptions
+
+- Preview redaction failure is logged with IDs/error code only and does not block transcript persistence; generation still retries and fails closed if redaction remains unavailable.
+- Live chunked preview redaction is intentionally deferred until there is a stable server-side finalize point.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: redaction artifacts remain transcript-derived owner content and no content-bearing logs were added.
+- Ownership rules preserved: redaction runs/entities are still scoped to the transcript owner and team.
+- Deletion semantics preserved: artifacts remain attached to transcript versions under the transcript-root cascade.
+- Provider rules preserved: de-identification provider resolution/fallback still goes through the existing redaction service.
+- Structured-note contract preserved: no EMIS keys or structured JSON validation changed.
+
+## 2026-04-23 Persisted Manual PII
+
+### Scope
+
+- Added owner-created manual PII rows under the transcript root.
+- Manual PII values are encrypted with the owner content DEK, returned only through owner workspace/API paths, and merged into the transcript PII sidebar/highlights.
+- Added owner-only create/delete API routes and browser add/delete controls.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: exact-string transcript highlighting still does not catch punctuation/spacing variants.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/1a2b3c4d5e6f_add_transcript_manual_pii_entities.py`: add transcript-root manual PII table with owner/team scope and cascade.
+- `app/services/transcripts.py`: add owner-only manual PII create/delete/encrypted value helpers.
+- `app/routes/api_routes.py`, `app/main.py`, `app/schemas/transcripts.py`, `app/schemas/__init__.py`: expose manual PII API contracts.
+- `app/web/transcribe_workspace.py`: merge detected and manual PII into owner workspace payload.
+- `app/static/js/transcribe/app.js`, `app/static/js/transcribe/bootstrap.js`, `app/static/js/transcribe/documents.js`, `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_shell_extras.html`, `app/templates/transcribe/_head_assets.html`: persist add/delete UI and keep highlights/table refreshed.
+- `tests/test_api.py`, `tests/test_migrations.py`: add API, auth, encryption, cascade, and schema coverage.
+- `docs/api.md`, `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document behavior and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/models.py app/services/transcripts.py app/web/transcribe_workspace.py app/main.py app/routes/api_routes.py app/schemas/transcripts.py app/schemas/__init__.py`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/bootstrap.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "pii_sidebar or transcribe_frontend_uses_global_template_selector"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "manual_pii or transcribe_workspace_endpoint_returns_owner_pii_entities"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_migrations.py -k "expected_schema"'`: passed.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated API behavior, transcript capture notes, testing notes, and progress log.
+
+### Risks / assumptions
+
+- Duplicate manual PII is collapsed by transcript, type, and normalized value hash.
+- Manual PII is review/highlight metadata only; it does not alter provider redaction runs or generated-document redaction mappings.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: manual PII is transcript-derived owner content and never exposed to leaders/admins.
+- Ownership rules preserved: create/delete/read require owning user and owner workspace resolution.
+- Deletion semantics preserved: manual PII cascades from transcript root and row deletion is immediate.
+- Provider rules preserved: no STT/LLM/de-identification provider behavior changed.
+- Structured-note contract preserved: no EMIS section keys or structured JSON shape changed.
+
+## 2026-04-22 PII Highlighting and Manual Review Entries
+
+### Scope
+
+- Highlight selected-note PII matches inside the transcript text area.
+- Added UI-only manual PII entry controls in the PII sidebar.
+- Manual entries join the sidebar table and transcript highlights for the current browser session only.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: persistence of manual PII intentionally deferred.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: add manual PII add controls.
+- `app/templates/transcribe/_head_assets.html`: style manual controls and transcript highlights.
+- `app/static/js/transcribe/app.js`: highlight selected-note/manual PII and manage UI-only manual entries.
+- `tests/test_admin_ui.py`: cover wiring for highlight/manual controls.
+- `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document behavior and coverage.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `git diff --check`: passed.
+- `python3 -m py_compile app/web/presentation.py app/web/transcribe_workspace.py app/schemas/templates.py app/schemas/transcripts.py app/schemas/workspace.py`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "pii_sidebar or transcribe_frontend_uses_global_template_selector"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_returns_owner_pii_entities"'`: passed.
+
+### Documentation
+
+- Updated testing, transcript-capture, and progress docs.
+
+### Risks / assumptions
+
+- Highlighting uses exact string matching. Case-insensitive matches are highlighted, but punctuation/spacing variants may not match.
+- Manual PII is not persisted and resets on transcript switch or page reload.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: PII values remain owner-visible transcript-derived content in the owner workspace only.
+- Ownership rules preserved: no new endpoint or shared visibility added.
+- Deletion semantics preserved: no persisted manual PII, no retention/deletion path change.
+- Provider rules preserved: no provider resolution or credential behavior changed.
+- Structured-note contract preserved: no EMIS section keys or structured JSON shape changed.
+
+## 2026-04-21 Note-Switch PII Refresh
+
+### Scope
+
+- Added note-level `pii_entities` to generated-document workspace payloads.
+- Updated note selection rendering so the PII sidebar refreshes from the newly selected note without a page reload.
+- Fixed note-switch redaction debug rendering so the selected document object no longer shadows `document.createElement`.
+- Versioned the transcribe module script and imports so browsers fetch the updated note-switch/PII modules after deploy or restart.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/schemas/templates.py`, `app/schemas/__init__.py`: add generated-document PII row payload.
+- `app/web/presentation.py`: include selected document redaction entities in generated-document responses.
+- `app/static/js/transcribe/documents.js`, `app/static/js/transcribe/app.js`: refresh PII sidebar during note selection.
+- `app/static/js/transcribe/actions.js`: route note-history clicks through the same note-selection path.
+- `app/templates/transcribe/_shell_extras.html`: version the transcribe module entrypoint.
+- `tests/test_admin_ui.py`, `tests/test_api.py`: cover dynamic wiring and note payload rows.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document behavior and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/schemas/templates.py app/web/presentation.py`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `git diff --check`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "pii_sidebar or transcribe_frontend_uses_global_template_selector"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_returns_owner_pii_entities"'`: passed.
+
+### Documentation
+
+- Updated API, testing, and progress docs.
+
+### Risks / assumptions
+
+- PII rows remain transcript-derived content. They are present only in owner-scoped generated-document payloads.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: PII values are still owner-only and derived from existing redaction entities.
+- Ownership rules preserved: generated documents remain owner-scoped by existing workspace query.
+- Deletion semantics preserved: no deletion or retention path changed.
+- Provider rules preserved: no provider resolution or credential behavior changed.
+- Structured-note contract preserved: no EMIS section keys or structured JSON shape changed.
+
+## 2026-04-21 Transcript PII Sidebar
+
+### Scope
+
+- Added owner-only detected PII rows to the transcribe workspace read model.
+- Added a bounded right-side PII table in the Transcript tab, beside the transcript text and below the control/title bars.
+- Kept post-consultation dictation in the same bounded history content area, with transcript text reflowing in the remaining grid width.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/schemas/transcripts.py`, `app/schemas/workspace.py`, `app/schemas/__init__.py`: add owner-visible PII row schema and workspace field.
+- `app/web/transcribe_workspace.py`: read latest successful redaction entities for the active owner transcript.
+- `app/templates/transcribe/_workspace.html`: render the PII table in the transcript history layout.
+- `app/templates/transcribe/_head_assets.html`: add responsive three-column transcript/PII/dictation grid styling.
+- `app/static/js/transcribe/app.js`: refresh PII table from workspace API/SSE payloads.
+- `tests/test_admin_ui.py`, `tests/test_api.py`: cover SSR UI and API ownership behavior.
+- `docs/api.md`, `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document behavior and coverage.
+
+### Tests
+
+- `python3 -m py_compile app/schemas/transcripts.py app/schemas/workspace.py app/web/transcribe_workspace.py`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `git diff --check`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "pii_sidebar or transcribe_frontend_uses_global_template_selector"'`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_endpoint_returns_owner_pii_entities"'`: passed.
+
+### Documentation
+
+- Updated API, testing, transcript-capture, and progress docs.
+
+### Risks / assumptions
+
+- PII table shows original detected values, so it is transcript-derived content. It remains owner-only and is not exposed in admin/team-leader views.
+- The panel uses the latest successful transcript redaction run. It does not trigger redaction by itself.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: detected PII values are returned only through the owner workspace for the active transcript.
+- Ownership rules preserved: workspace transcript resolution remains owner-scoped; non-owners get no active transcript and no PII rows.
+- Deletion semantics preserved: no deletion, retention, or cascade paths changed.
+- Provider rules preserved: no provider selection or credential behavior changed.
+- Structured-note contract preserved: no EMIS section keys or structured JSON shape changed.
+
 ## 2026-04-21 Transcript Content Flag Review Fix
 
 ### Scope
@@ -840,4 +1433,93 @@
 - Ownership rules preserved: de-identification provider provisioning remains system-admin only; team selection rules unchanged.
 - Deletion semantics preserved: provider DB references are removed/replaced before corresponding Vault secret deletion.
 - Provider rules preserved: raw de-identification secrets remain Vault-backed; arbitrary persisted headers/body fields cannot carry obvious secrets.
+- Structured-note contract preserved: no EMIS section keys or structured JSON output shape changed.
+
+## 2026-04-24 Transcribe Header Toolbar
+
+### Scope
+
+- Moved the transcribe note-selection actions (`Clear`, `Select all`, `Copy selected`) from the note body into the note header action row beside `Create`, while keeping the existing sidebar and panel hierarchy intact.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none noted for this UI-only slice.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: relocate the note selection controls into the note header action row and add a header-specific hook for coverage.
+- `app/templates/transcribe/_head_assets.html`: update the header action row and toolbar layout so the controls sit beside `Create` and remain responsive.
+- `tests/test_admin_ui.py`: assert the transcribe page renders the header toolbar hook.
+- `docs/transcribe-playwright-checklist.md`: note the expected header-row placement in manual/browser checks.
+- `docs/progress.md`: add this progress entry.
+
+### Tests
+
+- `tests/test_admin_ui.py`: updated the existing transcribe freeform editor render check to confirm the footer toolbar is present.
+
+### Documentation
+
+- Updated `docs/transcribe-playwright-checklist.md`.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- This change preserves the existing `data-*` selectors so the current transcribe JS continues to find and control the same buttons after relocation.
+- The note header action row now wraps on narrower widths so the copy controls do not compress or reorder the surrounding sidebar/pane layout.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: the change is limited to client-side layout and does not alter transcript or generated-note visibility.
+- Ownership rules preserved: no content access paths or ownership checks changed.
+- Deletion semantics preserved: no deletion flows, retention roots, or cascade behavior changed.
+- Provider rules preserved: provider selection and fallback logic are untouched.
+- Structured-note contract preserved: structured/freeform note data shape and copy-selection behavior remain unchanged.
+
+## 2026-04-23 De-identification Web UI Slice
+
+### Scope
+
+- Added the missing browser UI for de-identification provider management so system admins can provision and assign providers in `/admin`, and team leaders can choose the active team de-identification provider in `/home`.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: targeted pytest coverage is blocked in this environment until the test Postgres instance is available.
+
+### Files changed
+
+- `app/web/presentation.py`: add de-identification render context, form defaults, and JSON map parsing helper.
+- `app/routes/web_admin.py`: add admin browser handlers for de-identification provider upsert/delete and team assignment removal.
+- `app/routes/web_home_transcribe.py`: add leader browser handlers for de-identification selection and clear.
+- `app/templates/admin.html`: add provider provisioning, assignment, and team-selection visibility for de-identification.
+- `app/templates/home.html`: add a de-identification card to AI services for leader selection.
+- `tests/test_admin_ui.py`: add focused admin/home UI coverage for de-identification management.
+- `docs/testing.md`: record the new UI coverage expectations.
+
+### Tests
+
+- `.venv/bin/python -m py_compile app/web/presentation.py app/routes/web_admin.py app/routes/web_home_transcribe.py tests/test_admin_ui.py`: passed.
+- `bash -lc 'export $(grep -v ^# .env | xargs); .venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification or ai_service"'`: blocked by local test DB bootstrap (`psycopg.OperationalError` while connecting in `tests/conftest.py`).
+
+### Documentation
+
+- Updated `docs/testing.md`.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- The admin provider form intentionally supports the existing configurable `generic_rest` adapter only; the built-in native Presidio provider remains read-only and always available as fallback.
+- Provider provisioning remains visible only within the selected-team admin workflow even though the provider rows themselves are global admin-managed records.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript or generated-note access changed; the UI only manages provider metadata and selections.
+- Ownership rules preserved: transcript-derived content remains owner-only; leader access is limited to team-scoped provider selection metadata.
+- Deletion semantics preserved: assignment removal and selection clear immediately fall back to the built-in provider without changing transcript-root cascade behavior.
+- Provider rules preserved: system admins provision and assign providers, leaders select from assigned options, and clearing/invalid selection still falls back to built-in Presidio.
 - Structured-note contract preserved: no EMIS section keys or structured JSON output shape changed.

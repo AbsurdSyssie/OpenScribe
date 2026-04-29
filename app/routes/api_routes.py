@@ -360,6 +360,30 @@ def clear_deidentification_selection(team_id: UUID | None = None, context: Authe
     clear_team_deidentification_selection_service(db, context.user, team_id=team_id)
 
 
+@api.get("/clinical-nlp-selection", response_model=ClinicalNlpSelectionDetail | None, responses=error_responses)
+def get_clinical_nlp_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    selection = get_team_clinical_nlp_selection_service(db, context.user, team_id=team_id)
+    return clinical_nlp_selection_response(selection) if selection else None
+
+
+@api.get("/clinical-nlp-selection/options", response_model=list[DeidentificationProviderDetail], responses=error_responses)
+def list_clinical_nlp_selection_options(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    return [
+        deidentification_provider_response(provider)
+        for provider in list_selectable_clinical_nlp_providers_service(db, context.user, team_id=team_id)
+    ]
+
+
+@api.post("/clinical-nlp-selection", response_model=ClinicalNlpSelectionDetail, responses=error_responses)
+def set_clinical_nlp_selection(payload: ClinicalNlpSelectionUpsert, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    return clinical_nlp_selection_response(set_team_clinical_nlp_selection_service(db, context.user, payload))
+
+
+@api.delete("/clinical-nlp-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_clinical_nlp_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_deidentification_selector), db: Session = Depends(get_db)):
+    clear_team_clinical_nlp_selection_service(db, context.user, team_id=team_id)
+
+
 @api.get("/llm-preference", response_model=UserLlmPreferenceDetail | None, responses=error_responses)
 def get_llm_preference(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     preference = get_user_llm_preference_service(db, context.user)

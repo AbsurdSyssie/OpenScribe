@@ -453,7 +453,7 @@ Recommended fields:
 Notes:
 
 * stores sensitive original values, so it is confidential content
-* normalized/hash columns support deduplication and inspection without logging raw values
+* normalized hash columns are keyed owner-scoped digests, not plain deterministic hashes, so DB-only access cannot dictionary-test low-entropy PII values
 
 ## 8.3 Optional later: `redaction_spans`
 

@@ -25,6 +25,7 @@ from ..models import (
     UserStatus,
 )
 from ..schemas import (
+    ClinicalNlpSelectionDetail,
     DeidentificationInspectResult,
     DeidentificationProviderAssignmentDetail,
     DeidentificationProviderDetail,
@@ -64,7 +65,9 @@ from ..services.llm import (
     resolve_user_llm as resolve_user_llm_service,
 )
 from ..services.deidentification import (
+    get_team_clinical_nlp_selection as get_team_clinical_nlp_selection_service,
     get_team_deidentification_selection as get_team_deidentification_selection_service,
+    list_selectable_clinical_nlp_providers as list_selectable_clinical_nlp_providers_service,
     list_deidentification_providers as list_deidentification_providers_service,
     list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
     list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
@@ -206,6 +209,8 @@ def deidentification_provider_response(provider) -> DeidentificationProviderDeta
         response_score_field=provider.response_score_field,
         response_model_version_path=provider.response_model_version_path,
         entity_type_map_json=provider.entity_type_map_json or {},
+        clinical_detection_enabled=provider.clinical_detection_enabled,
+        clinical_detection_allow_unredacted=provider.clinical_detection_allow_unredacted,
         is_active=provider.is_active,
         is_builtin=provider.is_builtin,
         has_secret=bool(provider.vault_secret_ref),
@@ -238,6 +243,21 @@ def deidentification_selection_response(selection) -> DeidentificationSelectionD
         selected_provider_label=provider.label,
         selected_provider_adapter_kind=provider.adapter_kind,
         selected_provider_is_builtin=provider.is_builtin,
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
+def clinical_nlp_selection_response(selection) -> ClinicalNlpSelectionDetail:
+    provider = selection.provider
+    return ClinicalNlpSelectionDetail(
+        id=selection.id,
+        team_id=selection.team_id,
+        provider_id=selection.provider_id,
+        selected_by_user_id=selection.selected_by_user_id,
+        selected_provider_label=provider.label,
+        selected_provider_adapter_kind=provider.adapter_kind,
+        selected_provider_allows_unredacted=provider.clinical_detection_allow_unredacted,
         created_at=selection.created_at,
         updated_at=selection.updated_at,
     )
@@ -533,6 +553,8 @@ def deidentification_form_defaults(provider) -> dict[str, object]:
             "response_score_field": provider.response_score_field or "",
             "response_model_version_path": provider.response_model_version_path or "",
             "entity_type_map_json": json.dumps(provider.entity_type_map_json) if provider.entity_type_map_json else "",
+            "clinical_detection_enabled": provider.clinical_detection_enabled,
+            "clinical_detection_allow_unredacted": provider.clinical_detection_allow_unredacted,
             "sample_text": "Jane Smith attended on 22 April 2026.",
             "is_active": provider.is_active,
             "preserved_bearer_token": "",
@@ -557,6 +579,8 @@ def deidentification_form_defaults(provider) -> dict[str, object]:
         "response_score_field": "",
         "response_model_version_path": "",
         "entity_type_map_json": "",
+        "clinical_detection_enabled": False,
+        "clinical_detection_allow_unredacted": False,
         "sample_text": "Jane Smith attended on 22 April 2026.",
         "is_active": True,
         "preserved_bearer_token": "",
@@ -617,6 +641,7 @@ def render_admin(
     message_kind: str = "success",
     status_code: int = 200,
     active_admin_tab: str | None = None,
+    active_provider_tab: str | None = None,
     admin_page_route: str = "/admin",
     admin_return_view: str = "",
     template_name: str | None = None,
@@ -647,6 +672,7 @@ def render_admin(
         list_team_deidentification_provider_assignments_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     )
     deidentification_selection = get_team_deidentification_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    clinical_nlp_selection = get_team_clinical_nlp_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     default_templates = list_default_templates_service(db, current_user)
     default_quick_actions = list_default_quick_actions_service(db, current_user)
     selected_default_template = next((template for template in default_templates if str(template.id) == selected_default_template_id), None)
@@ -655,6 +681,15 @@ def render_admin(
     default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
     available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults"}
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
+    available_provider_tabs = {"stt", "llm", "deidentification"}
+    if active_provider_tab in available_provider_tabs:
+        resolved_provider_tab = active_provider_tab
+    elif selected_llm_config_id or llm_inspection:
+        resolved_provider_tab = "llm"
+    elif selected_deidentification_provider_id or deidentification_inspection:
+        resolved_provider_tab = "deidentification"
+    else:
+        resolved_provider_tab = "stt"
     usage_context = {
         "usage_scope_team": None,
         "usage_kpi_cards": [],
@@ -700,8 +735,12 @@ def render_admin(
         "deidentification_form": deidentification_form_override or deidentification_form_defaults(edit_deidentification_provider),
         "deidentification_assignments": deidentification_assignments,
         "deidentification_selection": deidentification_selection,
+        "clinical_nlp_selection": clinical_nlp_selection,
         "selectable_deidentification_providers": (
             list_selectable_deidentification_providers_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+        ),
+        "selectable_clinical_nlp_providers": (
+            list_selectable_clinical_nlp_providers_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
         ),
         "default_templates": default_templates,
         "default_template": selected_default_template,
@@ -717,6 +756,7 @@ def render_admin(
         "team_roles": list(TeamRole),
         "user_statuses": list(UserStatus),
         "active_admin_tab": resolved_admin_tab,
+        "active_provider_tab": resolved_provider_tab,
         "admin_page_route": admin_page_route,
         "admin_return_view": admin_return_view,
         "message": message,
@@ -819,6 +859,13 @@ def render_home(
         except AppError:
             deidentification_selection = None
     selectable_deidentification_providers = list_selectable_deidentification_providers_service(db, current_user) if is_manager else []
+    clinical_nlp_selection = None
+    if current_user.team_id is not None:
+        try:
+            clinical_nlp_selection = get_team_clinical_nlp_selection_service(db, current_user)
+        except AppError:
+            clinical_nlp_selection = None
+    selectable_clinical_nlp_providers = list_selectable_clinical_nlp_providers_service(db, current_user) if is_manager else []
     user_llm_preference = None
     resolved_user_llm_model = None
     if not current_user.is_system_admin and current_user.team_id is not None:
@@ -873,6 +920,7 @@ def render_home(
         "stt-settings",
         "llm-settings",
         "deidentification-settings",
+        "clinical-nlp-settings",
     }
     resolved_home_modal = active_home_modal if active_home_modal in allowed_home_modals else None
 
@@ -889,6 +937,8 @@ def render_home(
         "selectable_llm_configs": selectable_llm_configs,
         "deidentification_selection": deidentification_selection,
         "selectable_deidentification_providers": selectable_deidentification_providers,
+        "clinical_nlp_selection": clinical_nlp_selection,
+        "selectable_clinical_nlp_providers": selectable_clinical_nlp_providers,
         "user_llm_preference": user_llm_preference,
         "resolved_user_llm_model": resolved_user_llm_model,
         "team_leader_email": team_leader_email,

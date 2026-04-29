@@ -12,6 +12,14 @@ Goal:
 
 This page is for system admins only.
 
+## Layout notes
+
+- `/admin` uses a flat sidebar workspace with card-based sections for providers, defaults, directory, usage, and requests.
+- Provider setup is split into STT, LLM, and de-identification subtabs while preserving the same backend forms and routes.
+- LLM and de-identification inspect/ping responses reopen their originating provider subtab instead of resetting to STT.
+- Provider and directory cards display operational metadata only; transcript-derived text and generated clinical content remain absent from this page.
+- Destructive lifecycle actions remain explicit form submissions with confirmation prompts.
+
 ## Audience and access
 
 ### Primary user

@@ -33,6 +33,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = BASE_DIR / "redaction" / "presidio_config.yaml"
 PHI_TOKEN_PATTERN = re.compile(r"\[PHI-(\d+)\]")
 POTENTIAL_PHI_TOKEN_PATTERN = re.compile(r"\[PHI-[^\]]*(?:\]|$)")
+CLINICAL_ENTITY_TYPES = {"DISEASE", "DIAGNOSIS", "CONDITION", "PROBLEM", "SYMPTOM", "SIGN"}
 
 
 @dataclass
@@ -126,8 +127,10 @@ def _filter_provider_spans(
     *,
     score_threshold: float,
     entities: list[str] | None,
+    excluded_entities: set[str] | None = None,
 ) -> list[Span]:
     allowed_entities = {str(entity) for entity in entities} if entities is not None else None
+    excluded_normalized = {entity.strip().upper() for entity in excluded_entities or set()}
     normalized_spans: list[Span] = []
     for span in spans:
         if span.start < 0 or span.end > len(text) or span.start >= span.end:
@@ -135,6 +138,8 @@ def _filter_provider_spans(
         if span.score < score_threshold:
             continue
         if allowed_entities is not None and span.entity_type not in allowed_entities:
+            continue
+        if span.entity_type.strip().upper() in excluded_normalized:
             continue
         normalized_bounds = normalize_span_bounds(text, span.start, span.end, span.entity_type)
         if normalized_bounds is None:
@@ -242,6 +247,7 @@ def _provider_spans_from_payload(
     provider: DeidentificationProvider,
     score_threshold: float,
     entities: list[str] | None,
+    excluded_entities: set[str] | None = None,
 ) -> list[Span]:
     entities_payload = _extract_path(payload, provider.response_entities_path)
     if not isinstance(entities_payload, list):
@@ -258,7 +264,7 @@ def _provider_spans_from_payload(
             search_start=search_start,
         )
         spans.append(span)
-    return _resolve_overlaps(_filter_provider_spans(text, spans, score_threshold=score_threshold, entities=entities))
+    return _resolve_overlaps(_filter_provider_spans(text, spans, score_threshold=score_threshold, entities=entities, excluded_entities=excluded_entities))
 
 
 def _detect_with_presidio(text: str, *, language: str, score_threshold: float, entities: list[str] | None) -> DeidentificationDetectionResult:
@@ -288,6 +294,7 @@ def _detect_with_generic_rest(
     score_threshold: float,
     entities: list[str] | None,
     bearer_token_override: str | None = None,
+    excluded_entities: set[str] | None = None,
 ) -> DeidentificationDetectionResult:
     body: dict[str, Any] = dict(provider.extra_body_json or {})
     body[provider.request_text_field] = text
@@ -308,7 +315,7 @@ def _detect_with_generic_rest(
         payload = response.json()
     except ValueError as exc:
         raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
-    spans = _provider_spans_from_payload(text, payload, provider=provider, score_threshold=score_threshold, entities=entities)
+    spans = _provider_spans_from_payload(text, payload, provider=provider, score_threshold=score_threshold, entities=entities, excluded_entities=excluded_entities)
     model_or_version = None
     if provider.response_model_version_path:
         resolved_value = _extract_path(payload, provider.response_model_version_path)
@@ -341,6 +348,7 @@ def _detect_phi(
             score_threshold=score_threshold,
             entities=entities,
             bearer_token_override=bearer_token_override,
+            excluded_entities=CLINICAL_ENTITY_TYPES if provider.clinical_detection_enabled else None,
         )
     raise AppError(422, "business_rule_violation", "Unsupported de-identification adapter")
 
@@ -487,6 +495,12 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
         .limit(1)
     )
     if existing is not None:
+        from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
+
+        clinical_run = ensure_clinical_entity_run_for_transcript_version(db, transcript_version=transcript_version, redaction_run=existing)
+        if clinical_run is not None:
+            db.commit()
+            db.refresh(existing)
         return existing
 
     provider = active_team_deidentification_provider(db, team_id=transcript_version.transcript.team_id)
@@ -548,6 +562,9 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
                     occurrence_count=1,
                 )
             )
+        from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
+
+        ensure_clinical_entity_run_for_transcript_version(db, transcript_version=transcript_version, redaction_run=run)
         db.add(run)
         db.commit()
         db.refresh(run)

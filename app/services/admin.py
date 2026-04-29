@@ -27,6 +27,7 @@ from app.models import (
     QuickAction,
     QuickActionVersion,
     Team,
+    TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamLlmConfig,
@@ -1263,6 +1264,11 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
         selection.selected_by_user_id = actor.id
         db.add(selection)
 
+    clinical_nlp_selections = db.scalars(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.selected_by_user_id == user.id))
+    for selection in clinical_nlp_selections:
+        selection.selected_by_user_id = actor.id
+        db.add(selection)
+
     team_templates_created = db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.created_by_user_id == user.id))
     for template in team_templates_created:
         template.created_by_user_id = actor.id
@@ -1359,6 +1365,9 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         deidentification_selection = db.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id))
         if deidentification_selection is not None:
             db.delete(deidentification_selection)
+        clinical_nlp_selection = db.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id))
+        if clinical_nlp_selection is not None:
+            db.delete(clinical_nlp_selection)
         for assignment in db.scalars(select(TeamDeidentificationProviderAssignment).where(TeamDeidentificationProviderAssignment.team_id == team.id)):
             db.delete(assignment)
         db.flush()

@@ -20,6 +20,7 @@ source .env
 set +a
 
 : "${APP_HOST:=0.0.0.0}"
+: "${APP_PORT:=8080}"
 : "${DEV_ALLOW_REMOTE_BIND:=true}"
 : "${DEV_PURGE_CELERY_QUEUE:=true}"
 
@@ -50,11 +51,33 @@ if [[ "${DEV_RESTART_EXISTING_PROCESSES:-true}" == "true" ]]; then
   echo "Stopping existing processes..."
 
   pkill -f 'fastapi dev app/main.py' 2>/dev/null || true
+  pkill -f 'fastapi.*app/main.py' 2>/dev/null || true
+  pkill -f 'uvicorn.*app.main:app' 2>/dev/null || true
   pkill -f 'celery -A app.celery_app:celery_app worker' 2>/dev/null || true
   pkill -f 'brave-browser.*--remote-debugging-port=9222' 2>/dev/null || true
 
   sleep 1
 fi
+
+.venv/bin/python - <<'PY'
+import os
+import socket
+
+host = os.environ["APP_BIND_HOST"]
+port = int(os.environ["APP_PORT"])
+
+probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    probe.bind((host, port))
+except OSError as exc:
+    raise SystemExit(
+        f"FastAPI port {host}:{port} is already in use. "
+        "Stop the process using that port or set APP_PORT to a free port in .env."
+    ) from exc
+finally:
+    probe.close()
+PY
 
 echo "Waiting for Postgres to accept connections..."
 .venv/bin/python - <<'PY'
@@ -120,7 +143,7 @@ if [[ "${DEV_START_BRAVE:-true}" == "true" ]]; then
   brave-browser \
     --remote-debugging-port=9222 \
     --user-data-dir=/tmp/brave-mcp-profile \
-    "http://localhost:8080" \
+    "http://localhost:${APP_PORT}" \
     >/dev/null 2>&1 &
 
   BRAVE_PID=$!

@@ -9,6 +9,8 @@ from sqlalchemy import func, select
 from app.errors import AppError
 from app.models import (
     AccountRequest,
+    ClinicalEntity,
+    ClinicalEntityRun,
     DeidentificationAdapterKind,
     DeidentificationProvider,
     DefaultPromptTemplate,
@@ -27,7 +29,9 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    RedactionRunStatus,
     Team,
+    TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamLlmConfig,
@@ -335,11 +339,12 @@ def test_admin_providers_panel_renders_deidentification_management(client, make_
     page = client.get(f"/admin?tab=providers&team_id={team.id}")
 
     assert page.status_code == 200
-    assert "Team de-identification selection" in page.text
+    assert "No explicit de-identification selection" in page.text
     assert "Assign provider to team" in page.text
-    assert "Provisioned de-identification providers" in page.text
+    assert "Shared PII redaction and clinical NLP endpoints" in page.text
     assert "Built-in Native Presidio" in page.text
     assert "Clinic REST Deid" in page.text
+    assert 'data-provider-tab-target="deidentification"' in page.text
 
 
 def test_admin_can_provision_and_assign_deidentification_provider_from_web(
@@ -366,6 +371,8 @@ def test_admin_can_provision_and_assign_deidentification_provider_from_web(
             "response_start_field": "start",
             "response_end_field": "end",
             "response_type_field": "entity_type",
+            "clinical_detection_enabled": "true",
+            "clinical_detection_allow_unredacted": "true",
             "is_active": "true",
             "return_tab": "providers",
         },
@@ -375,6 +382,8 @@ def test_admin_can_provision_and_assign_deidentification_provider_from_web(
     assert created.status_code == 303
     provider = db_session.scalar(select(DeidentificationProvider).where(DeidentificationProvider.label == "Web REST Deid"))
     assert provider is not None
+    assert provider.clinical_detection_enabled is True
+    assert provider.clinical_detection_allow_unredacted is True
 
     assigned = client.post(
         "/admin/deidentification-provider-assignments",
@@ -402,9 +411,20 @@ def test_admin_can_provision_and_assign_deidentification_provider_from_web(
     assert selection is not None
     assert selection.provider_id == provider.id
 
+    clinical_selected = client.post(
+        "/admin/clinical-nlp-selection",
+        data={"team_id": str(team.id), "provider_id": str(provider.id), "return_tab": "providers"},
+        follow_redirects=False,
+    )
+    assert clinical_selected.status_code == 303
+    clinical_selection = db_session.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id))
+    assert clinical_selection is not None
+    assert clinical_selection.provider_id == provider.id
+
     page = client.get(f"/admin?tab=providers&team_id={team.id}")
     assert page.status_code == 200
     assert "Selected provider for lazy redaction runs: https://deid.example.com/detect." in page.text
+    assert "Active clinical NLP endpoint" in page.text
 
     cleared = client.post(
         "/admin/deidentification-selection/clear",
@@ -414,6 +434,7 @@ def test_admin_can_provision_and_assign_deidentification_provider_from_web(
 
     assert cleared.status_code == 303
     assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
+    assert db_session.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id)) is not None
 
 
 def test_admin_deidentification_inspect_does_not_render_bearer_token(
@@ -473,7 +494,8 @@ def test_admin_deidentification_inspect_does_not_render_bearer_token(
     )
 
     assert inspect.status_code == 200
-    assert "De-identification provider ping succeeded." in inspect.text
+    assert "Shared NLP endpoint ping succeeded." in inspect.text
+    assert 'data-default-provider-tab="deidentification"' in inspect.text
     assert "secret-token" not in inspect.text
     assert 'name="preserved_bearer_token" value="secret-token"' not in inspect.text
     assert captured["headers"] == {"Authorization": "Bearer secret-token"}
@@ -547,6 +569,56 @@ def test_leader_home_can_manage_deidentification_selection_inline(
     )
     assert cleared.status_code == 303
     assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
+
+
+def test_leader_home_can_enable_clinical_nlp_separately_from_deidentification(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+):
+    team = make_team(name="Clinic NLP Home")
+    admin = make_user(email="clinical-home-admin@example.com", password="password-2", is_system_admin=True)
+    make_user(email="clinical-home-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="OpenMedDetect",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://localhost:8090",
+        detect_path="/analyze",
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+
+    client.post("/login", data={"email": "clinical-home-leader@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/home?tab=ai-services&modal=clinical-nlp-settings")
+
+    assert page.status_code == 200
+    assert 'data-service-body="clinical-nlp"' in page.text
+    assert 'data-service-body="clinical-nlp" hidden' not in page.text
+    assert "Clinical NLP" in page.text
+    assert "OpenMedDetect" in page.text
+
+    selected = client.post(
+        "/home/clinical-nlp-selection",
+        data={"provider_id": str(provider.id), "return_tab": "ai-services"},
+        follow_redirects=False,
+    )
+    assert selected.status_code == 303
+    clinical_selection = db_session.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id))
+    assert clinical_selection is not None
+    assert clinical_selection.provider_id == provider.id
+    assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
+
+    cleared = client.post(
+        "/home/clinical-nlp-selection/clear",
+        data={"return_tab": "ai-services"},
+        follow_redirects=False,
+    )
+    assert cleared.status_code == 303
+    assert db_session.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id)) is None
 
 
 def test_home_restyled_llm_preference_redirect_preserves_preview_route(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -1321,8 +1393,11 @@ def test_admin_restyled_preview_route_renders_for_system_admin(client, make_team
     page = client.get(f"/admin-restyled?team_id={team.id}")
 
     assert page.status_code == 200
-    assert "Team STT endpoints" in page.text
+    assert "Configure STT, LLM, and de-identification." in page.text
+    assert "STT endpoints" in page.text
     assert "Provisioned endpoints" in page.text
+    assert 'data-provider-tab-nav' in page.text
+    assert 'data-provider-tab-target="llm"' in page.text
     assert 'form method="get" action="/admin-restyled"' in page.text
     assert 'name="return_view" value="restyled"' in page.text
 
@@ -1342,6 +1417,8 @@ def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
     assert "Provider setup" in page.text
     assert "Create team" in page.text
     assert "Create managed user" in page.text
+    assert 'class="admin-section" data-tab-panel="directory"' in page.text
+    assert 'class="admin-card-grid admin-card-grid--two"' in page.text
     assert 'section class="hero panel"' not in page.text
     assert 'class="panel tab-shell__nav"' not in page.text
     assert "border-radius: 18px" not in page.text
@@ -1903,6 +1980,86 @@ def test_user_transcribe_page_shows_owner_pii_sidebar(
     assert "John Smith" in page.text
     assert "07123 456789" in page.text
     assert "PHONE NUMBER" in page.text
+
+
+def test_user_transcribe_page_shows_clinical_entities_in_pii_area(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Clinical Sidebar")
+    member = make_user(email="member-clinical-sidebar@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Clinical sidebar review",
+        current_draft_text_encrypted="Patient reports asthma and dizziness.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(version)
+    db_session.flush()
+    clinical_run = ClinicalEntityRun(
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        owner_user_id=member.id,
+        team_id=team.id,
+        status=RedactionRunStatus.succeeded,
+        source_text_redacted=True,
+        api_provider="Clinical NLP",
+        entity_count=2,
+    )
+    db_session.add(clinical_run)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ClinicalEntity(
+                clinical_entity_run_id=clinical_run.id,
+                entity_order=1,
+                entity_type="DISEASE",
+                value_encrypted="asthma",
+                normalized_value_hash="hash-1",
+                occurrence_count=1,
+            ),
+            ClinicalEntity(
+                clinical_entity_run_id=clinical_run.id,
+                entity_order=2,
+                entity_type="SYMPTOM",
+                value_encrypted="dizziness",
+                normalized_value_hash="hash-2",
+                occurrence_count=1,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "member-clinical-sidebar@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert 'data-pii-count>2</span>' in page.text
+    assert "asthma" in page.text
+    assert "dizziness" in page.text
+    assert "Clinical NLP" in page.text
+    assert "pii-type--clinical" in page.text
+
+
+def test_transcribe_workspace_refresh_renders_updated_pii_entities():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+    transcript_branch = app_js.split("if (transcript) {", 1)[1].split("} else {", 1)[0]
+
+    assert "workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);" in app_js
+    assert "renderDraft(draftText);\n          renderPiiEntities(workspaceTranscriptPiiEntities);" in transcript_branch
 
 
 def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
@@ -4846,6 +5003,39 @@ def test_admin_page_can_save_no_auth_stt_config_without_token(client, db_session
     assert saved_config.vault_secret_ref == ""
 
 
+def test_admin_provider_save_errors_keep_matching_provider_tab(client, make_team, make_user):
+    team = make_team(name="Clinic Provider Error Tabs")
+    make_user(email="admin-provider-error-tabs@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-provider-error-tabs@example.com", "password": "password-1"}, follow_redirects=False)
+    stt_error = client.post(
+        "/admin/stt-configs",
+        data={
+            "team_id": str(team.id),
+            "label": "Broken STT",
+            "adapter_kind": "not_an_adapter",
+            "base_url": "http://127.0.0.1:7000",
+            "transcribe_path": "/v1/audio/transcriptions",
+            "file_field_name": "file",
+            "response_text_path": "text",
+        },
+    )
+    llm_error = client.post(
+        "/admin/llm-configs",
+        data={
+            "team_id": str(team.id),
+            "label": "Broken LLM",
+            "adapter_kind": "not_an_adapter",
+            "base_url": "https://llm.example.com",
+        },
+    )
+
+    assert stt_error.status_code == 400
+    assert 'data-default-provider-tab="stt"' in stt_error.text
+    assert llm_error.status_code == 400
+    assert 'data-default-provider-tab="llm"' in llm_error.text
+
+
 def test_admin_page_can_run_saved_stt_test_and_render_result(client, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -4915,6 +5105,7 @@ def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(c
     )
 
     assert inspect.status_code == 200
+    assert 'data-default-provider-tab="llm"' in inspect.text
     assert 'name="preserved_bearer_token" value="secret-openai-key"' in inspect.text
     assert ">gpt-4o-mini (fetched)<" in inspect.text
 

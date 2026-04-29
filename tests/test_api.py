@@ -1,6 +1,7 @@
 import json
 import time
 import io
+import hashlib
 import subprocess
 from datetime import timedelta
 from uuid import UUID, uuid4
@@ -20,6 +21,8 @@ from app.main import app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    ClinicalEntity,
+    ClinicalEntityRun,
     DefaultPromptTemplate,
     DefaultPromptTemplateVersion,
     DefaultQuickAction,
@@ -47,6 +50,7 @@ from app.models import (
     SttAuthMode,
     SttSelectionPurpose,
     Team,
+    TeamClinicalNlpSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -84,6 +88,7 @@ from app.services.content_crypto import (
     encrypt_text_for_owner,
     ensure_user_dek,
     is_encrypted_envelope,
+    keyed_digest_for_owner,
 )
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
@@ -1642,9 +1647,13 @@ def test_system_admin_can_provision_assign_and_leader_select_deidentification_pr
             "response_end_field": "end",
             "response_type_field": "entity_type",
             "entity_type_map_json": {"PATIENT": "PERSON"},
+            "clinical_detection_enabled": True,
+            "clinical_detection_allow_unredacted": True,
         },
     )
     assert created.status_code == 200
+    assert created.json()["clinical_detection_enabled"] is True
+    assert created.json()["clinical_detection_allow_unredacted"] is True
     provider_id = created.json()["id"]
 
     assigned = client.post(
@@ -1676,6 +1685,51 @@ def test_system_admin_can_provision_assign_and_leader_select_deidentification_pr
     cleared = client.delete("/api/v1/deidentification-selection")
     assert cleared.status_code == 204
     assert client.get("/api/v1/deidentification-selection").json() is None
+
+
+def test_leader_can_enable_clinical_nlp_without_changing_pii_redaction_selection(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+):
+    team = make_team(name="Clinic NLP API")
+    admin = make_user(email="clinical-api-admin@example.com", password="password-1", is_system_admin=True)
+    make_user(email="clinical-api-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="OpenMedDetect",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://localhost:8090",
+        detect_path="/analyze",
+        auth_mode=DeidentificationAuthMode.none,
+        response_type_field="label",
+        response_score_field="confidence",
+        clinical_detection_enabled=True,
+        clinical_detection_allow_unredacted=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+
+    login(client, email="clinical-api-leader@example.com", password="password-2")
+    options = client.get("/api/v1/clinical-nlp-selection/options")
+    assert options.status_code == 200
+    assert [item["id"] for item in options.json()] == [str(provider.id)]
+
+    selected = client.post("/api/v1/clinical-nlp-selection", json={"provider_id": str(provider.id)})
+    assert selected.status_code == 200
+    body = selected.json()
+    assert body["provider_id"] == str(provider.id)
+    assert body["selected_provider_label"] == "OpenMedDetect"
+    assert body["selected_provider_allows_unredacted"] is True
+
+    assert db_session.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id)) is not None
+    assert db_session.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) is None
+
+    cleared = client.delete("/api/v1/clinical-nlp-selection")
+    assert cleared.status_code == 204
+    assert client.get("/api/v1/clinical-nlp-selection").json() is None
 
 
 def test_system_admin_can_inspect_deidentification_provider_without_persisting_secret(client, make_user, monkeypatch):
@@ -1896,6 +1950,107 @@ def test_system_admin_can_inspect_deidentification_openapi_docs(client, make_use
     assert posted["url"] == "http://127.0.0.1:9500/analyze"
 
 
+def test_deidentification_inspect_adjusts_entity_fields_from_ping_response(client, make_user, monkeypatch):
+    make_user(email="clinical-openapi-admin@example.com", password="password-1", is_system_admin=True)
+
+    class FakeOpenAPIResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "openapi": "3.1.0",
+                "paths": {
+                    "/analyze": {
+                        "post": {
+                            "summary": "Analyze",
+                            "requestBody": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["text"],
+                                            "properties": {
+                                                "text": {"type": "string"},
+                                                "model_name": {"type": "string", "default": "disease_detection_superclinical"},
+                                                "confidence_threshold": {"type": "number", "default": 0.0},
+                                            },
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "entities": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "start": {"type": "integer"},
+                                                                "end": {"type": "integer"},
+                                                                "entity_type": {"type": "string"},
+                                                                "score": {"type": "number"},
+                                                            },
+                                                        },
+                                                    },
+                                                    "model_name": {"type": "string"},
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+
+    class FakePostResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "entities": [
+                    {"start": 25, "end": 35, "text": "chest pain", "label": "DISEASE", "confidence": 0.96},
+                    {"start": 40, "end": 49, "text": "dysphagia", "label": "DISEASE", "confidence": 0.95},
+                ],
+                "model_name": "disease_detection_superclinical",
+            }
+
+    monkeypatch.setattr("app.services.deidentification.httpx.get", lambda *args, **kwargs: FakeOpenAPIResponse())
+    monkeypatch.setattr("app.services.deidentification.httpx.post", lambda *args, **kwargs: FakePostResponse())
+
+    login(client, email="clinical-openapi-admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/deidentification-providers/inspect",
+        json={
+            "label": "OpenMedDetect",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://localhost:8090",
+            "openapi_path": "/openapi.json",
+            "detect_path": "/analyze",
+            "auth_mode": "none",
+            "sample_text": "Jane Smith attended with chest pain and dysphagia.",
+            "clinical_detection_enabled": True,
+            "clinical_detection_allow_unredacted": True,
+        },
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["response_type_field"] == "label"
+    assert body["response_score_field"] == "confidence"
+    assert body["entities"] == [
+        {"start": 25, "end": 35, "entity_type": "DISEASE", "score": 0.96, "value": "chest pain"},
+        {"start": 40, "end": 49, "entity_type": "DISEASE", "score": 0.95, "value": "dysphagia"},
+    ]
+    assert any("response_type_field=label" in note for note in body["notes"])
+
+
 def test_deidentification_openapi_docs_preserve_top_level_array_response_path(client, make_user, monkeypatch):
     make_user(email="deid-openapi-array-admin@example.com", password="password-1", is_system_admin=True)
 
@@ -2083,6 +2238,19 @@ def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_tok
     )
     assert secret_body.status_code == 422
 
+    nested_secret_body = client.post(
+        "/api/v1/deidentification-providers",
+        json={
+            "label": "Nested Body Secret",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://deid.example.com",
+            "detect_path": "/detect",
+            "auth_mode": "none",
+            "extra_body_json": {"auth": {"token": "raw-secret"}},
+        },
+    )
+    assert nested_secret_body.status_code == 422
+
     missing_token = client.post(
         "/api/v1/deidentification-providers",
         json={
@@ -2192,6 +2360,63 @@ def test_deidentification_provider_delete_defers_vault_cleanup_until_after_db_co
     assert deleted_secret_refs == [old_secret_ref]
 
 
+def test_deidentification_provider_delete_clears_clinical_nlp_refs(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Delete Clinical Provider")
+    admin = make_user(email="deid-delete-clinical-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="deid-delete-clinical-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Delete Clinical NLP Provider",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://clinical.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    selection = make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Clinical provider delete",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    run = ClinicalEntityRun(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        provider_id=provider.id,
+        status=RedactionRunStatus.succeeded,
+        source_text_redacted=True,
+        api_provider=provider.label,
+        entity_count=0,
+    )
+    db_session.add(run)
+    db_session.commit()
+
+    login(client, email="deid-delete-clinical-admin@example.com", password="password-1")
+    deleted = client.delete(f"/api/v1/deidentification-providers/{provider.id}")
+
+    assert deleted.status_code == 204
+    db_session.refresh(run)
+    assert run.provider_id is None
+    assert db_session.get(TeamClinicalNlpSelection, selection.id) is None
+    assert db_session.get(DeidentificationProvider, provider.id) is None
+
+
 def test_leader_cannot_select_unassigned_deidentification_provider(client, make_team, make_user, make_deidentification_provider):
     team = make_team(name="Clinic Deid Unassigned")
     admin = make_user(email="deid-unassigned-admin@example.com", password="password-1", is_system_admin=True)
@@ -2221,6 +2446,7 @@ def test_deidentification_runtime_falls_back_to_builtin_when_selection_is_inacti
     make_deidentification_provider,
     make_deidentification_provider_assignment,
     make_deidentification_selection,
+    make_clinical_nlp_selection,
 ):
     from app.services.deidentification import BUILTIN_DEIDENTIFICATION_PROVIDER_ID, active_team_deidentification_provider
 
@@ -2271,6 +2497,7 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
     make_deidentification_provider,
     make_deidentification_provider_assignment,
     make_deidentification_selection,
+    make_clinical_nlp_selection,
 ):
     team_with_external = make_team(name="Clinic External Deid")
     team_builtin = make_team(name="Clinic Builtin Deid")
@@ -2391,6 +2618,79 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
     ) == "[PHI-1] reports dizziness."
 
 
+def test_redaction_reuse_creates_missing_clinical_run(
+    db_session,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Existing Redaction Clinical")
+    admin = make_user(email="clinical-existing-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-existing-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Native Clinical NLP",
+        adapter_kind=DeidentificationAdapterKind.native_presidio,
+        clinical_detection_enabled=True,
+        is_builtin=False,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Existing redaction clinical",
+        current_draft_text_encrypted="Alex reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext="Alex reports asthma.",
+    )
+    redaction_run = RedactionRun(
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        status=RedactionRunStatus.succeeded,
+        api_provider="Existing Deid",
+    )
+    db_session.add(redaction_run)
+    db_session.flush()
+    redaction_run.redacted_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=redaction_run.id,
+        plaintext="[PHI-1] reports asthma.",
+    )
+    db_session.commit()
+
+    reused = ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert reused.id == redaction_run.id
+    clinical_run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id))
+    assert clinical_run is not None
+    assert clinical_run.redaction_run_id == redaction_run.id
+    assert clinical_run.owner_user_id == owner.id
+    assert clinical_run.team_id == team.id
+
+
 def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
     db_session,
     monkeypatch,
@@ -2409,9 +2709,11 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
         auth_mode=DeidentificationAuthMode.none,
         response_score_field="score",
         entity_type_map_json={"NAME": "PERSON"},
+        clinical_detection_enabled=True,
     )
-    text = "Patient John Smith has pain 5/10 today."
+    text = "Patient John Smith has asthma and pain 5/10 today."
     name_start = text.index("John Smith")
+    asthma_start = text.index("asthma")
     pain_start = text.index("5/10")
     today_start = text.index("today")
 
@@ -2422,6 +2724,7 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
             return {
                 "entities": [
                     {"start": name_start - 1, "end": name_start + len("John Smith"), "entity_type": "NAME", "score": 0.99},
+                    {"start": asthma_start, "end": asthma_start + len("asthma"), "entity_type": "DISEASE", "score": 0.99},
                     {"start": pain_start, "end": pain_start + len("5/10"), "entity_type": "PERSON", "score": 0.99},
                     {"start": today_start, "end": today_start + len("today"), "entity_type": "DATE_TIME", "score": 0.99},
                     {"start": 0, "end": len("Patient"), "entity_type": "PERSON", "score": 0.1},
@@ -2438,10 +2741,169 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
         start_index=3,
     )
 
-    assert result["redacted_text"] == "Patient [PHI-3] has pain 5/10 today."
+    assert result["redacted_text"] == "Patient [PHI-3] has asthma and pain 5/10 today."
     assert result["phi_index"] == [
         {"index": 3, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-3]"}
     ]
+
+
+def test_clinical_detection_uses_redacted_text_for_remote_provider(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Remote Clinical NLP")
+    admin = make_user(email="clinical-remote-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-remote-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Remote Clinical NLP",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://clinical.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+        clinical_detection_allow_unredacted=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_deidentification_selection(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Remote clinical NLP",
+        current_draft_text_encrypted="John Smith reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="John Smith reports asthma.")
+    db_session.add(version)
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    def fake_detect_phi(db, *, provider, text, language, score_threshold, entities):
+        return DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len("John Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub",
+        )
+
+    class FakeClinicalResponse:
+        status_code = 200
+
+        def json(self):
+            return {"entities": [{"start": 16, "end": 22, "entity_type": "DISEASE"}]}
+
+    captured_body = {}
+
+    def fake_post(url, json, headers, timeout):
+        captured_body.update(json)
+        return FakeClinicalResponse()
+
+    monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
+    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+
+    ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_id == transcript.id))
+    assert run is not None
+    assert run.source_text_redacted is True
+    assert captured_body["text"] == "[PHI-1] reports asthma."
+    assert run.entity_count == 1
+
+
+def test_clinical_detection_allows_unredacted_text_for_local_provider(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Local Clinical NLP")
+    admin = make_user(email="clinical-local-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-local-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Local Clinical NLP",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9400",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+        clinical_detection_allow_unredacted=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_deidentification_selection(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Local clinical NLP",
+        current_draft_text_encrypted="Jane Smith reports dizziness.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="Jane Smith reports dizziness.")
+    db_session.add(version)
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    monkeypatch.setattr(
+        "app.services.redaction._detect_phi",
+        lambda db, *, provider, text, language, score_threshold, entities: DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len("Jane Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub",
+        ),
+    )
+    captured_body = {}
+
+    class FakeClinicalResponse:
+        status_code = 200
+
+        def json(self):
+            return {"entities": [{"start": 19, "end": 28, "entity_type": "SYMPTOM"}]}
+
+    def fake_post(url, json, headers, timeout):
+        captured_body.update(json)
+        return FakeClinicalResponse()
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+
+    ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_id == transcript.id))
+    assert run is not None
+    assert run.source_text_redacted is False
+    assert captured_body["text"] == "Jane Smith reports dizziness."
+    entity = db_session.scalar(select(ClinicalEntity).where(ClinicalEntity.clinical_entity_run_id == run.id))
+    assert entity is not None
+    raw_sha256 = hashlib.sha256("dizziness".encode("utf-8")).hexdigest()
+    assert entity.normalized_value_hash != raw_sha256
+    assert entity.normalized_value_hash == keyed_digest_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        purpose="clinical_entities.normalized_value_hash",
+        value="dizziness",
+    )
 
 
 def test_generic_rest_deidentification_locates_value_only_entities(
@@ -6957,6 +7419,7 @@ def test_owner_can_add_and_delete_manual_pii_entities(
     assert stored.transcript_id == transcript.id
     assert is_encrypted_envelope(stored.original_value_encrypted)
     assert stored.original_value_encrypted != "Riverside House"
+    assert stored.normalized_value_hash != hashlib.sha256("riverside house".encode("utf-8")).hexdigest()
     assert decrypt_text_for_owner(
         db_session,
         owner_user_id=owner.id,
@@ -6976,6 +7439,7 @@ def test_owner_can_add_and_delete_manual_pii_entities(
     )
     assert duplicate.status_code == 201
     assert duplicate.json()["id"] == body["id"]
+    assert db_session.get(TranscriptManualPiiEntity, entity_id).normalized_value_hash == stored.normalized_value_hash
     assert db_session.query(TranscriptManualPiiEntity).filter(TranscriptManualPiiEntity.transcript_id == transcript.id).count() == 1
 
     client.post("/api/v1/auth/logout")
@@ -7003,6 +7467,70 @@ def test_owner_can_add_and_delete_manual_pii_entities(
     deleted = client.delete(f"/api/v1/transcripts/{transcript.id}/manual-pii/{entity_id}")
     assert deleted.status_code == 204
     assert db_session.get(TranscriptManualPiiEntity, entity_id) is None
+
+
+def test_manual_pii_duplicate_lookup_accepts_legacy_sha256_hash(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Manual PII Legacy Hash Team")
+    owner = make_user(email="owner-manual-pii-legacy@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Manual PII legacy session",
+        current_draft_text_encrypted="Patient mentioned Riverside House.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    entity_id = uuid4()
+    legacy_hash = hashlib.sha256("riverside house".encode("utf-8")).hexdigest()
+    db_session.add(
+        TranscriptManualPiiEntity(
+            id=entity_id,
+            transcript_id=transcript.id,
+            owner_user_id=owner.id,
+            team_id=team.id,
+            entity_type="ADDRESS",
+            original_value_encrypted=encrypt_text_for_owner(
+                db_session,
+                owner_user_id=owner.id,
+                table="transcript_manual_pii_entities",
+                field="original_value_encrypted",
+                record_id=entity_id,
+                plaintext="Riverside House",
+            ),
+            normalized_value_hash=legacy_hash,
+            occurrence_count=1,
+        )
+    )
+    db_session.commit()
+
+    login(client, email="owner-manual-pii-legacy@example.com", password="password-1")
+    duplicate = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "ADDRESS", "value": "  Riverside   House  ", "occurrence_count": 3},
+    )
+
+    assert duplicate.status_code == 201
+    assert duplicate.json()["id"] == str(entity_id)
+    assert duplicate.json()["occurrence_count"] == 3
+    stored = db_session.get(TranscriptManualPiiEntity, entity_id)
+    assert stored is not None
+    assert stored.normalized_value_hash != legacy_hash
+    assert stored.normalized_value_hash == keyed_digest_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        purpose="transcript_manual_pii_entities.normalized_value_hash",
+        value="riverside house",
+    )
+    assert db_session.query(TranscriptManualPiiEntity).filter(TranscriptManualPiiEntity.transcript_id == transcript.id).count() == 1
 
 
 def test_transcript_delete_cascades_manual_pii_entities(db_session, make_team, make_user):
@@ -7492,6 +8020,28 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
         transcript_version=version,
         template_version=template_version,
     )
+    clinical_run = ClinicalEntityRun(
+        transcript_id=transcript_id,
+        transcript_version_id=version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        status=RedactionRunStatus.succeeded,
+        source_text_redacted=True,
+        api_provider="Clinical NLP",
+        entity_count=1,
+    )
+    db_session.add(clinical_run)
+    db_session.flush()
+    clinical_entity = ClinicalEntity(
+        clinical_entity_run_id=clinical_run.id,
+        entity_order=1,
+        entity_type="DISEASE",
+        value_encrypted="asthma",
+        normalized_value_hash="hash",
+        occurrence_count=1,
+    )
+    db_session.add(clinical_entity)
+    db_session.commit()
     deleted_secret_refs: list[str] = []
     queued = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -7518,6 +8068,8 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
     assert deleted.status_code == 204
     assert db_session.get(Transcript, transcript_id) is None
     assert db_session.get(TranscriptVersion, version.id) is None
+    assert db_session.get(ClinicalEntityRun, clinical_run.id) is None
+    assert db_session.get(ClinicalEntity, clinical_entity.id) is None
     assert db_session.get(TranscriptIngestionJob, job_id) is None
     assert db_session.get(GeneratedDocument, generated_document.id) is None
     assert deleted_secret_refs == [job.source_audio_vault_ref]

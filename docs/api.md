@@ -123,7 +123,7 @@ Browser navigation behavior:
 - `DELETE /api/v1/app-preferences`
 - these are metadata and secret-reference routes, not transcript-content routes
 
-### De-identification provider configuration
+### Shared NLP endpoint configuration
 
 - `GET /api/v1/deidentification-providers`
 - `POST /api/v1/deidentification-providers`
@@ -136,14 +136,24 @@ Browser navigation behavior:
 - `GET /api/v1/deidentification-selection/options`
 - `POST /api/v1/deidentification-selection`
 - `DELETE /api/v1/deidentification-selection`
-- built-in native provider remains selectable for every team by default
-- external providers require explicit admin assignment before team selection
+- `GET /api/v1/clinical-nlp-selection`
+- `GET /api/v1/clinical-nlp-selection/options`
+- `POST /api/v1/clinical-nlp-selection`
+- `DELETE /api/v1/clinical-nlp-selection`
+- these routes keep the historical `deidentification` API name, but the saved generic REST endpoint can be used for PII redaction, clinical entity extraction, or both
+- built-in native provider remains selectable for every team as the PII redaction fallback
+- clinical entity extraction is separate from PII redaction: admins mark endpoints as clinical NLP-capable and assign them to a team; team leaders enable one assigned clinical NLP endpoint through the clinical selection routes
+- clinical NLP has no built-in fallback; no clinical selection means disease/symptom extraction is off
+- external endpoints require explicit admin assignment before team selection
 - inspect can load `/docs`, `/redoc`, or OpenAPI JSON paths to infer detect path, request text/language fields, extra body defaults, and response entity fields before saving
 - inspect separates `openapi_path` (docs/schema discovery, not saved for runtime) from `detect_path` (selected POST endpoint saved and used for runtime redaction)
 - after docs discovery, callers may pass `openapi_path` plus a selected `detect_path` from `candidate_paths` to infer and ping that specific endpoint contract
 - inspect pings against a concrete or inferred detect path use caller-supplied synthetic sample text only and return parsed entity spans plus the raw provider JSON response for admin testing
 - raw inspect responses are for synthetic provider tests only; runtime redaction does not expose provider responses or transcript-derived content in admin routes
-- runtime generic REST parsing accepts either offset entities (`start`, `end`, label/type, optional score) or value-only entities with detected text plus label; value-only entities are matched back into the submitted source text to derive offsets
+- runtime generic REST parsing accepts either offset entities (`start`, `end`, label/type, optional score/confidence) or value-only entities with detected text plus label; value-only entities are matched back into the submitted source text to derive offsets
+- inspect can adjust response field settings from a successful synthetic ping when OpenAPI schemas say `entity_type`/`score` but the actual response uses common clinical-NLP fields such as `label`/`confidence`
+- the same saved provider contract can opt into disease/symptom detection for transcript snapshots
+- when clinical detection is enabled, remote/public endpoints receive the redacted transcript text from the linked redaction run; unredacted transcript text is sent only when the admin enabled that option and the endpoint host is localhost, private, link-local, or unspecified
 - these are metadata and secret-reference routes, not transcript-content routes
 
 ## Error envelope
@@ -374,6 +384,11 @@ Current generation behavior:
   - free-text follow-up/template/quick-action instructions are also redacted transiently before the provider call
   - generated output is validated so only well-formed known placeholders survive to re-identification
   - final stored output is re-identified before being written back into `generated_documents`
+- clinical NLP snapshots are created beside successful redaction runs when the team has selected a clinical NLP endpoint:
+  - `clinical_entity_runs` records owner/team/transcript/version scope, provider snapshot metadata, status, and whether the submitted source text was redacted
+  - `clinical_entities` stores detected disease/symptom values encrypted per owner, with owner-keyed normalized hashes for duplicate matching
+  - deleting a clinical NLP provider clears active clinical NLP selections and preserves historical clinical runs by setting their provider reference to null
+  - clinical detection failure does not expose provider output or transcript text through admin routes
 - a dev-only verification endpoint now exists for localhost seeded test accounts:
   - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
   - it remains owner-only
@@ -588,7 +603,7 @@ Current whole-file ingestion behavior:
   - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
   - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
-  - exposes `active_transcript_pii_entities` as owner-only detected PII rows from the latest successful redaction run plus owner-created manual PII rows for the active transcript
+  - exposes `active_transcript_pii_entities` as owner-only detected PII rows from the latest successful redaction run, disease/symptom rows from the latest successful clinical NLP run, plus owner-created manual PII rows for the active transcript
   - includes note-level `generated_documents[].pii_entities` so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates

@@ -19,6 +19,8 @@ from .auth import (
 from .common import ApiError, ErrorResponse
 from .dictation import PostConsultationDictationDetail, PostConsultationDictationUpdate
 from .deidentification import (
+    ClinicalNlpSelectionDetail,
+    ClinicalNlpSelectionUpsert,
     DeidentificationInspectEntity,
     DeidentificationInspectFieldTip,
     DeidentificationInspectResult,
@@ -95,6 +97,8 @@ __all__ = [
     "AccountRequestDetail",
     "AccountRequestListItem",
     "AccountRequestReject",
+    "ClinicalNlpSelectionDetail",
+    "ClinicalNlpSelectionUpsert",
     "CurrentUserResponse",
     "PostConsultationDictationDetail",
     "PostConsultationDictationUpdate",

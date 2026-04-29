@@ -54,6 +54,22 @@ def _validate_deidentification_base_url(value: str) -> str:
     return value.rstrip("/")
 
 
+def _secret_body_field_paths(value: Any, *, path: str = "") -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = str(key).strip()
+            child_path = f"{path}.{normalized_key}" if path else normalized_key
+            if normalized_key.lower() in SECRET_BODY_FIELD_NAMES:
+                paths.append(child_path)
+            paths.extend(_secret_body_field_paths(item, path=child_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            paths.extend(_secret_body_field_paths(item, path=child_path))
+    return paths
+
+
 class DeidentificationProviderUpsert(BaseModel):
     model_config = {"protected_namespaces": ()}
 
@@ -75,6 +91,8 @@ class DeidentificationProviderUpsert(BaseModel):
     response_score_field: str | None = Field(default=None, max_length=255)
     response_model_version_path: str | None = Field(default=None, max_length=255)
     entity_type_map_json: dict[str, str] = Field(default_factory=dict)
+    clinical_detection_enabled: bool = False
+    clinical_detection_allow_unredacted: bool = False
     is_active: bool = True
 
     @model_validator(mode="before")
@@ -101,6 +119,8 @@ class DeidentificationProviderUpsert(BaseModel):
             normalized["response_score_field"] = None
             normalized["response_model_version_path"] = None
             normalized["entity_type_map_json"] = {}
+            normalized["clinical_detection_enabled"] = False
+            normalized["clinical_detection_allow_unredacted"] = False
         return normalized
 
     @field_validator("base_url")
@@ -154,10 +174,9 @@ class DeidentificationProviderUpsert(BaseModel):
 
     @field_validator("extra_body_json")
     @classmethod
-    def validate_extra_body_does_not_store_secrets(cls, value: dict[str, str]) -> dict[str, str]:
-        for key in value:
-            if key.strip().lower() in SECRET_BODY_FIELD_NAMES:
-                raise ValueError("Secret-bearing de-identification body fields must use bearer_token/Vault storage")
+    def validate_extra_body_does_not_store_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if _secret_body_field_paths(value):
+            raise ValueError("Secret-bearing de-identification body fields must use bearer_token/Vault storage")
         return value
 
     @model_validator(mode="after")
@@ -248,6 +267,8 @@ class DeidentificationProviderDetail(BaseModel):
     response_score_field: str | None
     response_model_version_path: str | None
     entity_type_map_json: dict[str, str]
+    clinical_detection_enabled: bool
+    clinical_detection_allow_unredacted: bool
     is_active: bool
     is_builtin: bool
     has_secret: bool
@@ -293,5 +314,26 @@ class DeidentificationSelectionDetail(BaseModel):
     selected_provider_label: str
     selected_provider_adapter_kind: DeidentificationAdapterKind
     selected_provider_is_builtin: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClinicalNlpSelectionUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID | None = None
+    provider_id: UUID
+
+
+class ClinicalNlpSelectionDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    id: UUID
+    team_id: UUID
+    provider_id: UUID
+    selected_by_user_id: UUID
+    selected_provider_label: str
+    selected_provider_adapter_kind: DeidentificationAdapterKind
+    selected_provider_allows_unredacted: bool
     created_at: datetime
     updated_at: datetime

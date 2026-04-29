@@ -9,6 +9,7 @@ from ..db import SessionLocal
 from ..errors import AppError
 from ..models import (
     GeneratedDocument,
+    ClinicalEntityRun,
     GeneratedDocumentGeneratorType,
     RedactionRun,
     RedactionRunStatus,
@@ -66,6 +67,7 @@ from ..services.transcripts import (
     transcript_version_text as transcript_version_text_service,
 )
 from ..services.redaction import redaction_entity_original_value as redaction_entity_original_value_service
+from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
 from .presentation import generated_document_response, quick_action_response, template_response
 from .templates import templates
 
@@ -337,7 +339,29 @@ def transcript_pii_entities_response(db: Session, transcript: Transcript | None)
             .order_by(TranscriptManualPiiEntity.created_at.asc(), TranscriptManualPiiEntity.id.asc())
         )
     )
-    return detected_entities + [
+    clinical_run = db.scalar(
+        select(ClinicalEntityRun)
+        .where(
+            ClinicalEntityRun.transcript_id == transcript.id,
+            ClinicalEntityRun.owner_user_id == transcript.owner_user_id,
+        )
+        .order_by(ClinicalEntityRun.created_at.desc(), ClinicalEntityRun.id.desc())
+        .limit(1)
+    )
+    clinical_entities = []
+    if clinical_run is not None and clinical_run.status is RedactionRunStatus.succeeded:
+        clinical_entities = [
+            TranscriptPiiEntityDetail(
+                id=None,
+                entity_type=entity.entity_type,
+                value=clinical_entity_value_service(db, entity=entity),
+                placeholder="Clinical NLP",
+                occurrence_count=entity.occurrence_count,
+                source="clinical",
+            )
+            for entity in sorted(clinical_run.entities, key=lambda item: item.entity_order)
+        ]
+    return detected_entities + clinical_entities + [
         transcript_manual_pii_entity_response(db, entity)
         for entity in manual_entities
     ]

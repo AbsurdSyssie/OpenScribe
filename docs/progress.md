@@ -1,5 +1,213 @@
 # Progress
 
+## 2026-04-29 Review Regression Fixes
+
+### Scope
+
+- Fixed clinical NLP generation when a successful redaction run already exists.
+- Preserved duplicate detection for manual PII rows stored with legacy SHA-256 hashes.
+- Kept admin provider save errors on the matching STT or LLM sub-tab.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/redaction.py`: run missing clinical entity detection on reused redaction runs.
+- `app/services/transcripts.py`: add legacy manual PII hash lookup and upgrade matched rows to keyed digest.
+- `app/routes/web_admin.py`: pass matching provider tab after STT and LLM save validation errors.
+- `tests/test_api.py`: add clinical reuse and legacy manual PII duplicate regressions.
+- `tests/test_admin_ui.py`: add provider-tab error regression.
+- `docs/progress.md`: record this review fix.
+
+### Tests
+
+- Added API/service coverage for existing redaction reuse creating a clinical entity run.
+- Added API coverage for legacy manual PII SHA-256 duplicate matching and hash upgrade.
+- Added admin UI coverage for STT/LLM validation errors staying on matching provider tabs.
+
+### Documentation
+
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Reusing a redaction run now commits if clinical detection creates or updates a clinical run, matching the already-committing fresh redaction path.
+- Legacy manual PII compatibility is lookup-time migration only; no schema migration required.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content is logged or exposed; clinical detection still uses configured provider rules.
+- Ownership rules preserved: manual PII lookup remains scoped to owning user's transcript and entity type.
+- Deletion semantics preserved: no retention roots, hard-delete paths, or cascades changed.
+- Provider rules preserved: clinical NLP still runs only when a valid assigned team selection exists; admin tabs only affect browser state.
+- Structured-note contract preserved: no EMIS keys or generated-note JSON shape changed.
+
+## 2026-04-29 Dev Startup Port Guard
+
+### Scope
+
+- Hardened `./start-dev.sh` when FastAPI port is already occupied.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: shell syntax validation.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `start-dev.sh`: stop more stale FastAPI process patterns, fail fast if `APP_PORT` is occupied, and open Brave on configured port.
+- `docs/setup.md`, `docs/progress.md`: document port guard behavior.
+
+### Tests
+
+- `bash -n start-dev.sh`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema changes.
+- Auth/ownership checkpoint: no auth or ownership behavior changed.
+- Lifecycle/deletion checkpoint: dev startup now fails before Celery/Brave when app port is unavailable; no content lifecycle changed.
+- Provider/structured-note checkpoints: unchanged.
+
+## 2026-04-28 Clinical NLP Workspace Refresh Fix
+
+### Scope
+
+- Fixed transcribe workspace refresh so newly returned PII/clinical NLP entities render into the right-side review table and transcript highlights after analyse runs.
+- Bumped the transcribe app script cache key so browsers load the fixed module.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: re-render PII entities from each workspace payload after draft text refresh.
+- `app/templates/transcribe/_shell_extras.html`: bump module cache key.
+- `tests/test_admin_ui.py`: add regression guard for workspace refresh invoking PII render.
+- `docs/testing.md`, `docs/progress.md`: document refresh coverage and daily note.
+
+### Tests
+
+- `python3 -m py_compile tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_workspace_refresh_renders_updated_pii_entities or user_transcribe_page_shows_clinical_entities_in_pii_area"`: passed, 2 tests.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated transcribe workspace regression notes and progress log.
+
+### Risks / assumptions
+
+- Static JS regression test protects the missing render call; no browser automation was added for this small fix.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only owner workspace consumes owner-scoped `active_transcript_pii_entities`; no admin/leader content access added.
+- Ownership rules preserved: API/workspace ownership filtering unchanged.
+- Deletion semantics preserved: no model or cascade behavior changed.
+- Provider rules preserved: clinical NLP selection/resolution unchanged; this only renders returned entities.
+- Structured-note contract preserved: no generated document or EMIS JSON behavior changed.
+
+## 2026-04-28 Admin Full Layout Redesign
+
+### Scope
+
+- Updated `/admin` to use redesigned flat workspace sections across providers, defaults, directory, usage, and requests.
+- Split provider management into STT, LLM, and de-identification subtabs with active-selection cards and provider metadata cards.
+- Kept LLM inspection and de-identification/NLP ping responses on their originating provider subtab instead of resetting to STT.
+- Preserved existing backend form routes, return-view routing, secret handling, and destructive action confirmations.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/admin.html`: add redesigned section/card/subtab layout and provider subtab switching JS while keeping existing forms and honoring server-selected provider subtabs.
+- `app/web/presentation.py`, `app/routes/web_admin.py`: carry active provider subtab context for LLM and de-identification inspect responses.
+- `tests/test_admin_ui.py`: update admin layout assertions for provider subtabs, directory cards, and de-identification management.
+- `docs/admin_brief.md`, `docs/testing.md`, `docs/progress.md`: document admin layout and regression coverage.
+
+### Tests
+
+- `python3 -m py_compile tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_page_uses_flat_sidebar_workspace_layout or admin_restyled_preview_route_renders_for_system_admin or admin_providers_panel_renders_deidentification_management or admin_llm_selection_uses_visible_model_tiles_and_default_dropdown"`: passed, 4 tests.
+- `python3 -m py_compile app/web/presentation.py app/routes/web_admin.py tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "deidentification_inspect_does_not_render_bearer_token or inspect_and_save_llm_provider_without_retyping_api_key or admin_restyled_preview_route_renders_for_system_admin"`: passed, 3 tests.
+
+### Documentation
+
+- Added admin layout notes and test coverage note.
+
+### Risks / assumptions
+
+- Provider forms remain inline rather than drawer-based so server-rendered inspect/edit flows and credential handling stay unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: admin UI remains metadata-only and does not render transcript or generated note content.
+- Ownership rules preserved: no user/team ownership filters or routes changed.
+- Deletion semantics preserved: existing delete forms and confirmation prompts remain on same routes.
+- Provider rules preserved: Vault-backed secret fields, provider selection, and fallback behavior unchanged.
+- Structured-note contract preserved: no template JSON or generated-document behavior changed.
+
+## 2026-04-28 Manual PII Digest and Nested Provider Secret Review Fix
+
+### Scope
+
+- Replaced plain SHA-256 manual PII dedupe hashes with owner-DEK-keyed HMAC digests so low-entropy PII cannot be dictionary-tested from DB contents alone.
+- Made de-identification provider `extra_body_json` secret-key validation recursive so nested `token`/`api_key` style fields are rejected instead of persisted raw.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/content_crypto.py`: add owner-scoped keyed digest helper using the unwrapped owner DEK.
+- `app/services/transcripts.py`: use keyed digest helper for manual PII `normalized_value_hash`.
+- `app/schemas/deidentification.py`: recursively reject secret-bearing keys in arbitrary body JSON.
+- `tests/test_api.py`: cover non-plain-SHA manual PII digests and nested de-identification body secrets.
+- `docs/testing.md`, `docs/DatabasePlan.md`, `docs/progress.md`: document keyed digest and nested secret validation coverage.
+
+### Tests
+
+- `python3 -m py_compile app/services/content_crypto.py app/services/transcripts.py app/schemas/deidentification.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "owner_can_add_and_delete_manual_pii_entities or deidentification_provider_rejects_secret_headers"`: passed, 2 tests.
+
+### Documentation
+
+- Updated testing coverage, database plan note, and daily progress.
+
+### Risks / assumptions
+
+- Existing manual PII rows created with the old plain hash format will not dedupe against newly keyed digests until re-created; this avoids continuing offline-guessable hashes.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: manual PII plaintext remains encrypted; dedupe metadata is now non-offline-guessable without owner key material.
+- Ownership rules preserved: manual PII remains owner-only and keyed by owner DEK.
+- Deletion semantics preserved: no cascade or retention changes; manual PII still lives under transcript root.
+- Provider rules preserved: raw de-identification secrets must use Vault-backed bearer-token storage, including nested body fields.
+- Structured-note contract preserved: no EMIS or generated-document JSON changes.
+
 ## 2026-04-27 De-identification Inspect Token Handling
 
 ### Scope

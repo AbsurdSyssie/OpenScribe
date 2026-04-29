@@ -38,6 +38,7 @@ from app.models import (
     SttAuthMode,
     SttSelectionPurpose,
     Team,
+    TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamLlmConfig,
@@ -312,6 +313,8 @@ def make_deidentification_provider(db_session: Session, make_user: Callable[...,
         response_score_field: str | None = None,
         response_model_version_path: str | None = None,
         entity_type_map_json: dict[str, str] | None = None,
+        clinical_detection_enabled: bool = False,
+        clinical_detection_allow_unredacted: bool = False,
         is_active: bool = True,
         is_builtin: bool = False,
         has_secret: bool = False,
@@ -334,6 +337,8 @@ def make_deidentification_provider(db_session: Session, make_user: Callable[...,
             response_score_field=response_score_field,
             response_model_version_path=response_model_version_path,
             entity_type_map_json=entity_type_map_json or {},
+            clinical_detection_enabled=clinical_detection_enabled,
+            clinical_detection_allow_unredacted=clinical_detection_allow_unredacted,
             vault_secret_ref=f"secret:openscribe/deidentification/provider/{uuid4()}" if has_secret else "",
             is_active=is_active,
             is_builtin=is_builtin,
@@ -386,6 +391,34 @@ def make_deidentification_selection(db_session: Session, make_user: Callable[...
             is_system_admin=False,
         )
         selection = TeamDeidentificationSelection(
+            team_id=team.id,
+            provider_id=provider.id,
+            selected_by_user_id=resolved_actor.id,
+        )
+        db_session.add(selection)
+        db_session.commit()
+        db_session.refresh(selection)
+        return selection
+
+    return factory
+
+
+@pytest.fixture
+def make_clinical_nlp_selection(db_session: Session, make_user: Callable[..., User]) -> Callable[..., TeamClinicalNlpSelection]:
+    def factory(
+        *,
+        team: Team,
+        provider: DeidentificationProvider,
+        actor: User | None = None,
+    ) -> TeamClinicalNlpSelection:
+        resolved_actor = actor or make_user(
+            email=f"leader-clinical-nlp-{team.id}@example.com",
+            password="password-1",
+            team=team,
+            team_role=TeamRole.leader,
+            is_system_admin=False,
+        )
+        selection = TeamClinicalNlpSelection(
             team_id=team.id,
             provider_id=provider.id,
             selected_by_user_id=resolved_actor.id,

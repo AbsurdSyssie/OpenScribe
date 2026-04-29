@@ -191,6 +191,12 @@ class Team(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    clinical_nlp_selection: Mapped["TeamClinicalNlpSelection | None"] = relationship(
+        back_populates="team",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(back_populates="team")
     templates: Mapped[list["PromptTemplate"]] = relationship(back_populates="team")
     quick_actions: Mapped[list["QuickAction"]] = relationship(back_populates="team")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="team")
@@ -272,6 +278,7 @@ class User(Base):
     manual_pii_entities: Mapped[list["TranscriptManualPiiEntity"]] = relationship(back_populates="owner")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="owner")
     encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(back_populates="owner")
 
 
 class UserEncryptionKey(Base):
@@ -506,6 +513,8 @@ class DeidentificationProvider(Base):
     response_score_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     response_model_version_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     entity_type_map_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    clinical_detection_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    clinical_detection_allow_unredacted: Mapped[bool] = mapped_column(default=False, nullable=False)
     vault_secret_ref: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     is_builtin: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -519,6 +528,10 @@ class DeidentificationProvider(Base):
         cascade="all, delete-orphan",
     )
     selections: Mapped[list["TeamDeidentificationSelection"]] = relationship(
+        back_populates="provider",
+        cascade="all, delete-orphan",
+    )
+    clinical_nlp_selections: Mapped[list["TeamClinicalNlpSelection"]] = relationship(
         back_populates="provider",
         cascade="all, delete-orphan",
     )
@@ -556,6 +569,65 @@ class TeamDeidentificationSelection(Base):
     team: Mapped[Team] = relationship(back_populates="deidentification_selection")
     provider: Mapped[DeidentificationProvider] = relationship(back_populates="selections")
     selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
+
+
+class TeamClinicalNlpSelection(Base):
+    __tablename__ = "team_clinical_nlp_selections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), unique=True, nullable=False)
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("deidentification_providers.id"), nullable=False)
+    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="clinical_nlp_selection")
+    provider: Mapped[DeidentificationProvider] = relationship(back_populates="clinical_nlp_selections")
+    selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
+
+
+class ClinicalEntityRun(Base):
+    __tablename__ = "clinical_entity_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
+    transcript_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_versions.id"), nullable=True)
+    redaction_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("redaction_runs.id"), nullable=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    provider_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("deidentification_providers.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[RedactionRunStatus] = mapped_column(Enum(RedactionRunStatus), default=RedactionRunStatus.succeeded, nullable=False)
+    source_text_redacted: Mapped[bool] = mapped_column(default=True, nullable=False)
+    api_provider: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_model_or_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    entity_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    transcript: Mapped["Transcript"] = relationship(back_populates="clinical_entity_runs")
+    transcript_version: Mapped["TranscriptVersion | None"] = relationship(back_populates="clinical_entity_runs")
+    redaction_run: Mapped["RedactionRun | None"] = relationship()
+    owner: Mapped[User] = relationship(back_populates="clinical_entity_runs")
+    team: Mapped[Team] = relationship(back_populates="clinical_entity_runs")
+    provider: Mapped[DeidentificationProvider | None] = relationship()
+    entities: Mapped[list["ClinicalEntity"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+
+
+class ClinicalEntity(Base):
+    __tablename__ = "clinical_entities"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    clinical_entity_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clinical_entity_runs.id"), nullable=False)
+    entity_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_value_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    run: Mapped[ClinicalEntityRun] = relationship(back_populates="entities")
 
 
 class UserLlmPreference(Base):
@@ -793,6 +865,10 @@ class Transcript(Base):
         back_populates="transcript",
         cascade="all, delete-orphan",
     )
+    clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(
+        back_populates="transcript",
+        cascade="all, delete-orphan",
+    )
     manual_pii_entities: Mapped[list["TranscriptManualPiiEntity"]] = relationship(
         back_populates="transcript",
         cascade="all, delete-orphan",
@@ -880,6 +956,10 @@ class TranscriptVersion(Base):
 
     transcript: Mapped[Transcript] = relationship(back_populates="versions")
     redaction_runs: Mapped[list["RedactionRun"]] = relationship(
+        back_populates="transcript_version",
+        cascade="all, delete-orphan",
+    )
+    clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(
         back_populates="transcript_version",
         cascade="all, delete-orphan",
     )

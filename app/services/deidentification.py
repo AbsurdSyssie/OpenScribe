@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
 from app.models import (
+    ClinicalEntityRun,
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     DeidentificationProvider,
     Team,
+    TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamRole,
@@ -23,6 +25,7 @@ from app.schemas import (
     DeidentificationInspectEntity,
     DeidentificationInspectFieldTip,
     DeidentificationInspectResult,
+    ClinicalNlpSelectionUpsert,
     DeidentificationProviderAssignmentUpsert,
     DeidentificationProviderInspectRequest,
     DeidentificationProviderUpsert,
@@ -331,6 +334,66 @@ def _extra_forbidden_body_fields(raw_response: Any) -> set[str]:
     return fields
 
 
+def _entity_items_from_raw_response(raw_response: Any) -> tuple[list[dict[str, Any]], str | None]:
+    if isinstance(raw_response, list):
+        return [item for item in raw_response if isinstance(item, dict)], ""
+    if not isinstance(raw_response, dict):
+        return [], None
+    for key in ("entities", "items", "results", "spans", "detections"):
+        value = raw_response.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)], key
+    for key, value in raw_response.items():
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)], str(key)
+    return [], None
+
+
+def _infer_response_fields_from_raw_response(raw_response: Any) -> dict[str, str | None]:
+    items, entities_path = _entity_items_from_raw_response(raw_response)
+    first = items[0] if items else {}
+    if not first:
+        return {}
+    inferred: dict[str, str | None] = {}
+    for key in ("start", "begin", "start_offset", "offset"):
+        if key in first:
+            inferred["response_start_field"] = key
+            break
+    for key in ("end", "stop", "end_offset"):
+        if key in first:
+            inferred["response_end_field"] = key
+            break
+    for key in ("entity_type", "type", "label", "category", "entity"):
+        if key in first:
+            inferred["response_type_field"] = key
+            break
+    for key in ("score", "confidence", "probability"):
+        if key in first:
+            inferred["response_score_field"] = key
+            break
+    if entities_path is not None:
+        inferred["response_entities_path"] = entities_path
+    return inferred
+
+
+def _apply_inferred_response_fields(provider: DeidentificationProvider, inferred: dict[str, str | None]) -> list[str]:
+    changed: list[str] = []
+    field_map = {
+        "response_entities_path": "response_entities_path",
+        "response_start_field": "response_start_field",
+        "response_end_field": "response_end_field",
+        "response_type_field": "response_type_field",
+        "response_score_field": "response_score_field",
+    }
+    for payload_key, attr in field_map.items():
+        value = inferred.get(payload_key)
+        if value is None or value == getattr(provider, attr):
+            continue
+        setattr(provider, attr, value)
+        changed.append(f"{attr}={value or '<top-level array>'}")
+    return changed
+
+
 def _inspect_provider_ping(
     db: Session,
     *,
@@ -384,10 +447,20 @@ def _inspect_provider_ping(
     try:
         spans = _provider_spans_from_payload(sample_text, raw_response, provider=provider, score_threshold=0.0, entities=None)
     except (AppError, KeyError, TypeError, ValueError) as exc:
-        notes.append("Provider responded, but response could not be parsed with the current entity field settings.")
-        if isinstance(raw_response, dict):
-            notes.append(f"Top-level response keys: {', '.join(sorted(str(key) for key in raw_response.keys())) or 'none'}.")
-        spans = []
+        inferred = _infer_response_fields_from_raw_response(raw_response)
+        changed = _apply_inferred_response_fields(provider, inferred)
+        if changed:
+            try:
+                spans = _provider_spans_from_payload(sample_text, raw_response, provider=provider, score_threshold=0.0, entities=None)
+                notes.append(f"Provider response fields were adjusted from the ping response: {', '.join(changed)}.")
+            except (AppError, KeyError, TypeError, ValueError):
+                notes.append("Provider responded, but response could not be parsed with the current entity field settings.")
+                spans = []
+        else:
+            notes.append("Provider responded, but response could not be parsed with the current entity field settings.")
+            if isinstance(raw_response, dict):
+                notes.append(f"Top-level response keys: {', '.join(sorted(str(key) for key in raw_response.keys())) or 'none'}.")
+            spans = []
     model_or_version = None
     if provider.response_model_version_path:
         try:
@@ -473,6 +546,8 @@ def _inspect_deidentification_openapi(db: Session, actor: User, payload: Deident
         response_score_field=score_field,
         response_model_version_path=model_path,
         entity_type_map_json=payload.entity_type_map_json,
+        clinical_detection_enabled=payload.clinical_detection_enabled,
+        clinical_detection_allow_unredacted=payload.clinical_detection_allow_unredacted,
         vault_secret_ref="",
         is_active=payload.is_active,
         is_builtin=False,
@@ -500,12 +575,12 @@ def _inspect_deidentification_openapi(db: Session, actor: User, payload: Deident
         request_text_field=request_text_field,
         request_language_field=provider.request_language_field,
         extra_body_json=provider.extra_body_json or {},
-        response_entities_path=entities_path,
-        response_start_field=start_field,
-        response_end_field=end_field,
-        response_type_field=type_field,
-        response_score_field=score_field,
-        response_model_version_path=model_path,
+        response_entities_path=provider.response_entities_path,
+        response_start_field=provider.response_start_field,
+        response_end_field=provider.response_end_field,
+        response_type_field=provider.response_type_field,
+        response_score_field=provider.response_score_field,
+        response_model_version_path=provider.response_model_version_path,
         api_provider=payload.label.strip(),
         api_model_or_version=ping_model_or_version,
         sample_text=payload.sample_text,
@@ -544,6 +619,8 @@ def ensure_builtin_deidentification_provider(db: Session) -> DeidentificationPro
         response_score_field=None,
         response_model_version_path=None,
         entity_type_map_json={},
+        clinical_detection_enabled=False,
+        clinical_detection_allow_unredacted=False,
         vault_secret_ref="",
         is_active=True,
         is_builtin=True,
@@ -613,6 +690,8 @@ def inspect_deidentification_provider(
         response_score_field=payload.response_score_field,
         response_model_version_path=payload.response_model_version_path,
         entity_type_map_json=payload.entity_type_map_json,
+        clinical_detection_enabled=payload.clinical_detection_enabled,
+        clinical_detection_allow_unredacted=payload.clinical_detection_allow_unredacted,
         vault_secret_ref=existing_provider.vault_secret_ref if existing_provider is not None else "",
         is_active=payload.is_active,
         is_builtin=False,
@@ -698,6 +777,8 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
             response_score_field=payload.response_score_field,
             response_model_version_path=payload.response_model_version_path,
             entity_type_map_json=payload.entity_type_map_json,
+            clinical_detection_enabled=payload.clinical_detection_enabled,
+            clinical_detection_allow_unredacted=payload.clinical_detection_allow_unredacted,
             vault_secret_ref="",
             is_active=payload.is_active,
             is_builtin=False,
@@ -723,6 +804,8 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
         provider.response_score_field = payload.response_score_field
         provider.response_model_version_path = payload.response_model_version_path
         provider.entity_type_map_json = payload.entity_type_map_json
+        provider.clinical_detection_enabled = payload.clinical_detection_enabled
+        provider.clinical_detection_allow_unredacted = payload.clinical_detection_allow_unredacted
         provider.is_active = payload.is_active
         provider.updated_by_user_id = actor.id
         db.add(provider)
@@ -766,10 +849,17 @@ def delete_deidentification_provider(db: Session, actor: User, *, provider_id: U
     selections = list(db.scalars(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.provider_id == provider.id)))
     for selection in selections:
         db.delete(selection)
+    clinical_nlp_selections = list(db.scalars(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.provider_id == provider.id)))
+    for selection in clinical_nlp_selections:
+        db.delete(selection)
     assignments = list(db.scalars(select(TeamDeidentificationProviderAssignment).where(TeamDeidentificationProviderAssignment.provider_id == provider.id)))
     for assignment in assignments:
         db.delete(assignment)
-    if selections or assignments:
+    clinical_entity_runs = list(db.scalars(select(ClinicalEntityRun).where(ClinicalEntityRun.provider_id == provider.id)))
+    for run in clinical_entity_runs:
+        run.provider_id = None
+        db.add(run)
+    if selections or clinical_nlp_selections or assignments or clinical_entity_runs:
         db.flush()
     db.delete(provider)
     db.commit()
@@ -839,6 +929,10 @@ def remove_deidentification_provider_assignment(db: Session, actor: User, *, tea
     if selection is not None:
         db.delete(selection)
         db.flush()
+    clinical_selection = db.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team_id, TeamClinicalNlpSelection.provider_id == provider_id))
+    if clinical_selection is not None:
+        db.delete(clinical_selection)
+        db.flush()
     db.delete(assignment)
     db.commit()
 
@@ -905,6 +999,86 @@ def clear_team_deidentification_selection(db: Session, actor: User, *, team_id: 
         raise AppError(404, "not_found", "De-identification selection not found", {"resource": "deidentification_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+
+
+def list_selectable_clinical_nlp_providers(db: Session, actor: User, *, team_id: UUID | None = None) -> list[DeidentificationProvider]:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    stmt = (
+        select(DeidentificationProvider)
+        .join(TeamDeidentificationProviderAssignment, TeamDeidentificationProviderAssignment.provider_id == DeidentificationProvider.id)
+        .where(
+            TeamDeidentificationProviderAssignment.team_id == team.id,
+            DeidentificationProvider.is_active.is_(True),
+            DeidentificationProvider.is_builtin.is_(False),
+            DeidentificationProvider.clinical_detection_enabled.is_(True),
+        )
+        .order_by(DeidentificationProvider.created_at.desc(), DeidentificationProvider.id.desc())
+    )
+    return list(db.scalars(stmt))
+
+
+def get_team_clinical_nlp_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamClinicalNlpSelection | None:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    return db.scalar(
+        select(TeamClinicalNlpSelection)
+        .options(joinedload(TeamClinicalNlpSelection.provider))
+        .where(TeamClinicalNlpSelection.team_id == team.id)
+    )
+
+
+def set_team_clinical_nlp_selection(db: Session, actor: User, payload: ClinicalNlpSelectionUpsert) -> TeamClinicalNlpSelection:
+    team = _resolve_selection_scoped_team(db, actor, team_id=payload.team_id)
+    selectable_ids = {provider.id for provider in list_selectable_clinical_nlp_providers(db, actor, team_id=team.id)}
+    if payload.provider_id not in selectable_ids:
+        raise AppError(404, "not_found", "Selectable clinical NLP endpoint not found", {"resource": "clinical_nlp_provider", "provider_id": str(payload.provider_id)})
+    selection = db.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id))
+    if selection is None:
+        selection = TeamClinicalNlpSelection(
+            id=uuid4(),
+            team_id=team.id,
+            provider_id=payload.provider_id,
+            selected_by_user_id=actor.id,
+        )
+        db.add(selection)
+    else:
+        selection.provider_id = payload.provider_id
+        selection.selected_by_user_id = actor.id
+        db.add(selection)
+    db.commit()
+    db.refresh(selection)
+    return db.scalar(
+        select(TeamClinicalNlpSelection)
+        .options(joinedload(TeamClinicalNlpSelection.provider))
+        .where(TeamClinicalNlpSelection.id == selection.id)
+    ) or selection
+
+
+def clear_team_clinical_nlp_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
+    team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
+    selection = db.scalar(select(TeamClinicalNlpSelection).where(TeamClinicalNlpSelection.team_id == team.id))
+    if selection is None:
+        raise AppError(404, "not_found", "Clinical NLP selection not found", {"resource": "clinical_nlp_selection", "team_id": str(team.id)})
+    db.delete(selection)
+    db.commit()
+
+
+def active_team_clinical_nlp_provider(db: Session, *, team_id: UUID) -> DeidentificationProvider | None:
+    selection = db.scalar(
+        select(TeamClinicalNlpSelection)
+        .options(joinedload(TeamClinicalNlpSelection.provider))
+        .where(TeamClinicalNlpSelection.team_id == team_id)
+    )
+    if selection is None or selection.provider is None or not selection.provider.is_active or not selection.provider.clinical_detection_enabled:
+        return None
+    assignment = db.scalar(
+        select(TeamDeidentificationProviderAssignment.id).where(
+            TeamDeidentificationProviderAssignment.team_id == team_id,
+            TeamDeidentificationProviderAssignment.provider_id == selection.provider.id,
+        )
+    )
+    if assignment is None:
+        return None
+    return selection.provider
 
 
 def active_team_deidentification_provider(db: Session, *, team_id: UUID) -> DeidentificationProvider:

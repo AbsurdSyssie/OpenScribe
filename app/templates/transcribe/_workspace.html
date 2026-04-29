@@ -703,7 +703,7 @@ Redaction check has not run for this transcript yet.
 <tbody data-pii-table-body>
 {% for entity in active_transcript_pii_entities %}
 <tr>
-<td><span class="pii-type">{{ entity.entity_type|replace('_', ' ') }}</span></td>
+<td><span class="pii-type{% if entity.source == 'clinical' %} pii-type--clinical{% endif %}">{{ entity.entity_type|replace('_', ' ') }}</span></td>
 <td>
 <span class="pii-value">{{ entity.value }}</span>
 <span class="pii-placeholder">{{ entity.placeholder }}</span>

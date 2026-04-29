@@ -28,6 +28,7 @@ Current behavior:
 - the first pytest run acquires the lock and proceeds
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
+- admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
 
 ## API auth route audit
 
@@ -71,7 +72,9 @@ What it does:
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
+- workspace refreshes re-render the right-side PII table and transcript highlights from `active_transcript_pii_entities`, including newly detected clinical NLP entities, without requiring a full page reload
 - manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
+- manual PII dedupe coverage verifies normalized value hashes are keyed owner-scoped digests rather than plain SHA-256 of low-entropy PII
 - manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation
 
 ## Main.py refactor guardrails
@@ -179,6 +182,7 @@ What it does:
 - live-capture finalize applying completed chunks, deferring preview redaction while chunks are still pending, and creating/reusing owner-scoped redaction once the transcript is ready
 - workspace redaction preview status distinguishing not-run, succeeded, and failed checks so an empty PII table is not ambiguous
 - workspace PII coverage verifies detected rows are hidden when the latest redaction run failed rather than falling back to stale older successful runs
+- clinical NLP coverage verifies admin provider flags, team assignment plus leader enablement, remote providers receiving redacted transcript text, local/private providers receiving unredacted transcript text only when allowed, encrypted owner-scoped clinical entity rows, transcript deletion cascade cleanup, and the `/transcribe` PII panel rendering disease/symptom rows with a separate highlight class
 - generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version, including reuse of an existing matching transcript version
 - generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
 - generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
@@ -274,8 +278,8 @@ What it does:
 - admin team hard delete preflighting system-admin membership before deleting Vault-backed provider secrets
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
-- de-identification provider validation rejecting secret-bearing extra headers/body fields and bearer-auth providers without a Vault-backed token
-- de-identification provider inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, and no token echo
+- de-identification provider validation rejecting secret-bearing extra headers/body fields, including nested body JSON keys, and bearer-auth providers without a Vault-backed token
+- shared NLP endpoint inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, clinical-NLP `label`/`confidence` response adjustment, and no token echo
 - admin de-identification inspection UI using entered bearer tokens for the ping only and requiring re-entry for save instead of rendering tokens into hidden fields
 - de-identification provider OpenAPI/docs inspection inferring REST detect path, request fields, response entity fields including top-level array responses, typed extra body defaults, automatic synthetic ping, and raw response display
 - de-identification provider inspection separating docs discovery path from selected runtime endpoint and allowing candidate endpoint re-ping with the same OpenAPI document
@@ -288,6 +292,7 @@ What it does:
 - de-identification runtime fallback to the built-in global provider when a selected team provider is inactive or unavailable
 - admin providers UI exposing de-identification provider provisioning, edit/delete, and per-team assignment without revealing Vault-backed bearer tokens
 - leader home AI-services UI exposing team de-identification selection and clear-to-built-in-fallback behavior
+- leader home AI-services UI exposing clinical NLP enable/disable separately from PII redaction selection
 - home tabs initializing after the navigation moved above the tab shell
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace

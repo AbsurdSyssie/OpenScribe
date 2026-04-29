@@ -1946,6 +1946,56 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 {% endif %}
 </div>
 </section>
+
+<section class="service-row{% if active_home_modal == 'clinical-nlp-settings' %} service-row--active{% endif %}" id="clinical-nlp-service">
+<div class="service-row__head">
+<div class="service-row__icon service-row__icon--templates">NLP</div>
+<div class="service-row__info">
+<div class="service-row__title">Clinical NLP</div>
+<div class="service-row__status">
+{% if clinical_nlp_selection %}
+<span class="status-dot status-dot--active"></span>
+<span class="service-row__detail">{{ clinical_nlp_selection.provider.label }}</span>
+{% else %}
+<span class="status-dot status-dot--pending"></span>
+<span class="service-row__detail">Disabled</span>
+{% endif %}
+</div>
+</div>
+<div class="service-row__actions">
+{% if clinical_nlp_selection %}
+<form method="post" action="/home/clinical-nlp-selection/clear" onsubmit="return confirm('Disable clinical NLP for your team?');" style="margin:0;">
+<input type="hidden" name="return_view" value="{{ home_return_view }}">
+<input type="hidden" name="return_tab" value="ai-services">
+<button type="submit" class="btn-ghost-sm">Disable</button>
+</form>
+{% endif %}
+<button type="button" class="btn-ghost-sm service-row__toggle" data-service-toggle="clinical-nlp">{% if active_home_modal == 'clinical-nlp-settings' %}Close{% else %}Configure{% endif %}</button>
+</div>
+</div>
+<div class="service-row__body" data-service-body="clinical-nlp"{% if active_home_modal != 'clinical-nlp-settings' %} hidden{% endif %}>
+{% if selectable_clinical_nlp_providers %}
+<form method="post" action="/home/clinical-nlp-selection">
+<input type="hidden" name="return_view" value="{{ home_return_view }}">
+<input type="hidden" name="return_tab" value="ai-services">
+<div class="form-row">
+<label class="form-label">
+<span class="form-label__text">Endpoint</span>
+<select name="provider_id" class="form-select" required>
+{% for provider in selectable_clinical_nlp_providers %}
+<option value="{{ provider.id }}" {% if clinical_nlp_selection and clinical_nlp_selection.provider_id == provider.id %}selected{% endif %}>{{ provider.label }} ({{ provider.adapter_kind.value }})</option>
+{% endfor %}
+</select>
+</label>
+</div>
+<p class="form-empty" style="margin-bottom:12px;">This enables assigned disease and symptom extraction for transcript highlights. PII redaction provider choice stays separate.</p>
+<button type="submit" class="btn-primary-sm">Enable</button>
+</form>
+{% else %}
+<p class="form-empty">No clinical NLP endpoints are available yet. Ask a system admin to assign one to your team.</p>
+{% endif %}
+</div>
+</section>
 </div>
 </section>
 

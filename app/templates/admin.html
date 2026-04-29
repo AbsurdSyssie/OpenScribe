@@ -122,11 +122,10 @@
     .grid { grid-template-columns: minmax(0, 1fr); }
 
     .panel {
-      background: transparent;
-      border: 0;
-      border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid var(--border);
       border-radius: 0;
-      padding: 22px 0 0;
+      padding: 18px;
       box-shadow: none;
       overflow-x: auto;
     }
@@ -168,6 +167,220 @@
       background: rgba(224, 242, 245, 0.8);
       border: 1px solid rgba(61, 122, 140, 0.18);
     }
+
+    .admin-section {
+      display: grid;
+      gap: 20px;
+    }
+    .admin-section__intro {
+      display: grid;
+      gap: 6px;
+      max-width: 78ch;
+    }
+    .admin-section__intro p,
+    .section-header p,
+    .active-selection__detail,
+    .provider-card__url,
+    .provider-card__meta-item,
+    .entity-card__detail {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .admin-card-grid,
+    .provider-grid,
+    .entity-grid {
+      display: grid;
+      gap: 12px;
+    }
+    .admin-card-grid--two {
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      align-items: start;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-header h2,
+    .section-header h3 { margin: 0; }
+    .section-header__actions,
+    .quick-actions,
+    .entity-card__actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .sub-nav {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    .sub-nav__tab {
+      position: relative;
+      padding: 12px 16px;
+      border: 0;
+      background: transparent;
+      color: var(--slate);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      min-height: 44px;
+      white-space: nowrap;
+    }
+    .sub-nav__tab:hover {
+      color: var(--ink);
+      background: rgba(29, 79, 94, 0.04);
+      transform: none;
+    }
+    .sub-nav__tab[aria-selected="true"] { color: var(--ink); }
+    .sub-nav__tab[aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 2px;
+      background: var(--accent);
+    }
+    .sub-nav__tab .count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      margin-left: 6px;
+      padding: 0 5px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--parchment);
+      border: 1px solid var(--border);
+    }
+    .sub-nav__tab[aria-selected="true"] .count {
+      color: var(--accent);
+      background: var(--accent-pale);
+      border-color: rgba(61, 122, 140, 0.2);
+    }
+    .provider-panel {
+      display: grid;
+      gap: 20px;
+    }
+    .provider-panel[hidden] { display: none; }
+    .active-selection {
+      padding: 16px;
+      border: 1px solid rgba(61, 122, 140, 0.25);
+      background: linear-gradient(180deg, rgba(224, 242, 245, 0.6) 0%, rgba(255, 255, 255, 0.95) 100%);
+    }
+    .active-selection__header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .active-selection__label,
+    .provider-card__name,
+    .entity-card__name {
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .active-selection__meta,
+    .provider-card__meta,
+    .entity-card__meta {
+      display: flex;
+      gap: 8px 12px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .provider-card,
+    .entity-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.96);
+      transition: border-color 0.15s ease;
+    }
+    .provider-card:hover,
+    .entity-card:hover { border-color: var(--border-strong); }
+    .provider-card.is-active,
+    .entity-card.is-active {
+      border-color: rgba(61, 122, 140, 0.35);
+      background: linear-gradient(180deg, rgba(224, 242, 245, 0.3) 0%, rgba(255, 255, 255, 0.95) 100%);
+    }
+    .provider-card__main,
+    .entity-card__main { min-width: 0; }
+    .provider-card__header,
+    .entity-card__header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .provider-card__url { margin-top: 4px; word-break: break-all; }
+    .provider-card__actions,
+    .entity-card__actions {
+      justify-content: flex-end;
+      align-content: start;
+    }
+    .provider-card__actions form,
+    .entity-card__actions form,
+    .quick-actions form {
+      display: contents;
+    }
+    .quick-action,
+    a.quick-action,
+    button.btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--slate);
+      font-size: 0.84rem;
+      font-weight: 500;
+      text-decoration: none;
+      cursor: pointer;
+      min-height: 40px;
+      white-space: nowrap;
+    }
+    .quick-action:hover,
+    a.quick-action:hover,
+    button.btn-secondary:hover {
+      background: var(--parchment);
+      border-color: var(--border-strong);
+      color: var(--ink);
+      transform: none;
+    }
+    .quick-action--primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .quick-action--primary:hover {
+      background: var(--accent-soft);
+      color: #fff;
+    }
+    .quick-action--danger {
+      color: var(--error);
+      border-color: rgba(197, 48, 48, 0.22);
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .form-grid > .span-all { grid-column: 1 / -1; }
 
     form { display: grid; gap: 14px; }
     label {
@@ -688,9 +901,13 @@
         border-bottom: 1px solid var(--border);
       }
       .admin-pane { padding: 18px 16px 56px; }
-      .panel { padding: 18px 0 0; }
+      .panel { padding: 16px; }
       .topbar { grid-template-columns: 1fr; }
       button { width: 100%; }
+      .provider-card,
+      .entity-card { grid-template-columns: 1fr; }
+      .provider-card__actions,
+      .entity-card__actions { justify-content: flex-start; }
       th:nth-child(n+4), td:nth-child(n+4) { }
       .tab-shell__nav.is-tabs-ready {
         display: grid;
@@ -733,10 +950,19 @@
       {% endif %}
 
       <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
-    <section class="grid" data-tab-panel="providers">
+    <section class="admin-section" data-tab-panel="providers">
+      <div class="admin-section__intro">
+        <div class="eyebrow">Provider setup</div>
+        <h2>Configure STT, LLM, and de-identification.</h2>
+        <p>System admins provision endpoint rows, credentials, team policy, and redaction providers without opening transcript or note content.</p>
+      </div>
       <div class="panel">
-        <h2>Team STT endpoints</h2>
-        <p>System admins provision endpoint rows and credentials here. Team leaders only choose the active endpoint and model from the provisioned options.</p>
+        <div class="section-header">
+          <div>
+            <h2>Team scope</h2>
+            <p>Choose target team before editing provider availability or active selections.</p>
+          </div>
+        </div>
         <form method="get" action="{{ admin_page_route }}">
           <input type="hidden" name="tab" value="providers">
           <label>
@@ -749,35 +975,61 @@
             </select>
           </label>
         </form>
+      </div>
         {% if selected_team_id %}
+      <nav class="sub-nav" role="tablist" aria-label="Provider types" data-provider-tab-nav data-default-provider-tab="{{ active_provider_tab }}">
+        <button type="button" class="sub-nav__tab" role="tab" aria-selected="true" data-provider-tab-target="stt">
+          STT endpoints <span class="count">{{ stt_configs|length }}</span>
+        </button>
+        <button type="button" class="sub-nav__tab" role="tab" aria-selected="false" data-provider-tab-target="llm">
+          LLM providers <span class="count">{{ llm_configs|length }}</span>
+        </button>
+        <button type="button" class="sub-nav__tab" role="tab" aria-selected="false" data-provider-tab-target="deidentification">
+          De-identification <span class="count">{{ deidentification_providers|length }}</span>
+        </button>
+      </nav>
+      <div class="provider-panel" data-provider-tab-panel="stt" role="tabpanel">
         {% if stt_selection or stt_dictation_selection %}
-        <h3>Current active selections</h3>
         {% if stt_selection %}
-        <h4>Conversation transcription</h4>
-        <p><span class="pill">{{ stt_selection.config.label }}</span> <span class="pill">{{ stt_selection.config.adapter_kind.value }}</span> {{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }}</p>
-        <p><small>Resolved model: {{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}. Resolved language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}.</small></p>
+        <div class="active-selection">
+          <div class="active-selection__header">
+            <div>
+              <div class="eyebrow">Active for conversation</div>
+              <div class="active-selection__label">{{ stt_selection.config.label }}</div>
+            </div>
         <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="purpose" value="conversation">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <button type="submit">Clear conversation selection</button>
+              <button type="submit" class="btn-secondary">Clear</button>
         </form>
+          </div>
+          <div class="active-selection__meta"><span class="pill">{{ stt_selection.config.adapter_kind.value }}</span><span class="pill">{{ stt_selection.model_name_override or stt_selection.config.model_name or "not set" }}</span></div>
+          <div class="active-selection__detail">{{ stt_selection.config.base_url }}{{ stt_selection.config.transcribe_path }} · Language: {{ stt_selection.language_override or stt_selection.config.language or "not set" }}</div>
+        </div>
         {% endif %}
         {% if stt_dictation_selection %}
-        <h4>Post-consultation dictation</h4>
-        <p><span class="pill">{{ stt_dictation_selection.config.label }}</span> <span class="pill">{{ stt_dictation_selection.config.adapter_kind.value }}</span> {{ stt_dictation_selection.config.base_url }}{{ stt_dictation_selection.config.transcribe_path }}</p>
-        <p><small>Resolved model: {{ stt_dictation_selection.model_name_override or stt_dictation_selection.config.model_name or "not set" }}. Resolved language: {{ stt_dictation_selection.language_override or stt_dictation_selection.config.language or "not set" }}.</small></p>
+        <div class="active-selection">
+          <div class="active-selection__header">
+            <div>
+              <div class="eyebrow">Active for dictation</div>
+              <div class="active-selection__label">{{ stt_dictation_selection.config.label }}</div>
+            </div>
         <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear active dictation STT selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="purpose" value="post_consultation_dictation">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <button type="submit">Clear dictation selection</button>
+              <button type="submit" class="btn-secondary">Clear</button>
         </form>
+          </div>
+          <div class="active-selection__meta"><span class="pill">{{ stt_dictation_selection.config.adapter_kind.value }}</span><span class="pill">{{ stt_dictation_selection.model_name_override or stt_dictation_selection.config.model_name or "not set" }}</span></div>
+          <div class="active-selection__detail">{{ stt_dictation_selection.config.base_url }}{{ stt_dictation_selection.config.transcribe_path }} · Language: {{ stt_dictation_selection.language_override or stt_dictation_selection.config.language or "not set" }}</div>
+        </div>
         {% endif %}
         {% else %}
-        <p><small>No active STT selection is set for this team yet.</small></p>
+        <div class="active-selection"><div class="active-selection__detail">No active STT selection is set for this team yet.</div></div>
         {% endif %}
 
         {% if selectable_stt_configs %}
@@ -817,48 +1069,53 @@
         </form>
         {% endif %}
 
-        <h3>Provisioned endpoints</h3>
+        <div class="section-header">
+          <div>
+            <h2>Provisioned endpoints</h2>
+            <p>Credentials stay Vault-backed; this view shows metadata only.</p>
+          </div>
+        </div>
         {% if stt_configs %}
-        <table>
-          <thead>
-            <tr>
-              <th>Endpoint</th>
-              <th>Defaults</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        <div class="provider-grid">
             {% for config in stt_configs %}
-            <tr>
-              <td>
-                <strong>{{ config.label }}</strong><br>
-                <small>{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</small><br>
-                <small>Secret configured: {{ "yes" if config.vault_secret_ref else "no" }}</small>
-              </td>
-              <td>
-                <small>Model: {{ config.model_name or "not set" }}</small><br>
-                <small>Language: {{ config.language or "not set" }}</small>
-              </td>
-              <td>
+            {% set stt_is_active = (stt_selection and stt_selection.stt_config_id == config.id) or (stt_dictation_selection and stt_dictation_selection.stt_config_id == config.id) %}
+            <article class="provider-card{% if stt_is_active %} is-active{% endif %}">
+              <div class="provider-card__main">
+                <div class="provider-card__header">
+                  <span class="provider-card__name">{{ config.label }}</span>
+                  {% if stt_selection and stt_selection.stt_config_id == config.id %}<span class="pill">conversation</span>{% endif %}
+                  {% if stt_dictation_selection and stt_dictation_selection.stt_config_id == config.id %}<span class="pill">dictation</span>{% endif %}
+                </div>
+                <div class="provider-card__url">{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</div>
+                <div class="provider-card__meta">
+                  <span class="provider-card__meta-item"><strong>Model:</strong> {{ config.model_name or "not set" }}</span>
+                  <span class="provider-card__meta-item"><strong>Language:</strong> {{ config.language or "not set" }}</span>
+                  <span class="provider-card__meta-item"><strong>Secret:</strong> {{ "yes" if config.vault_secret_ref else "no" }}</span>
+                </div>
+              </div>
+              <div class="provider-card__actions">
+                <div class="quick-actions">
                 <form method="get" action="{{ admin_page_route }}">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
                   <input type="hidden" name="tab" value="providers">
-                  <button type="submit">Edit</button>
+                  <button type="submit" class="quick-action">Edit</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/test">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Test STT</button>
+                  <button type="submit" class="quick-action">Test</button>
                 </form>
+                </div>
+                <div class="quick-actions">
                 <form method="post" action="/admin/stt-selection">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="purpose" value="conversation">
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Use for conversation</button>
+                  <button type="submit" class="quick-action">Use for conversation</button>
                 </form>
                 <form method="post" action="/admin/stt-selection">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
@@ -866,24 +1123,30 @@
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Use for dictation</button>
+                  <button type="submit" class="quick-action">Use for dictation</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned STT endpoint and its saved secret?');">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Delete</button>
+                  <button type="submit" class="quick-action quick-action--danger">Delete</button>
                 </form>
-              </td>
-            </tr>
+                </div>
+              </div>
+            </article>
             {% endfor %}
-          </tbody>
-        </table>
+        </div>
         {% else %}
         <p><small>No STT endpoints are provisioned for this team yet.</small></p>
         {% endif %}
 
-        <h3>{% if stt_config %}Edit provisioned endpoint{% else %}Add provisioned endpoint{% endif %}</h3>
+        <div class="panel">
+        <div class="section-header">
+          <div>
+            <h3>{% if stt_config %}Edit provisioned endpoint{% else %}Add provisioned endpoint{% endif %}</h3>
+            <p>Inspect endpoint metadata before saving credentials and defaults.</p>
+          </div>
+        </div>
         <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1071,22 +1334,30 @@
           </dl>
         </div>
         {% endif %}
+        </div>
 
-        <hr style="margin: 24px 0; border: 0; border-top: 1px solid rgba(212, 199, 171, 0.8);">
+      </div>
+      <div class="provider-panel" data-provider-tab-panel="llm" role="tabpanel" hidden>
 
-        <h3>Team LLM selection</h3>
         {% if llm_selection %}
-        <p><span class="pill">{{ llm_selection.config.label }}</span> <span class="pill">{{ llm_selection.config.adapter_kind.value }}</span> {{ llm_selection.config.base_url }}</p>
-        <p><small>Resolved team default model: {{ llm_selection.model_name_override or llm_selection.config.model_name or "not set" }}.</small></p>
-        <p><small>User-visible models: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none selected" }}.</small></p>
+        <div class="active-selection">
+          <div class="active-selection__header">
+            <div>
+              <div class="eyebrow">Active LLM provider</div>
+              <div class="active-selection__label">{{ llm_selection.config.label }}</div>
+            </div>
         <form method="post" action="/admin/llm-selection/clear" onsubmit="return confirm('Clear the active LLM selection for this team?');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <button type="submit">Clear active LLM selection</button>
+              <button type="submit" class="btn-secondary">Clear</button>
         </form>
+          </div>
+          <div class="active-selection__meta"><span class="pill">{{ llm_selection.config.adapter_kind.value }}</span><span class="pill">{{ llm_selection.model_name_override or llm_selection.config.model_name or "not set" }}</span></div>
+          <div class="active-selection__detail">{{ llm_selection.config.base_url }} · User-visible models: {{ llm_selection.allowed_models_json | join(", ") if llm_selection.allowed_models_json else "none selected" }}</div>
+        </div>
         {% else %}
-        <p><small>No active LLM selection is set for this team yet.</small></p>
+        <div class="active-selection"><div class="active-selection__detail">No active LLM selection is set for this team yet.</div></div>
         {% endif %}
 
         {% if selectable_llm_configs %}
@@ -1138,48 +1409,52 @@
         </form>
         {% endif %}
 
-        <h3>Provisioned LLM providers</h3>
+        <div class="section-header">
+          <div>
+            <h2>Provisioned LLM providers</h2>
+            <p>Configure model availability and default team model from saved providers.</p>
+          </div>
+        </div>
         {% if llm_configs %}
-        <table>
-          <thead>
-            <tr>
-              <th>Provider</th>
-              <th>Default model</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        <div class="provider-grid">
             {% for config in llm_configs %}
-            <tr>
-              <td>
-                <strong>{{ config.label }}</strong><br>
-                <small>{{ config.adapter_kind.value }} · {{ config.base_url }}</small><br>
-                <small>Secret configured: {{ "yes" if config.vault_secret_ref else "no" }}</small>
-              </td>
-              <td>{{ config.model_name or "not set" }}</td>
-              <td>
+            <article class="provider-card{% if llm_selection and llm_selection.llm_config_id == config.id %} is-active{% endif %}">
+              <div class="provider-card__main">
+                <div class="provider-card__header"><span class="provider-card__name">{{ config.label }}</span>{% if llm_selection and llm_selection.llm_config_id == config.id %}<span class="pill">active</span>{% endif %}</div>
+                <div class="provider-card__url">{{ config.adapter_kind.value }} · {{ config.base_url }}</div>
+                <div class="provider-card__meta">
+                  <span class="provider-card__meta-item"><strong>Default model:</strong> {{ config.model_name or "not set" }}</span>
+                  <span class="provider-card__meta-item"><strong>Secret:</strong> {{ "yes" if config.vault_secret_ref else "no" }}</span>
+                </div>
+              </div>
+              <div class="provider-card__actions">
                 <form method="get" action="{{ admin_page_route }}">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="llm_config_id" value="{{ config.id }}">
                   <input type="hidden" name="tab" value="providers">
-                  <button type="submit">Edit</button>
+                  <button type="submit" class="quick-action">Edit</button>
                 </form>
                 <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned LLM provider and its saved secret?');">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Delete</button>
+                  <button type="submit" class="quick-action quick-action--danger">Delete</button>
                 </form>
-              </td>
-            </tr>
+              </div>
+            </article>
             {% endfor %}
-          </tbody>
-        </table>
+        </div>
         {% else %}
         <p><small>No LLM providers are provisioned for this team yet.</small></p>
         {% endif %}
 
-        <h3>{% if llm_config %}Edit provisioned LLM provider{% else %}Add provisioned LLM provider{% endif %}</h3>
+        <div class="panel">
+        <div class="section-header">
+          <div>
+            <h3>{% if llm_config %}Edit provisioned LLM provider{% else %}Add provisioned LLM provider{% endif %}</h3>
+            <p>Inspect available models, then save provider metadata and secret reference.</p>
+          </div>
+        </div>
         <form method="post" action="/admin/llm-configs/inspect" data-llm-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1276,24 +1551,54 @@
           </label>
           <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
         </form>
+        </div>
 
-        <hr style="margin: 24px 0; border: 0; border-top: 1px solid rgba(212, 199, 171, 0.8);">
+      </div>
+      <div class="provider-panel" data-provider-tab-panel="deidentification" role="tabpanel" hidden>
 
-        <h3>Team de-identification selection</h3>
         {% if deidentification_selection %}
-        <p><span class="pill">{{ deidentification_selection.provider.label }}</span> <span class="pill">{{ deidentification_selection.provider.adapter_kind.value }}</span></p>
-        <p><small>{% if deidentification_selection.provider.is_builtin %}Built-in fallback provider selected for this team.{% else %}Selected provider for lazy redaction runs{% if deidentification_selection.provider.base_url %}: {{ deidentification_selection.provider.base_url }}{{ deidentification_selection.provider.detect_path }}{% endif %}.{% endif %}</small></p>
+        <div class="active-selection">
+          <div class="active-selection__header">
+            <div>
+              <div class="eyebrow">Active de-identification provider</div>
+              <div class="active-selection__label">{{ deidentification_selection.provider.label }}</div>
+            </div>
         <form method="post" action="/admin/deidentification-selection/clear" onsubmit="return confirm('Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.');">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <button type="submit">Clear selection</button>
+              <button type="submit" class="btn-secondary">Clear</button>
         </form>
+          </div>
+          <div class="active-selection__meta"><span class="pill">{{ deidentification_selection.provider.adapter_kind.value }}</span>{% if deidentification_selection.provider.is_builtin %}<span class="pill">fallback</span>{% endif %}</div>
+          <div class="active-selection__detail">{% if deidentification_selection.provider.is_builtin %}Built-in fallback provider selected for this team.{% else %}Selected provider for lazy redaction runs{% if deidentification_selection.provider.base_url %}: {{ deidentification_selection.provider.base_url }}{{ deidentification_selection.provider.detect_path }}{% endif %}.{% endif %}</div>
+        </div>
         {% else %}
-        <p><small>No explicit de-identification selection is set for this team. Built-in Native Presidio will be used as the fallback.</small></p>
+        <div class="active-selection"><div class="active-selection__detail">No explicit de-identification selection is set for this team. Built-in Native Presidio will be used as the fallback.</div></div>
         {% endif %}
 
-        <h3>Assigned de-identification providers</h3>
+        {% if clinical_nlp_selection %}
+        <div class="active-selection">
+          <div class="active-selection__header">
+            <div>
+              <div class="eyebrow">Active clinical NLP endpoint</div>
+              <div class="active-selection__label">{{ clinical_nlp_selection.provider.label }}</div>
+            </div>
+            <form method="post" action="/admin/clinical-nlp-selection/clear" onsubmit="return confirm('Disable clinical NLP for this team?');">
+              <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+              <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+              <input type="hidden" name="return_tab" value="providers">
+              <button type="submit" class="btn-secondary">Disable</button>
+            </form>
+          </div>
+          <div class="active-selection__meta"><span class="pill">{{ clinical_nlp_selection.provider.adapter_kind.value }}</span><span class="pill">clinical NLP</span></div>
+          <div class="active-selection__detail">Selected endpoint for disease and symptom extraction{% if clinical_nlp_selection.provider.base_url %}: {{ clinical_nlp_selection.provider.base_url }}{{ clinical_nlp_selection.provider.detect_path }}{% endif %}.</div>
+        </div>
+        {% else %}
+        <div class="active-selection"><div class="active-selection__detail">Clinical NLP is disabled for this team until a clinical-capable assigned endpoint is selected.</div></div>
+        {% endif %}
+
+        <h3>Assigned shared NLP endpoints</h3>
         {% if deidentification_assignments %}
         <table>
           <thead>
@@ -1324,15 +1629,24 @@
                   <input type="hidden" name="provider_id" value="{{ assignment.provider_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit">Use for team</button>
+                  <button type="submit">Use for PII redaction</button>
                 </form>
+                {% if assignment.provider.clinical_detection_enabled %}
+                <form method="post" action="/admin/clinical-nlp-selection">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="provider_id" value="{{ assignment.provider_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit">Use for clinical NLP</button>
+                </form>
+                {% endif %}
               </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
         {% else %}
-        <p><small>No non-builtin de-identification providers are assigned to this team yet.</small></p>
+        <p><small>No non-builtin shared NLP endpoints are assigned to this team yet.</small></p>
         {% endif %}
 
         {% set assignable_deidentification_providers = deidentification_providers | rejectattr('is_builtin') | list %}
@@ -1354,7 +1668,7 @@
         </form>
         {% endif %}
 
-        <h3>Provisioned de-identification providers</h3>
+        <h3>Shared PII redaction and clinical NLP endpoints</h3>
         {% if deidentification_providers %}
         <table>
           <thead>
@@ -1371,6 +1685,7 @@
                 <strong>{{ provider.label }}</strong><br>
                 <small>{{ provider.adapter_kind.value }}{% if provider.base_url %} · {{ provider.base_url }}{{ provider.detect_path }}{% endif %}</small><br>
                 <small>Secret configured: {{ "yes" if provider.vault_secret_ref else "no" }}</small>
+                {% if provider.clinical_detection_enabled %}<br><small>Clinical NLP: on{% if provider.clinical_detection_allow_unredacted %}, local/private unredacted allowed{% else %}, redacted only{% endif %}</small>{% endif %}
               </td>
               <td>
                 <small>Text field: {{ provider.request_text_field }}</small><br>
@@ -1399,11 +1714,11 @@
           </tbody>
         </table>
         {% else %}
-        <p><small>No de-identification providers are provisioned yet.</small></p>
+        <p><small>No shared NLP endpoints are provisioned yet.</small></p>
         {% endif %}
 
-        <h3>{% if deidentification_provider %}Edit de-identification provider{% else %}Add de-identification provider{% endif %}</h3>
-        <p><small>Only generic REST providers are configurable here. The built-in native Presidio provider remains available as the global fallback.</small></p>
+        <h3>{% if deidentification_provider %}Edit shared NLP endpoint{% else %}Add shared NLP endpoint{% endif %}</h3>
+        <p><small>Use this shared infrastructure for PII redaction endpoints, clinical entity extraction endpoints, or a provider that supports both. The built-in native Presidio provider remains the PII redaction fallback only.</small></p>
         <form method="post" action="/admin/deidentification-providers">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="provider_id" value="{{ deidentification_form.provider_id }}">
@@ -1498,8 +1813,16 @@
             <input type="text" name="sample_text" maxlength="500" value="{{ deidentification_form.sample_text or 'Jane Smith attended on 22 April 2026.' }}">
           </label>
           <label>
-            Entity type map JSON
+            Entity type map JSON for PII redaction
             <textarea name="entity_type_map_json">{{ deidentification_form.entity_type_map_json }}</textarea>
+          </label>
+          <label>
+            <input type="checkbox" name="clinical_detection_enabled" value="true" {% if deidentification_form.clinical_detection_enabled %}checked{% endif %}>
+            Use this endpoint for clinical entity extraction
+          </label>
+          <label>
+            <input type="checkbox" name="clinical_detection_allow_unredacted" value="true" {% if deidentification_form.clinical_detection_allow_unredacted %}checked{% endif %}>
+            Clinical NLP may receive unredacted transcript text only when endpoint is local/private
           </label>
           <label>
             <input type="checkbox" name="is_active" value="true" {% if deidentification_form.is_active %}checked{% endif %}>
@@ -1507,13 +1830,13 @@
           </label>
           <div class="stack">
             <button type="submit" formaction="/admin/deidentification-providers/inspect" formmethod="post">Ping provider</button>
-            <button type="submit">{% if deidentification_form.provider_id %}Save provider{% else %}Add provider{% endif %}</button>
+            <button type="submit">{% if deidentification_form.provider_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
           </div>
         </form>
         {% if deidentification_inspection %}
         <div class="result success">
           <div class="stack">
-            <strong>De-identification provider ping</strong>
+            <strong>Shared NLP endpoint ping</strong>
             <span class="pill">{{ deidentification_inspection.api_provider }}</span>
             {% if deidentification_inspection.api_model_or_version %}<span class="pill">{{ deidentification_inspection.api_model_or_version }}</span>{% endif %}
           </div>
@@ -1579,14 +1902,20 @@
           {% endif %}
         </div>
         {% endif %}
-        {% endif %}
       </div>
+        {% endif %}
 
     </section>
 
-    <section class="grid" data-tab-panel="directory">
+    <section class="admin-section" data-tab-panel="directory">
+      <div class="admin-section__intro">
+        <div class="eyebrow">Directory</div>
+        <h2>Teams and managed users.</h2>
+        <p>Create administrative records and manage account lifecycle without reading user-owned content.</p>
+      </div>
+      <div class="admin-card-grid admin-card-grid--two">
       <div class="panel">
-        <h2>Create team</h2>
+        <div class="section-header"><div><h2>Create team</h2><p>Set team shell and fixed default retention window.</p></div></div>
         <form method="post" action="/admin/teams">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="directory">
@@ -1612,7 +1941,7 @@
       </div>
 
       <div class="panel">
-        <h2>Create managed user</h2>
+        <div class="section-header"><div><h2>Create managed user</h2><p>Create accounts, team roles, status, and MFA requirement.</p></div></div>
         <form method="post" action="/admin/users">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="directory">
@@ -1666,9 +1995,10 @@
           <button type="submit">Create user</button>
         </form>
       </div>
+      </div>
 
       <div class="panel">
-        <h2>Teams</h2>
+        <div class="section-header"><div><h2>Teams</h2><p>Permanent team deletion remains explicit and immediate after confirmation.</p></div></div>
         <table>
           <thead>
             <tr>
@@ -1698,7 +2028,7 @@
       </div>
 
       <div class="panel">
-        <h2>Users</h2>
+        <div class="section-header"><div><h2>Users</h2><p>Lock, reactivate, or permanently delete managed accounts and owned transcript-derived content.</p></div></div>
         <table>
         <thead>
           <tr>
@@ -1754,11 +2084,20 @@
       </div>
     </section>
 
-    <section class="grid" data-tab-panel="defaults">
+    <section class="admin-section" data-tab-panel="defaults">
+      <div class="admin-section__intro">
+        <div class="eyebrow">Defaults</div>
+        <h2>System default assets.</h2>
+        <p>Manage templates and quick actions copied into teams. These are configuration assets, not transcript-derived content.</p>
+      </div>
       <div class="panel">
-        <h2>Default templates</h2>
-        <p>System-owned blueprints copied into each new team when the team is created.</p>
-        <p><a href="/admin/templates/editor?scope=default{% if admin_return_view %}&return_view={{ admin_return_view }}{% endif %}"><button type="button">New default template</button></a></p>
+        <div class="section-header">
+          <div>
+            <h2>Default templates</h2>
+            <p>System-owned blueprints copied into each new team when the team is created.</p>
+          </div>
+          <a class="quick-action quick-action--primary" href="/admin/templates/editor?scope=default{% if admin_return_view %}&return_view={{ admin_return_view }}{% endif %}">New default template</a>
+        </div>
         {% if default_templates %}
         <table>
           <thead>
@@ -1798,8 +2137,7 @@
       </div>
 
       <div class="panel">
-        <h2>Default quick actions</h2>
-        <p>System-owned quick actions copied into each new team when the team is created.</p>
+        <div class="section-header"><div><h2>Default quick actions</h2><p>System-owned quick actions copied into each new team when the team is created.</p></div></div>
         <form method="post" action="/admin/default-quick-actions">
           <input type="hidden" name="quick_action_id" value="{{ default_quick_action.id if default_quick_action else '' }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1860,7 +2198,7 @@
       </div>
     </section>
 
-    <section class="grid" data-tab-panel="usage">
+    <section class="admin-section" data-tab-panel="usage">
       <div class="panel usage-hero">
         <div class="usage-hero__top">
           <div>
@@ -2247,8 +2585,14 @@
       </div>
     </section>
 
-    <section class="panel" data-tab-panel="requests">
-      <h2>Account requests</h2>
+    <section class="admin-section" data-tab-panel="requests">
+      <div class="admin-section__intro">
+        <div class="eyebrow">Requests</div>
+        <h2>Account requests.</h2>
+        <p>Review pending access requests and create users without exposing clinical content.</p>
+      </div>
+      <div class="panel">
+      <div class="section-header"><div><h2>Account requests</h2><p>Approve requests into selected teams or reject with review notes.</p></div></div>
       <table>
         <thead>
           <tr>
@@ -2310,6 +2654,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </section>
       </div>
     </main>
@@ -2368,6 +2713,42 @@
         });
 
         activateTab(defaultTab);
+      });
+
+      document.querySelectorAll('[data-provider-tab-nav]').forEach((nav) => {
+        const tabs = Array.from(nav.querySelectorAll('[data-provider-tab-target]'));
+        const panels = Array.from(document.querySelectorAll('[data-provider-tab-panel]'));
+        if (!tabs.length || !panels.length) return;
+
+        function activateProviderTab(name) {
+          tabs.forEach((tab) => {
+            const active = tab.dataset.providerTabTarget === name;
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          panels.forEach((panel) => {
+            panel.hidden = panel.dataset.providerTabPanel !== name;
+          });
+        }
+
+        tabs.forEach((tab, index) => {
+          tab.addEventListener('click', () => activateProviderTab(tab.dataset.providerTabTarget));
+          tab.addEventListener('keydown', (event) => {
+            let targetIndex = null;
+            if (event.key === 'ArrowLeft') targetIndex = index > 0 ? index - 1 : tabs.length - 1;
+            if (event.key === 'ArrowRight') targetIndex = index < tabs.length - 1 ? index + 1 : 0;
+            if (event.key === 'Home') targetIndex = 0;
+            if (event.key === 'End') targetIndex = tabs.length - 1;
+            if (targetIndex === null) return;
+            event.preventDefault();
+            tabs[targetIndex].focus();
+            activateProviderTab(tabs[targetIndex].dataset.providerTabTarget);
+          });
+        });
+
+        const defaultProviderTab = tabs.some((tab) => tab.dataset.providerTabTarget === nav.dataset.defaultProviderTab)
+          ? nav.dataset.defaultProviderTab
+          : tabs[0].dataset.providerTabTarget;
+        activateProviderTab(defaultProviderTab);
       });
 
       function applyAdapterState(form) {

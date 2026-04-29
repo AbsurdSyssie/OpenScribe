@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 from typing import Any
@@ -193,6 +195,18 @@ def decrypt_text_for_owner(
     except Exception as exc:
         raise AppError(500, "content_crypto_invalid", "Encrypted content could not be decrypted") from exc
     return plaintext.decode("utf-8")
+
+
+def keyed_digest_for_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    purpose: str,
+    value: str,
+) -> str:
+    _, dek = _owner_dek(db, owner_user_id=owner_user_id, create_if_missing=True)
+    message = f"openscribe:v1:{purpose}:{value}".encode("utf-8")
+    return hmac.new(dek, message, hashlib.sha256).hexdigest()
 
 
 def encrypt_json_for_owner(

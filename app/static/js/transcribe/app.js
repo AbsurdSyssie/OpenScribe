@@ -735,7 +735,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           }))
           .filter((entity) => entity.value.length > 0)
           .filter((entity) => {
-            const key = `${entity.entity_type.toLowerCase()}\u0000${entity.value.toLowerCase()}`;
+            const key = `${entity.source}\u0000${entity.entity_type.toLowerCase()}\u0000${entity.value.toLowerCase()}`;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -750,20 +750,24 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
           return;
         }
-        const values = [...new Set(uniquePiiEntities(entities).map((entity) => entity.value))]
-          .sort((left, right) => right.length - left.length);
-        if (values.length === 0) {
+        const highlightEntities = uniquePiiEntities(entities)
+          .map((entity) => ({ value: entity.value, source: entity.source || 'detected' }))
+          .sort((left, right) => right.value.length - left.value.length);
+        if (highlightEntities.length === 0) {
           activeDraft.textContent = text;
           return;
         }
+        const values = [...new Set(highlightEntities.map((entity) => entity.value))];
+        const sourceByValue = new Map(highlightEntities.map((entity) => [entity.value.toLowerCase(), entity.source]));
         const pattern = new RegExp(`(${values.map(escapeRegExp).join('|')})`, 'gi');
         activeDraft.innerHTML = text
           .split(pattern)
-          .map((part) => (
-            values.some((value) => value.toLowerCase() === part.toLowerCase())
-              ? `<mark class="pii-highlight">${escapeHtml(part)}</mark>`
-              : escapeHtml(part)
-          ))
+          .map((part) => {
+            const source = sourceByValue.get(part.toLowerCase());
+            if (!source) return escapeHtml(part);
+            const className = source === 'clinical' ? 'clinical-highlight' : 'pii-highlight';
+            return `<mark class="${className}">${escapeHtml(part)}</mark>`;
+          })
           .join('');
       };
 
@@ -1307,7 +1311,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
             <tbody data-pii-table-body>
               ${rows.map((entity) => `
                 <tr data-pii-source="${escapeHtml(entity.source || '')}" data-pii-entity-id="${escapeHtml(entity.id || '')}">
-                  <td><span class="pii-type">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
+                  <td><span class="pii-type ${entity.source === 'clinical' ? 'pii-type--clinical' : ''}">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
                   <td>
                     <span class="pii-value">${escapeHtml(entity.value || '')}</span>
                     <span class="pii-placeholder">${escapeHtml(entity.placeholder || (entity.source === 'manual' ? 'Manual' : ''))}</span>
@@ -1596,6 +1600,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           const draftText = transcript.current_draft_text_encrypted || '';
           renderDraft(draftText);
+          renderPiiEntities(workspaceTranscriptPiiEntities);
           syncGenerationAvailability(draftText);
           if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
           if (renameTitleInput) renameTitleInput.value = transcript.title || '';

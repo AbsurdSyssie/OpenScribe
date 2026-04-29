@@ -1,6 +1,6 @@
-import hashlib
 import logging
 import os
+import hashlib
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -28,7 +28,7 @@ from app.services.audio import (
     normalize_audio_to_wav_16k_mono,
     probe_audio_duration_seconds,
 )
-from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
+from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
 from app.services.vault import (
@@ -570,7 +570,17 @@ def _normalize_manual_pii_value(value: str) -> str:
     return " ".join(value.strip().split())
 
 
-def _manual_pii_value_hash(value: str) -> str:
+def _manual_pii_value_hash(db: Session, *, owner_user_id: UUID, value: str) -> str:
+    normalized = _normalize_manual_pii_value(value).lower()
+    return keyed_digest_for_owner(
+        db,
+        owner_user_id=owner_user_id,
+        purpose="transcript_manual_pii_entities.normalized_value_hash",
+        value=normalized,
+    )
+
+
+def _legacy_manual_pii_value_hash(value: str) -> str:
     normalized = _normalize_manual_pii_value(value).lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
@@ -603,17 +613,19 @@ def create_manual_pii_entity(
     normalized_value = _normalize_manual_pii_value(value)
     if not normalized_value:
         raise AppError(422, "business_rule_violation", "PII value is required", {"field": "value"})
-    normalized_hash = _manual_pii_value_hash(normalized_value)
+    normalized_hash = _manual_pii_value_hash(db, owner_user_id=owner.id, value=normalized_value)
+    legacy_normalized_hash = _legacy_manual_pii_value_hash(normalized_value)
     existing = db.scalar(
         select(TranscriptManualPiiEntity)
         .where(
             TranscriptManualPiiEntity.transcript_id == transcript.id,
             TranscriptManualPiiEntity.entity_type == normalized_type,
-            TranscriptManualPiiEntity.normalized_value_hash == normalized_hash,
+            TranscriptManualPiiEntity.normalized_value_hash.in_([normalized_hash, legacy_normalized_hash]),
         )
         .limit(1)
     )
     if existing is not None:
+        existing.normalized_value_hash = normalized_hash
         existing.occurrence_count = max(existing.occurrence_count, occurrence_count)
         db.add(existing)
         db.commit()

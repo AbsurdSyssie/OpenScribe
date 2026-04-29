@@ -43,8 +43,10 @@ def test_alembic_upgrade_head_creates_expected_schema():
 
     assert current_tables() == {
         "alembic_version",
-        "account_requests",
-        "default_quick_actions",
+            "account_requests",
+            "clinical_entities",
+            "clinical_entity_runs",
+            "default_quick_actions",
         "default_quick_action_versions",
         "default_templates",
         "default_template_versions",
@@ -62,6 +64,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "teams",
         "team_deidentification_provider_assignments",
         "team_deidentification_selections",
+        "team_clinical_nlp_selections",
         "team_llm_configs",
         "team_llm_selections",
         "team_stt_configs",
@@ -162,6 +165,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     deidentification_provider_columns = {column["name"] for column in inspector.get_columns("deidentification_providers")}
     deidentification_assignment_columns = {column["name"] for column in inspector.get_columns("team_deidentification_provider_assignments")}
     deidentification_selection_columns = {column["name"] for column in inspector.get_columns("team_deidentification_selections")}
+    clinical_nlp_selection_columns = {column["name"] for column in inspector.get_columns("team_clinical_nlp_selections")}
     user_llm_preference_columns = {column["name"] for column in inspector.get_columns("user_llm_preferences")}
     user_app_preference_columns = {column["name"] for column in inspector.get_columns("user_app_preferences")}
     template_indexes = inspector.get_indexes("templates")
@@ -185,6 +189,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
     redaction_run_columns = {column["name"] for column in inspector.get_columns("redaction_runs")}
     redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
+    clinical_entity_run_columns = {column["name"] for column in inspector.get_columns("clinical_entity_runs")}
+    clinical_entity_columns = {column["name"] for column in inspector.get_columns("clinical_entities")}
+    clinical_entity_run_fks = inspector.get_foreign_keys("clinical_entity_runs")
     manual_pii_columns = {column["name"] for column in inspector.get_columns("transcript_manual_pii_entities")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
@@ -211,11 +218,14 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "response_type_field",
         "entity_type_map_json",
         "vault_secret_ref",
+        "clinical_detection_enabled",
+        "clinical_detection_allow_unredacted",
         "is_active",
         "is_builtin",
     } <= deidentification_provider_columns
     assert {"team_id", "provider_id", "assigned_by_user_id"} <= deidentification_assignment_columns
     assert {"team_id", "provider_id", "selected_by_user_id"} <= deidentification_selection_columns
+    assert {"team_id", "provider_id", "selected_by_user_id"} <= clinical_nlp_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
     assert {"user_id", "preferences_json"} <= user_app_preference_columns
     assert any(item["name"] == "uq_templates_team_name_lower" for item in template_indexes)
@@ -340,6 +350,32 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "occurrence_count",
         "created_at",
     } <= redaction_entity_columns
+    assert {
+        "transcript_id",
+        "transcript_version_id",
+        "redaction_run_id",
+        "owner_user_id",
+        "team_id",
+        "provider_id",
+        "status",
+        "source_text_redacted",
+        "entity_count",
+        "api_provider",
+        "error_code",
+        "created_at",
+    } <= clinical_entity_run_columns
+    provider_fk = next(item for item in clinical_entity_run_fks if item["referred_table"] == "deidentification_providers")
+    assert provider_fk["options"].get("ondelete") == "SET NULL"
+    assert {
+        "clinical_entity_run_id",
+        "entity_order",
+        "entity_type",
+        "value_encrypted",
+        "normalized_value_hash",
+        "occurrence_count",
+        "score",
+        "created_at",
+    } <= clinical_entity_columns
     assert {
         "transcript_id",
         "owner_user_id",

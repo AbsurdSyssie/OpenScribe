@@ -552,6 +552,7 @@ def admin_upsert_stt_config(
             message_kind="error",
             status_code=status_code,
             active_admin_tab=return_tab or "providers",
+            active_provider_tab="stt",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
@@ -868,6 +869,7 @@ def admin_inspect_llm_config(
         },
         message="LLM provider inspected. Review the inferred fields before saving.",
         active_admin_tab=return_tab or "providers",
+        active_provider_tab="llm",
         admin_page_route=_admin_page_route_from_return_view(return_view),
         admin_return_view=_admin_return_view_value(return_view),
     )
@@ -925,6 +927,7 @@ def admin_upsert_llm_config(
             message_kind="error",
             status_code=status_code,
             active_admin_tab=return_tab or "providers",
+            active_provider_tab="llm",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
@@ -1081,6 +1084,8 @@ def admin_inspect_deidentification_provider(
     response_score_field: str = Form(""),
     response_model_version_path: str = Form(""),
     entity_type_map_json: str = Form(""),
+    clinical_detection_enabled: str | None = Form(default=None),
+    clinical_detection_allow_unredacted: str | None = Form(default=None),
     sample_text: str = Form("Jane Smith attended on 22 April 2026."),
     is_active: str | None = Form(default=None),
     return_view: str = Form(""),
@@ -1113,6 +1118,8 @@ def admin_inspect_deidentification_provider(
         "response_score_field": response_score_field,
         "response_model_version_path": response_model_version_path,
         "entity_type_map_json": entity_type_map_json,
+        "clinical_detection_enabled": clinical_detection_enabled == "true",
+        "clinical_detection_allow_unredacted": clinical_detection_allow_unredacted == "true",
         "sample_text": sample_text,
         "is_active": is_active == "true",
         "preserved_bearer_token": "",
@@ -1141,6 +1148,8 @@ def admin_inspect_deidentification_provider(
                 response_score_field=response_score_field or None,
                 response_model_version_path=response_model_version_path or None,
                 entity_type_map_json=parse_string_map_json(entity_type_map_json, field_name="entity_type_map_json", label="Entity type map"),
+                clinical_detection_enabled=clinical_detection_enabled == "true",
+                clinical_detection_allow_unredacted=clinical_detection_allow_unredacted == "true",
                 sample_text=sample_text,
                 is_active=is_active == "true",
             ),
@@ -1186,9 +1195,10 @@ def admin_inspect_deidentification_provider(
         selected_deidentification_provider_id=provider_id or None,
         deidentification_inspection=inspection,
         deidentification_form_override=form_override,
-        message="De-identification provider ping succeeded.",
+        message="Shared NLP endpoint ping succeeded.",
         message_kind="success",
         active_admin_tab=return_tab or "providers",
+        active_provider_tab="deidentification",
         admin_page_route=_admin_page_route_from_return_view(return_view),
         admin_return_view=_admin_return_view_value(return_view),
     )
@@ -1216,6 +1226,8 @@ def admin_upsert_deidentification_provider(
     response_score_field: str = Form(""),
     response_model_version_path: str = Form(""),
     entity_type_map_json: str = Form(""),
+    clinical_detection_enabled: str | None = Form(default=None),
+    clinical_detection_allow_unredacted: str | None = Form(default=None),
     is_active: str | None = Form(default=None),
     return_view: str = Form(""),
     return_tab: str = Form(""),
@@ -1263,6 +1275,8 @@ def admin_upsert_deidentification_provider(
                     field_name="entity_type_map_json",
                     label="Entity type map",
                 ),
+                clinical_detection_enabled=clinical_detection_enabled == "true",
+                clinical_detection_allow_unredacted=clinical_detection_allow_unredacted == "true",
                 is_active=is_active == "true",
             ),
         )
@@ -1445,6 +1459,87 @@ def admin_clear_deidentification_selection(
             message_kind="error",
             status_code=status_code,
             active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/clinical-nlp-selection", response_class=HTMLResponse)
+def admin_set_clinical_nlp_selection(
+    request: Request,
+    team_id: str = Form(...),
+    provider_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_team_clinical_nlp_selection_service(
+            db,
+            context.user,
+            ClinicalNlpSelectionUpsert(team_id=UUID(team_id), provider_id=UUID(provider_id)),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid clinical NLP selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="deidentification",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/clinical-nlp-selection/clear", response_class=HTMLResponse)
+def admin_clear_clinical_nlp_selection(
+    request: Request,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        clear_team_clinical_nlp_selection_service(db, context.user, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid clinical NLP selection clear request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="deidentification",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )

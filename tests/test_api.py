@@ -489,7 +489,7 @@ def test_direct_managed_user_creation_sets_temp_password_onboarding_state(client
     persisted_user = db_session.get(User, UUID(response.json()["id"]))
     assert persisted_user is not None
     assert persisted_user.password_hash != "TempPass1"
-    assert persisted_user.password_hash.startswith("scrypt$")
+    assert persisted_user.password_hash.startswith("$argon2id$")
     assert_error(duplicate, status_code=409, code="conflict", message="User already exists")
 
 

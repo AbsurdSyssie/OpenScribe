@@ -445,7 +445,13 @@
           <button type="submit">Sign in</button>
         </div>
       </form>
-      <p class="footer-note">Some accounts will be asked to finish setup before reaching the main app.</p>
+      <p class="footer-note">Some accounts will be asked to finish setup before reaching the main app.
+        {% if password_reset_email_enabled %}
+        <a href="/forgot-password">Reset password</a>.
+        {% else %}
+        If you cannot sign in, contact your team leader or system administrator for a reset.
+        {% endif %}
+      </p>
       {% endif %}
     </section>
   </main>

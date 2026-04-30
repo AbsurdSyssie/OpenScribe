@@ -129,6 +129,158 @@ def home_reactivate_user(
     )
 
 
+@app.post("/home/users/{user_id}/send-activation", response_class=HTMLResponse)
+def home_send_activation(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        send_account_activation_email_service(db, user, created_by=context.user)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/users/{user_id}/recover-password", response_class=HTMLResponse)
+def home_recover_password(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        temporary_password = reset_user_password_to_temporary_service(db, user)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        message="Temporary password generated.",
+        message_kind="success",
+        recovery_temporary_password=temporary_password,
+        active_home_tab=return_tab or "team-management",
+        template_name=_home_template_name_from_return_view(return_view),
+        home_page_route=_home_page_route_from_return_view(return_view),
+        home_return_view=_home_return_view_value(return_view),
+    )
+
+
+@app.post("/home/users/{user_id}/reset-mfa", response_class=HTMLResponse)
+def home_reset_mfa(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        reset_user_mfa_for_reenrollment_service(db, user=user)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/users/{user_id}/recover-account", response_class=HTMLResponse)
+def home_recover_account(
+    request: Request,
+    user_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        temporary_password = reset_user_password_to_temporary_service(db, user, reset_mfa=True)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "team-management",
+            status_code=exc.status_code,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+        )
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        message="Temporary password generated and MFA reset.",
+        message_kind="success",
+        recovery_temporary_password=temporary_password,
+        active_home_tab=return_tab or "team-management",
+        template_name=_home_template_name_from_return_view(return_view),
+        home_page_route=_home_page_route_from_return_view(return_view),
+        home_return_view=_home_return_view_value(return_view),
+    )
+
+
 @app.post("/home/users/{user_id}/delete", response_class=HTMLResponse)
 def home_delete_user(
     request: Request,

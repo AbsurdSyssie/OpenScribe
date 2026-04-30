@@ -269,35 +269,39 @@ Why:
 
 ### Transport options
 
-Support one transport first:
+Recommended first transport now:
 
-- SMTP relay
+- Resend Email API
 
-Examples in practice could be:
+Why Resend first:
 
+- direct transactional email API fits account activation and password reset flows
+- Python SDK and REST API are both available
+- API-level idempotency helps safe retry from an outbox worker
+- delivery webhooks can be added later without changing the auth-token model
+
+Keep the mailer interface provider-neutral so SMTP can still be added later for:
+
+- internal corporate SMTP relay
+- AWS SES SMTP
 - Postmark SMTP
 - SendGrid SMTP
-- AWS SES SMTP
-- internal corporate SMTP relay
-
-This keeps the first implementation simple.
-Later, if needed, add API-based providers behind the same mailer interface.
 
 ### Recommended config shape
 
 Add one instance-level mail transport config, for example:
 
-- `MAIL_TRANSPORT=disabled|smtp`
+- `MAIL_TRANSPORT=disabled|stdout|resend`
 - `MAIL_FROM_ADDRESS`
 - `MAIL_FROM_NAME`
 - `MAIL_REPLY_TO` optional
-- `MAIL_RESET_BASE_URL`
+- `APP_PUBLIC_URL`
 
-Sensitive SMTP values should not live in plain env for production if the rest of the app already uses Vault-backed secrets.
+Sensitive Resend values should not live in plain env for production if the rest of the app already uses Vault-backed secrets.
 
 Recommended secret model:
 
-- store SMTP credential material in Vault
+- store Resend API key material in Vault
 - store only a Vault reference in the database if you need editable admin-managed config
 - or load the secret from env only in local/dev if you want the smallest first slice
 
@@ -316,6 +320,13 @@ Best fit for current architecture:
 - leaders have no power to edit or view mail credentials
 
 That mirrors the existing provider-secret pattern.
+
+For Resend production setup:
+
+- verify the sending domain before enabling production delivery
+- prefer a dedicated transactional subdomain
+- use a sending-restricted API key when available
+- use one stable sender identity for security email
 
 ### Send path
 
@@ -367,14 +378,63 @@ Do not infer this from request headers alone for security-sensitive emails.
 
 For development, easiest options are:
 
-- MailHog/Mailpit SMTP
 - console/file outbox mode
+- MailHog/Mailpit if SMTP support is added later
 
 Suggested dev option:
 
-- `MAIL_TRANSPORT=stdout` or `mailpit`
+- `MAIL_TRANSPORT=stdout`
 
 That lets tests and local runs verify the flow without a real external provider.
+
+### Account activation and setup email
+
+Account activation should use the same email/token infrastructure as password reset.
+
+Recommended model:
+
+- add a generic auth email token table, or extend `password_reset_tokens` before naming locks in too narrowly
+- token purposes should include:
+  - `account_activation`
+  - `password_reset`
+  - `manager_password_reset`
+  - `manager_account_recovery`
+- manager-created users and approved account requests can receive setup email instead of relying only on an out-of-band temporary password
+- setup link lets the user choose the first real password
+- TOTP onboarding remains mandatory before full access
+- temporary-password onboarding may remain as fallback until production email delivery is proven
+
+Security rules:
+
+- store only token hash
+- activation tokens are single-use and short-lived
+- activation does not grant full access until password and MFA onboarding complete
+- setup/reset emails contain no team secrets, provider secrets, transcript text, note text, or recovery codes
+
+### Resend send behavior
+
+The first Resend adapter should:
+
+- call the Email API with `from`, `to`, `subject`, `html`, and `text`
+- set an idempotency key based on the outbox row id
+- store Resend message id and delivery attempt metadata only
+- treat API key as a platform secret
+- retry transient failures from the worker
+
+Implemented first slice:
+
+- mail service supports `disabled`, `stdout`, and `resend`
+- `resend` uses the direct Resend Email API with bearer auth and a `User-Agent`
+- `stdout` keeps local/dev and no-Resend deployments usable
+- `scripts/send_test_email.py` sends a non-content test email through the configured transport
+- `auth_email_tokens` stores account setup/reset tokens as hashes with purpose, expiry, and used state
+- `/forgot-password`, `/reset-password`, and `/activate-account` provide browser flows
+- `POST /api/v1/auth/password-reset/request`, `POST /api/v1/auth/password-reset/confirm`, and `POST /api/v1/auth/account-activation/confirm` provide API flows
+- manager recovery endpoints can send setup links, reset MFA, or reset password/password+MFA with a one-time visible random temporary password
+- only the temporary password hash is stored; the plaintext value is returned once to the manager and must not be logged
+
+Resend webhooks are optional for MVP.
+If added, webhook processing must verify provider signatures before trusting event payloads and should store status metadata only.
 
 ### Tests needed for email transport slice
 
@@ -427,7 +487,7 @@ Behavior:
 - revoke trusted devices
 - clear the right MFA/recovery state
 - update onboarding or recovery gating state
-- never expose secrets in response payloads
+- expose temporary passwords only for manager-assisted non-email recovery; never expose reset tokens, MFA secrets, recovery codes, or content
 
 ### Auth0 login / callback
 

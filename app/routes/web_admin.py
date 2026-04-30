@@ -1664,6 +1664,66 @@ def admin_reactivate_user(
     )
 
 
+@app.post("/admin/users/{user_id}/send-activation", response_class=HTMLResponse)
+def admin_send_activation(request: Request, user_id: UUID, return_view: str = Form(""), return_tab: str = Form(""), return_team_id: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        send_account_activation_email_service(db, user, created_by=context.user)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message=exc.message, message_kind="error", status_code=exc.status_code, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/recover-password", response_class=HTMLResponse)
+def admin_recover_password(request: Request, user_id: UUID, return_view: str = Form(""), return_tab: str = Form(""), return_team_id: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        temporary_password = reset_user_password_to_temporary_service(db, user)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message=exc.message, message_kind="error", status_code=exc.status_code, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message="Temporary password generated.", message_kind="success", recovery_temporary_password=temporary_password, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+
+
+@app.post("/admin/users/{user_id}/reset-mfa", response_class=HTMLResponse)
+def admin_reset_mfa(request: Request, user_id: UUID, return_view: str = Form(""), return_tab: str = Form(""), return_team_id: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        reset_user_mfa_for_reenrollment_service(db, user=user)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message=exc.message, message_kind="error", status_code=exc.status_code, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/recover-account", response_class=HTMLResponse)
+def admin_recover_account(request: Request, user_id: UUID, return_view: str = Form(""), return_tab: str = Form(""), return_team_id: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+        temporary_password = reset_user_password_to_temporary_service(db, user, reset_mfa=True)
+    except AppError as exc:
+        return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message=exc.message, message_kind="error", status_code=exc.status_code, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return render_admin(request, db, current_user=context.user, selected_team_id=return_team_id or None, message="Temporary password generated and MFA reset.", message_kind="success", recovery_temporary_password=temporary_password, active_admin_tab=return_tab or "directory", admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+
+
 @app.post("/admin/users/{user_id}/delete", response_class=HTMLResponse)
 def admin_delete_user(
     request: Request,

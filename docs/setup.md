@@ -52,6 +52,7 @@ This starts Docker services, initializes or unseals the persistent local Vault, 
 It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
 It also checks the configured FastAPI port before starting Celery or Brave; if another process still owns the port, it exits with a direct `APP_PORT`/stop-process message instead of leaving a worker running after server startup fails.
+It exports derived dev defaults such as `APP_PORT` and `APP_BIND_HOST` before running child Python checks, so missing optional `.env` values still use the documented defaults.
 It also purges stale queued Celery tasks by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
 The default dev configuration keeps Postgres, Redis, and Vault on localhost while exposing FastAPI for reverse-proxied or off-box frontend access.
 Before the server starts, `./start-dev.sh` now also checks the live Docker port bindings for Postgres, Redis, and Vault and prints an error to the terminal if any of them are published beyond localhost.
@@ -83,6 +84,7 @@ These seeded accounts are:
 - `mfa_enabled = false`
 - restricted to localhost requests only; non-local login attempts are rejected and any reused non-local session is revoked immediately
 - on localhost, these seeded dev accounts also get a `/transcribe` redaction-debug view for the latest note/follow-up so PHI placeholdering can be verified during development without exposing that view to normal users
+- `Sectioned EMIS note`, `Patient follow-up message`, and `Referral letter` team assets are hard-coded into the dev seed and recreated if missing
 
 You can disable this behavior by setting:
 
@@ -141,6 +143,31 @@ Cookie security uses:
 
 - `COOKIE_SECURE_MODE=auto` by default
 - set `COOKIE_SECURE_MODE=always` on public HTTPS deployments if proxy/scheme handling is ambiguous
+
+Transactional email uses:
+
+- `MAIL_TRANSPORT=disabled|stdout|resend`
+- `APP_PUBLIC_URL`
+- `MAIL_FROM_ADDRESS`
+- `MAIL_FROM_NAME`
+- `MAIL_REPLY_TO` optional
+- `RESEND_API_KEY` for local development only, or `RESEND_API_KEY_VAULT_REF` once production secret storage is wired
+
+Current behavior:
+
+- `disabled` keeps the existing manual setup path with manager-created temporary passwords and no outbound email.
+- `stdout` writes transactional email bodies to server stdout for local development and tests.
+- `resend` sends through the Resend Email API. Production deployments should verify their Resend domain and use a sending-restricted API key before enabling it.
+
+To test Resend after editing `.env`:
+
+```bash
+source .venv/bin/activate
+python scripts/send_test_email.py --to you@example.com
+```
+
+For `MAIL_TRANSPORT=resend`, the test script uses `RESEND_API_KEY` or `RESEND_API_KEY_VAULT_REF`, `MAIL_FROM_ADDRESS`, `MAIL_FROM_NAME`, `MAIL_REPLY_TO`, and `APP_PUBLIC_URL`.
+Do not commit the Resend API key.
 
 You can disable the worker startup in `./start-dev.sh` with:
 
@@ -230,6 +257,7 @@ After the first user exists:
 - leaders can create users for their own team from `/home`
 - system admins can create users from `/admin`
 - creators set a temporary password and share it out-of-band
+- when transactional email is configured, managers can also send setup links from user-management actions
 
 ### First login for managed accounts
 
@@ -240,6 +268,14 @@ After the first user exists:
   - TOTP setup
   - optional recovery code generation
 - only then does normal app access unlock
+
+### Account recovery
+
+- users can open `/forgot-password` to request a password reset link only when outbound mail is configured
+- when `MAIL_TRANSPORT=disabled`, the login page hides self-service reset and tells users to contact a team leader or system administrator
+- reset requests show the same generic response whether the email exists or not
+- managers can send setup links, generate a one-time visible temporary password, reset MFA, or recover password+MFA from user-management actions
+- password reset and MFA reset revoke sessions and trusted-device trust
 
 ### Later logins for managed accounts
 
@@ -268,6 +304,18 @@ Browser flows also use a separate CSRF cookie:
 - cookie name: `openscribe_csrf`
 - browser forms submit it as `_csrf_token`
 - browser JavaScript requests submit it as `X-CSRF-Token`
+
+### Force Argon2id password rotation
+
+This dev repo does not keep plaintext passwords, so non-Argon2id hashes cannot be converted directly.
+To force the local cutover, rotate every non-Argon2id user to a random temporary Argon2id password:
+
+```bash
+source .venv/bin/activate
+python scripts/force_argon2id_password_rotation.py --confirm-dev-password-rotation
+```
+
+The script prints temporary passwords once, marks affected users for password change, revokes active sessions/trusted devices, and preserves existing TOTP/recovery-code state.
 
 ### Whole-file ingestion caps
 

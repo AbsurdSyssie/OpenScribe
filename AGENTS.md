@@ -91,6 +91,7 @@ All coding agents must always use the `caveman` skill for communication unless a
 - Store provider credentials as Vault references in DB, not raw secrets.
 - Provider credential cleanup must not delete Vault secrets before the DB commit that removes the corresponding references unless compensation or retry cleanup is implemented.
 - Do not log or expose confidential fields.
+- Use OWASP recommendations for security related tasks, never hand roll if there is something we can use already.
 
 ### Provider rules
 - System admin provisions provider credentials per team.

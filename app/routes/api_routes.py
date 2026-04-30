@@ -43,6 +43,28 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
     return response
 
 
+@api.post("/auth/password-reset/request", response_model=GenericMessageResponse, responses=error_responses)
+@LOGIN_RATE_LIMIT
+def api_password_reset_request(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
+    return GenericMessageResponse(message=request_password_reset_service(db, email=str(payload.email)))
+
+
+@api.post("/auth/password-reset/confirm", response_model=GenericMessageResponse, responses=error_responses)
+def api_password_reset_confirm(payload: PasswordResetConfirmRequest, db: Session = Depends(get_db)):
+    confirm_password_reset_service(db, raw_token=payload.token, new_password=payload.new_password)
+    return GenericMessageResponse(message="Password reset complete")
+
+
+@api.post("/auth/account-activation/confirm", response_model=LoginResponse, responses=error_responses)
+def api_account_activation_confirm(payload: AccountActivationConfirmRequest, request: Request, db: Session = Depends(get_db)):
+    user, token = confirm_account_activation_service(db, raw_token=payload.token, new_password=payload.new_password)
+    response = JSONResponse(
+        LoginResponse(authenticated=True, auth_level=SessionAuthLevel.onboarding, redirect_to="/onboarding").model_dump(mode="json")
+    )
+    _set_session_cookie(request, response, token)
+    return response
+
+
 @api.post("/auth/mfa/totp", response_model=LoginResponse, responses=error_responses)
 @MFA_RATE_LIMIT
 def api_login_mfa_totp(
@@ -194,6 +216,33 @@ def list_teams(_: AuthenticatedContext = Depends(require_system_admin), db: Sess
 @api.post("/users", response_model=UserDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
 def create_user(payload: UserCreate, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
     return create_user_service(db, payload, actor=context.user)
+
+
+@api.post("/users/{user_id}/send-activation", response_model=GenericMessageResponse, responses=error_responses)
+def send_user_activation(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    send_account_activation_email_service(db, user, created_by=context.user)
+    return GenericMessageResponse(message="Activation email sent if mail transport is enabled")
+
+
+@api.post("/users/{user_id}/recover-password", response_model=ManagerRecoveryResponse, responses=error_responses)
+def recover_user_password(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    temporary_password = reset_user_password_to_temporary_service(db, user)
+    return ManagerRecoveryResponse(message="Temporary password generated. Share it with the user out of band.", temporary_password=temporary_password)
+
+
+@api.post("/users/{user_id}/reset-mfa", response_model=UserDetail, responses=error_responses)
+def reset_user_mfa(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    return reset_user_mfa_for_reenrollment_service(db, user=user)
+
+
+@api.post("/users/{user_id}/recover-account", response_model=ManagerRecoveryResponse, responses=error_responses)
+def recover_user_account(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    temporary_password = reset_user_password_to_temporary_service(db, user, reset_mfa=True)
+    return ManagerRecoveryResponse(message="Temporary password generated and MFA reset. Share it with the user out of band.", temporary_password=temporary_password)
 
 
 @api.get("/users", response_model=list[UserListItem], responses=error_responses)

@@ -16,6 +16,7 @@ from app.models import Team, TeamRole, TeamStatus, Transcript, User, UserEncrypt
 from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
 from app.services.content_crypto import ensure_user_dek, get_active_user_key
+from app.services.default_assets import ensure_builtin_team_assets
 from app.services.transcripts import delete_retry_sources_for_transcripts
 from app.services.vault import unwrap_user_content_data_key
 
@@ -173,6 +174,8 @@ def main() -> None:
             team=team,
             team_role=TeamRole.user,
         )
+        ensure_builtin_team_assets(db, team=team, actor=leader)
+        db.commit()
         leader_email = leader.email
         user_email = user.email
 

@@ -1,6 +1,4 @@
-import base64
 import hashlib
-import hmac
 import secrets
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -25,6 +23,7 @@ from app.models import (
     utcnow,
 )
 from app.normalization import normalize_email
+from app.services.passwords import hash_password, password_needs_rehash, verify_password
 
 
 SESSION_COOKIE_NAME = "openscribe_session"
@@ -33,25 +32,6 @@ SESSION_LIFETIME = timedelta(hours=12)
 TRUSTED_DEVICE_LIFETIME = timedelta(days=30)
 MFA_FRESHNESS_WINDOW = timedelta(days=1)
 RECOVERY_CODE_COUNT = 8
-
-
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        algorithm, salt_b64, derived_b64 = password_hash.split("$", 2)
-    except ValueError:
-        return False
-
-    if algorithm != "scrypt":
-        return False
-
-    try:
-        salt = base64.b64decode(salt_b64.encode("ascii"))
-        expected = base64.b64decode(derived_b64.encode("ascii"))
-    except (ValueError, TypeError):
-        return False
-
-    candidate = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
-    return hmac.compare_digest(candidate, expected)
 
 
 def opaque_token_hash(token: str) -> str:
@@ -104,6 +84,8 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
         raise AppError(401, "unauthorized", "Invalid email or password")
     if user.status is not UserStatus.active:
         raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(password)
     user.last_login_at = utcnow()
     db.add(user)
     db.commit()
@@ -263,7 +245,11 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
         raise AppError(409, "conflict", "Password change is not pending for this user")
     user.password_hash = new_password_hash
     user.must_change_password = False
-    user.onboarding_state = UserOnboardingState.pending_totp_enrollment
+    user.onboarding_state = (
+        UserOnboardingState.complete
+        if user.mfa_enabled and active_primary_totp_method(user) is not None
+        else UserOnboardingState.pending_totp_enrollment
+    )
     db.add(user)
     db.commit()
     db.refresh(user)

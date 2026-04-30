@@ -43,6 +43,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
 
     assert current_tables() == {
         "alembic_version",
+        "auth_email_tokens",
             "account_requests",
             "clinical_entities",
             "clinical_entity_runs",
@@ -196,6 +197,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
     user_encryption_key_columns = {column["name"] for column in inspector.get_columns("user_encryption_keys")}
+    auth_email_token_columns = {column["name"] for column in inspector.get_columns("auth_email_tokens")}
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
@@ -228,6 +230,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"team_id", "provider_id", "selected_by_user_id"} <= clinical_nlp_selection_columns
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
     assert {"user_id", "preferences_json"} <= user_app_preference_columns
+    assert {"user_id", "purpose", "token_hash", "expires_at", "used_at", "created_by_user_id"} <= auth_email_token_columns
     assert any(item["name"] == "uq_templates_team_name_lower" for item in template_indexes)
     assert any(item["name"] == "uq_templates_owner_name_lower" for item in template_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns

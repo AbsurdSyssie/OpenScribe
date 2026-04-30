@@ -54,7 +54,7 @@ from app.models import (
     UserStatus,
     utcnow,
 )
-from app.services.default_assets import import_team_assets_to_defaults
+from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
 
 
 class FakeHttpxResponse:
@@ -186,7 +186,8 @@ def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
 
     page = client.get("/onboarding")
     assert page.status_code == 200
-    assert "Finish setting up your account." in page.text
+    assert "Finish your secure setup." in page.text
+    assert "OpenScribe account setup" in page.text
 
     start_page = client.post("/onboarding/totp/start")
     assert start_page.status_code == 200
@@ -1366,6 +1367,11 @@ def test_home_restyled_team_management_uses_member_menu_without_duplicate_user_t
     assert "Managed users" not in page.text
     assert "Suspend" in page.text
     assert "Delete" in page.text
+    assert "overflow: visible; background: var(--card);" in page.text
+    assert ".member-menu[open] { z-index: 40; }" in page.text
+    assert "const memberMenuIdleMs = 3500;" in page.text
+    assert "document.addEventListener('click', (event) =>" in page.text
+    assert "if (menu.open && !menu.contains(event.target)) closeMemberMenu(menu);" in page.text
 
 
 def test_home_page_uses_flat_sidebar_workspace_layout(client, make_team, make_user):
@@ -3493,6 +3499,24 @@ def test_active_templates_route_flash_messages_through_top_right_toasts():
     assert "top:24px;" in mfa_html and "data-toast-container" in mfa_html
 
 
+def test_auth_recovery_pages_use_current_shell_styling():
+    root = Path(__file__).resolve().parents[1]
+    onboarding_html = (root / "app" / "templates" / "onboarding.html").read_text(encoding="utf-8")
+    reset_request_html = (root / "app" / "templates" / "password_reset_request.html").read_text(encoding="utf-8")
+    reset_confirm_html = (root / "app" / "templates" / "password_reset_confirm.html").read_text(encoding="utf-8")
+
+    for html in (onboarding_html, reset_request_html, reset_confirm_html):
+        assert "DM Sans" in html
+        assert "Fraunces" in html
+        assert "--bg:#FAF8F5" in html
+        assert "panel hero" in html
+        assert "var(--accent)" in html
+
+    assert "is-active" in onboarding_html
+    assert "Account recovery" in reset_request_html
+    assert "Secure account link" in reset_confirm_html
+
+
 def test_home_overview_and_asset_cards_keep_white_fill_like_team_cards():
     root = Path(__file__).resolve().parents[1]
     home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
@@ -4562,6 +4586,52 @@ def test_admin_team_creation_seeds_active_default_assets(client, db_session, mak
     assert db_session.scalar(select(func.count()).select_from(QuickAction).join(QuickAction.team).where(QuickAction.name == "Starter action")) == 1
     assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.name == "Disabled note")) == 0
     assert db_session.scalar(select(func.count()).select_from(QuickAction).where(QuickAction.name == "Disabled action")) == 0
+
+
+def test_admin_team_creation_seeds_builtin_assets_when_defaults_empty(client, db_session, make_user):
+    make_user(email="admin-builtin-seed@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-builtin-seed@example.com", "password": "password-1"}, follow_redirects=False)
+    created = client.post(
+        "/admin/teams",
+        data={"name": "Builtin Clinic", "status": "active", "default_retention_days": "30", "return_tab": "directory"},
+        follow_redirects=False,
+    )
+
+    assert created.status_code == 303
+    team = db_session.scalar(select(Team).where(Team.name == "Builtin Clinic"))
+    assert team is not None
+    template = db_session.scalar(select(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == BUILTIN_DEFAULT_TEMPLATE["name"]))
+    assert template is not None
+    version = db_session.scalar(select(PromptTemplateVersion).where(PromptTemplateVersion.template_id == template.id))
+    assert version is not None
+    assert version.mode is TemplateMode.structured
+    assert [section["section_key"] for section in version.config_json["sections"]] == [
+        "problem",
+        "history",
+        "family_history",
+        "social_history",
+        "examination",
+        "comment",
+        "tasks",
+        "investigations",
+    ]
+    for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
+        assert db_session.scalar(select(QuickAction).where(QuickAction.team_id == team.id, QuickAction.name == built_in["name"])) is not None
+
+
+def test_builtin_team_asset_seed_is_idempotent(db_session, make_team, make_user):
+    team = make_team(name="Builtin Idempotent Clinic")
+    leader = make_user(email="builtin-idempotent-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == BUILTIN_DEFAULT_TEMPLATE["name"])) == 1
+    for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
+        assert db_session.scalar(select(func.count()).select_from(QuickAction).where(QuickAction.team_id == team.id, QuickAction.name == built_in["name"])) == 1
 
 
 def test_admin_page_can_delete_team_and_owned_records(

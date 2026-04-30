@@ -92,7 +92,7 @@ Brief test shape:
 
 ```python
 persisted_user.password_hash != "TempPass1"
-persisted_user.password_hash.startswith("scrypt$")
+persisted_user.password_hash.startswith("$argon2id$")
 persisted_user.onboarding_state.value == "pending_password_change"
 ```
 

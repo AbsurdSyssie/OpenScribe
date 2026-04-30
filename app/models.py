@@ -159,6 +159,13 @@ class ProviderUsageEventType(str, enum.Enum):
     enqueue_failed = "enqueue_failed"
 
 
+class AuthEmailTokenPurpose(str, enum.Enum):
+    account_activation = "account_activation"
+    password_reset = "password_reset"
+    manager_password_reset = "manager_password_reset"
+    manager_account_recovery = "manager_account_recovery"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -239,6 +246,15 @@ class User(Base):
         foreign_keys="AccountRequest.reviewed_by_user_id",
     )
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    auth_email_tokens: Mapped[list["AuthEmailToken"]] = relationship(
+        back_populates="user",
+        foreign_keys="AuthEmailToken.user_id",
+        cascade="all, delete-orphan",
+    )
+    created_auth_email_tokens: Mapped[list["AuthEmailToken"]] = relationship(
+        back_populates="created_by",
+        foreign_keys="AuthEmailToken.created_by_user_id",
+    )
     trusted_devices: Mapped[list["UserTrustedDevice"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -346,6 +362,26 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class AuthEmailToken(Base):
+    __tablename__ = "auth_email_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_email_tokens_token_hash"),
+        Index("ix_auth_email_tokens_user_purpose", "user_id", "purpose"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[AuthEmailTokenPurpose] = mapped_column(Enum(AuthEmailTokenPurpose), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="auth_email_tokens", foreign_keys=[user_id])
+    created_by: Mapped[User | None] = relationship(back_populates="created_auth_email_tokens", foreign_keys=[created_by_user_id])
 
 
 class UserTrustedDevice(Base):

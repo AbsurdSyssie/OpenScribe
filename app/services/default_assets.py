@@ -33,6 +33,40 @@ from app.services.templates import (
 )
 
 
+BUILTIN_DEFAULT_TEMPLATE = {
+    "name": "Sectioned EMIS note",
+    "description": "Starter structured consultation note for EMIS transfer.",
+    "prompt_text": "Write a concise EMIS-ready consultation note from the transcript. Return structured JSON with a title and content mapped to the configured sections. Omit empty sections.",
+    "mode": TemplateMode.structured,
+    "config_json": {
+        "profile": "emis",
+        "sections": [
+            {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise presenting problems and diagnoses.", "section_order": 1},
+            {"section_key": "history", "section_label": "History", "instruction": "Summarise relevant history, symptoms, and timeline.", "section_order": 2},
+            {"section_key": "family_history", "section_label": "Family history", "instruction": "Include relevant family history only when mentioned.", "section_order": 3},
+            {"section_key": "social_history", "section_label": "Social history", "instruction": "Include relevant social context, occupation, smoking, alcohol, and support details only when mentioned.", "section_order": 4},
+            {"section_key": "examination", "section_label": "Examination", "instruction": "Summarise examination findings and observations.", "section_order": 5},
+            {"section_key": "comment", "section_label": "Comment", "instruction": "Summarise assessment, safety-netting, and plan narrative.", "section_order": 6},
+            {"section_key": "tasks", "section_label": "Tasks", "instruction": "List agreed actions, referrals, prescriptions, and follow-up tasks.", "section_order": 7},
+            {"section_key": "investigations", "section_label": "Investigations", "instruction": "List investigations ordered, reviewed, or discussed.", "section_order": 8},
+        ],
+    },
+}
+
+BUILTIN_DEFAULT_QUICK_ACTIONS = (
+    {
+        "name": "Patient follow-up message",
+        "description": "Draft a short patient-facing follow-up message.",
+        "prompt_text": "Draft a concise patient-facing follow-up message from the consultation. Use clear language, include agreed next steps, and avoid adding information not present in the transcript or note. Reading age of 10. Very short, for SMS.",
+    },
+    {
+        "name": "Referral letter",
+        "description": "Draft a referral letter from the consultation.",
+        "prompt_text": "Draft a referral letter using the consultation context. Include reason for referral, relevant history, examination, investigations, current plan, and requested action. Do not invent details.",
+    },
+)
+
+
 @dataclass(slots=True)
 class DefaultAssetImportSummary:
     source_team_id: UUID
@@ -142,6 +176,139 @@ def _default_template_exists(db: Session, *, name: str) -> bool:
 def _default_quick_action_exists(db: Session, *, name: str) -> bool:
     normalized_name = _serialize_asset_name(name)
     return db.scalar(select(DefaultQuickAction.id).where(func.lower(DefaultQuickAction.name) == normalized_name.lower()).limit(1)) is not None
+
+
+def _team_template_exists(db: Session, *, team: Team, name: str) -> bool:
+    normalized_name = _serialize_asset_name(name)
+    return (
+        db.scalar(
+            select(PromptTemplate.id)
+            .where(
+                PromptTemplate.scope == TemplateScope.team,
+                PromptTemplate.team_id == team.id,
+                func.lower(PromptTemplate.name) == normalized_name.lower(),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _team_quick_action_exists(db: Session, *, team: Team, name: str) -> bool:
+    normalized_name = _serialize_asset_name(name)
+    return (
+        db.scalar(
+            select(QuickAction.id)
+            .where(
+                QuickAction.scope == TemplateScope.team,
+                QuickAction.team_id == team.id,
+                func.lower(QuickAction.name) == normalized_name.lower(),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def ensure_builtin_default_assets(db: Session, actor: User) -> None:
+    _require_system_admin(actor)
+    if not _default_template_exists(db, name=BUILTIN_DEFAULT_TEMPLATE["name"]):
+        template = DefaultPromptTemplate(
+            id=uuid4(),
+            name=BUILTIN_DEFAULT_TEMPLATE["name"],
+            description=BUILTIN_DEFAULT_TEMPLATE["description"],
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(template)
+        db.flush()
+        db.add(
+            DefaultPromptTemplateVersion(
+                id=uuid4(),
+                default_template_id=template.id,
+                version_no=1,
+                mode=BUILTIN_DEFAULT_TEMPLATE["mode"],
+                prompt_text=BUILTIN_DEFAULT_TEMPLATE["prompt_text"],
+                config_json=BUILTIN_DEFAULT_TEMPLATE["config_json"],
+                created_by_user_id=actor.id,
+            )
+        )
+
+    for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
+        if _default_quick_action_exists(db, name=built_in["name"]):
+            continue
+        quick_action = DefaultQuickAction(
+            id=uuid4(),
+            name=built_in["name"],
+            description=built_in["description"],
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(quick_action)
+        db.flush()
+        db.add(
+            DefaultQuickActionVersion(
+                id=uuid4(),
+                default_quick_action_id=quick_action.id,
+                version_no=1,
+                mode=TemplateMode.freeform,
+                prompt_text=built_in["prompt_text"],
+                created_by_user_id=actor.id,
+            )
+        )
+
+
+def ensure_builtin_team_assets(db: Session, *, team: Team, actor: User) -> None:
+    if not _team_template_exists(db, team=team, name=BUILTIN_DEFAULT_TEMPLATE["name"]):
+        template = PromptTemplate(
+            id=uuid4(),
+            scope=TemplateScope.team,
+            owner_user_id=None,
+            team_id=team.id,
+            name=BUILTIN_DEFAULT_TEMPLATE["name"],
+            description=BUILTIN_DEFAULT_TEMPLATE["description"],
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(template)
+        db.flush()
+        db.add(
+            PromptTemplateVersion(
+                id=uuid4(),
+                template_id=template.id,
+                version_no=1,
+                mode=BUILTIN_DEFAULT_TEMPLATE["mode"],
+                prompt_text=BUILTIN_DEFAULT_TEMPLATE["prompt_text"],
+                config_json=BUILTIN_DEFAULT_TEMPLATE["config_json"],
+                created_by_user_id=actor.id,
+            )
+        )
+
+    for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
+        if _team_quick_action_exists(db, team=team, name=built_in["name"]):
+            continue
+        quick_action = QuickAction(
+            id=uuid4(),
+            scope=TemplateScope.team,
+            owner_user_id=None,
+            team_id=team.id,
+            name=built_in["name"],
+            description=built_in["description"],
+            is_active=True,
+            created_by_user_id=actor.id,
+        )
+        db.add(quick_action)
+        db.flush()
+        db.add(
+            QuickActionVersion(
+                id=uuid4(),
+                quick_action_id=quick_action.id,
+                version_no=1,
+                mode=TemplateMode.freeform,
+                prompt_text=built_in["prompt_text"],
+                created_by_user_id=actor.id,
+            )
+        )
 
 
 def list_default_templates(db: Session, actor: User) -> list[DefaultPromptTemplate]:

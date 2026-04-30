@@ -424,6 +424,66 @@ a > button { text-decoration: none; }
 .toast.success { border-color: rgba(45, 138, 94, 0.25); background: rgba(45, 138, 94, 0.06); color: var(--success); }
 .toast.error { border-color: rgba(197, 48, 48, 0.2); background: rgba(197, 48, 48, 0.06); color: var(--error); }
 .toast.warning { border-color: rgba(196, 138, 26, 0.25); background: rgba(196, 138, 26, 0.06); color: var(--warning); }
+.recovery-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(20, 32, 43, 0.42);
+}
+.recovery-modal__dialog {
+  width: min(520px, 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  padding: 22px;
+  box-shadow: var(--shadow-lg);
+  display: grid;
+  gap: 16px;
+}
+.recovery-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.recovery-modal__header p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 6px;
+}
+.recovery-modal__close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+}
+.recovery-modal__secret {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--parchment);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1rem;
+  color: var(--ink);
+}
+.recovery-modal__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.recovery-modal__status {
+  color: var(--success);
+  font-size: 0.88rem;
+}
 @keyframes toastSlideIn {
   from { opacity: 0; transform: translateY(-12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -997,7 +1057,7 @@ padding: 1rem 0;
     .member-panel { display: grid; gap: 0; }
     .member-list {
       border: 1px solid var(--border); border-radius: var(--radius-lg);
-      overflow: hidden; background: var(--card);
+      overflow: visible; background: var(--card);
       box-shadow: var(--shadow-sm), var(--shadow-inset);
     }
     .member-row {
@@ -1019,7 +1079,7 @@ padding: 1rem 0;
     .member-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; align-items: center; }
     .member-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 
-    .member-menu { position: relative; }
+    .member-menu { position: relative; z-index: 2; }
     .member-menu summary {
       list-style: none; width: 36px; height: 36px; display: grid; place-items: center;
       border-radius: var(--radius-sm); border: 1px solid var(--border);
@@ -1028,9 +1088,10 @@ padding: 1rem 0;
     }
     .member-menu summary::-webkit-details-marker { display: none; }
     .member-menu summary:hover { background: #fff; color: var(--ink); border-color: var(--border-strong); }
+    .member-menu[open] { z-index: 40; }
     .member-menu[open] summary { background: #fff; border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
     .member-menu__panel {
-      position: absolute; top: calc(100% + 6px); right: 0; width: 160px; z-index: 12;
+      position: absolute; top: calc(100% + 6px); right: 0; width: 184px; z-index: 41;
       display: grid; gap: 2px; padding: 6px; border: 1px solid var(--border);
       border-radius: var(--radius-md); background: var(--card); box-shadow: var(--shadow-md);
       animation: menuDropIn 0.15s ease;
@@ -1501,6 +1562,25 @@ padding: 1rem 0;
 
     {% if message %}
     <div class="panel flash {{ message_kind }}">{{ message }}</div>
+    {% endif %}
+
+    {% if recovery_temporary_password %}
+    <div class="recovery-modal" data-recovery-modal role="dialog" aria-modal="true" aria-labelledby="recovery-modal-title">
+      <div class="recovery-modal__dialog">
+        <div class="recovery-modal__header">
+          <div>
+            <h2 id="recovery-modal-title">Temporary password</h2>
+            <p>Copy this now and share it with the user out of band. It will not be shown again.</p>
+          </div>
+          <button type="button" class="recovery-modal__close" data-recovery-modal-close aria-label="Close">×</button>
+        </div>
+        <input class="recovery-modal__secret" value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password">
+        <div class="recovery-modal__actions">
+          <button type="button" class="btn-primary btn-sm" data-recovery-copy>Copy password</button>
+          <span class="recovery-modal__status" data-recovery-copy-status></span>
+        </div>
+      </div>
+    </div>
     {% endif %}
 
     <div class="tab-shell" data-tab-shell data-default-tab="{{ active_home_tab }}">
@@ -2082,6 +2162,26 @@ Create a new team member
                   {% else %}
                   <span class="member-menu__state">Security state</span>
                   {% endif %}
+                  <form method="post" action="/home/users/{{ user.id }}/send-activation">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <button type="submit" class="member-menu__item"><span>Send setup link</span></button>
+                  </form>
+                  <form method="post" action="/home/users/{{ user.id }}/recover-password">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <button type="submit" class="member-menu__item"><span>Generate temp password</span></button>
+                  </form>
+                  <form method="post" action="/home/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <button type="submit" class="member-menu__item member-menu__item--warning"><span>Reset MFA</span></button>
+                  </form>
+                  <form method="post" action="/home/users/{{ user.id }}/recover-account" onsubmit="return confirm('Reset password and MFA for this user?');">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <button type="submit" class="member-menu__item member-menu__item--warning"><span>Recover account</span></button>
+                  </form>
                   <a class="member-menu__item" href="mailto:{{ user.email }}"><svg class="member-menu__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.25h11v7.5h-11zm0 .25L8 8.5l5.5-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2"/></svg><span>Email</span></a>
                   <form method="post" action="/home/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
@@ -2185,6 +2285,22 @@ function showToast(message, kind = 'success', duration = 4000) {
   }, duration);
 }
 window.showToast = showToast;
+const recoveryModal = document.querySelector('[data-recovery-modal]');
+const recoveryInput = document.querySelector('[data-recovery-temp-password]');
+const recoveryStatus = document.querySelector('[data-recovery-copy-status]');
+document.querySelector('[data-recovery-copy]')?.addEventListener('click', async () => {
+if (!recoveryInput) return;
+try {
+await navigator.clipboard.writeText(recoveryInput.value);
+} catch (_err) {
+recoveryInput.select();
+document.execCommand('copy');
+}
+if (recoveryStatus) recoveryStatus.textContent = 'Copied';
+});
+document.querySelector('[data-recovery-modal-close]')?.addEventListener('click', () => {
+if (recoveryModal) recoveryModal.hidden = true;
+});
 document.querySelectorAll('.flash').forEach((flash) => {
 const kind = flash.classList.contains('error') ? 'error' : (flash.classList.contains('warning') ? 'warning' : 'success');
 const message = flash.textContent.trim();
@@ -2204,6 +2320,51 @@ body.hidden = !body.hidden;
 btn.textContent = body.hidden ? 'Configure' : 'Close';
 }
 });
+});
+
+const memberMenuIdleMs = 3500;
+const memberMenuTimers = new WeakMap();
+const memberMenus = Array.from(document.querySelectorAll('.member-menu'));
+function clearMemberMenuTimer(menu) {
+  const timer = memberMenuTimers.get(menu);
+  if (timer) window.clearTimeout(timer);
+  memberMenuTimers.delete(menu);
+}
+function closeMemberMenu(menu) {
+  clearMemberMenuTimer(menu);
+  menu.open = false;
+}
+function closeOtherMemberMenus(activeMenu) {
+  memberMenus.forEach((menu) => {
+    if (menu !== activeMenu) closeMemberMenu(menu);
+  });
+}
+function startMemberMenuIdleTimer(menu) {
+  if (!menu.open || menu.matches(':hover') || menu.contains(document.activeElement)) return;
+  clearMemberMenuTimer(menu);
+  memberMenuTimers.set(menu, window.setTimeout(() => closeMemberMenu(menu), memberMenuIdleMs));
+}
+memberMenus.forEach((menu) => {
+  menu.addEventListener('toggle', () => {
+    if (menu.open) {
+      closeOtherMemberMenus(menu);
+      startMemberMenuIdleTimer(menu);
+    } else {
+      clearMemberMenuTimer(menu);
+    }
+  });
+  menu.addEventListener('mouseenter', () => clearMemberMenuTimer(menu));
+  menu.addEventListener('mouseleave', () => startMemberMenuIdleTimer(menu));
+  menu.addEventListener('focusin', () => clearMemberMenuTimer(menu));
+  menu.addEventListener('focusout', () => window.setTimeout(() => startMemberMenuIdleTimer(menu), 0));
+});
+document.addEventListener('click', (event) => {
+  memberMenus.forEach((menu) => {
+    if (menu.open && !menu.contains(event.target)) closeMemberMenu(menu);
+  });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') memberMenus.forEach(closeMemberMenu);
 });
 })();
 (() => {

@@ -1,5 +1,51 @@
 # Progress
 
+## 2026-04-30 Editor Smart Phrases And Reordering
+
+### Scope
+
+- Added personal smart phrase CRUD/API plus default `CESRF` seed for normal team users.
+- Added slash-trigger expansion to structured/freeform note lines and line reordering by drag handle or `Alt+Arrow` keys.
+- Added home settings UI for creating, editing, duplicating, deleting, and searching personal smart phrases.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: local Sortable-compatible vendor shim is committed because package fetch is unavailable in this workspace.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/20260430_001_add_smart_phrases.py`: add smart phrase persistence.
+- `app/schemas/smart_phrases.py`, `app/services/smart_phrases.py`, `app/routes/api_routes.py`: add owner-only smart phrase API.
+- `app/api_route_audit.py`: cover smart phrase routes in auth audit manifest.
+- `app/web/presentation.py`, `app/web/transcribe_workspace.py`, `app/schemas/workspace.py`: expose smart phrases to home/transcribe.
+- `app/templates/home.html`, `app/static/js/home/smart-phrases.js`: add settings UI.
+- `app/templates/transcribe/_head_assets.html`, `app/templates/transcribe/_shell_extras.html`, `app/static/js/transcribe/*.js`, `app/static/vendor/sortable/Sortable.min.js`: add expansion and reordering.
+- `tests/test_smart_phrases_api.py`, `tests/test_migrations.py`: add API and schema coverage.
+- `docs/api.md`, `docs/editor-smart-phrases.md`, `docs/progress.md`: document behavior and endpoints.
+
+### Tests
+
+- Added coverage for CRUD, ownership isolation, validation, usage counters, hard delete, default creation, and migration constraints.
+
+### Documentation
+
+- Added smart phrase feature doc and API endpoint list.
+
+### Risks / assumptions
+
+- Smart phrases are treated as personal configuration; users should not store transcript-derived content there unless deliberately making it their own reusable private text.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: smart phrases are owner-only and not team-readable.
+- Ownership rules preserved: all service queries filter by `owner_user_id`; admins are blocked.
+- Deletion semantics preserved: phrase delete is hard delete; user delete cascades phrase rows.
+- Provider rules preserved: no provider selection, credentials, or fallback behavior changed.
+- Structured-note contract preserved: EMIS section keys/output JSON unchanged; reordering only changes editor line order.
+
 ## 2026-04-30 Built-In Team Asset Seeding
 
 ### Scope

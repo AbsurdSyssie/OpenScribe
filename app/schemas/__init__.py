@@ -49,6 +49,7 @@ from .llm import (
     UserLlmPreferenceUpsert,
 )
 from .preferences import LlmDetailLevel, UserAppPreferencesDetail, UserAppPreferencesUpsert
+from .smart_phrases import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
 from .stt import (
     SttConfigDetail,
     SttConfigUpsert,
@@ -140,6 +141,9 @@ __all__ = [
     "LlmSelectionDetail",
     "LlmSelectionUpsert",
     "LlmDetailLevel",
+    "SmartPhraseCreate",
+    "SmartPhraseDetail",
+    "SmartPhraseUpdate",
     "SttConfigDetail",
     "SttConfigUpsert",
     "SttInspectFieldTip",

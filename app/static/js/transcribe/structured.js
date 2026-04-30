@@ -514,6 +514,14 @@ export function createStructuredEditor({
     row.className = 'statement-row';
     row.setAttribute(lineRowAttr, '');
 
+    const dragHandle = document.createElement('button');
+    dragHandle.type = 'button';
+    dragHandle.className = 'statement-drag-handle';
+    dragHandle.setAttribute('data-statement-drag-handle', '');
+    dragHandle.setAttribute('aria-label', 'Drag to reorder line');
+    dragHandle.title = 'Drag to reorder line';
+    dragHandle.textContent = '⋮⋮';
+
     const checkboxLabel = document.createElement('div');
     checkboxLabel.className = 'statement-checkbox';
 
@@ -540,6 +548,7 @@ export function createStructuredEditor({
     textarea.dataset.sectionKey = sectionKey;
     textarea.dataset.sectionLabel = sectionLabel;
 
+    row.appendChild(dragHandle);
     row.appendChild(checkboxLabel);
     content.appendChild(textarea);
     row.appendChild(content);
@@ -552,7 +561,7 @@ export function createStructuredEditor({
 
     row.addEventListener('click', (event) => {
       const target = event.target;
-      if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+      if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLButtonElement) {
         return;
       }
       focusStatementEditor(textarea);
@@ -746,6 +755,39 @@ export function createStructuredEditor({
     });
   };
 
+  const rowInput = (row) => row?.querySelector?.('[data-structured-line-input], [data-freeform-note-input]') || null;
+  const rowCheckbox = (row) => row?.querySelector?.('[data-structured-line-checkbox], [data-freeform-note-checkbox]') || null;
+
+  const syncMovedRowSectionMetadata = (row) => {
+    if (!(row instanceof HTMLElement)) return;
+    const section = row.closest('[data-generated-structured-section]');
+    if (!(section instanceof HTMLElement)) return;
+    const sectionKey = section.dataset.sectionKey || '';
+    const sectionLabel = section.dataset.sectionLabel || 'Section';
+    row.querySelectorAll('[data-structured-line-input], [data-structured-line-checkbox]').forEach((node) => {
+      node.dataset.sectionKey = sectionKey;
+      node.dataset.sectionLabel = sectionLabel;
+      if (node instanceof HTMLTextAreaElement) {
+        node.placeholder = `Add ${sectionLabel.toLowerCase()} statement`;
+      }
+      if (node instanceof HTMLInputElement) {
+        node.setAttribute('aria-label', `Select ${sectionLabel} statement`);
+      }
+    });
+  };
+
+  const removePlaceholderRowIfFilled = (container) => {
+    if (!(container instanceof HTMLElement)) return;
+    const rows = [
+      ...container.querySelectorAll('[data-structured-statement-row], [data-freeform-note-row]'),
+    ];
+    const filledRows = rows.filter((row) => String(rowInput(row)?.value || '').trim().length > 0);
+    if (!filledRows.length) return;
+
+    const blankRows = rows.filter((row) => String(rowInput(row)?.value || '').trim().length === 0);
+    blankRows.slice(0, -1).forEach((row) => row.remove());
+  };
+
   const addGeneratedStructuredLine = (sectionContainer, value = '', afterRow = null, checked = true, options = {}) => {
     const rows = sectionContainer.querySelector('[data-generated-structured-section-rows]');
     if (!rows) return null;
@@ -812,6 +854,71 @@ export function createStructuredEditor({
     if (rows.length === 0) {
       addGeneratedFreeformLine('', null, true);
     }
+  };
+
+  const focusLine = (rowOrInput, target = 'handle') => {
+    const row = rowOrInput instanceof HTMLTextAreaElement
+      ? rowOrInput.closest('[data-structured-statement-row], [data-freeform-note-row]')
+      : rowOrInput;
+    if (!(row instanceof HTMLElement)) return;
+    const focusTarget = target === 'textarea'
+      ? rowInput(row)
+      : row.querySelector('[data-statement-drag-handle]');
+    window.requestAnimationFrame(() => {
+      if (focusTarget instanceof HTMLElement) {
+        focusTarget.focus();
+        row.scrollIntoView({ block: 'nearest' });
+      }
+    });
+  };
+
+  const getLineContextFromInput = (input) => {
+    if (!(input instanceof HTMLTextAreaElement)) return null;
+    const structuredRow = input.closest('[data-structured-statement-row]');
+    if (structuredRow instanceof HTMLElement) {
+      const section = input.closest('[data-generated-structured-section]');
+      return {
+        mode: 'structured',
+        row: structuredRow,
+        section,
+        input,
+        checkbox: rowCheckbox(structuredRow),
+      };
+    }
+    const freeformRow = input.closest('[data-freeform-note-row]');
+    if (freeformRow instanceof HTMLElement) {
+      return {
+        mode: 'freeform',
+        row: freeformRow,
+        section: null,
+        input,
+        checkbox: rowCheckbox(freeformRow),
+      };
+    }
+    return null;
+  };
+
+  const notifyNoteRowsChanged = ({ mode } = {}) => {
+    if (mode === 'freeform') {
+      ensureFreeformHasEditableRow();
+      syncGeneratedFreeformDraftFromDom();
+    } else {
+      document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
+        section.querySelectorAll('[data-structured-statement-row]').forEach((row) => {
+          syncMovedRowSectionMetadata(row);
+        });
+        ensureSectionHasEditableRow(section);
+        removePlaceholderRowIfFilled(section);
+      });
+      syncGeneratedStructuredDraftFromDom();
+      syncStructuredContextHiddenInputs();
+    }
+    handleStructuredContextChanged();
+    syncNoteEmptyState();
+    if (dom.structuredCopyStatus) {
+      dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
+    }
+    onNoteEditorChanged?.();
   };
 
   const addGeneratedFreeformLine = (value = '', afterRow = null, checked = true, options = {}) => {
@@ -1171,6 +1278,14 @@ export function createStructuredEditor({
   };
 
   return {
+    notifyNoteRowsChanged,
+    getLineContextFromInput,
+    focusLine,
+    autosizeStatementEditor,
+    syncMovedRowSectionMetadata,
+    ensureSectionHasEditableRow,
+    ensureFreeformHasEditableRow,
+    removePlaceholderRowIfFilled,
     bootstrapFromDom,
     buildGeneratedStructuredDraft,
     collectSelectedNoteLines,

@@ -276,6 +276,22 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         json_body=_json(scope="user", name="Personal Quick Action", prompt_text="Create a personal follow-up", is_active=True),
     ),
     AuditCase("DELETE", f"/api/v1/quick-actions/personal/{PLACEHOLDER_UUID}", AccessTier.full),
+    AuditCase("GET", "/api/v1/smart-phrases/available", AccessTier.full),
+    AuditCase("GET", "/api/v1/smart-phrases/personal", AccessTier.full),
+    AuditCase(
+        "POST",
+        "/api/v1/smart-phrases/personal",
+        AccessTier.full,
+        json_body=_json(trigger="AUDIT", expansion_text="Audit expansion"),
+    ),
+    AuditCase(
+        "PATCH",
+        f"/api/v1/smart-phrases/personal/{PLACEHOLDER_UUID}",
+        AccessTier.full,
+        json_body=_json(description="Audit update"),
+    ),
+    AuditCase("DELETE", f"/api/v1/smart-phrases/personal/{PLACEHOLDER_UUID}", AccessTier.full),
+    AuditCase("POST", f"/api/v1/smart-phrases/personal/{PLACEHOLDER_UUID}/used", AccessTier.full),
     AuditCase("POST", f"/api/v1/users/{PLACEHOLDER_UUID}/suspend", AccessTier.manager),
     AuditCase("POST", f"/api/v1/users/{PLACEHOLDER_UUID}/reactivate", AccessTier.manager),
     AuditCase("DELETE", f"/api/v1/users/{PLACEHOLDER_UUID}", AccessTier.manager),
@@ -425,6 +441,7 @@ def missing_route_specs() -> set[tuple[str, str]]:
             .replace("{provider_id}", "{id}")
             .replace("{template_id}", "{id}")
             .replace("{quick_action_id}", "{id}")
+            .replace("{smart_phrase_id}", "{id}")
             .replace("{user_id}", "{id}")
             .replace("{transcript_id}", "{id}")
             .replace("{entity_id}", "{id}")

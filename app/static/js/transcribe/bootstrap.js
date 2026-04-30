@@ -19,6 +19,7 @@ const DEFAULT_BOOTSTRAP = {
   activeTranscriptRedactionStatus: { status: "not_run", entity_count: 0, error_code: null },
   activeTab: "output",
   viewerRole: "user",
+  smartPhrases: [],
 };
 
 export function readTranscribeBootstrap() {
@@ -39,6 +40,7 @@ export function readTranscribeBootstrap() {
       emisSections: Array.isArray(parsed?.emisSections) ? parsed.emisSections : [],
       activeTranscriptPiiEntities: Array.isArray(parsed?.activeTranscriptPiiEntities) ? parsed.activeTranscriptPiiEntities : [],
       activeTranscriptRedactionStatus: parsed?.activeTranscriptRedactionStatus || DEFAULT_BOOTSTRAP.activeTranscriptRedactionStatus,
+      smartPhrases: Array.isArray(parsed?.smartPhrases) ? parsed.smartPhrases : [],
     };
   } catch (error) {
     console.error("Could not parse transcribe bootstrap payload.", error);

@@ -11,6 +11,16 @@ from ..main import (
     _set_session_cookie,
     _set_trusted_device_cookie,
 )
+from ..schemas import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
+from ..services.smart_phrases import (
+    create_personal_smart_phrase as create_personal_smart_phrase_service,
+    delete_personal_smart_phrase as delete_personal_smart_phrase_service,
+    list_available_smart_phrases as list_available_smart_phrases_service,
+    list_personal_smart_phrases as list_personal_smart_phrases_service,
+    mark_personal_smart_phrase_used as mark_personal_smart_phrase_used_service,
+    update_personal_smart_phrase as update_personal_smart_phrase_service,
+)
+from ..web.presentation import smart_phrase_response
 
 
 @api.post("/auth/login", response_model=LoginResponse, responses=error_responses)
@@ -533,6 +543,65 @@ def delete_team_quick_action(quick_action_id: UUID, context: AuthenticatedContex
 @api.get("/quick-actions/personal", response_model=list[QuickActionDetail], responses=error_responses)
 def list_personal_quick_actions(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [quick_action_response(quick_action) for quick_action in list_personal_quick_actions_service(db, context.user)]
+
+
+@api.get("/smart-phrases/available", response_model=list[SmartPhraseDetail], responses=error_responses)
+def list_available_smart_phrases(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [smart_phrase_response(phrase) for phrase in list_available_smart_phrases_service(db, context.user)]
+
+
+@api.get("/smart-phrases/personal", response_model=list[SmartPhraseDetail], responses=error_responses)
+def list_personal_smart_phrases(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    return [smart_phrase_response(phrase) for phrase in list_personal_smart_phrases_service(db, context.user)]
+
+
+@api.post(
+    "/smart-phrases/personal",
+    response_model=SmartPhraseDetail,
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses,
+)
+def create_personal_smart_phrase(
+    payload: SmartPhraseCreate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return smart_phrase_response(create_personal_smart_phrase_service(db, context.user, payload))
+
+
+@api.patch("/smart-phrases/personal/{smart_phrase_id}", response_model=SmartPhraseDetail, responses=error_responses)
+def update_personal_smart_phrase(
+    smart_phrase_id: UUID,
+    payload: SmartPhraseUpdate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return smart_phrase_response(
+        update_personal_smart_phrase_service(
+            db,
+            context.user,
+            smart_phrase_id=smart_phrase_id,
+            payload=payload,
+        )
+    )
+
+
+@api.delete("/smart-phrases/personal/{smart_phrase_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_personal_smart_phrase(
+    smart_phrase_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    delete_personal_smart_phrase_service(db, context.user, smart_phrase_id=smart_phrase_id)
+
+
+@api.post("/smart-phrases/personal/{smart_phrase_id}/used", response_model=SmartPhraseDetail, responses=error_responses)
+def mark_personal_smart_phrase_used(
+    smart_phrase_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return smart_phrase_response(mark_personal_smart_phrase_used_service(db, context.user, smart_phrase_id=smart_phrase_id))
 
 
 @api.post("/quick-actions/personal", response_model=QuickActionDetail, responses=error_responses)

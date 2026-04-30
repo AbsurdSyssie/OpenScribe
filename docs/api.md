@@ -96,6 +96,15 @@ Browser navigation behavior:
 - `POST /api/v1/templates/personal`
 - `DELETE /api/v1/templates/personal/{template_id}`
 
+### Smart Phrases
+
+- `GET /api/v1/smart-phrases/available`
+- `GET /api/v1/smart-phrases/personal`
+- `POST /api/v1/smart-phrases/personal`
+- `PATCH /api/v1/smart-phrases/personal/{smart_phrase_id}`
+- `DELETE /api/v1/smart-phrases/personal/{smart_phrase_id}`
+- `POST /api/v1/smart-phrases/personal/{smart_phrase_id}/used`
+
 ### Team transcription configuration
 
 - `GET /api/v1/stt-configs`
@@ -371,6 +380,10 @@ Current template behavior:
   - leaders may create, update, list, and delete team quick actions for their own team
   - normal users may create, update, list, and delete only their own personal quick actions
   - quick action updates create a new immutable `quick_action_versions` row while updating the logical quick action root metadata
+- smart phrases are personal configuration only:
+  - normal team users may create, update, list, mark-used, and hard-delete only their own smart phrases
+  - triggers are stored uppercase without the leading slash and unique per owner case-insensitively
+  - system admins do not own smart phrases
 
 Current generation behavior:
 

@@ -13,6 +13,7 @@ from ..models import (
     LlmAdapterKind,
     PromptTemplate,
     QuickAction,
+    SmartPhrase,
     SttAdapterKind,
     SttSelectionPurpose,
     TeamRole,
@@ -41,6 +42,7 @@ from ..schemas import (
     LlmSelectionDetail,
     PromptTemplateDetail,
     QuickActionDetail,
+    SmartPhraseDetail,
     SttConfigDetail,
     SttInspectResult,
     SttSelectionDetail,
@@ -91,6 +93,7 @@ from ..services.templates import (
     list_team_quick_actions as list_team_quick_actions_service,
     list_team_templates as list_team_templates_service,
 )
+from ..services.smart_phrases import list_personal_smart_phrases as list_personal_smart_phrases_service
 from ..services.default_assets import (
     list_default_quick_actions as list_default_quick_actions_service,
     list_default_templates as list_default_templates_service,
@@ -364,6 +367,20 @@ def quick_action_response(quick_action: QuickAction) -> QuickActionDetail:
             "created_by_user_id": latest_version.created_by_user_id,
             "created_at": latest_version.created_at,
         },
+    )
+
+
+def smart_phrase_response(phrase: SmartPhrase) -> SmartPhraseDetail:
+    return SmartPhraseDetail(
+        id=phrase.id,
+        owner_user_id=phrase.owner_user_id,
+        trigger=phrase.trigger,
+        expansion_text=phrase.expansion_text,
+        description=phrase.description,
+        last_used_at=phrase.last_used_at,
+        times_used=phrase.times_used or 0,
+        created_at=phrase.created_at,
+        updated_at=phrase.updated_at,
     )
 
 
@@ -894,6 +911,7 @@ def render_home(
     personal_templates = list_personal_templates_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
     team_quick_actions = list_team_quick_actions_service(db, current_user) if is_manager else []
     personal_quick_actions = list_personal_quick_actions_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
+    personal_smart_phrases = list_personal_smart_phrases_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
     selected_team_template = next((template for template in team_templates if str(template.id) == selected_team_template_id), None)
     selected_personal_template = next((template for template in personal_templates if str(template.id) == selected_personal_template_id), None)
     selected_team_quick_action = next((quick_action for quick_action in team_quick_actions if str(quick_action.id) == selected_team_quick_action_id), None)
@@ -904,7 +922,7 @@ def render_home(
     personal_quick_action_latest_version = _latest_quick_action_version(selected_personal_quick_action) if selected_personal_quick_action is not None else None
     available_home_tabs = ["overview"]
     if not current_user.is_system_admin and current_user.team_id is not None:
-        available_home_tabs.extend(["templates", "quick-actions"])
+        available_home_tabs.extend(["templates", "quick-actions", "smart-phrases"])
     if is_manager:
         available_home_tabs.extend(["ai-services", "team-management", "account-requests"])
 
@@ -951,6 +969,7 @@ def render_home(
         "personal_templates": personal_templates,
         "team_quick_actions": team_quick_actions,
         "personal_quick_actions": personal_quick_actions,
+        "personal_smart_phrases": personal_smart_phrases,
         "selected_team_template_id": selected_team_template_id,
         "selected_personal_template_id": selected_personal_template_id,
         "selected_team_quick_action_id": selected_team_quick_action_id,

@@ -4,6 +4,8 @@ import { createDocumentNavigator } from './documents.js?v=20260421-pii-refresh';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260421-pii-refresh';
 import { createStructuredEditor } from './structured.js?v=20260421-pii-refresh';
+import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
+import { attachNoteReordering } from './reorder.js?v=20260430-smart-phrases-reorder';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 
       const bootstrap = readTranscribeBootstrap();
@@ -1174,6 +1176,20 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         persistStructuredContextSilently: async () => saveStructuredContext({ silent: true }),
       });
       structuredEditor.bootstrapFromDom();
+      attachSmartPhraseExpander({
+        smartPhrases: bootstrap.smartPhrases || [],
+        onExpanded: ({ phrase }) => {
+          if (!phrase?.id) return;
+          void fetch(`/api/v1/smart-phrases/personal/${phrase.id}/used`, {
+            method: 'POST',
+            credentials: 'include',
+          }).catch(() => {});
+        },
+      });
+      attachNoteReordering({
+        structuredEditor,
+        showFlash,
+      });
       generatedStructuredPanel?.addEventListener('focusout', (event) => {
         if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute('data-structured-line-input')) {
           scheduleNoteAutosave({ immediate: true });

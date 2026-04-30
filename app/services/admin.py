@@ -60,6 +60,7 @@ from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
 from app.services.llm import delete_team_llm_bearer_token
 from app.services.passwords import hash_password
+from app.services.smart_phrases import ensure_default_smart_phrase_for_user
 from app.services.stt import delete_team_stt_bearer_token
 from app.services.transcripts import delete_retry_sources_for_transcripts
 
@@ -1124,6 +1125,7 @@ def create_user(db: Session, payload: UserCreate, *, actor: User | None = None) 
         db.flush()
         if not user.is_system_admin:
             ensure_user_dek(db, user=user)
+            ensure_default_smart_phrase_for_user(db, user, commit=False)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -1579,6 +1581,7 @@ def approve_account_request(db: Session, actor: User, request_id, payload: Accou
     try:
         db.flush()
         ensure_user_dek(db, user=user)
+        ensure_default_smart_phrase_for_user(db, user, commit=False)
         db.commit()
     except IntegrityError as exc:
         db.rollback()

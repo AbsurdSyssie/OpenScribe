@@ -55,6 +55,7 @@ from ..services.templates import (
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
     generated_document_section_text as generated_document_section_text_service,
 )
+from ..services.smart_phrases import list_available_smart_phrases as list_available_smart_phrases_service
 from ..services.transcripts import (
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
@@ -68,7 +69,7 @@ from ..services.transcripts import (
 )
 from ..services.redaction import redaction_entity_original_value as redaction_entity_original_value_service
 from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
-from .presentation import generated_document_response, quick_action_response, template_response
+from .presentation import generated_document_response, quick_action_response, smart_phrase_response, template_response
 from .templates import templates
 
 
@@ -517,6 +518,7 @@ def resolve_transcribe_workspace(
             switch_mode_block_message = whole_file_message
     available_templates = list_available_templates_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_quick_actions = list_available_quick_actions_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
+    available_smart_phrases = list_available_smart_phrases_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_templates = _order_assets_by_favourites(available_templates, user_app_preferences_json.get("favorite_template_ids"))
     available_quick_actions = _order_assets_by_favourites(available_quick_actions, user_app_preferences_json.get("favorite_quick_action_ids"))
     preferred_template = _preferred_template_from_preferences(available_templates, user_app_preferences_json.get("default_template_id"))
@@ -588,6 +590,7 @@ def resolve_transcribe_workspace(
         "user_app_preferences_json": user_app_preferences_json,
         "template_section_definitions_by_id": _structured_section_option_payloads(available_templates),
         "available_quick_actions": available_quick_actions,
+        "available_smart_phrases": available_smart_phrases,
         "generated_documents": generated_documents,
         "note_documents": note_documents,
         "followup_documents": followup_documents,
@@ -648,6 +651,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     generated_documents = workspace.get("generated_documents") or []
     available_templates = workspace.get("available_templates") or []
     available_quick_actions = workspace.get("available_quick_actions") or []
+    available_smart_phrases = workspace.get("available_smart_phrases") or []
     return TranscribeWorkspaceDetail(
         recent_transcripts=[transcript_list_item_response(db, transcript) for transcript in recent_transcripts],
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
@@ -661,6 +665,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         generated_documents=[generated_document_response(db, document) for document in generated_documents],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
+        smart_phrases=[smart_phrase_response(phrase) for phrase in available_smart_phrases],
         active_structured_context=dict(workspace.get("active_structured_context") or {}),
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
@@ -749,6 +754,11 @@ def render_transcribe(
         active_transcript if isinstance(active_transcript, Transcript) else None,
     )
     generated_documents = workspace.get("generated_documents") or []
+    available_smart_phrases = workspace.get("available_smart_phrases") or []
+    workspace["smart_phrases"] = [
+        smart_phrase_response(phrase).model_dump(mode="json")
+        for phrase in available_smart_phrases
+    ]
     if generated_documents:
         generated_document_details = [generated_document_response(db, document) for document in generated_documents]
         workspace["generated_documents"] = generated_document_details

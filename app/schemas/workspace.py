@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from .dictation import PostConsultationDictationDetail
+from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
 from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail
 
@@ -14,6 +15,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     generated_documents: list[GeneratedDocumentDetail]
     available_templates: list[PromptTemplateDetail]
     available_quick_actions: list[QuickActionDetail]
+    smart_phrases: list[SmartPhraseDetail] = []
     active_structured_context: dict[str, list[str]]
     stt_selected: bool
     stt_available: bool

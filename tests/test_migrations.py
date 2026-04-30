@@ -61,6 +61,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "quick_action_versions",
         "redaction_entities",
         "redaction_runs",
+        "smart_phrases",
         "transcript_manual_pii_entities",
         "teams",
         "team_deidentification_provider_assignments",
@@ -198,6 +199,10 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
     user_encryption_key_columns = {column["name"] for column in inspector.get_columns("user_encryption_keys")}
     auth_email_token_columns = {column["name"] for column in inspector.get_columns("auth_email_tokens")}
+    smart_phrase_columns = {column["name"] for column in inspector.get_columns("smart_phrases")}
+    smart_phrase_indexes = inspector.get_indexes("smart_phrases")
+    smart_phrase_checks = inspector.get_check_constraints("smart_phrases")
+    smart_phrase_fks = inspector.get_foreign_keys("smart_phrases")
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
@@ -231,6 +236,16 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"user_id", "preferred_model_name"} <= user_llm_preference_columns
     assert {"user_id", "preferences_json"} <= user_app_preference_columns
     assert {"user_id", "purpose", "token_hash", "expires_at", "used_at", "created_by_user_id"} <= auth_email_token_columns
+    assert {"owner_user_id", "trigger", "expansion_text", "description", "last_used_at", "times_used"} <= smart_phrase_columns
+    assert any(item["name"] == "uq_smart_phrases_owner_trigger_lower" for item in smart_phrase_indexes)
+    assert any(item["name"] == "ck_smart_phrases_trigger_format" for item in smart_phrase_checks)
+    assert any(item["name"] == "ck_smart_phrases_expansion_length" for item in smart_phrase_checks)
+    assert any(
+        fk["referred_table"] == "users"
+        and fk["constrained_columns"] == ["owner_user_id"]
+        and fk.get("options", {}).get("ondelete") == "CASCADE"
+        for fk in smart_phrase_fks
+    )
     assert any(item["name"] == "uq_templates_team_name_lower" for item in template_indexes)
     assert any(item["name"] == "uq_templates_owner_name_lower" for item in template_indexes)
     assert {"scope", "owner_user_id", "team_id", "name", "created_by_user_id"} <= template_columns

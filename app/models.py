@@ -295,6 +295,29 @@ class User(Base):
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="owner")
     encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(back_populates="owner")
+    smart_phrases: Mapped[list["SmartPhrase"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+
+
+class SmartPhrase(Base):
+    __tablename__ = "smart_phrases"
+    __table_args__ = (
+        CheckConstraint("trigger ~ '^[A-Z0-9_]{1,64}$'", name="ck_smart_phrases_trigger_format"),
+        CheckConstraint("char_length(expansion_text) BETWEEN 1 AND 2000", name="ck_smart_phrases_expansion_length"),
+        CheckConstraint("description IS NULL OR char_length(description) <= 255", name="ck_smart_phrases_description_length"),
+        Index("uq_smart_phrases_owner_trigger_lower", "owner_user_id", text("lower(trigger)"), unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    expansion_text: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    times_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    owner: Mapped[User] = relationship(back_populates="smart_phrases")
 
 
 class UserEncryptionKey(Base):

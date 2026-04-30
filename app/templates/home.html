@@ -883,6 +883,57 @@ width: 100%;
 margin-top: 0.5rem;
 }
 
+.smart-phrase-row {
+width: 100%;
+border: 0;
+border-radius: 0;
+text-align: left;
+}
+
+.smart-phrase-drawer[hidden] {
+display: none;
+}
+
+.smart-phrase-drawer {
+position: fixed;
+inset: 0;
+z-index: 150;
+display: flex;
+justify-content: flex-end;
+}
+
+.smart-phrase-drawer__backdrop {
+position: absolute;
+inset: 0;
+background: rgba(20, 32, 43, 0.28);
+}
+
+.smart-phrase-drawer__panel {
+position: relative;
+z-index: 1;
+width: min(520px, 100%);
+height: 100%;
+overflow: auto;
+padding: 24px;
+background: var(--card);
+border-left: 1px solid var(--border);
+box-shadow: var(--shadow-lg);
+}
+
+.smart-phrase-drawer__header,
+.smart-phrase-drawer__actions {
+display: flex;
+align-items: flex-start;
+justify-content: space-between;
+gap: 12px;
+flex-wrap: wrap;
+}
+
+.smart-phrase-drawer__actions {
+margin-top: 6px;
+justify-content: flex-start;
+}
+
 .status-dot {
 width: 8px;
 height: 8px;
@@ -1518,6 +1569,7 @@ padding: 1rem 0;
         {% if not current_user.is_system_admin and current_user.team_id %}
         <button type="button" class="tab-shell__tab" data-tab-target="templates" data-tab-url="{{ home_page_route }}?tab=templates" role="tab" aria-selected="false" data-tour-target="templates-tab">Templates</button>
         <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" data-tab-url="{{ home_page_route }}?tab=quick-actions" role="tab" aria-selected="false" data-tour-target="saved-prompts-tab">Quick actions</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="smart-phrases" data-tab-url="{{ home_page_route }}?tab=smart-phrases" role="tab" aria-selected="false">Smart phrases</button>
         {% endif %}
         {% if is_manager %}
         <button type="button" class="tab-shell__tab" data-tab-target="ai-services" data-tab-url="{{ home_page_route }}?tab=ai-services" role="tab" aria-selected="false" data-tour-target="ai-services-tab">AI Services</button>
@@ -1813,6 +1865,57 @@ padding: 1rem 0;
 </div>
 </div>
 {% endif %}
+</section>
+
+{# ── SMART PHRASES ── #}
+<section class="tab-stack" data-tab-panel="smart-phrases">
+<div class="settings-header">
+<div>
+<h2>Smart phrases</h2>
+<span class="settings-header__hint">Type /CESRF in a note line and press Enter or Tab to insert the phrase.</span>
+</div>
+<button type="button" class="btn-primary-sm" data-smart-phrase-new>New phrase</button>
+</div>
+
+<div class="panel panel--interactive" data-smart-phrase-settings>
+<label>Search smart phrases<input type="search" data-smart-phrase-search placeholder="Search trigger or expansion"></label>
+<div class="settings-stack" data-smart-phrase-list>
+{% for phrase in personal_smart_phrases|sort(attribute='trigger') %}
+<button type="button" class="asset-row smart-phrase-row" data-smart-phrase-row data-smart-phrase-id="{{ phrase.id }}" data-smart-phrase-trigger="{{ phrase.trigger }}" data-smart-phrase-expansion="{{ phrase.expansion_text }}" data-smart-phrase-description="{{ phrase.description or '' }}">
+<span class="asset-row__info">
+<span class="asset-row__title">{{ phrase.trigger }}</span>
+<span class="asset-row__status">{{ phrase.expansion_text.replace('\n', ' ')[:90] }}</span>
+</span>
+</button>
+{% else %}
+<div class="asset-row" data-smart-phrase-empty>
+<div class="asset-row__info">
+<div class="asset-row__title">No smart phrases yet</div>
+<div class="asset-row__status">Create one to expand slash triggers in notes.</div>
+</div>
+</div>
+{% endfor %}
+</div>
+</div>
+
+<aside class="smart-phrase-drawer" data-smart-phrase-drawer hidden>
+<div class="smart-phrase-drawer__backdrop" data-smart-phrase-close></div>
+<form class="smart-phrase-drawer__panel" data-smart-phrase-form>
+<input type="hidden" data-smart-phrase-id-input>
+<div class="smart-phrase-drawer__header">
+<div><div class="section-kicker">Smart phrase</div><h2 data-smart-phrase-drawer-title>New phrase</h2></div>
+<button type="button" class="btn-ghost-sm" data-smart-phrase-close>Close</button>
+</div>
+<label>Trigger<input data-smart-phrase-trigger-input maxlength="64" placeholder="CESRF" autocomplete="off"></label>
+<label>Expansion<textarea data-smart-phrase-expansion-input maxlength="2000" rows="8"></textarea></label>
+<label>Description, optional<input data-smart-phrase-description-input maxlength="255"></label>
+<div class="smart-phrase-drawer__actions">
+<button type="submit" class="btn-primary-sm">Save</button>
+<button type="button" class="btn-ghost-sm" data-smart-phrase-duplicate hidden>Duplicate</button>
+<button type="button" class="btn-danger-sm" data-smart-phrase-delete hidden>Delete</button>
+</div>
+</form>
+</aside>
 </section>
 {% endif %}
 
@@ -2666,6 +2769,7 @@ const tourOverlay = document.querySelector('[data-tour-overlay]');
       });
     })();
   </script>
+  <script src="/static/js/home/smart-phrases.js?v=20260430-smart-phrases"></script>
   {% include "_csrf_script.html" %}
 </body>
 </html>

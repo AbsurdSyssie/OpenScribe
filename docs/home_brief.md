@@ -234,13 +234,14 @@ How:
 - enter new-user identity and temporary password
 - choose role/status/MFA requirement
 - save creation
-- use account actions for suspend/reactivate/delete
+- use the per-user actions menu for suspend/reactivate/setup link/password recovery/MFA reset/account recovery/email/delete
 
 Access:
 - leader only
 
 Notes:
 - delete here is high impact because it deletes owned transcript-derived content too
+- per-user actions menu is layered above the member list, closes when clicking outside, and auto-closes after a short unhovered idle period
 
 ### Incoming account requests
 

@@ -229,6 +229,255 @@ Rules:
 - public reset request must not leak whether an email exists
 - if Auth0 is added, Auth0-managed accounts should use Auth0-owned password/MFA recovery rather than a competing local reset path
 
+## Resend transactional email plan
+
+Goal:
+- use Resend for security-critical transactional email: account activation/setup, password reset, manager-issued recovery, and later MFA/security notifications
+- keep email delivery as platform infrastructure, not team/provider configuration
+- preserve current privacy model: email flows carry auth metadata only and never include transcript-derived content
+
+Checklist before coding:
+- target behavior:
+  - managed user creation and approved account requests can send an activation/setup email instead of relying only on out-of-band temporary passwords
+  - forgot-password flow sends a generic reset email for local-auth users
+  - manager recovery actions can issue setup links or generate one-time visible temporary passwords without exposing tokens, MFA secrets, recovery codes, or content
+  - public reset request response remains generic for existing and missing emails
+- affected schema/modules/endpoints:
+  - auth token table, mail outbox table, settings/config, auth services, admin/account-request services, Celery worker, browser pages, API route audit manifest
+  - likely endpoints: `POST /api/v1/auth/password-reset/request`, `POST /api/v1/auth/password-reset/confirm`, activation/setup confirm route, manager recovery routes
+- affected tests:
+  - migration/schema tests, API auth tests, route-audit tests, mailer unit tests, account-request/managed-user integration tests, manager authorization tests
+- architecture risks:
+  - token leakage in logs, email enumeration, team leaders gaining platform mail control, Resend API key stored outside Vault, reset accidentally rotating/destroying user DEK, activation semantics weakening MFA onboarding
+- docs to refer/update:
+  - `docs/account_recovery_brief.md`
+  - `docs/auth.md`
+  - `docs/security.md`
+  - `docs/api.md`
+  - `docs/setup.md`
+  - `docs/testing.md`
+
+### Phase 0: design lock
+
+- decide whether to add a generic `auth_email_tokens` table or implement `password_reset_tokens` first and add activation later
+- recommended: generic `auth_email_tokens` so password reset, account activation, manager reset, and future email-change confirmation share one hashed-token lifecycle
+- token purposes:
+  - `account_activation`
+  - `password_reset`
+  - `manager_password_reset`
+  - `manager_account_recovery`
+- token rules:
+  - store only token hash
+  - short expiry
+  - single use
+  - revoke previous live tokens for same user and purpose when issuing a new one
+  - never log plaintext token or full reset URL
+  - token use must revoke active sessions and trusted devices where recovery changes auth material
+- activation rule:
+  - activation/setup link may let user set first real password
+  - TOTP onboarding still required before full access
+  - activation must not create transcript ownership for system admins or change user DEK rules
+- password reset rule:
+  - reset changes password hash only
+  - reset must not rotate, delete, or rewrap the user DEK
+  - reset completion revokes sessions and trusted devices
+
+### Phase 1: platform Resend configuration
+
+- done: added `disabled`, `stdout`, and `resend` mail transport modes
+- done: added environment config loading/validation for mail transport, public URL, sender identity, reply-to, and Resend API key / Vault ref
+- done: added stdout local sender so repo users can keep current no-Resend setup
+- done: added direct Resend Email API sender behind the same mail service interface
+- done: added operator test script for configured mail transport
+- pending: admin/system setup page that shows mail config status
+- pending: production UI/path for writing Resend API key into Vault instead of env
+- add instance-level mail config, not team scoped:
+  - `MAIL_TRANSPORT=disabled|stdout|resend`
+  - `APP_PUBLIC_URL`
+  - `MAIL_FROM_ADDRESS`
+  - `MAIL_FROM_NAME`
+  - `MAIL_REPLY_TO` optional
+  - Resend API key Vault reference for production
+- keep current no-email setup:
+  - `disabled` preserves manual/temporary-password onboarding
+  - self-service password reset should be unavailable or should direct users to contact a manager
+  - manager-created temporary passwords remain the fallback path until email is configured
+- setup modes:
+  - `disabled`: no outbound mail, current manual setup behavior
+  - `stdout`: local/dev outbox printed to server output, no external account needed
+  - `resend`: production transactional email through operator-owned Resend account/domain
+- dev fallback:
+  - `stdout` outbox mode for tests/local runs
+  - optional raw env API key only for local development
+- production rule:
+  - store Resend API key in Vault or equivalent secret store
+  - database/env may hold only non-secret metadata and Vault reference
+  - leaders cannot view, edit, or test platform mail credentials
+- Resend setup notes:
+  - verify sending domain before production use
+  - use a dedicated transactional subdomain if available
+  - create sending-restricted API key where Resend allows it
+
+### Phase 2: mail outbox and sender service
+
+- add `email_outbox` table:
+  - `id`
+  - `purpose`
+  - `recipient_email`
+  - `subject`
+  - `body_text`
+  - `body_html`
+  - `status`
+  - `provider`
+  - `provider_message_id`
+  - `idempotency_key`
+  - `attempt_count`
+  - `last_error_code`
+  - `last_error_at`
+  - timestamps
+- do not store auth token plaintext separately from rendered email unless the row is deleted immediately after send; preferred path is render at enqueue time and keep only normal email body plus hashed token in auth-token table
+- sender service:
+  - resolve platform mail config
+  - send via Resend `/emails`
+  - include both HTML and plaintext bodies
+  - use Resend idempotency key per outbox row
+  - record provider message id and delivery attempt metadata
+  - log only event type, outbox id, recipient hash or normalized email if current logging policy allows email metadata, provider id, status, duration, and error code
+- worker:
+  - send asynchronously through Celery
+  - retry transient errors
+  - mark permanent failures without exposing secrets
+  - keep request path generic even when enqueue/send fails; surface operational failure only to admins through metadata
+
+### Phase 3: account activation/setup email
+
+- done: added `auth_email_tokens` table with hashed token, purpose, expiry, used marker, and optional manager actor
+- done: added account setup email generation through configured mail transport
+- done: added browser route `/activate-account` and API route `POST /api/v1/auth/account-activation/confirm`
+- done: setup link sets first real password, creates onboarding session, and still forces TOTP enrollment before full access
+- done: manager can send setup link from user-management UI/API
+- manager creates user or approves request
+- system creates user with password setup required and MFA onboarding required
+- system issues `account_activation` token and enqueues setup email
+- user opens setup link:
+  - token validated by hash, expiry, purpose, unused state
+  - user sets password
+  - token marked used
+  - onboarding session created or user redirected to login then onboarding
+  - TOTP enrollment remains mandatory before full access
+- keep temporary-password path as fallback until email delivery is proven in production
+- tests:
+  - leader can trigger activation only for same-team non-system-admin users
+  - system admin can trigger activation for allowed accounts
+  - activation token single-use
+  - expired token rejected
+  - activation does not grant full access before TOTP setup
+  - activation email body contains no team secrets, provider secrets, transcript text, note text, or recovery codes
+
+### Phase 4: self-service password reset
+
+- done: added browser request/confirm routes `/forgot-password` and `/reset-password`
+- done: added API routes `POST /api/v1/auth/password-reset/request` and `POST /api/v1/auth/password-reset/confirm`
+- done: public request response is generic for existing and missing emails
+- done: disabled mail hides browser self-service reset and returns `503 mail_transport_disabled` before user lookup/token creation
+- done: reset tokens are hashed, short-lived, and single-use
+- done: successful reset revokes sessions and trusted devices without touching user DEK
+- add public forgot-password page and API
+- request route:
+  - normalize email
+  - always return generic success
+  - rate limit by IP and normalized email hash
+  - create token/outbox only for existing eligible local-auth accounts
+  - do not reveal locked/deleted/nonexistent status
+- confirm route:
+  - validate token hash
+  - set new password
+  - mark token used
+  - revoke all sessions and trusted devices
+  - revoke other live reset tokens for that user
+  - keep MFA requirement unchanged; user still completes TOTP/recovery flow after login
+- tests:
+  - existing and missing email responses match
+  - no plaintext token stored
+  - reset preserves DEK and owner can still decrypt prior content
+  - reset revokes sessions/trusted devices
+  - pending/onboarding sessions cannot use normal routes after reset
+
+### Phase 5: manager-assisted recovery emails
+
+- done: added manager API routes for setup link, password reset, MFA reset, and combined account recovery
+- done: added leader/system-admin browser actions in user-management UI
+- done: manager non-email recovery generates one-time visible temporary passwords, stores only hashes, and forces password change
+- done: MFA reset deletes TOTP/recovery-code state, revokes sessions/trusted devices, and forces TOTP reenrollment
+- manager actions:
+  - resend activation/setup email
+  - generate temporary password for non-email password reset
+  - reset MFA only
+  - reset password + MFA with temporary password
+- authority:
+  - leaders: same-team non-system-admin users only
+  - system admins: allowed accounts, but never silently delete/alter transcript-derived content
+  - no self-reset through manager routes unless explicitly allowed later
+- behavior:
+  - manager sees delivery status metadata for setup links, or one-time temporary password for non-email recovery
+  - manager cannot view token, URL, TOTP secret, recovery codes, mail provider secret, or transcript-derived content
+  - all recovery actions revoke sessions/trusted devices as appropriate
+- tests:
+  - leader cross-team denial
+  - leader system-admin target denial
+  - manager metadata response contains no token/secret
+  - route-audit manifest updated
+
+### Phase 6: Resend webhooks and delivery status
+
+- optional after basic send works
+- add webhook endpoint only if delivery/bounce status is needed in-product
+- verify webhook signatures using provider-recommended mechanism before trusting payload
+- store event metadata only:
+  - provider message id
+  - event type
+  - timestamp
+  - delivery status
+  - error code/reason category
+- do not store provider payloads if they can include message body or headers with secrets
+- tests:
+  - unsigned webhook rejected
+  - unknown message id handled safely
+  - webhook update cannot expose email body/token content
+
+### Checkpoints during coding
+
+- schema checkpoint:
+  - auth-token rows have hashed token only, expiry, purpose, used marker, and user FK
+  - outbox rows hold delivery metadata and rendered transactional copy only; no provider secrets or transcript content
+- auth/ownership checkpoint:
+  - public reset route is enumeration-safe
+  - manager routes are metadata-only and same-team scoped
+  - activation/recovery sessions cannot access transcript routes before full auth
+- lifecycle/deletion checkpoint:
+  - user deletion removes auth tokens and outbox rows or anonymizes delivery metadata according to retention decision
+  - token use/recovery revokes sessions and trusted devices
+  - reset does not alter wrapped DEK or transcript retention
+- docs/tests checkpoint:
+  - docs and route-audit manifest updated with each route
+  - tests cover auth boundaries, token lifecycle, mail failure, and DEK preservation
+
+### Implementation order
+
+1. platform mail config plus `stdout` sender and tests
+2. Resend sender adapter behind same interface
+3. mail outbox and Celery delivery worker
+4. account activation/setup email for manager-created/approved users
+5. self-service password reset
+6. manager recovery emails
+7. optional Resend webhooks
+
+Open questions:
+- whether activation email fully replaces temporary passwords or ships as preferred path with temporary-password fallback
+- whether outbox retention stores rendered email bodies after send or purges bodies and keeps metadata only
+- whether Resend webhook status is needed for MVP or can stay in Resend dashboard until operational demand exists
+- exact public URL/source of truth for hosted deployments
+
 # UI improvement
 Revamp clinical notes/follow up area. Current UI ugly, not great. 
 
@@ -395,3 +644,7 @@ Do not use:
 
 # PHI Plan
 Allow for a generic PHI endpoint to be configured so that all transcript derived content can be sent through.
+Also need to add regex for UK phone numbers and NHS numbers. ideally we would be able to do something to counteract uneven spacing of numbers, numbers being spelled out or characters etc.
+
+# Onboarding UI
+- Needs to be updated to look like current main UI, colours, spacing, typeface etc

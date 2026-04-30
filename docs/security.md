@@ -20,9 +20,15 @@ Repeatable XSS checks and the current probe plan are documented in [security-xss
 - public account requests
 - leader/admin-created managed accounts
 - temporary-password first login for managed accounts
+- optional account setup links by transactional email
+- self-service password reset by single-use email token
+- manager-assisted password/MFA recovery actions
 - forced password change
 - forced TOTP enrollment
 - optional recovery-code generation
+
+New password hashes use Argon2id with OWASP baseline parameters.
+Non-Argon2id local dev hashes are not accepted after the Argon2id cutover; rotate dev users with `scripts/force_argon2id_password_rotation.py`.
 
 Invite acceptance is not the active MVP onboarding path anymore.
 
@@ -35,6 +41,17 @@ Invite acceptance is not the active MVP onboarding path anymore.
   - logout
 - onboarding sessions may not access normal app routes or transcript features
 - normal access begins only after password change and TOTP enrollment complete
+
+### Account recovery rules
+
+- auth email tokens are stored as hashes only and expire after a short window
+- setup/reset link plaintext is not logged or stored separately
+- public password-reset requests do not reveal whether an account exists
+- setup/reset confirmation validates token state before expensive password hashing
+- password reset never rotates, deletes, or rewraps the user DEK
+- successful password reset revokes active sessions and trusted devices
+- account setup links are restricted to first password setup and do not grant full access; users still complete TOTP onboarding
+- manager-assisted recovery is same-team/system-admin scoped and does not expose transcript, note, prompt, TOTP secret, recovery code, or token content
 
 ### Session storage behavior
 

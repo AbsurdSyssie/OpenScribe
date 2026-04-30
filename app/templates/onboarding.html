@@ -4,184 +4,153 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Onboarding</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --bg: #f3efe6;
-      --panel: #fffaf0;
-      --ink: #1b1d1f;
-      --muted: #5b605f;
-      --line: #d4c7ab;
-      --accent: #9f3a2d;
-      --accent-strong: #7f251b;
-      --success: #316b4d;
-      --error: #9a2e2e;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      font-family: "Iowan Old Style", "Palatino Linotype", serif;
-      background: linear-gradient(180deg, #f8f3ea 0%, var(--bg) 100%);
-      color: var(--ink);
-    }
-    main {
-      width: min(760px, 100%);
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      padding: 28px;
-      display: grid;
-      gap: 16px;
-      box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
-    }
-    form { display: grid; gap: 12px; }
-    label { display: grid; gap: 6px; color: var(--muted); }
-    input, textarea {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font: inherit;
-      background: white;
-    }
-    button, a {
-      width: fit-content;
-      border: 0;
-      border-radius: 999px;
-      padding: 12px 18px;
-      font: inherit;
-      background: var(--accent);
-      color: white;
-      text-decoration: none;
-      cursor: pointer;
-    }
-    button:hover, a:hover { background: var(--accent-strong); }
-    .flash { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); }
-    .flash.success { color: var(--success); }
-    .flash.error { color: var(--error); }
-    .toast-container { position: fixed; top: 24px; right: 24px; z-index: 120; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
-    .toast { pointer-events: auto; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--line); background: #fff; font-size: .9rem; font-weight: 500; box-shadow: 0 18px 32px rgba(15, 23, 42, .12); animation: toastSlideIn .25s ease; max-width: 360px; }
-    .toast.success { color: var(--success); border-color: rgba(47,133,90,.2); background: rgba(47,133,90,.06); }
-    .toast.error { color: var(--error); border-color: rgba(197,48,48,.2); background: rgba(197,48,48,.06); }
-    @keyframes toastSlideIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
-    @keyframes toastSlideOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-12px); } }
-    .toast.hiding { animation: toastSlideOut .2s ease forwards; }
-    .code-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap: 8px;
-      font-family: monospace;
-    }
-    .code-list div {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 10px 12px;
-      background: white;
-    }
-    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
-    .qr {
-      display: grid;
-      gap: 10px;
-      justify-items: start;
-      margin: 12px 0;
-    }
-    .qr img {
-      width: 220px;
-      height: 220px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: white;
-      padding: 12px;
-    }
+    :root {--bg:#FAF8F5;--parchment:#F5F1EB;--card:#FFFFFF;--ink:#1A202C;--slate:#2D3748;--muted:#718096;--border:#E2DED6;--accent:#1D4F5E;--accent-soft:#3D7A8C;--accent-pale:#E0F2F5;--success:#2F855A;--error:#C53030;--shadow-soft:0 10px 30px rgba(26,32,44,.04);--shadow-focus:0 0 0 3px rgba(224,242,245,.9)}
+    *{box-sizing:border-box} html{background:var(--bg)} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:28px;font-family:"DM Sans",sans-serif;color:var(--ink);background:var(--bg);line-height:1.5;position:relative}
+    body::before{content:"";position:fixed;inset:0;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");opacity:.018}
+    main{position:relative;z-index:1;width:min(980px,100%);display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.18fr);gap:20px;align-items:start}.panel{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px;box-shadow:var(--shadow-soft)}.hero{background:linear-gradient(180deg,rgba(245,241,235,.95) 0%,rgba(255,255,255,.98) 100%);position:sticky;top:28px}
+    .eyebrow,.section-label{display:inline-flex;align-items:center;gap:8px;width:fit-content;margin-bottom:10px;padding:6px 10px;border-radius:999px;font-size:.75rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);background:rgba(255,255,255,.78);border:1px solid rgba(226,222,214,.92)}.eyebrow::before,.section-label::before{content:"";width:8px;height:8px;border-radius:999px;background:var(--accent)}
+    h1,h2{margin:0;font-family:"Fraunces",serif;font-weight:500;letter-spacing:-.02em;color:var(--ink)}h1{font-size:clamp(2rem,4vw,2.9rem);line-height:1.04}h2{font-size:1.5rem;line-height:1.12}p{margin:0;color:var(--muted)}.hero-copy{display:grid;gap:16px}.meta{padding-top:14px;border-top:1px solid rgba(226,222,214,.9);font-size:.92rem;color:var(--muted);overflow-wrap:anywhere}
+    .steps{display:grid;gap:10px;margin-top:4px}.step{display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:start;padding:12px;border:1px solid rgba(226,222,214,.75);border-radius:14px;background:rgba(255,255,255,.68)}.step-number{display:grid;place-items:center;width:30px;height:30px;border-radius:999px;background:var(--accent-pale);color:var(--accent);font-weight:700}.step strong{display:block;color:var(--ink);font-size:.95rem}.step span{color:var(--muted);font-size:.9rem}.step.is-active{border-color:rgba(61,122,140,.32);background:#fff}.step.is-active .step-number{background:var(--accent);color:#fff}.step.is-complete .step-number{background:rgba(47,133,90,.12);color:var(--success)}
+    .content{display:grid;gap:20px}.card-top{display:grid;gap:8px;padding-bottom:16px;border-bottom:1px solid rgba(226,222,214,.9)}section.panel form{display:grid;gap:14px;margin-top:18px}label{display:grid;gap:7px;color:var(--slate);font-size:.95rem;font-weight:500}input{width:100%;border:1px solid var(--border);border-radius:10px;padding:12px 14px;font:inherit;color:var(--ink);background:var(--parchment);transition:border-color .15s ease,background-color .15s ease,box-shadow .15s ease}input:focus{outline:none;border-color:rgba(61,122,140,.55);background:#fff;box-shadow:var(--shadow-focus)}
+    button,.button{width:fit-content;border:1px solid transparent;border-radius:10px;padding:11px 16px;font:inherit;font-weight:500;background:var(--accent);color:#fff;cursor:pointer;transition:all .15s ease;text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;min-height:44px}button:hover,.button:hover{background:var(--accent-soft);transform:translateY(-1px)}.secondary{background:#fff;color:var(--ink);border-color:var(--border)}.secondary:hover{background:rgba(29,79,94,.04);border-color:rgba(61,122,140,.28)}.actions{display:flex;gap:12px;flex-wrap:wrap}.signout-form{margin-top:0!important;padding-top:16px;border-top:1px solid rgba(226,222,214,.9)}
+    .flash{padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(245,241,235,.7)}.flash.success{color:var(--success);border-color:rgba(47,133,90,.2);background:rgba(47,133,90,.06)}.flash.error{color:var(--error);border-color:rgba(197,48,48,.2);background:rgba(197,48,48,.06)}.toast-container{position:fixed;top:24px;right:24px;z-index:120;display:flex;flex-direction:column;gap:10px;pointer-events:none}.toast{pointer-events:auto;padding:12px 16px;border:1px solid var(--border);border-radius:12px;background:#fff;font-size:.9rem;font-weight:500;box-shadow:0 18px 32px rgba(15,23,42,.12);animation:toastSlideIn .25s ease;max-width:360px}.toast.success{color:var(--success);border-color:rgba(47,133,90,.2);background:rgba(47,133,90,.06)}.toast.error{color:var(--error);border-color:rgba(197,48,48,.2);background:rgba(197,48,48,.06)}@keyframes toastSlideIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}@keyframes toastSlideOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-12px)}}.toast.hiding{animation:toastSlideOut .2s ease forwards}
+    .qr{display:grid;gap:12px;justify-items:start;margin-top:16px}.qr img{width:220px;height:220px;border:1px solid var(--border);border-radius:18px;background:#fff;padding:12px;box-shadow:var(--shadow-soft)}.secret{display:grid;gap:6px;padding:12px;border:1px solid rgba(226,222,214,.9);border-radius:12px;background:var(--parchment);overflow-wrap:anywhere}.secret strong,.secret small{color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}.code-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}.code-list div{border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--parchment);color:var(--ink)}
+    @media (max-width:820px){body{padding:18px}main{grid-template-columns:1fr}.hero{position:static}.panel{padding:22px}button,.button,.actions{width:100%}.actions{display:grid}button,.button{justify-content:center}.toast-container{left:18px;right:18px}.toast{max-width:none}}
   </style>
 </head>
 <body>
   <main>
-    <div>Account setup for {{ current_user.email }}</div>
-    <h1>Finish setting up your account.</h1>
-    <p>You only need to do this once. Until you finish, you can change your password, set up sign-in protection, save recovery codes, or sign out.</p>
-
-    {% if message %}
-    <div class="flash {{ message_kind }}">{{ message }}</div>
-    {% endif %}
-
-    {% if current_user.onboarding_state.value == "pending_password_change" %}
-    <section>
-      <h2>Step 1. Choose a new password</h2>
-      <form method="post" action="/onboarding/password">
-        <label>
-          New password
-          <input type="password" name="new_password" required minlength="8">
-        </label>
-        <button type="submit">Save new password</button>
-      </form>
-    </section>
-    {% elif current_user.onboarding_state.value == "pending_totp_enrollment" %}
-    <section>
-      <h2>Step 2. Set up sign-in protection</h2>
-      {% if not totp_secret %}
-      <form method="post" action="/onboarding/totp/start">
-        <button type="submit">Set up authenticator app</button>
-      </form>
-      {% else %}
-      <div class="qr">
-        <div>Scan this QR code with your authenticator app.</div>
-        <img src="{{ totp_qr_svg_data_uri }}" alt="TOTP QR code">
+    <section class="panel hero">
+      <div class="hero-copy">
+        <div>
+          <div class="eyebrow">OpenScribe account setup</div>
+          <h1>Finish your secure setup.</h1>
+          <p>You only need to do this once. Until setup is complete, access stays limited to these steps.</p>
+        </div>
+        <div class="steps" aria-label="Onboarding steps">
+          <div class="step {% if current_user.onboarding_state.value == 'pending_password_change' %}is-active{% elif current_user.onboarding_state.value != 'pending_password_change' %}is-complete{% endif %}">
+            <div class="step-number">1</div>
+            <div><strong>Password</strong><span>Choose your own sign-in password.</span></div>
+          </div>
+          <div class="step {% if current_user.onboarding_state.value == 'pending_totp_enrollment' %}is-active{% elif current_user.onboarding_state.value in ['pending_recovery_codes', 'complete'] %}is-complete{% endif %}">
+            <div class="step-number">2</div>
+            <div><strong>Authenticator</strong><span>Protect sign-in with a one-time code.</span></div>
+          </div>
+          <div class="step {% if current_user.onboarding_state.value == 'pending_recovery_codes' %}is-active{% elif current_user.onboarding_state.value == 'complete' %}is-complete{% endif %}">
+            <div class="step-number">3</div>
+            <div><strong>Recovery</strong><span>Save backup codes or skip for now.</span></div>
+          </div>
+        </div>
+        <div class="meta">Signed in as {{ current_user.email }}</div>
       </div>
-      <p>Manual code: <strong>{{ totp_secret }}</strong></p>
-      <p>Setup link: <small>{{ totp_uri }}</small></p>
-      <form method="post" action="/onboarding/totp/verify">
-        <label>
-          6-digit code
-          <input type="text" name="code" required minlength="6" maxlength="8">
-        </label>
-        <button type="submit">Check code</button>
-      </form>
+    </section>
+
+    <div class="content">
+      {% if message %}
+      <div class="flash {{ message_kind }}">{{ message }}</div>
       {% endif %}
-    </section>
-    {% elif current_user.onboarding_state.value == "pending_recovery_codes" %}
-    <section>
-      <h2>Step 3. Recovery codes</h2>
-      <p>You can save one-time recovery codes now, or skip this optional step.</p>
-      <div class="actions">
-        <form method="post" action="/onboarding/recovery-codes">
-          <button type="submit">Create recovery codes</button>
-        </form>
-        <form method="post" action="/onboarding/skip-recovery-codes">
-          <button type="submit">Skip for now</button>
-        </form>
-      </div>
-    </section>
-    {% else %}
-    <section>
-      <h2>Onboarding complete</h2>
-      <p>Your account is ready to use.</p>
-      <div class="actions">
-        <a href="/home">Go to home</a>
-      </div>
-    </section>
-    {% endif %}
 
-    {% if recovery_codes %}
-    <section>
-      <h2>Your recovery codes</h2>
-      <p>Save these now. They will only be shown once.</p>
-      <div class="code-list">
-        {% for code in recovery_codes %}
-        <div>{{ code }}</div>
-        {% endfor %}
-      </div>
-      <div class="actions">
-        <a href="/home">Continue</a>
-      </div>
-    </section>
-    {% endif %}
+      {% if current_user.onboarding_state.value == "pending_password_change" %}
+      <section class="panel">
+        <div class="card-top">
+          <div class="section-label">Step 1</div>
+          <h2>Choose a new password</h2>
+          <p>Use at least 8 characters. This replaces your temporary password.</p>
+        </div>
+        <form method="post" action="/onboarding/password">
+          <label>
+            New password
+            <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+          </label>
+          <button type="submit">Save new password</button>
+        </form>
+      </section>
+      {% elif current_user.onboarding_state.value == "pending_totp_enrollment" %}
+      <section class="panel">
+        <div class="card-top">
+          <div class="section-label">Step 2</div>
+          <h2>Set up sign-in protection</h2>
+          <p>Use your authenticator app to link OpenScribe, then enter the current code.</p>
+        </div>
+        {% if not totp_secret %}
+        <form method="post" action="/onboarding/totp/start">
+          <button type="submit">Set up authenticator app</button>
+        </form>
+        {% else %}
+        <div class="qr">
+          <p>Scan this QR code with your authenticator app.</p>
+          <img src="{{ totp_qr_svg_data_uri }}" alt="TOTP QR code">
+        </div>
+        <div class="secret">
+          <span>Manual code</span>
+          <strong>{{ totp_secret }}</strong>
+          <span>Setup link</span>
+          <small>{{ totp_uri }}</small>
+        </div>
+        <form method="post" action="/onboarding/totp/verify">
+          <label>
+            6-digit code
+            <input type="text" name="code" required minlength="6" maxlength="8" inputmode="numeric" autocomplete="one-time-code">
+          </label>
+          <button type="submit">Verify code</button>
+        </form>
+        {% endif %}
+      </section>
+      {% elif current_user.onboarding_state.value == "pending_recovery_codes" %}
+      <section class="panel">
+        <div class="card-top">
+          <div class="section-label">Step 3</div>
+          <h2>Recovery codes</h2>
+          <p>Save one-time backup codes now, or skip this optional step.</p>
+        </div>
+        <div class="actions" style="margin-top:18px">
+          <form method="post" action="/onboarding/recovery-codes">
+            <button type="submit">Create recovery codes</button>
+          </form>
+          <form method="post" action="/onboarding/skip-recovery-codes">
+            <button class="secondary" type="submit">Skip for now</button>
+          </form>
+        </div>
+      </section>
+      {% else %}
+      <section class="panel">
+        <div class="card-top">
+          <div class="section-label">Complete</div>
+          <h2>Onboarding complete</h2>
+          <p>Your account is ready to use.</p>
+        </div>
+        <div class="actions" style="margin-top:18px">
+          <a class="button" href="/home">Go to home</a>
+        </div>
+      </section>
+      {% endif %}
 
-    <form method="post" action="/logout">
-      <button type="submit">Sign out</button>
-    </form>
+      {% if recovery_codes %}
+      <section class="panel">
+        <div class="card-top">
+          <div class="section-label">Save now</div>
+          <h2>Your recovery codes</h2>
+          <p>Save these now. They will only be shown once.</p>
+        </div>
+        <div class="code-list">
+          {% for code in recovery_codes %}
+          <div>{{ code }}</div>
+          {% endfor %}
+        </div>
+        <div class="actions" style="margin-top:18px">
+          <a class="button" href="/home">Continue</a>
+        </div>
+      </section>
+      {% endif %}
+
+      <form class="signout-form" method="post" action="/logout">
+        <button class="secondary" type="submit">Sign out</button>
+      </form>
+    </div>
   </main>
   <div class="toast-container" data-toast-container></div>
   <script>

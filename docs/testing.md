@@ -29,6 +29,9 @@ Current behavior:
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
+- mail-service tests verify disabled/stdout/resend configuration validation, stdout local delivery, skipped delivery when mail is disabled, hidden Resend API key repr behavior, Resend API payload/header construction, provider-error mapping, and Vault-ref API key resolution
+- auth-email tests verify generic password reset request responses when mail is enabled, non-enumerable password reset behavior during mail misconfiguration/send failures, disabled-mail reset gating in API and browser pages, current browser shell styling for reset pages, hashed setup/reset tokens, invalid confirm tokens being rejected before password hashing, password reset session/trusted-device revocation, first-time-only activation into TOTP onboarding, manager recovery same-team authorization, one-time temporary password generation, password-only recovery preserving TOTP/recovery codes, MFA-only reset preserving pending password changes, persistent copy-modal browser display, and MFA/recovery-code clearing for full recovery
+- auth-service tests verify Argon2id password hashing, non-Argon2id hash rejection, and forced dev password rotation
 
 ## API auth route audit
 

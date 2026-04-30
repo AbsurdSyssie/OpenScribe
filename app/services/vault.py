@@ -418,6 +418,33 @@ def delete_deidentification_bearer_token(*, provider_id: UUID, secret_ref: str |
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
+def read_mail_resend_api_key(*, secret_ref: str) -> str:
+    prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(prefix):
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(prefix):].strip()
+    if not path:
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
+    try:
+        response = httpx.get(
+            url,
+            headers=_vault_headers(),
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code >= 400:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    payload = response.json()
+    data = ((payload.get("data") or {}).get("data") or {})
+    api_key = data.get("api_key") or data.get("resend_api_key")
+    if not api_key:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    return str(api_key)
+
+
 def transcript_ingestion_source_audio_path(job_id: UUID) -> str:
     return f"openscribe/transcript-ingestion/{job_id}/source-audio"
 

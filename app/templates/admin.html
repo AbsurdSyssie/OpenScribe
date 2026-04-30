@@ -558,6 +558,66 @@
       border-color: rgba(196, 138, 26, 0.25);
       background: rgba(196, 138, 26, 0.06);
     }
+    .recovery-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 140;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(26, 32, 44, 0.42);
+    }
+    .recovery-modal__dialog {
+      width: min(520px, 100%);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 22px;
+      box-shadow: 0 24px 60px rgba(26, 32, 44, 0.18);
+      display: grid;
+      gap: 16px;
+    }
+    .recovery-modal__header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .recovery-modal__header p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-top: 6px;
+    }
+    .recovery-modal__close {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .recovery-modal__secret {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--parchment);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1rem;
+      color: var(--ink);
+    }
+    .recovery-modal__actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .recovery-modal__status {
+      color: var(--success);
+      font-size: 0.88rem;
+    }
     @keyframes toastSlideIn {
       from { opacity: 0; transform: translateY(-12px); }
       to { opacity: 1; transform: translateY(0); }
@@ -947,6 +1007,25 @@
 
       {% if message %}
       <div class="flash {{ message_kind }}">{{ message }}</div>
+      {% endif %}
+
+      {% if recovery_temporary_password %}
+      <div class="recovery-modal" data-recovery-modal role="dialog" aria-modal="true" aria-labelledby="recovery-modal-title">
+        <div class="recovery-modal__dialog">
+          <div class="recovery-modal__header">
+            <div>
+              <h2 id="recovery-modal-title">Temporary password</h2>
+              <p>Copy this now and share it with the user out of band. It will not be shown again.</p>
+            </div>
+            <button type="button" class="recovery-modal__close" data-recovery-modal-close aria-label="Close">×</button>
+          </div>
+          <input class="recovery-modal__secret" value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password">
+          <div class="recovery-modal__actions">
+            <button type="button" data-recovery-copy>Copy password</button>
+            <span class="recovery-modal__status" data-recovery-copy-status></span>
+          </div>
+        </div>
+      </div>
       {% endif %}
 
       <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
@@ -2067,6 +2146,30 @@
                 {% else %}
                 <span class="pill">Security state</span>
                 {% endif %}
+                <form method="post" action="/admin/users/{{ user.id }}/send-activation" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <button type="submit">Send setup link</button>
+                </form>
+                <form method="post" action="/admin/users/{{ user.id }}/recover-password" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <button type="submit">Generate temp password</button>
+                </form>
+                <form method="post" action="/admin/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <button type="submit">Reset MFA</button>
+                </form>
+                <form method="post" action="/admin/users/{{ user.id }}/recover-account" onsubmit="return confirm('Reset password and MFA for this user?');" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <button type="submit">Recover account</button>
+                </form>
                 <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
@@ -2675,6 +2778,22 @@
         }, duration);
       };
       window.showToast = showToast;
+      const recoveryModal = document.querySelector('[data-recovery-modal]');
+      const recoveryInput = document.querySelector('[data-recovery-temp-password]');
+      const recoveryStatus = document.querySelector('[data-recovery-copy-status]');
+      document.querySelector('[data-recovery-copy]')?.addEventListener('click', async () => {
+        if (!recoveryInput) return;
+        try {
+          await navigator.clipboard.writeText(recoveryInput.value);
+        } catch (_err) {
+          recoveryInput.select();
+          document.execCommand('copy');
+        }
+        if (recoveryStatus) recoveryStatus.textContent = 'Copied';
+      });
+      document.querySelector('[data-recovery-modal-close]')?.addEventListener('click', () => {
+        if (recoveryModal) recoveryModal.hidden = true;
+      });
       document.querySelectorAll('.flash').forEach((flash) => {
         const message = flash.textContent.trim();
         if (!message) return;

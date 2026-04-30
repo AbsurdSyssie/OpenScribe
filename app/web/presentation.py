@@ -56,6 +56,7 @@ from ..services.admin import (
     list_users as list_users_service,
     user_count as user_count_service,
 )
+from ..services.auth_email import email_password_reset_enabled as email_password_reset_enabled_service
 from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
@@ -598,6 +599,7 @@ def render_auth_page(
     context = {
         "request": request,
         "bootstrap_allowed": user_count_service(db) == 0,
+        "password_reset_email_enabled": email_password_reset_enabled_service(),
         "message": message,
         "message_kind": message_kind,
     }
@@ -639,6 +641,7 @@ def render_admin(
     deidentification_form_override: dict[str, object] | None = None,
     message: str | None = None,
     message_kind: str = "success",
+    recovery_temporary_password: str | None = None,
     status_code: int = 200,
     active_admin_tab: str | None = None,
     active_provider_tab: str | None = None,
@@ -761,6 +764,7 @@ def render_admin(
         "admin_return_view": admin_return_view,
         "message": message,
         "message_kind": message_kind,
+        "recovery_temporary_password": recovery_temporary_password,
         **usage_context,
     }
     resolved_template_name = template_name or "admin.html"
@@ -810,6 +814,7 @@ def render_home(
     selected_personal_quick_action_id: str | None = None,
     message: str | None = None,
     message_kind: str = "success",
+    recovery_temporary_password: str | None = None,
     queued_transcript_id: str | None = None,
     active_home_tab: str | None = None,
     active_home_modal: str | None = None,
@@ -968,6 +973,7 @@ def render_home(
         "emis_sections": [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS],
         "message": message,
         "message_kind": message_kind,
+        "recovery_temporary_password": recovery_temporary_password,
         "queued_transcript_id": queued_transcript_id,
         "transcribe_return_tab": transcribe_return_tab,
     }

@@ -1,5 +1,245 @@
 # Progress
 
+## 2026-04-30 Built-In Team Asset Seeding
+
+### Scope
+
+- Added hard-coded starter team assets so setup creates a structured EMIS template plus follow-up and referral quick actions when missing.
+- Kept previous default-asset library behavior: admin-created teams still receive active default assets, now with built-ins ensured first.
+- Updated dev setup seed so the reusable dev team gets the built-in team assets even though the dev seed does not use the admin team-creation service.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: built-in content is intentionally minimal starter wording and may need clinical/editorial review.
+
+### Files changed
+
+- `app/services/default_assets.py`: added built-in starter asset definitions and idempotent default/team seed helpers.
+- `app/services/admin.py`: ensures built-in defaults before seeding newly created teams.
+- `scripts/seed_dev_accounts.py`: seeds built-in assets into the dev team after leader/user setup.
+- `tests/test_admin_ui.py`: covers built-in default/team seeding and idempotency.
+- `docs/setup.md`: documents dev-seeded starter assets.
+- `docs/progress.md`: records this change.
+
+### Tests
+
+- Added focused regression coverage for admin-created team built-ins and direct team seed idempotency.
+
+### Documentation
+
+- Updated setup docs to note hard-coded dev team starter assets.
+
+### Risks / assumptions
+
+- Assumes starter assets are safe as non-content configuration and do not contain transcript-derived text.
+- Assumes recreating missing built-ins during team setup is desired even if an operator removed them from the default library.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: built-ins contain no transcript-derived content and do not affect generated documents.
+- Ownership rules preserved: default library assets require system admin; seeded team assets are team-scoped with no owner user.
+- Deletion semantics preserved: transcript-root/user deletion paths unchanged; deleted team assets can be recreated only by setup/team-seed paths.
+- Provider rules preserved: no STT/LLM/de-identification provider config changed.
+- Structured-note contract preserved: built-in structured template uses allowed EMIS section keys only and omits no schema fields.
+
+## 2026-04-30 README Resend Setup Walkthrough
+
+### Scope
+
+- Added README walkthrough for configuring Resend transactional email for an OpenScribe instance.
+
+### Checklist
+
+- Code complete: docs-only change complete.
+- Tests added/updated: not run; docs-only walkthrough change.
+- Docs added/updated: yes.
+- Open issues: production deployments still need Vault/deployment secret-store wiring for `RESEND_API_KEY_VAULT_REF` where applicable.
+
+### Files changed
+
+- `README.md`: added Resend setup, env example, smoke test, and troubleshooting notes.
+- `docs/progress.md`: records this documentation change.
+
+### Tests
+
+- Not run; no executable code changed.
+
+### Documentation
+
+- Updated README with user-facing Resend setup instructions.
+
+### Risks / assumptions
+
+- Assumes operators can create a Resend API key and verify DNS outside OpenScribe.
+- Assumes local plaintext `.env` key guidance remains limited to local development only.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content behavior or logs changed.
+- Ownership rules preserved: no account/team ownership code changed.
+- Deletion semantics preserved: no lifecycle/delete paths changed.
+- Provider rules preserved: Resend remains instance-level mail infrastructure, not team STT/LLM/de-identification provider config.
+- Structured-note contract preserved: no generated-note behavior changed.
+
+## 2026-04-30 Team Member Menu Usability Fix
+
+### Scope
+
+- Fixed leader team-management member actions menu so it renders above the member list/background, closes on outside click/Escape, and auto-closes after 3.5 seconds when no longer hovered or focused.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/home.html`: adjusted member-list/menu stacking and added menu lifecycle JavaScript.
+- `tests/test_admin_ui.py`: added regression assertions for menu stacking and close behavior script.
+- `docs/home_brief.md`: documented member actions menu behavior.
+- `docs/progress.md`: records this fix.
+
+### Tests
+
+- Added focused HTML regression coverage for visible overflow, elevated open-menu z-index, outside-click close, and idle timeout constant.
+
+### Documentation
+
+- Updated home brief team member controls section.
+
+### Risks / assumptions
+
+- Assumes 3.5 seconds is acceptable for "a few seconds" and focus should keep the menu open for keyboard users.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content paths or logs changed.
+- Ownership rules preserved: leader actions and same-team enforcement remain in existing routes/services.
+- Deletion semantics preserved: delete form and confirmation text unchanged.
+- Provider rules preserved: no provider selection/config behavior changed.
+- Structured-note contract preserved: no generated-note behavior changed.
+
+## 2026-04-29 Dev Startup Env Export Fix
+
+### Scope
+
+- Fixed `./start-dev.sh` so resolved dev defaults are exported before child Python port checks and FastAPI startup.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: shell syntax plus focused env-contract check.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `start-dev.sh`: exports `APP_HOST`, `APP_PORT`, dev flags, and resolved `APP_BIND_HOST` after applying defaults.
+- `docs/setup.md`: documents derived default export behavior.
+- `docs/progress.md`: records this fix.
+
+### Tests
+
+- `bash -n start-dev.sh`: passed.
+- Focused Python env-contract check for `APP_BIND_HOST`/`APP_PORT`: passed.
+
+### Documentation
+
+- Updated setup docs for startup default export behavior.
+
+### Risks / assumptions
+
+- Assumes `.env` may omit optional defaults listed in setup docs.
+- No service exposure policy changed; existing exposure checks still run before app startup.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content paths or logs changed.
+- Ownership rules preserved: no auth, team, or owner scoping changed.
+- Deletion semantics preserved: no lifecycle/delete paths changed.
+- Provider rules preserved: Vault/provider startup remains unchanged; only exported env visibility changed.
+- Structured-note contract preserved: no generated-note behavior changed.
+
+## 2026-04-29 Resend Account Email First Slice
+
+### Scope
+
+- Planned Resend-backed transactional email for account activation/setup, password reset, and manager-assisted recovery.
+- Kept email as instance-level platform infrastructure rather than team-scoped provider config.
+- Updated account recovery direction from SMTP-first to Resend-first with provider-neutral mailer boundaries.
+- Added first mail-service slice with disabled/stdout/resend config modes, stdout local delivery, and direct Resend Email API delivery.
+- Kept no-Resend installs on the current manual temporary-password setup path.
+- Added an operator test script so Resend credentials/domain can be verified before account activation/reset flows are wired.
+- Added account setup links, self-service password reset, manager password/MFA recovery actions, and browser/API routes.
+
+### Checklist
+
+- Code complete: account activation, password reset, and manager recovery first pass complete.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: durable outbox/worker retry, Resend webhook delivery status, production UI/path for writing Resend API key into Vault.
+
+### Files changed
+
+- `.env.example`: added mail transport and Resend setup variables.
+- `alembic/versions/c0d1e2f3a4b6_add_auth_email_tokens.py`: added hashed auth email token table.
+- `app/models.py`: added auth email token purpose enum/model and user relationships.
+- `app/services/auth_email.py`: added setup/reset token issuance, email sends, token confirmation, and manager recovery helpers.
+- `app/services/mail.py`: added mail config loading/validation plus disabled, stdout, and Resend transports.
+- `app/services/admin.py`: preserves auth-email token actor metadata during manager deletion.
+- `app/services/vault.py`: added generic mail Resend API key read helper for Vault refs.
+- `app/routes/api_routes.py`: added auth activation/reset and manager recovery API routes.
+- `app/routes/web_pages.py`, `app/routes/web_team_management.py`, `app/routes/web_admin.py`: added browser recovery and manager actions.
+- `app/templates/login.html`, `app/templates/password_reset_request.html`, `app/templates/password_reset_confirm.html`: added password reset/setup browser UI.
+- `app/schemas/auth.py`, `app/schemas/__init__.py`: added request/response schemas.
+- `app/api_route_audit.py`: added auth audit coverage for new routes and missing clinical NLP routes.
+- `scripts/send_test_email.py`: added operator smoke test for the configured mail transport.
+- `tests/test_mail_service.py`: added focused mail config, stdout delivery, and Resend adapter tests.
+- `tests/test_auth_email.py`: added password reset, activation, and manager recovery authorization tests.
+- `tests/test_migrations.py`: added auth email token table/schema assertions.
+- `docs/api.md`, `docs/auth.md`, `docs/security.md`: documented activation/recovery API and security behavior.
+- `docs/feature_todo.md`: added phased Resend transactional email plan with workflow checklist and architecture checkpoints.
+- `docs/account_recovery_brief.md`: updated mail transport guidance, setup email model, and Resend send behavior.
+- `docs/setup.md`: documented mail transport modes and setup variables.
+- `docs/testing.md`: documented mail-service coverage.
+- `docs/progress.md`: recorded this first slice.
+
+### Tests
+
+- `python3 -m py_compile app/models.py app/services/auth_email.py app/services/admin.py app/services/mail.py app/services/vault.py app/schemas/auth.py app/schemas/__init__.py app/main.py app/routes/api_routes.py app/routes/web_pages.py app/routes/web_team_management.py app/routes/web_admin.py app/api_route_audit.py tests/test_auth_email.py tests/test_mail_service.py tests/test_migrations.py alembic/versions/c0d1e2f3a4b6_add_auth_email_tokens.py scripts/send_test_email.py`: passed.
+- `.venv/bin/pytest -q tests/test_mail_service.py tests/test_auth_email.py tests/test_api_route_audit.py`: passed, 15 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "expected_schema"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "leader_can_suspend_reactivate_and_delete_team_user_from_home or admin_page_uses_flat_sidebar_workspace_layout"`: passed, 1 test.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Added Resend account email plan to feature todo.
+- Updated account recovery brief so it no longer points at SMTP as the first transport.
+- Documented `disabled`, `stdout`, and `resend` modes, with `disabled` preserving current manual setup.
+- Documented `scripts/send_test_email.py --to you@example.com` for Resend smoke testing.
+- Documented setup/reset browser/API flows and manager recovery actions.
+
+### Risks / assumptions
+
+- Assumes local-auth remains current recovery authority; Auth0 accounts should still use Auth0-owned recovery if added later.
+- Assumes Resend API key follows Vault-backed secret handling in production.
+- Resend webhook signature verification details need confirmation during implementation before any webhook endpoint ships.
+- Email is sent synchronously for this first pass; durable outbox/worker retry remains the next hardening slice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: transactional emails may carry auth links only, never transcript or note content.
+- Ownership rules preserved: activation/reset affects authentication state only and gives no manager content access.
+- Deletion semantics preserved: auth tokens cascade on user delete; manager actor references are reassigned before user deletion.
+- Provider rules preserved: Resend is platform mail infrastructure, not team STT/LLM/de-identification provider config; no team leader mail-secret UI added.
+- Structured-note contract preserved: no EMIS or generated-document JSON behavior changed.
+
 ## 2026-04-29 Review Regression Fixes
 
 ### Scope
@@ -1731,3 +1971,222 @@
 - Deletion semantics preserved: assignment removal and selection clear immediately fall back to the built-in provider without changing transcript-root cascade behavior.
 - Provider rules preserved: system admins provision and assign providers, leaders select from assigned options, and clearing/invalid selection still falls back to built-in Presidio.
 - Structured-note contract preserved: no EMIS section keys or structured JSON output shape changed.
+
+## 2026-04-30 Auth Onboarding Page Refresh
+
+### Scope
+
+- Refreshed onboarding and password reset browser pages to match the current OpenScribe auth design language.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none for this slice
+
+### Files changed
+
+- `app/templates/onboarding.html`: replaced old parchment/red styling with the current DM Sans/Fraunces auth shell, card panels, step rail, mobile layout, and current controls.
+- `app/templates/password_reset_request.html`: updated forgot-password page with current auth shell, safer explanatory copy, and responsive actions.
+- `app/templates/password_reset_confirm.html`: updated reset/setup confirmation page with current auth shell while preserving token form behavior.
+- `tests/test_auth_email.py`: added browser assertions for reset page shell styling and preserved disabled-mail behavior.
+- `tests/test_admin_ui.py`: updated onboarding copy assertion and added static shell-style coverage for onboarding/reset templates.
+- `docs/testing.md`: noted reset browser shell coverage.
+- `docs/progress.md`: added this progress entry.
+
+### Tests
+
+- `tests/test_auth_email.py`: password-reset browser pages render current shell styling and keep reset actions available.
+- `tests/test_admin_ui.py`: onboarding flow still renders, TOTP setup remains available, and auth recovery templates keep current style markers.
+
+### Documentation
+
+- Updated `docs/testing.md`.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- This is a browser-template-only refresh; no auth state transitions, password reset token semantics, or onboarding endpoints changed.
+- The reset confirm template is shared by account activation, so the refreshed shell applies to both password reset and activation setup links.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content access or display paths changed.
+- Ownership rules preserved: forms still use existing authenticated onboarding and token-bound reset routes.
+- Deletion semantics preserved: no deletion, retention, or cascade behavior changed.
+- Provider rules preserved: no STT/LLM/de-identification provider selection or fallback behavior changed.
+- Structured-note contract preserved: no EMIS sections or generated-document JSON contract changed.
+
+## 2026-04-30 Password Reset Enumeration Guard
+
+### Scope
+
+- Closed a password-reset enumeration edge case where valid configured mail transport with broken send/config paths could return different API statuses for existing vs missing accounts.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none for this slice
+
+### Files changed
+
+- `app/services/auth_email.py`: validates reset mail config before lookup and returns the generic reset message when send fails after a matching active user is found.
+- `tests/test_auth_email.py`: adds regression coverage for misconfigured mail and send failures returning non-enumerable responses.
+- `docs/testing.md`: records the new auth-email coverage.
+- `docs/progress.md`: adds this progress entry.
+
+### Tests
+
+- `tests/test_auth_email.py`: verifies existing and missing reset requests match during mail misconfiguration and send failure cases.
+
+### Documentation
+
+- Updated `docs/testing.md`.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Send failures after token issuance can still leave an unused reset token, matching previous token issuance behavior, but response shape no longer reveals account presence.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: reset responses no longer expose account existence through mail failure status differences.
+- Ownership rules preserved: token-bound reset and existing user state transitions are unchanged.
+- Deletion semantics preserved: auth tokens still use existing user cascade behavior.
+- Provider rules preserved: mail remains platform infrastructure; STT/LLM/de-identification provider rules unchanged.
+- Structured-note contract preserved: no generated-document behavior changed.
+
+## 2026-04-30 MFA Reset Pending Password Guard
+
+### Scope
+
+- Fixed manager-triggered MFA-only reset so it no longer skips an existing `pending_password_change` onboarding state.
+- Cleaned password-auth test/docs wording away from old hash specifics after the Argon2id-only reset.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: focused pytest run is blocked by local Postgres connectivity in this environment
+
+### Files changed
+
+- `app/services/auth_email.py`: preserves `pending_password_change` during MFA-only reset while still clearing MFA/recovery state and revoking trust.
+- `tests/test_auth_email.py`: adds regression coverage for MFA-only reset against a user still forced to change password.
+- `tests/test_auth_service.py`: updates non-Argon2id rejection/rotation fixtures to avoid old hash-specific data.
+- `docs/auth.md`, `docs/security.md`, `docs/setup.md`, `docs/testing.md`: document generic non-Argon2id rotation and MFA-only reset password-change preservation.
+
+### Tests
+
+- Added `tests/test_auth_email.py::test_manager_reset_mfa_preserves_pending_password_change`.
+- `python -m py_compile app/services/auth_email.py tests/test_auth_email.py tests/test_auth_service.py` passed.
+- `pytest tests/test_auth_email.py tests/test_auth_service.py` could not start because test DB connection failed with `psycopg.OperationalError: connection is bad`.
+
+### Documentation
+
+- Updated auth/security/setup/testing docs.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Assumes MFA-only reset should preserve the password-change gate and still clear prior TOTP/recovery-code state.
+- No schema, migration, provider, encryption, or transcript-derived content changes.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: recovery remains metadata/auth-only and no transcript-derived content paths changed.
+- Ownership rules preserved: existing manager same-team/system-admin checks remain in caller path.
+- Deletion semantics preserved: no transcript/user deletion or retention behavior changed; MFA/recovery rows still use existing reset cleanup.
+- Provider rules preserved: no STT/LLM/de-identification provider selection or fallback behavior changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-04-30 Auth Confirm Hardening
+
+### Scope
+
+- Moved password hashing for reset/setup confirmations behind token validation so invalid public tokens cannot trigger Argon2id work.
+- Restricted account setup links to users still pending first password setup.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: focused pytest result noted below
+
+### Files changed
+
+- `app/services/auth_email.py`: consumes/validates tokens before hashing new passwords and rejects activation for users not in first-password setup.
+- `app/routes/api_routes.py`, `app/routes/web_pages.py`: pass raw new passwords to the service so validation happens before hashing.
+- `tests/test_auth_email.py`: adds invalid-token no-hash coverage for API/browser reset confirm and completed-user activation guard coverage.
+- `docs/auth.md`, `docs/security.md`, `docs/testing.md`: document confirm hardening and first-time-only setup links.
+
+### Tests
+
+- Added password reset invalid-token and activation-state regressions.
+- `python -m py_compile app/services/auth_email.py app/routes/api_routes.py app/routes/web_pages.py tests/test_auth_email.py` passed.
+- `pytest tests/test_auth_email.py -q` could not start because test DB connection failed with `psycopg.OperationalError: connection is bad`.
+
+### Documentation
+
+- Updated auth/security/testing docs.
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Account activation tokens that were issued before this guard for already-onboarded users are now rejected on use.
+- Completed or already-onboarded users must use explicit recovery/reset flows instead of setup links.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content access or display paths changed.
+- Ownership rules preserved: manager/system-admin issuance still uses existing manageable-user checks, with stricter activation eligibility.
+- Deletion semantics preserved: no user/transcript deletion or cascade behavior changed.
+- Provider rules preserved: no STT/LLM/de-identification provider behavior changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-04-30 Auth Review Fixes
+
+### Scope
+
+- Fixed activation browser page enum import so valid setup links do not 500.
+- Updated invalid-token regression to use schema-valid token text so service token validation is exercised.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: focused pytest run result noted below
+
+### Files changed
+
+- `app/routes/web_pages.py`: imports `UserOnboardingState` used by account activation page guard.
+- `tests/test_auth_email.py`: uses a nonexistent token that satisfies schema length validation.
+- `docs/progress.md`: records review-fix checkpoint.
+
+### Tests
+
+- `.venv/bin/python -m py_compile app/routes/web_pages.py tests/test_auth_email.py`: passed.
+- `.venv/bin/python -m pytest tests/test_auth_email.py::test_password_reset_confirm_rejects_invalid_token_before_hashing -q`: passed, 1 test.
+- `.venv/bin/python -m pytest tests/test_auth_email.py::test_account_activation_sets_password_and_creates_onboarding_session tests/test_auth_email.py::test_account_activation_is_restricted_to_first_password_setup -q`: blocked by local Postgres connection with `psycopg.OperationalError: connection is bad`.
+
+### Documentation
+
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Assumes existing auth docs already describe confirm hardening; no user-facing behavior changed beyond crash/test fix.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content paths changed.
+- Ownership rules preserved: activation eligibility check unchanged.
+- Deletion semantics preserved: no delete/cascade behavior changed.
+- Provider rules preserved: no provider selection or fallback behavior changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.

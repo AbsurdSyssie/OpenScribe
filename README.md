@@ -47,3 +47,41 @@ Quick start:
 - the default dev bind exposes FastAPI on `0.0.0.0` so a reverse proxy or another machine can reach the frontend
 - Postgres, Redis, and Vault still stay localhost-only unless you explicitly change their Docker port bindings and opt into `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
 - `./start-dev.sh` now also checks live Docker port bindings for Postgres, Redis, and Vault and aborts with a terminal error if they are exposed beyond localhost unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
+
+Resend transactional email setup:
+
+OpenScribe can use Resend for account setup, password reset, and manager-assisted recovery email. Email is instance-level platform infrastructure, not team-scoped provider configuration.
+
+1. Create or choose a Resend account for this OpenScribe instance.
+2. In Resend, add and verify the sending domain you want OpenScribe to use.
+3. Add Resend DNS records at your DNS host and wait until Resend shows the domain as verified.
+4. Create a Resend API key. Use the least-privileged or sending-restricted key Resend allows for your account.
+5. Edit `.env` for this instance:
+
+```env
+MAIL_TRANSPORT=resend
+APP_PUBLIC_URL=https://your-openscribe.example.com
+MAIL_FROM_ADDRESS=no-reply@your-verified-domain.example
+MAIL_FROM_NAME=OpenScribe
+MAIL_REPLY_TO=support@your-verified-domain.example
+RESEND_API_KEY=re_your_key_here
+```
+
+6. For local development only, keeping `RESEND_API_KEY` in `.env` is acceptable. Do not commit `.env` or paste the key into logs/issues.
+7. For production, store the Resend API key in Vault or your deployment secret store and set `RESEND_API_KEY_VAULT_REF` instead of a plaintext `RESEND_API_KEY` when that secret path is wired for the deployment.
+8. Restart OpenScribe so the mail config is reloaded.
+9. Send a smoke-test email:
+
+```bash
+source .venv/bin/activate
+python scripts/send_test_email.py --to you@example.com
+```
+
+10. Confirm the email arrives and Resend shows a successful send for the verified domain.
+
+Troubleshooting:
+
+- If the smoke test says mail is disabled, confirm `MAIL_TRANSPORT=resend` is in the active `.env` used by the running process.
+- If Resend rejects the sender, confirm `MAIL_FROM_ADDRESS` uses the verified domain exactly.
+- If reset/setup links point at localhost, set `APP_PUBLIC_URL` to the public HTTPS URL users use to reach this instance.
+- If you do not want outbound email yet, use `MAIL_TRANSPORT=disabled` for manual temporary-password setup or `MAIL_TRANSPORT=stdout` for local email-body printing.

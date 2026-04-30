@@ -12,6 +12,7 @@ from ..main import (
     _set_session_cookie,
     _set_trusted_device_cookie,
 )
+from ..models import UserOnboardingState
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -80,6 +81,124 @@ def request_access_submit(
     except AppError as exc:
         return render_request_access_page(request, message=exc.message, message_kind="error", status_code=exc.status_code)
     return render_request_access_page(request, message="Account request submitted", message_kind="success")
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request):
+    reset_enabled = email_password_reset_enabled_service()
+    message = None if reset_enabled else PASSWORD_RESET_EMAIL_DISABLED_MESSAGE
+    return templates.TemplateResponse(
+        request,
+        "password_reset_request.html",
+        {"request": request, "message": message, "password_reset_email_enabled": reset_enabled},
+    )
+
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+@LOGIN_RATE_LIMIT
+def forgot_password_submit(request: Request, email: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    try:
+        message = request_password_reset_service(db, email=email)
+        status_code = status.HTTP_200_OK
+    except AppError as exc:
+        message = exc.message if exc.code == "mail_transport_disabled" else GENERIC_PASSWORD_RESET_MESSAGE
+        status_code = exc.status_code if exc.code == "mail_transport_disabled" else status.HTTP_200_OK
+    reset_enabled = email_password_reset_enabled_service()
+    return templates.TemplateResponse(
+        request,
+        "password_reset_request.html",
+        {"request": request, "message": message, "password_reset_email_enabled": reset_enabled},
+        status_code=status_code,
+    )
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request, token: str = "", db: Session = Depends(get_db)):
+    token_valid = bool(token and get_active_token_user_service(db, raw_token=token, purpose=AuthEmailTokenPurpose.password_reset))
+    if not token_valid:
+        token_valid = bool(token and get_active_token_user_service(db, raw_token=token, purpose=AuthEmailTokenPurpose.manager_password_reset))
+    if not token_valid:
+        token_valid = bool(token and get_active_token_user_service(db, raw_token=token, purpose=AuthEmailTokenPurpose.manager_account_recovery))
+    return templates.TemplateResponse(
+        request,
+        "password_reset_confirm.html",
+        {
+            "request": request,
+            "title": "Reset password",
+            "message": None if token_valid else "Reset link is invalid or expired.",
+            "token_valid": token_valid,
+            "token": token,
+            "action": "/reset-password",
+            "button_label": "Reset password",
+        },
+        status_code=200 if token_valid else status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+@app.post("/reset-password", response_class=HTMLResponse)
+def reset_password_submit(request: Request, token: str = Form(...), new_password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    try:
+        confirm_password_reset_service(db, raw_token=token, new_password=new_password)
+    except AppError as exc:
+        return templates.TemplateResponse(
+            request,
+            "password_reset_confirm.html",
+            {
+                "request": request,
+                "title": "Reset password",
+                "message": exc.message,
+                "token_valid": True,
+                "token": token,
+                "action": "/reset-password",
+                "button_label": "Reset password",
+            },
+            status_code=exc.status_code,
+        )
+    return render_auth_page(request, db, message="Password reset complete. Sign in with your new password.", message_kind="success")
+
+
+@app.get("/activate-account", response_class=HTMLResponse)
+def activate_account_page(request: Request, token: str = "", db: Session = Depends(get_db)):
+    user = get_active_token_user_service(db, raw_token=token, purpose=AuthEmailTokenPurpose.account_activation) if token else None
+    token_valid = bool(user and user.onboarding_state is UserOnboardingState.pending_password_change and user.must_change_password)
+    return templates.TemplateResponse(
+        request,
+        "password_reset_confirm.html",
+        {
+            "request": request,
+            "title": "Set up account",
+            "message": None if token_valid else "Setup link is invalid or expired.",
+            "token_valid": token_valid,
+            "token": token,
+            "action": "/activate-account",
+            "button_label": "Set password",
+        },
+        status_code=200 if token_valid else status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+@app.post("/activate-account", response_class=HTMLResponse)
+def activate_account_submit(request: Request, token: str = Form(...), new_password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    try:
+        user, session_token = confirm_account_activation_service(db, raw_token=token, new_password=new_password)
+    except AppError as exc:
+        return templates.TemplateResponse(
+            request,
+            "password_reset_confirm.html",
+            {
+                "request": request,
+                "title": "Set up account",
+                "message": exc.message,
+                "token_valid": True,
+                "token": token,
+                "action": "/activate-account",
+                "button_label": "Set password",
+            },
+            status_code=exc.status_code,
+        )
+    response = RedirectResponse(url="/onboarding", status_code=status.HTTP_303_SEE_OTHER)
+    _set_session_cookie(request, response, session_token)
+    return response
 
 
 @app.post("/bootstrap/system-admin", response_class=HTMLResponse)

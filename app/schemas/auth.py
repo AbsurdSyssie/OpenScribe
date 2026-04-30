@@ -20,6 +20,29 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=16)
+    new_password: str = Field(min_length=8)
+
+
+class AccountActivationConfirmRequest(BaseModel):
+    token: str = Field(min_length=16)
+    new_password: str = Field(min_length=8)
+
+
+class GenericMessageResponse(BaseModel):
+    message: str
+
+
+class ManagerRecoveryResponse(BaseModel):
+    message: str
+    temporary_password: str
+
+
 class TotpEnrollmentStartResponse(BaseModel):
     secret: str
     provisioning_uri: str

@@ -127,8 +127,28 @@ For users whose onboarding is already complete:
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/mfa/totp`
 - `POST /api/v1/auth/logout`
+- `POST /api/v1/auth/password-reset/request`
+- `POST /api/v1/auth/password-reset/confirm`
+- `POST /api/v1/auth/account-activation/confirm`
 - `GET /api/v1/auth/me`
 - `GET /api/v1/auth/trusted-device`
+
+### Account activation and recovery
+
+- activation and password-reset links are backed by `auth_email_tokens`
+- token plaintext is emailed only and is not stored in the database
+- public password-reset request returns generic success for existing and missing accounts
+- when outbound mail is disabled, self-service password reset is hidden in the browser and the reset request endpoint returns `503 mail_transport_disabled`; users must ask a team leader or system administrator for recovery
+- password reset changes password auth material only; it does not rotate or delete the user DEK
+- password reset revokes sessions and trusted devices
+- password reset/setup confirmation validates the token before running Argon2id password hashing
+- password hashes use Argon2id with OWASP baseline parameters; non-Argon2id local dev hashes can be rotated with `scripts/force_argon2id_password_rotation.py`
+- activation/setup links are only valid before first password setup; they set the user's first real password and then force TOTP onboarding before full access
+- manager recovery actions are metadata-only and never expose transcript-derived content:
+  - `POST /api/v1/users/{user_id}/send-activation`
+  - `POST /api/v1/users/{user_id}/recover-password` generates a random temporary password, stores only its hash, revokes sessions/trusted devices, forces `pending_password_change`, preserves existing TOTP/recovery-code state, and browser UI shows the password in a persistent copy modal
+  - `POST /api/v1/users/{user_id}/reset-mfa` clears TOTP/recovery-code state, revokes sessions/trusted devices, and forces TOTP reenrollment unless the user is still in `pending_password_change`
+  - `POST /api/v1/users/{user_id}/recover-account` generates a random temporary password and clears MFA/recovery-code state before forced password/TOTP onboarding; browser UI shows the password in a persistent copy modal
 
 ## Brute-force protection
 
@@ -170,6 +190,9 @@ For users whose onboarding is already complete:
 ## Browser routes
 
 - `/login`
+- `/forgot-password`
+- `/reset-password`
+- `/activate-account`
 - `/request-access`
 - `/onboarding`
 - `/mfa/challenge`

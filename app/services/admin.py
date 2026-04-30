@@ -1,5 +1,3 @@
-import base64
-import hashlib
 import logging
 import secrets
 from dataclasses import dataclass
@@ -15,6 +13,8 @@ from app.errors import AppError
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
+    AuthEmailToken,
+    AuthEmailTokenPurpose,
     DefaultPromptTemplate,
     DefaultPromptTemplateVersion,
     DefaultQuickAction,
@@ -41,7 +41,9 @@ from app.models import (
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
     User,
+    UserMfaMethod,
     UserOnboardingState,
+    UserRecoveryCode,
     UserStatus,
     utcnow,
 )
@@ -55,8 +57,9 @@ from app.schemas import (
 )
 from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.content_crypto import ensure_user_dek
-from app.services.default_assets import seed_team_default_assets
+from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
 from app.services.llm import delete_team_llm_bearer_token
+from app.services.passwords import hash_password
 from app.services.stt import delete_team_stt_bearer_token
 from app.services.transcripts import delete_retry_sources_for_transcripts
 
@@ -983,12 +986,45 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[st
     }
 
 
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
-    salt_b64 = base64.b64encode(salt).decode("ascii")
-    derived_b64 = base64.b64encode(derived).decode("ascii")
-    return f"scrypt${salt_b64}${derived_b64}"
+def generate_temporary_password() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def reset_user_password_to_temporary(db: Session, user: User, *, reset_mfa: bool = False) -> str:
+    temporary_password = generate_temporary_password()
+    user.password_hash = hash_password(temporary_password)
+    user.must_change_password = True
+    user.onboarding_state = UserOnboardingState.pending_password_change
+    if reset_mfa:
+        user.mfa_enabled = False
+        for method in db.scalars(select(UserMfaMethod).where(UserMfaMethod.user_id == user.id)):
+            db.delete(method)
+        for code in db.scalars(select(UserRecoveryCode).where(UserRecoveryCode.user_id == user.id)):
+            db.delete(code)
+
+    now = utcnow()
+    reset_purposes = {
+        AuthEmailTokenPurpose.password_reset,
+        AuthEmailTokenPurpose.manager_password_reset,
+        AuthEmailTokenPurpose.manager_account_recovery,
+    }
+    active_tokens = db.scalars(
+        select(AuthEmailToken).where(
+            AuthEmailToken.user_id == user.id,
+            AuthEmailToken.purpose.in_(reset_purposes),
+            AuthEmailToken.used_at.is_(None),
+        )
+    )
+    for token in active_tokens:
+        token.used_at = now
+        db.add(token)
+
+    db.add(user)
+    db.commit()
+    revoke_reason = "manager_account_recovery" if reset_mfa else "manager_password_reset"
+    revoke_sessions_for_user(db, user, reason=revoke_reason)
+    revoke_trusted_devices_for_user(db, user, reason=revoke_reason)
+    return temporary_password
 
 
 def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
@@ -1002,6 +1038,7 @@ def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
     db.add(team)
     try:
         db.flush()
+        ensure_builtin_default_assets(db, actor)
         seed_team_default_assets(db, team=team, actor=actor)
         db.commit()
     except IntegrityError as exc:
@@ -1213,6 +1250,11 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
     for request in reviewed_requests:
         request.reviewed_by_user_id = None
         db.add(request)
+
+    created_auth_email_tokens = db.scalars(select(AuthEmailToken).where(AuthEmailToken.created_by_user_id == user.id))
+    for token in created_auth_email_tokens:
+        token.created_by_user_id = actor.id
+        db.add(token)
 
     stt_configs_created = db.scalars(select(TeamSttConfig).where(TeamSttConfig.created_by_user_id == user.id))
     for config in stt_configs_created:

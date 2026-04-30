@@ -23,6 +23,7 @@ set +a
 : "${APP_PORT:=8080}"
 : "${DEV_ALLOW_REMOTE_BIND:=true}"
 : "${DEV_PURGE_CELERY_QUEUE:=true}"
+export APP_HOST APP_PORT DEV_ALLOW_REMOTE_BIND DEV_PURGE_CELERY_QUEUE
 
 docker compose up -d
 
@@ -46,6 +47,7 @@ allow_remote = os.getenv("DEV_ALLOW_REMOTE_BIND", "false").strip().lower() == "t
 print(resolve_dev_bind_host(host=os.getenv("APP_HOST"), allow_remote=allow_remote))
 PY
 )"
+export APP_BIND_HOST
 
 if [[ "${DEV_RESTART_EXISTING_PROCESSES:-true}" == "true" ]]; then
   echo "Stopping existing processes..."

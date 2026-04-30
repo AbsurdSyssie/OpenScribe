@@ -16,6 +16,11 @@ Browser navigation behavior:
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/mfa/totp`
 - `POST /api/v1/auth/logout`
+- `POST /api/v1/auth/password-reset/request`
+  - returns generic success only when outbound mail is enabled
+  - returns `503 mail_transport_disabled` when email reset is not configured, so clients can tell users to contact a team leader or system administrator
+- `POST /api/v1/auth/password-reset/confirm`
+- `POST /api/v1/auth/account-activation/confirm`
 - `GET /api/v1/auth/me`
 - `GET /api/v1/auth/trusted-device`
 
@@ -48,6 +53,10 @@ Browser navigation behavior:
 - `GET /api/v1/users`
 - `POST /api/v1/users/{user_id}/suspend`
 - `POST /api/v1/users/{user_id}/reactivate`
+- `POST /api/v1/users/{user_id}/send-activation`
+- `POST /api/v1/users/{user_id}/recover-password` returns a one-time visible `temporary_password`
+- `POST /api/v1/users/{user_id}/reset-mfa`
+- `POST /api/v1/users/{user_id}/recover-account` returns a one-time visible `temporary_password` and resets MFA
 - `DELETE /api/v1/users/{user_id}`
 
 ### Transcripts

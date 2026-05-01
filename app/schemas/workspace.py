@@ -11,6 +11,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     active_transcript: TranscriptDetail | None = None
     active_transcript_pii_entities: list[TranscriptPiiEntityDetail] = []
     active_transcript_redaction_status: dict | None = None
+    active_transcript_clinical_nlp_status: dict | None = None
     post_consultation_dictation: PostConsultationDictationDetail | None = None
     generated_documents: list[GeneratedDocumentDetail]
     available_templates: list[PromptTemplateDetail]

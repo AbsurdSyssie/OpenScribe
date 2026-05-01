@@ -85,7 +85,7 @@ def ensure_clinical_entity_run_for_transcript_version(
         .order_by(ClinicalEntityRun.created_at.desc(), ClinicalEntityRun.id.desc())
         .limit(1)
     )
-    if existing is not None:
+    if existing is not None and existing.created_at >= provider.updated_at:
         return existing
 
     run = ClinicalEntityRun(

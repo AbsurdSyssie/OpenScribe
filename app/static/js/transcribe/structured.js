@@ -15,8 +15,14 @@ export function createStructuredEditor({
   let copyReviewDocumentId = null;
   let copyReviewObserver = null;
   let reviewedStructuredSectionKeys = new Set();
+  let structuredSectionReviewFingerprints = new Map();
+  let freeformReviewFingerprint = null;
   let freeformNoteReviewed = false;
   let copyReviewObservationReady = false;
+  let copyReviewViewportListener = null;
+  let copyReviewResizeListener = null;
+  let copyReviewViewportCheckScheduled = false;
+  let copyReviewRefreshScheduled = false;
 
   const noteCopyStatusDefault = 'Select the note lines you want to copy.';
 
@@ -43,8 +49,17 @@ export function createStructuredEditor({
   const syncStatementRowVisualState = (row) => {
     if (!row) return;
     const checkbox = row.querySelector('input[type="checkbox"]');
+    const input = row.querySelector('[data-structured-line-input], [data-freeform-note-input]');
+    const dragHandle = row.querySelector('[data-statement-drag-handle]');
+    const isBlank = String(input?.value || '').trim().length === 0;
     row.classList.toggle('is-unchecked', Boolean(checkbox && !checkbox.checked));
     row.classList.toggle('unchecked', Boolean(checkbox && !checkbox.checked));
+    row.classList.toggle('is-blank-line', isBlank);
+    if (dragHandle instanceof HTMLButtonElement) {
+      dragHandle.disabled = isBlank;
+      dragHandle.setAttribute('aria-disabled', isBlank ? 'true' : 'false');
+      dragHandle.title = isBlank ? 'Add text before reordering line' : 'Drag to reorder line';
+    }
   };
 
   const currentDraftSelectionKey = (mode = selectedOutputTemplateMode()) => {
@@ -174,6 +189,68 @@ export function createStructuredEditor({
     return rect.bottom <= viewportHeight + 2 && rect.top < viewportHeight;
   };
 
+  const normalizedCopyReviewLines = (container, selector) => {
+    if (!(container instanceof HTMLElement)) return [];
+    return [...container.querySelectorAll(selector)]
+      .map((input) => String(input?.value || '').trim())
+      .filter((value) => value.length > 0);
+  };
+
+  const structuredSectionCopyReviewFingerprint = (section) => [
+    section?.dataset?.sectionKey || '',
+    ...normalizedCopyReviewLines(section, '[data-structured-line-input]'),
+  ].join('\u001f');
+
+  const freeformCopyReviewFingerprint = () => normalizedCopyReviewLines(
+    dom.generatedFreeformPanel,
+    '[data-freeform-note-input]'
+  ).join('\u001f');
+
+  const syncCopyReviewContentFingerprints = () => {
+    if (!generatedCopyReviewRequired()) {
+      structuredSectionReviewFingerprints = new Map();
+      freeformReviewFingerprint = null;
+      return;
+    }
+
+    let reviewInvalidated = false;
+    const nextStructuredFingerprints = new Map();
+    document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
+      const sectionKey = section.dataset.sectionKey || '';
+      if (!sectionKey) return;
+      const fingerprint = structuredSectionCopyReviewFingerprint(section);
+      const previousFingerprint = structuredSectionReviewFingerprints.get(sectionKey);
+      if (previousFingerprint !== undefined && previousFingerprint !== fingerprint) {
+        reviewedStructuredSectionKeys.delete(sectionKey);
+        reviewInvalidated = true;
+      }
+      nextStructuredFingerprints.set(sectionKey, fingerprint);
+    });
+    reviewedStructuredSectionKeys.forEach((sectionKey) => {
+      if (!nextStructuredFingerprints.has(sectionKey)) {
+        reviewedStructuredSectionKeys.delete(sectionKey);
+      }
+    });
+    structuredSectionReviewFingerprints = nextStructuredFingerprints;
+
+    const freeformVisible = dom.generatedFreeformPanel instanceof HTMLElement && !dom.generatedFreeformPanel.hidden;
+    if (freeformVisible) {
+      const nextFreeformFingerprint = freeformCopyReviewFingerprint();
+      if (freeformReviewFingerprint !== null && freeformReviewFingerprint !== nextFreeformFingerprint) {
+        freeformNoteReviewed = false;
+        reviewInvalidated = true;
+      }
+      freeformReviewFingerprint = nextFreeformFingerprint;
+    } else {
+      freeformReviewFingerprint = null;
+    }
+
+    if (reviewInvalidated) {
+      setCopyReviewStatus('Generated note changed. Scroll to the bottom before copying.');
+    }
+    syncCopyReviewUi();
+  };
+
   const syncCopyReviewUi = () => {
     if (!generatedCopyReviewRequired()) {
       document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
@@ -207,6 +284,8 @@ export function createStructuredEditor({
     if (copyReviewDocumentId === documentId) return;
     copyReviewDocumentId = documentId;
     reviewedStructuredSectionKeys = new Set();
+    structuredSectionReviewFingerprints = new Map();
+    freeformReviewFingerprint = null;
     freeformNoteReviewed = false;
     if (!documentId) {
       setFreeformCopyReviewState(true);
@@ -232,7 +311,7 @@ export function createStructuredEditor({
       syncCopyReviewUi();
       return;
     }
-    if (target.hasAttribute('data-freeform-copy-review-sentinel')) {
+    if (target.hasAttribute('data-generated-freeform-panel')) {
       setFreeformCopyReviewState(true);
       setCopyReviewStatus();
       syncCopyReviewUi();
@@ -242,19 +321,45 @@ export function createStructuredEditor({
   const observeCopyReviewTargets = () => {
     copyReviewObserver?.disconnect();
     copyReviewObserver = null;
+    if (copyReviewViewportListener) {
+      document.removeEventListener('scroll', copyReviewViewportListener, true);
+      copyReviewViewportListener = null;
+    }
+    if (copyReviewResizeListener) {
+      window.removeEventListener('resize', copyReviewResizeListener);
+      copyReviewResizeListener = null;
+    }
+    copyReviewViewportCheckScheduled = false;
     if (!generatedCopyReviewRequired()) {
       syncCopyReviewUi();
       return;
     }
+    syncCopyReviewContentFingerprints();
     const targets = [
-      ...document.querySelectorAll('[data-structured-copy-review-sentinel]'),
-      ...document.querySelectorAll('[data-freeform-copy-review-sentinel]'),
+      ...document.querySelectorAll('[data-generated-structured-section]'),
+      ...document.querySelectorAll('[data-generated-freeform-panel]:not([hidden])'),
     ];
     if (!targets.length) {
       syncCopyReviewUi();
       return;
     }
     copyReviewObservationReady = true;
+    const checkTargets = () => {
+      targets.forEach((target) => {
+        if (visibleBottomReached(target)) {
+          markCopyReviewTargetViewed(target);
+        }
+      });
+      syncCopyReviewUi();
+    };
+    const scheduleViewportCheck = () => {
+      if (copyReviewViewportCheckScheduled) return;
+      copyReviewViewportCheckScheduled = true;
+      window.requestAnimationFrame(() => {
+        copyReviewViewportCheckScheduled = false;
+        checkTargets();
+      });
+    };
     if ('IntersectionObserver' in window) {
       copyReviewObserver = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -262,16 +367,25 @@ export function createStructuredEditor({
             markCopyReviewTargetViewed(entry.target);
           }
         });
-      }, { threshold: 1 });
+      }, { threshold: 0 });
       targets.forEach((target) => copyReviewObserver.observe(target));
     }
+    copyReviewViewportListener = scheduleViewportCheck;
+    copyReviewResizeListener = scheduleViewportCheck;
+    document.addEventListener('scroll', copyReviewViewportListener, true);
+    window.addEventListener('resize', copyReviewResizeListener);
     window.requestAnimationFrame(() => {
-      targets.forEach((target) => {
-        if (visibleBottomReached(target)) {
-          markCopyReviewTargetViewed(target);
-        }
-      });
-      syncCopyReviewUi();
+      checkTargets();
+    });
+  };
+
+  const scheduleCopyReviewRefresh = () => {
+    if (copyReviewRefreshScheduled) return;
+    copyReviewRefreshScheduled = true;
+    window.requestAnimationFrame(() => {
+      copyReviewRefreshScheduled = false;
+      syncCopyReviewContentFingerprints();
+      observeCopyReviewTargets();
     });
   };
 
@@ -809,6 +923,7 @@ export function createStructuredEditor({
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
+        scheduleCopyReviewRefresh();
       },
       onAddAfter: (currentRow) => {
         const nextRow = addGeneratedStructuredLine(sectionContainer, '', currentRow, true);
@@ -830,6 +945,7 @@ export function createStructuredEditor({
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
+        scheduleCopyReviewRefresh();
         window.requestAnimationFrame(() => {
           focusStatementEditor(previousRow.querySelector('[data-structured-line-input]'));
         });
@@ -918,6 +1034,7 @@ export function createStructuredEditor({
     if (dom.structuredCopyStatus) {
       dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
     }
+    scheduleCopyReviewRefresh();
     onNoteEditorChanged?.();
   };
 
@@ -939,6 +1056,7 @@ export function createStructuredEditor({
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
+        scheduleCopyReviewRefresh();
         onNoteEditorChanged?.();
       },
       onAddAfter: (currentRow) => {
@@ -959,6 +1077,7 @@ export function createStructuredEditor({
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
+        scheduleCopyReviewRefresh();
         window.requestAnimationFrame(() => {
           focusStatementEditor(previousRow.querySelector('[data-freeform-note-input], [data-structured-line-input]'));
         });
@@ -1029,11 +1148,6 @@ export function createStructuredEditor({
       } else {
         addGeneratedStructuredLine(card, '', null, true);
       }
-      const sentinel = document.createElement('div');
-      sentinel.setAttribute('data-structured-copy-review-sentinel', '');
-      sentinel.setAttribute('aria-hidden', 'true');
-      sentinel.style.cssText = 'width:1px;height:1px;';
-      body.appendChild(sentinel);
       window.refreshLucideIcons?.(card);
     });
     syncGeneratedStructuredDraftFromDom();
@@ -1060,11 +1174,6 @@ export function createStructuredEditor({
     draft.lines.forEach((line, lineIndex) => {
       addGeneratedFreeformLine(line.text || '', null, readRememberedRowSelectionState({ mode: 'freeform', lineIndex, fallback: line.checked !== false }));
     });
-    const sentinel = document.createElement('div');
-    sentinel.setAttribute('data-freeform-copy-review-sentinel', '');
-    sentinel.setAttribute('aria-hidden', 'true');
-    sentinel.style.cssText = 'width:1px;height:1px;';
-    dom.generatedFreeformRows.appendChild(sentinel);
     syncGeneratedFreeformDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedFreeformPanel.hidden = false;

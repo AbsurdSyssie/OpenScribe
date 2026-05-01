@@ -16,6 +16,23 @@ function structuredSections() {
   return [...document.querySelectorAll('[data-generated-structured-section]')];
 }
 
+function adjacentElementMatching(row, direction, selector) {
+  let candidate = direction === 'previous' ? row.previousElementSibling : row.nextElementSibling;
+  while (candidate instanceof HTMLElement) {
+    if (candidate.matches(selector)) return candidate;
+    candidate = direction === 'previous' ? candidate.previousElementSibling : candidate.nextElementSibling;
+  }
+  return null;
+}
+
+function rowInput(row) {
+  return row?.querySelector?.('[data-structured-line-input], [data-freeform-note-input]') || null;
+}
+
+function rowHasMovableContent(row) {
+  return String(rowInput(row)?.value || '').trim().length > 0;
+}
+
 function normalizeStructuredAfterMove(structuredEditor, row, oldContainer, newContainer) {
   if (row instanceof HTMLElement) structuredEditor?.syncMovedRowSectionMetadata?.(row);
   [oldContainer, newContainer].forEach((container) => {
@@ -40,11 +57,12 @@ function normalizeFreeformAfterMove(structuredEditor, row) {
 }
 
 function moveStructuredByKeyboard(row, direction) {
+  if (!rowHasMovableContent(row)) return null;
   const currentContainer = row.closest(STRUCTURED_CONTAINER_SELECTOR);
   if (!(currentContainer instanceof HTMLElement)) return null;
 
   if (direction === 'up') {
-    const previous = row.previousElementSibling;
+    const previous = adjacentElementMatching(row, 'previous', STRUCTURED_ROW_SELECTOR);
     if (previous instanceof HTMLElement) {
       currentContainer.insertBefore(row, previous);
       return { oldContainer: currentContainer, newContainer: currentContainer };
@@ -59,7 +77,7 @@ function moveStructuredByKeyboard(row, direction) {
   }
 
   if (direction === 'down') {
-    const next = row.nextElementSibling;
+    const next = adjacentElementMatching(row, 'next', STRUCTURED_ROW_SELECTOR);
     if (next instanceof HTMLElement) {
       currentContainer.insertBefore(next, row);
       return { oldContainer: currentContainer, newContainer: currentContainer };
@@ -86,17 +104,18 @@ function moveStructuredByKeyboard(row, direction) {
 }
 
 function moveFreeformByKeyboard(row, direction) {
+  if (!rowHasMovableContent(row)) return false;
   const container = row.closest(FREEFORM_CONTAINER_SELECTOR);
   if (!(container instanceof HTMLElement)) return false;
   if (direction === 'up') {
-    const previous = row.previousElementSibling;
+    const previous = adjacentElementMatching(row, 'previous', FREEFORM_ROW_SELECTOR);
     if (previous instanceof HTMLElement) {
       container.insertBefore(row, previous);
       return true;
     }
   }
   if (direction === 'down') {
-    const next = row.nextElementSibling;
+    const next = adjacentElementMatching(row, 'next', FREEFORM_ROW_SELECTOR);
     if (next instanceof HTMLElement) {
       container.insertBefore(next, row);
       return true;
@@ -118,12 +137,26 @@ function attachSortableToContainer(container, options) {
     chosenClass: 'statement-row--drag-chosen',
     dragClass: 'statement-row--dragging',
     forceFallback: false,
-    onStart: () => {
+    onStart: (event) => {
+      const blocked = !rowHasMovableContent(event.item);
+      event.item.dataset.reorderBlocked = blocked ? 'blank' : '';
+      event.item._openscribeReorderNextSibling = event.item.nextElementSibling;
       dispatchCloseSmartPhrases();
       document.body.classList.add('is-note-dragging');
     },
     onEnd: (event) => {
       document.body.classList.remove('is-note-dragging');
+      if (event.item.dataset.reorderBlocked === 'blank') {
+        const nextSibling = event.item._openscribeReorderNextSibling;
+        if (event.from instanceof HTMLElement) {
+          event.from.insertBefore(event.item, nextSibling instanceof HTMLElement && event.from.contains(nextSibling) ? nextSibling : null);
+        }
+        delete event.item.dataset.reorderBlocked;
+        delete event.item._openscribeReorderNextSibling;
+        options.onBlocked?.(event.item);
+        return;
+      }
+      delete event.item._openscribeReorderNextSibling;
       options.onEnd(event);
     },
   });
@@ -144,6 +177,7 @@ export function attachNoteReordering({ structuredEditor, showFlash }) {
       attachSortableToContainer(container, {
         draggable: STRUCTURED_ROW_SELECTOR,
         group: { name: 'openscribe-structured-lines', pull: true, put: true },
+        onBlocked: (row) => structuredEditor?.focusLine?.(row, 'textarea'),
         onEnd: (event) => normalizeStructuredAfterMove(structuredEditor, event.item, event.from, event.to),
       });
     });
@@ -151,6 +185,7 @@ export function attachNoteReordering({ structuredEditor, showFlash }) {
       attachSortableToContainer(container, {
         draggable: FREEFORM_ROW_SELECTOR,
         group: { name: 'openscribe-freeform-lines', pull: false, put: false },
+        onBlocked: (row) => structuredEditor?.focusLine?.(row, 'textarea'),
         onEnd: (event) => normalizeFreeformAfterMove(structuredEditor, event.item),
       });
     });
@@ -161,6 +196,7 @@ export function attachNoteReordering({ structuredEditor, showFlash }) {
     const row = event.target.closest?.(`${STRUCTURED_ROW_SELECTOR}, ${FREEFORM_ROW_SELECTOR}`);
     if (!(row instanceof HTMLElement)) return;
     event.preventDefault();
+    if (!rowHasMovableContent(row)) return;
     dispatchCloseSmartPhrases();
 
     if (row.matches(STRUCTURED_ROW_SELECTOR)) {

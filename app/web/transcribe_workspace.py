@@ -389,6 +389,27 @@ def transcript_redaction_status_response(db: Session, transcript: Transcript | N
     }
 
 
+def transcript_clinical_nlp_status_response(db: Session, transcript: Transcript | None) -> dict[str, object]:
+    if transcript is None:
+        return {"status": "unavailable", "entity_count": 0, "error_code": None}
+    latest_run = db.scalar(
+        select(ClinicalEntityRun)
+        .where(
+            ClinicalEntityRun.transcript_id == transcript.id,
+            ClinicalEntityRun.owner_user_id == transcript.owner_user_id,
+        )
+        .order_by(ClinicalEntityRun.created_at.desc(), ClinicalEntityRun.id.desc())
+        .limit(1)
+    )
+    if latest_run is None:
+        return {"status": "not_run", "entity_count": 0, "error_code": None}
+    return {
+        "status": latest_run.status.value,
+        "entity_count": latest_run.entity_count,
+        "error_code": latest_run.error_code,
+    }
+
+
 def transcript_manual_pii_entity_response(db: Session, entity: TranscriptManualPiiEntity) -> TranscriptPiiEntityDetail:
     return TranscriptPiiEntityDetail(
         id=entity.id,
@@ -610,6 +631,7 @@ def resolve_transcribe_workspace(
         "active_structured_context": active_structured_context,
         "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript),
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
+        "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
         "show_redaction_debug": show_redaction_debug,
         "emis_sections": _default_emis_section_definitions(),
@@ -657,6 +679,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
         active_transcript_pii_entities=list(workspace.get("active_transcript_pii_entities") or []),
         active_transcript_redaction_status=dict(workspace.get("active_transcript_redaction_status") or {}),
+        active_transcript_clinical_nlp_status=dict(workspace.get("active_transcript_clinical_nlp_status") or {}),
         post_consultation_dictation=(
             dictation_detail_response(db, dictation=post_consultation_dictation)
             if post_consultation_dictation is not None
@@ -750,6 +773,10 @@ def render_transcribe(
         for entity in transcript_pii_entities_response(db, active_transcript if isinstance(active_transcript, Transcript) else None)
     ]
     workspace["active_transcript_redaction_status"] = transcript_redaction_status_response(
+        db,
+        active_transcript if isinstance(active_transcript, Transcript) else None,
+    )
+    workspace["active_transcript_clinical_nlp_status"] = transcript_clinical_nlp_status_response(
         db,
         active_transcript if isinstance(active_transcript, Transcript) else None,
     )

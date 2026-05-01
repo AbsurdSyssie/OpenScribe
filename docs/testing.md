@@ -71,7 +71,7 @@ What it does:
 - the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
-- generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
+- generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft and is revoked when the copyable note text changes; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
@@ -185,7 +185,7 @@ What it does:
 - live-capture finalize applying completed chunks, deferring preview redaction while chunks are still pending, and creating/reusing owner-scoped redaction once the transcript is ready
 - workspace redaction preview status distinguishing not-run, succeeded, and failed checks so an empty PII table is not ambiguous
 - workspace PII coverage verifies detected rows are hidden when the latest redaction run failed rather than falling back to stale older successful runs
-- clinical NLP coverage verifies admin provider flags, team assignment plus leader enablement, remote providers receiving redacted transcript text, local/private providers receiving unredacted transcript text only when allowed, encrypted owner-scoped clinical entity rows, transcript deletion cascade cleanup, and the `/transcribe` PII panel rendering disease/symptom rows with a separate highlight class
+- clinical NLP coverage verifies admin provider flags, team assignment plus leader enablement, remote providers receiving redacted transcript text, local/private providers receiving unredacted transcript text only when allowed, encrypted owner-scoped clinical entity rows, stale zero-result runs rerunning after provider config changes, transcript deletion cascade cleanup, and the `/transcribe` PII panel rendering disease/symptom rows and clinical NLP status with a separate highlight class
 - generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version, including reuse of an existing matching transcript version
 - generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
 - generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
@@ -298,6 +298,7 @@ What it does:
 - leader home AI-services UI exposing clinical NLP enable/disable separately from PII redaction selection
 - home tabs initializing after the navigation moved above the tab shell
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
+- transcribe structured/freeform line reordering blocking blank placeholder rows by mouse drag and consuming blocked keyboard shortcuts so browser history navigation does not fire
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace
 - transcribe session delete confirmation marking only meaningful transcript draft/version text as content
 - MFA challenge page and remember-browser option for completed users

@@ -1,3 +1,5 @@
+{% set dictation_unavailable_message = dictation_stt_status_message or 'Not available. Ask your team lead to enable post-consultation dictation.' %}
+
 <main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
 <header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
 <div class="flex items-start justify-between gap-4">
@@ -104,6 +106,13 @@ data-local-busy-protected
 Try transcription again
 </button>
 </form>
+
+<button type="button" class="dictation-global-cta" data-dictation-cta data-local-busy-protected {% if not active_transcript %}disabled title="Open a consultation first."{% elif not dictation_stt_selected or not dictation_stt_available %}disabled title="{{ dictation_unavailable_message }}"{% endif %}>
+<i class="w-4 h-4" data-lucide="mic-2" aria-hidden="true"></i>
+<span data-dictation-cta-label>Add dictation</span>
+</button>
+
+<span class="dictation-global-cta__status" data-dictation-cta-status {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}{% else %}hidden{% endif %}>Not available. Ask your team lead to enable post-consultation dictation.</span>
 </div>
 <div class="flex flex-wrap items-center gap-2 text-sm text-slate">
 <div>Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
@@ -654,7 +663,7 @@ Create
 </div>
 </div>
 <div class="structured-workspace__body">
-<div class="transcript-review-grid">
+<div class="transcript-review-grid{% if post_consultation_dictation %} transcript-review-grid--dictation-open{% endif %}" data-transcript-review-grid>
 <section class="transcript-review-grid__transcript">
 <div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
 {% if active_transcript and active_transcript.current_draft_text_encrypted %}
@@ -688,6 +697,18 @@ Redaction check complete.
 Redaction check failed{% if redaction_error_code %}: {{ redaction_error_code }}{% endif %}.
 {% else %}
 Redaction check has not run for this transcript yet.
+{% endif %}
+</div>
+{% set clinical_status = active_transcript_clinical_nlp_status.status if active_transcript_clinical_nlp_status else 'not_run' %}
+{% set clinical_entity_count = active_transcript_clinical_nlp_status.entity_count if active_transcript_clinical_nlp_status else 0 %}
+{% set clinical_error_code = active_transcript_clinical_nlp_status.error_code if active_transcript_clinical_nlp_status else none %}
+<div class="pii-status{% if clinical_status == 'failed' %} pii-status--error{% endif %}" data-clinical-nlp-status>
+{% if clinical_status == 'succeeded' %}
+Clinical NLP complete: {{ clinical_entity_count }} item{% if clinical_entity_count != 1 %}s{% endif %}.
+{% elif clinical_status == 'failed' %}
+Clinical NLP failed{% if clinical_error_code %}: {{ clinical_error_code }}{% endif %}.
+{% else %}
+Clinical NLP has not run for this transcript yet.
 {% endif %}
 </div>
 <div class="pii-sidebar__body" data-pii-table-wrap>
@@ -725,13 +746,21 @@ Redaction check has not run for this transcript yet.
 {% endif %}
 </div>
 </aside>
-<section class="transcript-review-grid__dictation">
-<div class="flex-1 overflow-y-auto p-0">
-<div class="border-b border-stone px-3 py-3 space-y-3">
-<div class="flex flex-wrap items-center gap-2">
-<button type="button" class="btn-ghost-sm" data-dictation-audio-action-trigger {% if not active_transcript or not dictation_stt_selected or not dictation_stt_available %}disabled{% endif %}>Upload pass</button>
+<section class="transcript-review-grid__dictation dictation-side-panel" data-dictation-panel data-collapsed="{% if post_consultation_dictation %}false{% else %}true{% endif %}"{% if not post_consultation_dictation %} hidden{% endif %}>
+<div class="dictation-side-panel__header">
+<div>
+<div class="pii-sidebar__kicker">Post-consultation</div>
+<div class="pii-sidebar__title">Dictation</div>
+<p class="dictation-side-panel__intro">Record your clinician-authored summary, terminology, medication names, and plan after the consultation.</p>
+</div>
+<button type="button" class="dictation-side-panel__collapse" data-dictation-panel-collapse aria-label="Collapse post-consultation dictation panel" title="Collapse dictation panel"><i class="w-4 h-4" data-lucide="panel-right-close" aria-hidden="true"></i></button>
+</div>
+<div class="dictation-live-card">
+<div class="dictation-live-card__header"><div><div class="dictation-live-card__title">Live dictation</div><div class="dictation-live-card__hint">Primary path. Press record when ready; this will not start automatically.</div></div></div>
+<div class="flex flex-wrap items-center gap-2 mb-3">
+<button type="button" class="btn-ghost-sm" data-dictation-audio-action-trigger {% if not active_transcript or not dictation_stt_selected or not dictation_stt_available %}disabled title="{{ dictation_unavailable_message }}"{% endif %}>Upload pass</button>
 <button type="button" class="btn-primary-sm" data-dictation-record-toggle {% if not active_transcript or not dictation_stt_selected or not dictation_stt_available %}disabled{% endif %}>
-<span data-dictation-record-toggle-label>Start dictation</span>
+<span data-dictation-record-toggle-label>Start live dictation</span>
 </button>
 <div class="text-sm text-ink">Duration: <span class="font-medium" data-dictation-mic-timer>00:00</span></div>
 <div class="text-xs text-slate">{% if post_consultation_dictation %}{{ post_consultation_dictation.segment_count }} pass(es){% else %}0 passes{% endif %}</div>
@@ -740,31 +769,37 @@ Redaction check has not run for this transcript yet.
 {% if not active_transcript %}
 Open consultation first.
 {% elif not dictation_stt_selected %}
-{{ dictation_stt_status_message or 'No dictation STT configured for team.' }}
+Not available. Ask your team lead to enable post-consultation dictation.
 {% elif not dictation_stt_available %}
-{{ dictation_stt_status_message or 'Dictation STT unavailable.' }}
+{{ dictation_unavailable_message }}
 {% else %}
-Ready to append dictation audio from upload or microphone.
+Ready for live dictation.
 {% endif %}
 </div>
 <div class="text-xs text-slate" data-dictation-session-progress hidden></div>
 </div>
-<form method="post" action="/transcribe/dictation/upload" enctype="multipart/form-data" data-dictation-upload-form hidden>
+
+<div class="pii-sidebar__body dictation-side-panel__body">
+<details class="dictation-upload-secondary">
+<summary>Upload audio instead</summary>
+<p class="dictation-upload-secondary__hint">Use this only when you already have a separate dictation recording.</p>
+<form method="post" action="/transcribe/dictation/upload" enctype="multipart/form-data" data-dictation-upload-form>
 {% if active_transcript %}<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">{% endif %}
 <input type="file" name="audio" accept="audio/*" data-dictation-audio-file-input {% if not active_transcript or not dictation_stt_selected or not dictation_stt_available %}disabled{% endif %}>
 </form>
+</details>
 
 <form method="post" action="/transcribe/dictation/save" class="space-y-2 px-3 py-3">
 {% if active_transcript %}<input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">{% endif %}
 <div>
-<textarea name="combined_text" rows="16" class="w-full min-h-[22rem] bg-white px-0 py-0 text-sm text-ink resize-y border-0" data-dictation-combined-input {% if not active_transcript %}disabled{% endif %}>{% if post_consultation_dictation %}{{ post_consultation_dictation.effective_text }}{% endif %}</textarea>
+<textarea name="combined_text" rows="16" class="w-full min-h-[22rem] bg-white px-0 py-0 text-sm text-ink resize-y border-0" data-dictation-combined-input {% if not active_transcript %}disabled{% endif %} placeholder="Live dictation will appear here. You can edit this summary before generation.">{% if post_consultation_dictation %}{{ post_consultation_dictation.effective_text }}{% endif %}</textarea>
 <p class="text-xs text-slate mt-2">
 {% if post_consultation_dictation and post_consultation_dictation.is_combined_text_user_edited %}
 <span data-dictation-provenance>Edited dictation used for generation.</span>
 {% elif post_consultation_dictation %}
 <span data-dictation-provenance>Using appended raw dictation segments in append order until you edit this field.</span>
 {% else %}
-<span data-dictation-provenance>No dictation yet. Upload audio pass or type summary directly.</span>
+<span data-dictation-provenance>No dictation yet. Start live dictation or type a clinician summary directly.</span>
 {% endif %}
 </p>
 </div>

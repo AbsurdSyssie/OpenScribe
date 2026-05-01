@@ -2068,6 +2068,54 @@ def test_transcribe_workspace_refresh_renders_updated_pii_entities():
     assert "renderDraft(draftText);\n          renderPiiEntities(workspaceTranscriptPiiEntities);" in transcript_branch
 
 
+def test_transcribe_copy_review_uses_real_panels_without_sentinel_elements():
+    structured_js = Path("app/static/js/transcribe/structured.js").read_text()
+
+    assert "data-structured-copy-review-sentinel" not in structured_js
+    assert "data-freeform-copy-review-sentinel" not in structured_js
+    assert "const sentinel = document.createElement('div');" not in structured_js
+    assert "...document.querySelectorAll('[data-generated-structured-section]')" in structured_js
+    assert "...document.querySelectorAll('[data-generated-freeform-panel]:not([hidden])')" in structured_js
+    assert "target.hasAttribute('data-generated-freeform-panel')" in structured_js
+    assert "structuredSectionReviewFingerprints = new Map();" in structured_js
+    assert "freeformReviewFingerprint = null;" in structured_js
+    assert "Generated note changed. Scroll to the bottom before copying." in structured_js
+    assert "document.addEventListener('scroll', copyReviewViewportListener, true);" in structured_js
+    assert "}, { threshold: 0 });" in structured_js
+
+
+def test_transcribe_keyboard_reorder_skips_copy_review_sentinels():
+    reorder_js = Path("app/static/js/transcribe/reorder.js").read_text()
+
+    assert "function adjacentElementMatching" in reorder_js
+    assert "adjacentElementMatching(row, 'previous', STRUCTURED_ROW_SELECTOR)" in reorder_js
+    assert "adjacentElementMatching(row, 'next', STRUCTURED_ROW_SELECTOR)" in reorder_js
+    assert "const previous = row.previousElementSibling;" not in reorder_js
+    assert "const next = row.nextElementSibling;" not in reorder_js
+
+
+def test_transcribe_reorder_blocks_blank_note_lines():
+    root = Path(__file__).resolve().parents[1]
+    reorder_js = (root / "app" / "static" / "js" / "transcribe" / "reorder.js").read_text(encoding="utf-8")
+    structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
+    head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+
+    assert "function rowHasMovableContent" in reorder_js
+    assert "if (!rowHasMovableContent(row)) return null;" in reorder_js
+    assert "if (!rowHasMovableContent(row)) return false;" in reorder_js
+    assert "event.preventDefault();\n    if (!rowHasMovableContent(row)) return;" in reorder_js
+    assert "event.item.dataset.reorderBlocked = blocked ? 'blank' : '';" in reorder_js
+    assert "event.from.insertBefore(event.item, nextSibling instanceof HTMLElement && event.from.contains(nextSibling) ? nextSibling : null);" in reorder_js
+    assert "dragHandle.disabled = isBlank;" in structured_js
+    assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
+    assert "Add text before reordering line" in structured_js
+    assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
+    assert "/static/js/transcribe/app.js?v=20260501-clinical-nlp-status" in shell_extras
+    assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
+
+
 def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     client,
     db_session,
@@ -3308,13 +3356,20 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "collectStructuredSectionLines" in structured_js
     assert "dom.generatedStructuredPanel.addEventListener('click'" in actions_js
     assert "navigator.clipboard.writeText(textToCopy);" in actions_js
-    assert "data-structured-copy-review-sentinel" in structured_js
-    assert "data-freeform-copy-review-sentinel" in structured_js
+    assert "data-structured-copy-review-sentinel" not in structured_js
+    assert "data-freeform-copy-review-sentinel" not in structured_js
+    assert "document.querySelectorAll('[data-generated-structured-section]')" in structured_js
+    assert "document.querySelectorAll('[data-generated-freeform-panel]:not([hidden])')" in structured_js
     assert "noteCopyReviewBlocker" in structured_js
     assert "const activeRenderedGeneratedDocumentId = () => (" in structured_js
     assert "generatedStructuredDraft?.documentId" in structured_js
     assert "element.closest('[hidden]') || element.getClientRects().length === 0" in structured_js
     assert "entry.isIntersecting && visibleBottomReached(entry.target)" in structured_js
+    assert "structuredSectionCopyReviewFingerprint" in structured_js
+    assert "freeformCopyReviewFingerprint" in structured_js
+    assert "scheduleCopyReviewRefresh();" in structured_js
+    assert "document.addEventListener('scroll', copyReviewViewportListener, true);" in structured_js
+    assert "}, { threshold: 0 });" in structured_js
     assert "window.requestAnimationFrame(() => observeCopyReviewTargets())" in structured_js
     assert "copyReviewObservationReady = false;" in structured_js
     assert "if (!copyReviewObservationReady) return;" in structured_js
@@ -3328,6 +3383,14 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
     assert "const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');" in app_js
     assert "const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');" in app_js
+    assert "const dictationCta = document.querySelector('[data-dictation-cta]');" in app_js
+    assert "const dictationPanel = document.querySelector('[data-dictation-panel]');" in app_js
+    assert "const openDictationPanel = ({ highlightRecord = false, userInitiated = false } = {}) => {" in app_js
+    assert "dictationRecordToggleLabel.textContent = isRecording ? 'Stop dictation' : 'Start live dictation';" in app_js
+    assert "Not available. Ask your team lead to enable post-consultation dictation." in app_js
+    assert "dictationCta?.addEventListener('click', () => {" in app_js
+    assert "dictationPanelCollapse?.addEventListener('click', () => {" in app_js
+    assert "dictation-record-highlight" in app_js
     assert "const activeStatusPill = document.querySelector('[data-active-status-pill]');" in app_js
     assert "const statusLabelForRecordingProgress = (message) => {" in app_js
     assert "getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording'," in app_js
@@ -3367,12 +3430,29 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "overflow: visible;" in head_assets
     assert ".structured-workspace {" in head_assets
     assert "flex: 1;" in head_assets
+    assert ".dictation-global-cta" in head_assets
+    assert ".dictation-side-panel" in head_assets
+    assert "@media (max-width: 1180px) {\n.transcript-review-grid {\ngrid-template-columns: minmax(0, 1fr);" in head_assets
+    assert ".transcript-review-grid:not(.transcript-review-grid--dictation-open) {\ngrid-template-columns: minmax(0, 1fr);\n}" in head_assets
+    assert ".dictation-upload-secondary" in head_assets
+    assert "@keyframes dictationRecordPulse" in head_assets
     assert "statement-content" in workspace_html
     assert '<div class="px-4 pt-3" hidden data-flash-wrap>' in workspace_html
     assert "data-generated-freeform-panel" in workspace_html
     assert "data-latest-generated-updated-at=" in workspace_html
     assert "data-active-status-pill" in workspace_html
+    assert "data-clinical-nlp-status" in workspace_html
+    assert "Clinical NLP has not run for this transcript yet." in workspace_html
+    assert '"activeTranscriptClinicalNlpStatus": active_transcript_clinical_nlp_status' in shell_extras
     assert '<div class="sr-only" data-mic-status aria-live="polite">' in workspace_html
+    assert 'data-dictation-cta' in workspace_html
+    assert 'data-dictation-panel' in workspace_html
+    assert 'data-dictation-panel-collapse' in workspace_html
+    assert 'data-transcript-review-grid' in workspace_html
+    assert 'Add dictation' in workspace_html
+    assert 'Start live dictation' in workspace_html
+    assert 'Upload audio instead' in workspace_html
+    assert 'Not available. Ask your team lead to enable post-consultation dictation.' in workspace_html
     assert "data-new-session-block-message" not in sidebar_html
     assert "openscribe:legacy-workspace-document-selected" not in workspace_html
     assert "activateNoteTab('note')" not in workspace_html
@@ -3381,7 +3461,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="settings"' in workspace_html
     assert 'data-lucide="message-square-more"' in workspace_html
     assert 'data-lucide="sparkles"' in workspace_html
-    assert '<div class="transcript-review-grid">' in workspace_html
+    assert '<div class="transcript-review-grid' in workspace_html
     assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>' in workspace_html
     assert 'class="pii-sidebar" data-pii-sidebar' in workspace_html
     assert 'data-pii-table-wrap' in workspace_html
@@ -3389,6 +3469,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-pii-add-value' in workspace_html
     assert "const piiCount = document.querySelector('[data-pii-count]');" in app_js
     assert "const renderHighlightedTranscript = (text, entities = []) => {" in app_js
+    assert "const clinicalNlpStatus = document.querySelector('[data-clinical-nlp-status]');" in app_js
+    assert "workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };" in app_js
+    assert "Clinical NLP complete:" in app_js
     assert "activeDraft.innerHTML = text" in app_js
     assert "const renderPiiEntities = (entities = [], options = {}) => {" in app_js
     assert "piiAddForm?.addEventListener('submit'" in app_js
@@ -3418,7 +3501,6 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
     assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {" in documents_js
@@ -3436,6 +3518,13 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="trash-2"' in documents_js
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
     assert "not active_note_input_available" in workspace_html
+
+
+def test_transcribe_static_asset_version_bumped_for_dictation_cta():
+    root = Path(__file__).resolve().parents[1]
+    shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
+
+    assert "/static/js/transcribe/app.js?v=20260501-clinical-nlp-status" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

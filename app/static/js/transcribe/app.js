@@ -3,9 +3,9 @@ import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260421-pii-refresh';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260421-pii-refresh';
-import { createStructuredEditor } from './structured.js?v=20260421-pii-refresh';
+import { createStructuredEditor } from './structured.js?v=20260501-copy-review-no-sentinel';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
-import { attachNoteReordering } from './reorder.js?v=20260430-smart-phrases-reorder';
+import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 
       const bootstrap = readTranscribeBootstrap();
@@ -52,10 +52,13 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
       let dictationSaveInFlight = null;
       let dictationSaveQueued = false;
       let lastSavedDictationText = '';
+      let dictationPanelUserOpened = false;
+      let dictationPanelUserCollapsed = false;
       let currentDraftText = '';
       let currentPiiEntities = [];
       let workspaceTranscriptPiiEntities = Array.isArray(bootstrap.activeTranscriptPiiEntities) ? [...bootstrap.activeTranscriptPiiEntities] : [];
       let workspaceRedactionStatus = bootstrap.activeTranscriptRedactionStatus || { status: 'not_run', entity_count: 0, error_code: null };
+      let workspaceClinicalNlpStatus = bootstrap.activeTranscriptClinicalNlpStatus || { status: 'not_run', entity_count: 0, error_code: null };
       const showRedactionDebug = bootstrap.showRedactionDebug;
       const initialTranscriptErrorMessage = bootstrap.initialTranscriptErrorMessage;
 
@@ -68,6 +71,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
       const transcriptStats = document.querySelector('[data-transcript-stats]');
       const piiCount = document.querySelector('[data-pii-count]');
       const piiStatus = document.querySelector('[data-pii-status]');
+      const clinicalNlpStatus = document.querySelector('[data-clinical-nlp-status]');
       const piiTableWrap = document.querySelector('[data-pii-table-wrap]');
       const piiAddForm = document.querySelector('[data-pii-add-form]');
       const piiAddTypeInput = document.querySelector('[data-pii-add-type]');
@@ -82,6 +86,12 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
       const dictationSessionProgress = document.querySelector('[data-dictation-session-progress]');
       const dictationCombinedInput = document.querySelector('[data-dictation-combined-input]');
       const dictationProvenance = document.querySelector('[data-dictation-provenance]');
+      const transcriptReviewGrid = document.querySelector('[data-transcript-review-grid]');
+      const dictationCta = document.querySelector('[data-dictation-cta]');
+      const dictationCtaStatus = document.querySelector('[data-dictation-cta-status]');
+      const dictationPanel = document.querySelector('[data-dictation-panel]');
+      const dictationPanelCollapse = document.querySelector('[data-dictation-panel-collapse]');
+      dictationPanelUserOpened = Boolean((dictationCombinedInput?.value || '').trim());
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
@@ -609,12 +619,86 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           return { message: 'Open consultation first.', kind: 'error' };
         }
         if (!hasDictationSttSelection) {
-          return { message: dictationSttStatusMessage || 'No dictation STT configured for team.', kind: 'error' };
+          return { message: dictationSttStatusMessage || 'Not available. Ask your team lead to enable post-consultation dictation.', kind: 'error' };
         }
         if (!dictationSttAvailable) {
-          return { message: dictationSttStatusMessage || 'Dictation STT unavailable.', kind: 'error' };
+          return { message: dictationSttStatusMessage || 'Not available. Ask your team lead to enable post-consultation dictation.', kind: 'error' };
         }
-        return { message: 'Ready to append dictation audio from upload or microphone.', kind: '' };
+        return { message: 'Ready for live dictation.', kind: '' };
+      };
+
+      const dictationUnavailableCopy = () => (dictationSttStatusMessage || 'Not available. Ask your team lead to enable post-consultation dictation.');
+
+      const isConsultationCaptureActive = () => {
+        const label = String(recordToggleLabel?.textContent || '').toLowerCase();
+        return Boolean(captureController?.isLiveCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
+      };
+
+      const setDictationPanelOpen = (isOpen) => {
+        if (!dictationPanel) return;
+        dictationPanel.hidden = !isOpen;
+        dictationPanel.dataset.collapsed = isOpen ? 'false' : 'true';
+        transcriptReviewGrid?.classList.toggle('transcript-review-grid--dictation-open', isOpen);
+        refreshIcons(dictationPanel);
+      };
+
+      const openDictationPanel = ({ highlightRecord = false, userInitiated = false } = {}) => {
+        if (userInitiated) {
+          dictationPanelUserOpened = true;
+          dictationPanelUserCollapsed = false;
+        }
+        setDictationPanelOpen(true);
+        if (highlightRecord && dictationRecordToggleButton) {
+          dictationRecordToggleButton.focus({ preventScroll: false });
+          dictationRecordToggleButton.classList.add('dictation-record-highlight');
+          window.clearTimeout(openDictationPanel._highlightTimer);
+          openDictationPanel._highlightTimer = window.setTimeout(() => {
+            dictationRecordToggleButton.classList.remove('dictation-record-highlight');
+          }, 1600);
+        }
+      };
+
+      const collapseDictationPanel = () => {
+        dictationPanelUserCollapsed = true;
+        dictationPanelUserOpened = false;
+        setDictationPanelOpen(false);
+      };
+
+      const hasDictationContent = (dictation = null) => {
+        if (dictation) {
+          return Boolean(String(dictation.effective_text || '').trim() || Number(dictation.segment_count || 0) > 0 || dictation.is_combined_text_user_edited);
+        }
+        return Boolean(String(dictationCombinedInput?.value || lastSavedDictationText || '').trim());
+      };
+
+      const syncDictationCtaState = () => {
+        if (!dictationCta) return;
+        const consultationBusy = isConsultationCaptureActive();
+        const canUse = canUseDictationInput() && !consultationBusy;
+        dictationCta.disabled = !canUse;
+        if (!transcriptId) {
+          dictationCta.title = 'Open a consultation first.';
+        } else if (!hasDictationSttSelection || !dictationSttAvailable) {
+          dictationCta.title = dictationUnavailableCopy();
+        } else if (consultationBusy) {
+          dictationCta.title = 'Stop the consultation recording before adding post-consultation dictation.';
+        } else {
+          dictationCta.title = 'Add post-consultation dictation.';
+        }
+        if (dictationCtaStatus) {
+          const unavailable = Boolean(transcriptId && (!hasDictationSttSelection || !dictationSttAvailable));
+          dictationCtaStatus.hidden = !unavailable;
+          dictationCtaStatus.textContent = unavailable ? 'Not available. Ask your team lead to enable post-consultation dictation.' : '';
+        }
+      };
+
+      const syncDictationPanelState = (dictation = null) => {
+        if (hasDictationContent(dictation) && !dictationPanelUserCollapsed) {
+          dictationPanelUserOpened = true;
+        }
+        const shouldOpen = dictationPanelUserOpened && !dictationPanelUserCollapsed;
+        setDictationPanelOpen(shouldOpen);
+        syncDictationCtaState();
       };
 
       const canUseDictationInput = () => Boolean(transcriptId && hasDictationSttSelection && dictationSttAvailable);
@@ -633,9 +717,10 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           dictationRecordToggleButton.title = (!isRecording && !canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
         }
         if (dictationRecordToggleLabel) {
-          dictationRecordToggleLabel.textContent = isRecording ? 'Stop dictation' : 'Start dictation';
+          dictationRecordToggleLabel.textContent = isRecording ? 'Stop dictation' : 'Start live dictation';
         }
         dictationCaptureController?.syncDisplayedDuration?.();
+        syncDictationCtaState();
       };
 
       const renderDictation = (dictation) => {
@@ -652,9 +737,10 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           } else if (dictation) {
             dictationProvenance.textContent = 'Using appended raw dictation segments in append order until you edit this field.';
           } else {
-            dictationProvenance.textContent = 'No dictation yet. Upload audio pass or type summary directly.';
+            dictationProvenance.textContent = 'No dictation yet. Start live dictation or type a clinician summary directly.';
           }
         }
+        syncDictationPanelState(dictation);
       };
 
       const displayStatusLabel = (statusLabel, ingestionMode) => {
@@ -1306,6 +1392,19 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
             piiStatus.textContent = 'Redaction check has not run for this transcript yet.';
           }
         }
+        const clinicalStatus = workspaceClinicalNlpStatus?.status || 'not_run';
+        if (clinicalNlpStatus) {
+          clinicalNlpStatus.classList.toggle('pii-status--error', clinicalStatus === 'failed');
+          if (clinicalStatus === 'succeeded') {
+            const count = Number(workspaceClinicalNlpStatus?.entity_count || 0);
+            clinicalNlpStatus.textContent = `Clinical NLP complete: ${count} item${count === 1 ? '' : 's'}.`;
+          } else if (clinicalStatus === 'failed') {
+            const errorCode = workspaceClinicalNlpStatus?.error_code;
+            clinicalNlpStatus.textContent = `Clinical NLP failed${errorCode ? `: ${errorCode}` : ''}.`;
+          } else {
+            clinicalNlpStatus.textContent = 'Clinical NLP has not run for this transcript yet.';
+          }
+        }
         if (rows.length === 0) {
           const emptyText = redactionStatus === 'succeeded'
             ? 'No PII identified in the latest redaction check.'
@@ -1575,6 +1674,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         transcriptId = transcript?.id || null;
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
         workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
+        workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };
         currentTranscriptStatus = transcript?.status || null;
         activeIngestionMode = transcript?.ingestion_mode || null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
@@ -1643,6 +1743,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           setSessionProgress('Create or open a consultation to begin.');
         }
         renderDictation(dictation);
+        syncDictationCtaState();
         if (!(shouldPreserveLiveMicStatus() && !(latestIngestionJobStatus === 'failed' && latestIngestionErrorMessage))) {
           const micStatusState = defaultMicStatusState();
           setMicStatus(micStatusState.message, micStatusState.kind);
@@ -1664,6 +1765,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isLiveCaptureUiActive());
         setDictationMicButtons(false);
+        syncDictationPanelState(dictation);
         if (!preserveDirtyNoteEditor) {
           structuredEditor.syncStructuredTemplateUi();
         }
@@ -1736,6 +1838,28 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
       dictationCombinedInput?.addEventListener('blur', () => {
         if (dictationDirty) {
           scheduleDictationAutosave({ immediate: true });
+        }
+      });
+      dictationCta?.addEventListener('click', () => {
+        if (!canUseDictationInput()) {
+          showFlash('Not available. Ask your team lead to enable post-consultation dictation.', 'error');
+          syncDictationCtaState();
+          return;
+        }
+        if (isConsultationCaptureActive()) {
+          showFlash('Stop the consultation recording before adding post-consultation dictation.', 'error');
+          syncDictationCtaState();
+          return;
+        }
+        openDictationPanel({ highlightRecord: true, userInitiated: true });
+      });
+      dictationPanelCollapse?.addEventListener('click', () => {
+        collapseDictationPanel();
+        dictationCta?.focus({ preventScroll: false });
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && dictationPanel && !dictationPanel.hidden && document.activeElement?.closest?.('[data-dictation-panel]')) {
+          collapseDictationPanel();
         }
       });
       document.addEventListener('openscribe:legacy-structured-context-changed', () => {

@@ -92,6 +92,7 @@ from app.services.content_crypto import (
 )
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
+from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
@@ -2904,6 +2905,91 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
         purpose="clinical_entities.normalized_value_hash",
         value="dizziness",
     )
+
+
+def test_clinical_detection_reruns_after_provider_config_update(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Clinical NLP Refresh")
+    admin = make_user(email="clinical-refresh-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-refresh-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Refresh Clinical NLP",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9401",
+        detect_path="/analyze",
+        auth_mode=DeidentificationAuthMode.none,
+        response_entities_path="entities",
+        response_type_field="entity_type",
+        response_score_field="score",
+        clinical_detection_enabled=True,
+        clinical_detection_allow_unredacted=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Clinical NLP refresh",
+        current_draft_text_encrypted="Jane Smith attended with diarrhoea and chest pain.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Jane Smith attended with diarrhoea and chest pain.",
+    )
+    db_session.add(version)
+    db_session.flush()
+    stale_run = ClinicalEntityRun(
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        provider_id=provider.id,
+        status=RedactionRunStatus.succeeded,
+        source_text_redacted=False,
+        api_provider=provider.label,
+        entity_count=0,
+        created_at=utcnow() - timedelta(minutes=10),
+    )
+    db_session.add(stale_run)
+    provider.updated_at = utcnow()
+    db_session.add(provider)
+    db_session.commit()
+
+    class FakeClinicalResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "entities": [
+                    {"start": 25, "end": 34, "entity_type": "DISEASE", "score": 0.95},
+                    {"start": 39, "end": 49, "entity_type": "DISEASE", "score": 0.97},
+                ]
+            }
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeClinicalResponse())
+
+    fresh_run = ensure_clinical_entity_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert fresh_run is not None
+    assert fresh_run.id != stale_run.id
+    assert fresh_run.entity_count == 2
+    runs = list(db_session.scalars(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id)))
+    assert len(runs) == 2
 
 
 def test_generic_rest_deidentification_locates_value_only_entities(
@@ -7335,6 +7421,11 @@ def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
     assert payload["active_transcript_redaction_status"] == {
         "status": "succeeded",
         "entity_count": 2,
+        "error_code": None,
+    }
+    assert payload["active_transcript_clinical_nlp_status"] == {
+        "status": "not_run",
+        "entity_count": 0,
         "error_code": None,
     }
     assert payload["generated_documents"][0]["pii_entities"] == expected_document_entities

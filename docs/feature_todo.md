@@ -189,7 +189,7 @@ Phase 4: transcribe UI
 - done: allow append pass after prior dictation exists via append audio upload form
 - done: added combined editable dictation field
 - done: dedicated real-mic dictation recorder UI with reused VAD visualizer/timer/status for voice-only microphone capture
-- pending: explicit `Add post-consultation dictation` CTA polish; current first cut uses always-visible dictation pane
+- done: explicit `Add post-consultation dictation` CTA polish beside the main transcription controls; CTA opens a collapsible right-side dictation panel and highlights live dictation without auto-starting recording
 
 Phase 5: generation integration
 - done: auto-include dictation in note/follow-up/quick action generation
@@ -648,3 +648,8 @@ Also need to add regex for UK phone numbers and NHS numbers. ideally we would be
 
 # Onboarding UI
 - Needs to be updated to look like current main UI, colours, spacing, typeface etc
+
+# From Hazard log
+- Prompt user that no speech heard within 30 secs
+- if recording gets up to size / length limit, send record for transcription and start recording again. Obeys normal rate limit
+- Prompt user to confirm deletion of note.

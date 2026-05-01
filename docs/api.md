@@ -626,6 +626,7 @@ Current whole-file ingestion behavior:
   - supports bulk-delete of selected transcript sessions from the session rail
   - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
   - exposes `active_transcript_pii_entities` as owner-only detected PII rows from the latest successful redaction run, disease/symptom rows from the latest successful clinical NLP run, plus owner-created manual PII rows for the active transcript
+  - exposes `active_transcript_redaction_status` and `active_transcript_clinical_nlp_status` so empty review rows can distinguish not-run, failed, and succeeded-with-zero-results states without exposing transcript text
   - includes note-level `generated_documents[].pii_entities` so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates

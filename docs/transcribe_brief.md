@@ -139,11 +139,13 @@ User can change:
 - type note content directly
 - add/remove/revise structured statements
 - add/remove/revise freeform lines
+- reorder non-empty structured/freeform lines by drag handle or keyboard shortcut
 - continue editing generated notes after creation
 
 How:
 - edit note lines in place
 - autosave on debounce/blur
+- blank placeholder lines cannot be moved; blocked keyboard reorder shortcuts are still consumed so browser history navigation does not fire
 - explicit note switching changes which note is being edited
 
 Access:
@@ -170,6 +172,7 @@ How:
 - use a section header copy button
 - for LLM-generated notes, scroll to the bottom of a structured section before copying that section
 - for LLM-generated freeform notes, scroll to the bottom of the generated note before copying selected note lines
+- if the copyable generated-note text changes after review, scroll to the updated bottom again before copying
 - hidden output panes do not count as reviewed for generated-note copy
 - blocked generated-note copy controls remain clickable and explain the block with a toast
 - blocked copy attempts surface as a toast instead of an inline alert

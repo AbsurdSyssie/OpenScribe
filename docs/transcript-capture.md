@@ -126,6 +126,14 @@ Prompt contract:
 - prompt should instruct model to treat dictation as stronger clinician-authored signal for interpretation, terminology, and plan wording
 - prompt should still keep transcript as factual consultation anchor and should not permit invention of facts absent from both sources
 
+Workspace UX:
+
+- the post-consultation dictation CTA appears beside the main consultation transcription controls so it is reachable from any workspace tab
+- if dictation STT is not configured or unavailable, the CTA is disabled with the message: `Not available. Ask your team lead to enable post-consultation dictation.`
+- clicking the CTA reveals the collapsible right-side dictation panel and focuses/highlights the live dictation record button
+- clicking the CTA does not start recording automatically
+- live dictation is the primary path; audio upload remains a secondary fallback for separately recorded dictation audio
+
 Shared backend concepts:
 
 - transcript start
@@ -329,7 +337,7 @@ Implemented now for manual browser testing:
   - renders the full note text onto the generated document
   - persists individual section rows for section-by-section display
   - the workspace shows line-selectable EMIS section output with clearer row separation and a copy-selected-lines action, including after workspace API refreshes and polling
-  - generated-note copy controls now require the owner to view the relevant generated content first: structured section copy unlocks per section after its bottom is visible, reaching a later structured section bottom marks earlier sections reviewed, and generated freeform copy unlocks after the note bottom is visible; hidden output panes do not count as reviewed; blocked copy controls remain clickable and surface a toast instead of an inline alert
+  - generated-note copy controls now require the owner to view the relevant generated content first: structured section copy unlocks per section after its bottom is visible, reaching a later structured section bottom marks earlier sections reviewed, and generated freeform copy unlocks after the note bottom is visible; changing the copyable note text revokes the review state until the updated bottom is visible; hidden output panes do not count as reviewed; blocked copy controls remain clickable and surface a toast instead of an inline alert
 - when the owner edits a generated note in the browser and switches to another note version before autosave fires, the UI now saves the dirty note first and only switches versions if that save succeeds
 - before the worker sends transcript-derived text to an external LLM:
   - it lazily creates or reuses a `redaction_runs` snapshot for the queued `transcript_versions` row

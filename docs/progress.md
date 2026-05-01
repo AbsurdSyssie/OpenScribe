@@ -1,5 +1,186 @@
 # Progress
 
+## 2026-05-01 Clinical NLP Status and Refresh
+
+### Scope
+
+- Clinical NLP now reruns for the same transcript version when the selected provider was edited after a previous successful clinical run, preventing stale zero-result runs from blocking updated endpoint config.
+- The transcribe workspace now returns and renders clinical NLP status/count separately from redaction status.
+- The review sidebar now shows whether clinical NLP has not run, failed, or completed with a zero/non-zero count.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: pytest still blocked locally by database connection failure.
+
+### Files changed
+
+- `app/services/clinical_nlp.py`: only reuses existing clinical runs when they are newer than the provider configuration.
+- `app/web/transcribe_workspace.py`, `app/schemas/workspace.py`, `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_shell_extras.html`, `app/static/js/transcribe/app.js`: expose and render owner-scoped clinical NLP status.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: add stale-run rerun and clinical-status wiring coverage.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document clinical NLP status and rerun behavior.
+
+### Tests
+
+- Added service/API coverage for rerunning a stale zero-result clinical run after provider config update.
+- Added workspace/API and static UI coverage for clinical NLP status payload and rendering hooks.
+
+### Documentation
+
+- Updated API/testing docs and this progress note.
+
+### Risks / assumptions
+
+- Existing historical clinical runs are preserved; the latest run is used for display.
+- Provider `updated_at` is the freshness boundary for config changes.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only status/count metadata and owner-scoped clinical rows are exposed through the existing owner workspace.
+- Ownership rules preserved: workspace and clinical entities remain scoped by transcript owner and team.
+- Deletion semantics preserved: clinical runs remain transcript-derived children under existing cascades.
+- Provider rules preserved: active team clinical NLP selection, assignment, redacted/unredacted policy, and HTTPS/local rules are unchanged.
+- Structured-note contract preserved: no EMIS/generated-document JSON behavior changed.
+
+## 2026-05-01 Copy Review Content Freshness
+
+### Scope
+
+- Revoked generated-note copy review when the rendered copyable note text changes after the user has reviewed it.
+- Kept structured review invalidation section-scoped, so editing one section does not invalidate unrelated reviewed sections.
+- Added scroll/resize bottom checks alongside `IntersectionObserver` so tall note panels can unlock once their bottom reaches the viewport.
+- Restored the one-column transcript/PII review layout below 1180px even when the dictation panel is closed.
+- Restored unrelated transcript/PII/sidebar/follow-up static regression assertions and removed root scratch patch notes from the worktree.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser automation not run; static regression covers fingerprint invalidation and tall-panel scroll wiring.
+
+### Files changed
+
+- `app/static/js/transcribe/structured.js`: tracks per-section/freeform copy-review fingerprints, revokes stale review after text changes, and checks viewport bottom reach on scroll/resize.
+- `app/templates/transcribe/_head_assets.html`: adds a matching mobile override for the closed-dictation transcript review grid selector.
+- `tests/test_admin_ui.py`: adds static regression coverage for content freshness, tall-panel observer settings, and the closed-dictation mobile grid override while preserving existing transcript/PII/sidebar/follow-up checks.
+- `docs/testing.md`, `docs/transcribe_brief.md`, `docs/transcript-capture.md`, `docs/progress.md`: document updated copy-review behavior.
+
+### Tests
+
+- Added static UI regression coverage for copy-review content fingerprints, review invalidation copy, scroll listener wiring, non-full intersection threshold, and the closed-dictation mobile grid override.
+
+### Documentation
+
+- Updated testing and transcript-capture docs to state that changed copyable note text requires review again.
+
+### Risks / assumptions
+
+- Checkbox-only selection changes do not revoke review because the rendered note text has not changed.
+- Whitespace-only placeholder rows are ignored for review freshness because they are not copyable note content.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript or generated-note content is logged or exposed beyond the existing owner workspace DOM.
+- Ownership rules preserved: no owner/team access checks changed.
+- Deletion semantics preserved: no deletion or cascade behavior changed.
+- Provider rules preserved: no STT, LLM, or de-identification provider path changed.
+- Structured-note contract preserved: EMIS section keys and generated-document JSON shape unchanged.
+
+## 2026-05-01 Blank Note Line Reorder Guard
+
+### Scope
+
+- Prevented blank structured/freeform note lines in `/transcribe` from being moved by drag handle or `Alt+Arrow` keyboard reorder.
+- Consumed blocked `Alt+Arrow` shortcuts on blank rows before returning so browser history navigation cannot steal focus from the workspace.
+- Disabled and hid the reorder handle while a line has no non-whitespace text.
+- Restored a blank row to its original position if a stale drag interaction starts before the handle state updates.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser automation not run; static regression covers JS guards, blocked shortcut consumption, handle state, and cache keys.
+
+### Files changed
+
+- `app/static/js/transcribe/reorder.js`: blocks blank-row keyboard moves, consumes blocked shortcuts, and restores blocked drag attempts.
+- `app/static/js/transcribe/structured.js`: marks blank rows and disables their drag handles.
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: bump module cache keys.
+- `app/templates/transcribe/_head_assets.html`: hides disabled blank-row drag handles.
+- `tests/test_admin_ui.py`: adds static regression for blank-line reorder guard.
+- `docs/testing.md`, `docs/transcribe_brief.md`, `docs/progress.md`: document expected behavior.
+
+### Tests
+
+- Added static UI regression coverage for blank-row reorder blocking, blocked shortcut consumption, and cache busting.
+
+### Documentation
+
+- Updated transcribe behavior notes, testing notes, and this progress log.
+
+### Risks / assumptions
+
+- Assumes blank placeholder rows should remain available for typing but should not be reorderable until they contain text.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note content access path changed.
+- Ownership rules preserved: no owner/team checks changed.
+- Deletion semantics preserved: no deletion or cascade path changed.
+- Provider rules preserved: no STT/LLM/de-identification resolution changed.
+- Structured-note contract preserved: EMIS keys and generated-document JSON/content contracts unchanged.
+
+## 2026-05-01 Post-Consultation Dictation CTA
+
+### Scope
+
+- Added a global post-consultation dictation CTA beside the main consultation controls.
+- Made the dictation panel collapsible from the right-side transcript workspace.
+- CTA reveals the dictation panel and highlights/focuses the live dictation record button without starting recording.
+- Kept live dictation visually primary and moved audio upload behind a secondary disclosure.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: no browser automation added; static template/JS regression coverage protects the expected selectors and no-auto-record behavior.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: adds global dictation CTA, collapsible dictation panel affordance, and live-first copy.
+- `app/templates/transcribe/_head_assets.html`: adds dictation CTA/panel/highlight styling.
+- `app/static/js/transcribe/app.js`: adds CTA open/collapse behavior, record-button highlight, and dictation availability sync.
+- `app/templates/transcribe/_shell_extras.html`: bumps transcribe app module cache key.
+- `app/templates/transcribe/_shell_extras.html`: bumps transcribe app module cache key again after the initialization-order fix so browsers do not keep the broken module.
+- `tests/test_admin_ui.py`: adds static regression tests for markup, live-first ordering, no-auto-record click behavior, and cache key.
+- `docs/feature_todo.md`, `docs/transcript-capture.md`, `docs/progress.md`: documents the completed UI slice.
+
+### Tests
+
+- Added template/static JS checks for the global CTA, unavailable copy, collapsible panel, live-first ordering, and no automatic recording start.
+
+### Documentation
+
+- Updated feature checklist and transcript capture UX notes.
+
+### Risks / assumptions
+
+- Assumes existing workspace/session state is sufficient for panel open/close behavior and no new DB-backed preference is needed.
+- Assumes upload should remain available but secondary to live microphone dictation.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content endpoint or admin/leader content view was added.
+- Ownership rules preserved: existing owner-only dictation APIs remain the only dictation persistence path.
+- Deletion semantics preserved: no transcript-root cascade or lifecycle behavior changed.
+- Provider rules preserved: existing dictation STT selection/availability state is reused with no fallback change.
+- Structured-note contract preserved: generated-note JSON and EMIS section behavior are unchanged.
+
 ## 2026-04-30 Editor Smart Phrases And Reordering
 
 ### Scope
@@ -2236,3 +2417,46 @@
 - Deletion semantics preserved: no delete/cascade behavior changed.
 - Provider rules preserved: no provider selection or fallback behavior changed.
 - Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-01 Transcribe Copy Review Marker Fix
+
+### Scope
+
+- Removed structured/freeform copy-review sentinel elements so no marker can render at note section bottoms.
+- Kept copy-review gating by observing the real structured section cards and freeform panel bottoms.
+- Updated keyboard row reordering to skip non-row siblings.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/static/js/transcribe/structured.js`: observes section/panel elements directly instead of rendering sentinel markers.
+- `app/static/js/transcribe/reorder.js`: skips non-row siblings when moving rows by keyboard.
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: bump module query strings for updated editor/reorder code and the outer app module.
+- `tests/test_admin_ui.py`: adds static regressions for no sentinel markers and keyboard reorder sibling lookup.
+- `docs/progress.md`: records this UI fix.
+
+### Tests
+
+- Added static UI regression coverage for no rendered sentinel markers and reorder sibling skipping.
+
+### Documentation
+
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Assumes section/panel bottom visibility is the intended copy-review boundary.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note content access or display permissions changed.
+- Ownership rules preserved: no owner/team checks changed.
+- Deletion semantics preserved: no deletion or cascade path changed.
+- Provider rules preserved: no STT/LLM/de-identification resolution changed.
+- Structured-note contract preserved: EMIS keys and generated-document JSON/content contracts unchanged.

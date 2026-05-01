@@ -161,9 +161,21 @@ transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 cursor: grabbing;
 }
 
+.statement-drag-handle:disabled,
+.statement-row.is-blank-line .statement-drag-handle {
+cursor: default;
+opacity: 0;
+pointer-events: none;
+}
+
 .statement-row:hover .statement-drag-handle,
 .statement-row:focus-within .statement-drag-handle {
 opacity: 1;
+}
+
+.statement-row.is-blank-line:hover .statement-drag-handle,
+.statement-row.is-blank-line:focus-within .statement-drag-handle {
+opacity: 0;
 }
 
 .statement-drag-handle:hover,
@@ -732,6 +744,145 @@ background: white;
 overflow: hidden;
 }
 
+.transcript-review-grid:not(.transcript-review-grid--dictation-open) {
+grid-template-columns: minmax(0, 2.1fr) minmax(14rem, 0.82fr);
+}
+
+.transcript-review-grid__dictation[hidden] {
+display: none;
+}
+
+.dictation-global-cta {
+display: inline-flex;
+align-items: center;
+gap: 0.4rem;
+height: 2.25rem;
+padding: 0 0.8rem;
+border: 1px solid rgba(29, 79, 94, 0.24);
+border-radius: 999px;
+background: rgba(224, 242, 245, 0.64);
+color: var(--accent);
+font-size: 0.82rem;
+font-weight: 700;
+transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dictation-global-cta:hover:not(:disabled),
+.dictation-global-cta:focus-visible {
+border-color: rgba(29, 79, 94, 0.62);
+background: rgba(224, 242, 245, 0.95);
+box-shadow: 0 2px 10px rgba(26, 32, 44, 0.05);
+outline: none;
+}
+
+.dictation-global-cta:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
+.dictation-global-cta__status {
+max-width: 18rem;
+color: var(--muted);
+font-size: 0.76rem;
+line-height: 1.25;
+}
+
+.dictation-side-panel {
+position: relative;
+background: rgba(250, 248, 245, 0.96);
+box-shadow: -8px 0 24px rgba(20, 32, 43, 0.06);
+}
+
+.dictation-side-panel[data-collapsed="true"] {
+display: none;
+}
+
+.dictation-side-panel__header {
+display: flex;
+align-items: flex-start;
+justify-content: space-between;
+gap: 0.8rem;
+padding: 0.85rem 0.9rem;
+border-bottom: 1px solid var(--border);
+background: rgba(250, 248, 245, 0.98);
+}
+
+.dictation-side-panel__intro {
+margin-top: 0.35rem;
+font-size: 0.78rem;
+line-height: 1.35;
+color: var(--muted);
+}
+
+.dictation-side-panel__collapse {
+width: 2rem;
+height: 2rem;
+display: inline-flex;
+align-items: center;
+justify-content: center;
+border: 1px solid rgba(226, 222, 214, 0.95);
+border-radius: 999px;
+background: white;
+color: var(--muted);
+transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.dictation-side-panel__collapse:hover,
+.dictation-side-panel__collapse:focus-visible {
+color: var(--accent);
+border-color: rgba(61, 122, 140, 0.5);
+background: rgba(224, 242, 245, 0.45);
+outline: none;
+}
+
+.dictation-live-card {
+margin: 0.75rem;
+padding: 0.8rem;
+border: 1px solid rgba(61, 122, 140, 0.18);
+border-radius: 0.85rem;
+background: white;
+box-shadow: 0 2px 10px rgba(20, 32, 43, 0.04);
+}
+
+.dictation-live-card__title {
+font-size: 0.9rem;
+font-weight: 800;
+color: var(--fg);
+}
+
+.dictation-live-card__hint,
+.dictation-upload-secondary__hint {
+font-size: 0.76rem;
+line-height: 1.35;
+color: var(--muted);
+}
+
+.dictation-upload-secondary {
+margin-bottom: 0.9rem;
+padding: 0.7rem 0.75rem;
+border: 1px solid rgba(226, 222, 214, 0.9);
+border-radius: 0.75rem;
+background: rgba(255, 255, 255, 0.62);
+}
+
+.dictation-upload-secondary summary {
+cursor: pointer;
+font-size: 0.8rem;
+font-weight: 700;
+color: var(--accent);
+}
+
+.dictation-record-highlight {
+animation: dictationRecordPulse 1.6s ease-out;
+box-shadow: 0 0 0 4px rgba(91, 163, 181, 0.24);
+}
+
+@keyframes dictationRecordPulse {
+0% { box-shadow: 0 0 0 0 rgba(91, 163, 181, 0.38); }
+55% { box-shadow: 0 0 0 8px rgba(91, 163, 181, 0.18); }
+100% { box-shadow: 0 0 0 0 rgba(91, 163, 181, 0); }
+}
+
 .transcript-review-grid__transcript,
 .transcript-review-grid__dictation,
 .pii-sidebar {
@@ -980,6 +1131,10 @@ font-weight: 700;
 .transcript-review-grid {
 grid-template-columns: minmax(0, 1fr);
 overflow-y: auto;
+}
+
+.transcript-review-grid:not(.transcript-review-grid--dictation-open) {
+grid-template-columns: minmax(0, 1fr);
 }
 
 .transcript-review-grid__transcript,

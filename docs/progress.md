@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-05-02 Celery Audio Payload Hardening
+
+### Scope
+
+- Removed raw audio from Celery transcript-ingestion task payloads; tasks now carry only `job_id`.
+- Worker loads queued audio from `source_audio_vault_ref` and clears source audio after successful processing.
+- Live chunks and whole-file retries now use the same Vault-backed queued-source path.
+- Legacy queued `audio_b64` Celery messages remain accepted during rollout and are moved into Vault-backed source storage before processing.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: legacy `source_audio_blob` column remains for deployment safety; drop in later migration after confirming no deployed workers or failed jobs rely on it.
+
+### Files changed
+
+- `app/tasks.py`: remove audio/base64 from new transcript ingestion task payloads while accepting legacy queued payloads during rollout.
+- `app/services/transcripts.py`: add queued-source reader, store live chunks in Vault-backed source storage, read worker audio by job ref, clear source on success after DB commit, and preserve legacy blob retry fallback.
+- `app/routes/web_transcribe.py`, `app/routes/api_routes.py`: enqueue transcript ingestion by `job_id` only.
+- `tests/conftest.py`, `tests/test_api.py`, `tests/test_admin_ui.py`: update stubs and regression coverage for job-id-only enqueue and Vault-backed source audio.
+- `docs/testing.md`, `docs/transcript-capture.md`, `docs/progress.md`: document hardened payload behavior.
+
+### Tests
+
+- `python3 -m py_compile app/tasks.py app/services/transcripts.py app/routes/web_transcribe.py app/routes/api_routes.py tests/conftest.py tests/test_api.py tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py::test_enqueue_transcript_ingestion_job_does_not_send_audio tests/test_api.py::test_legacy_transcript_ingestion_task_payload_is_accepted tests/test_api.py::test_transcript_detail_includes_latest_ingestion_failure tests/test_api.py::test_live_audio_chunk_upload_queues_owner_job tests/test_api.py::test_processing_live_audio_chunk_jobs_applies_text_in_sequence tests/test_api.py::test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_job tests/test_api.py::test_audio_file_upload_queues_job_for_whole_file_mode tests/test_api.py::test_retry_audio_file_route_requeues_failed_blob_for_owner tests/test_api.py::test_retry_audio_file_enqueue_failure_keeps_retry_source_available tests/test_api.py::test_processing_audio_file_job_appends_transcript_draft_and_marks_ready tests/test_api.py::test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails tests/test_api.py::test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_changes tests/test_api.py::test_processing_audio_file_job_fails_when_normalized_duration_exceeds_limit tests/test_api.py::test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missing`: passed, 14 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_user_transcribe_page_shows_specific_ingestion_failure_message tests/test_admin_ui.py::test_user_can_retry_failed_file_transcription_from_browser`: passed, 2 tests.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Updated testing/transcript-capture docs and this progress note.
+
+### Risks / assumptions
+
+- Existing failed jobs with only legacy `source_audio_blob` remain retryable until the cleanup migration removes the fallback.
+- `source_audio_blob` remains in schema for a safe rollout and later cleanup migration.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: new Redis/Celery tasks no longer carry consultation audio; legacy queued messages are migrated into Vault-backed storage when processed.
+- Ownership rules preserved: upload/retry still uses owner-scoped transcript services.
+- Deletion semantics preserved: source refs are cleared after success and during transcript/user deletion; failed jobs keep source refs for retry.
+- Provider rules preserved: STT snapshot and provider resolution behavior unchanged.
+- Structured-note contract preserved: no EMIS/generated-document JSON behavior changed.
+
 ## 2026-05-01 Clinical NLP Status and Refresh
 
 ### Scope

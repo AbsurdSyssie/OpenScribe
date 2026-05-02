@@ -116,6 +116,56 @@ from app.services import vault as vault_service
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
 
 
+def test_enqueue_transcript_ingestion_job_does_not_send_audio(monkeypatch):
+    from app import tasks
+
+    captured = {}
+
+    class FakeTask:
+        @staticmethod
+        def delay(**kwargs):
+            captured.update(kwargs)
+
+            class Result:
+                id = "task-1"
+
+            return Result()
+
+    monkeypatch.setattr(tasks, "process_transcript_ingestion_job_task", FakeTask)
+
+    job_id = uuid4()
+    tasks.enqueue_transcript_ingestion_job(job_id=job_id)
+
+    assert captured == {"job_id": str(job_id)}
+    assert "audio_b64" not in captured
+    assert "audio_bytes" not in captured
+
+
+def test_legacy_transcript_ingestion_task_payload_is_accepted(monkeypatch):
+    from app import tasks
+
+    captured = {}
+
+    class FakeSession:
+        def __enter__(self):
+            return "db-session"
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(
+        tasks,
+        "process_transcript_ingestion_job",
+        lambda db, **kwargs: captured.update({"db": db, **kwargs}),
+    )
+
+    job_id = uuid4()
+    tasks.process_transcript_ingestion_job_task(job_id=str(job_id), audio_b64="bGVnYWN5LWF1ZGlv")
+
+    assert captured == {"db": "db-session", "job_id": job_id, "legacy_audio_bytes": b"legacy-audio"}
+
+
 def assert_error(response, *, status_code: int, code: str, message: str):
     body = response.json()
     assert response.status_code == status_code
@@ -7132,7 +7182,7 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
-        source_audio_blob=b"raw-file-audio",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/detail/source-audio",
         source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_config_secret_missing",
@@ -8238,6 +8288,8 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
     assert job.celery_task_id == "test-task-id"
+    assert job.source_audio_blob is None
+    assert job.source_audio_vault_ref is not None
     assert job.source_audio_size_bytes == len(b"raw-audio")
     assert job.declared_duration_seconds == 12
 
@@ -8630,7 +8682,7 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     )
     job_two_id = UUID(queued_two.json()["job"]["id"])
 
-    processed_two = process_transcript_ingestion_job(db_session, job_id=job_two_id, audio_bytes=b"chunk-2")
+    processed_two = process_transcript_ingestion_job(db_session, job_id=job_two_id)
     assert processed_two.status is TranscriptIngestionJobStatus.completed
 
     transcript_after_two = db_session.get(Transcript, UUID(transcript_id))
@@ -8639,7 +8691,7 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     assert decrypt_transcript_draft(db_session, transcript_after_two) == "draft-1"
     assert transcript_after_two.next_live_chunk_sequence_no_applied == 1
 
-    processed_one = process_transcript_ingestion_job(db_session, job_id=job_one_id, audio_bytes=b"chunk-1")
+    processed_one = process_transcript_ingestion_job(db_session, job_id=job_one_id)
     assert processed_one.status is TranscriptIngestionJobStatus.applied
 
     transcript_after_one = db_session.get(Transcript, UUID(transcript_id))
@@ -8960,7 +9012,7 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fail_if_called)
 
-    processed = process_transcript_ingestion_job(db_session, job_id=failed_job.id, audio_bytes=b"raw-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=failed_job.id)
 
     assert processed.status is TranscriptIngestionJobStatus.failed
     assert processed.error_code == "ingestion_processing_stale"
@@ -8996,6 +9048,10 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
         "app.services.transcripts.normalize_audio_to_wav_16k_mono",
         lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
     )
+    monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-audio")
+    job.source_audio_vault_ref = "secret:openscribe/transcript-ingestion/midflight/source-audio"
+    db_session.add(job)
+    db_session.commit()
 
     def fake_transcribe_with_stt_snapshot(db, **kwargs):
         refreshed_job = db.get(TranscriptIngestionJob, job.id)
@@ -9013,7 +9069,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
 
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
 
-    processed = process_transcript_ingestion_job(db_session, job_id=job.id, audio_bytes=b"raw-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
 
     assert processed.status is TranscriptIngestionJobStatus.failed
     assert processed.error_code == "ingestion_processing_stale"
@@ -9169,7 +9225,7 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
 
 
 def test_retry_audio_file_route_requeues_failed_blob_for_owner(
-    client, db_session, make_team, make_user, make_stt_config, make_stt_selection
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
 ):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-retry@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -9192,7 +9248,7 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
         transcript,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
-        source_audio_blob=b"raw-file-audio",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/retry/source-audio",
         source_audio_size_bytes=len(b"raw-file-audio"),
         source_audio_duration_seconds=15.25,
         stt_config_id=config.id,
@@ -9210,6 +9266,7 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     )
     db_session.add(failed_job)
     db_session.commit()
+    monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-file-audio")
 
     login(client, email="owner-retry@example.com", password="password-1")
     retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
@@ -9489,7 +9546,8 @@ def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
     assert latest_job is not None
     assert latest_job.id != failed_job.id
     assert latest_job.status is TranscriptIngestionJobStatus.failed
-    assert latest_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    assert latest_job.source_audio_vault_ref is not None
+    assert latest_job.source_audio_vault_ref != "secret:openscribe/transcript-ingestion/legacy/source-audio"
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
     assert detail.status_code == 200
     assert detail.json()["latest_ingestion_retry_available"] is True
@@ -10063,7 +10121,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
     job_id = UUID(uploaded.json()["job"]["id"])
-    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id)
 
     assert uploaded.status_code == 202
     assert processed.status is TranscriptIngestionJobStatus.applied
@@ -10135,7 +10193,7 @@ def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(cli
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
     job_id = UUID(uploaded.json()["job"]["id"])
-    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id)
 
     assert processed.status is TranscriptIngestionJobStatus.applied
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
@@ -10215,7 +10273,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
 
-    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id)
     assert processed.status is TranscriptIngestionJobStatus.applied
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert refreshed_job is not None
@@ -10327,7 +10385,7 @@ def test_processing_audio_file_job_fails_when_normalized_duration_exceeds_limit(
     )
     job_id = UUID(uploaded.json()["job"]["id"])
 
-    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id)
 
     failed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert failed_job is not None
@@ -10385,7 +10443,7 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
     )
     job_id = UUID(uploaded.json()["job"]["id"])
 
-    processed = process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
+    processed = process_transcript_ingestion_job(db_session, job_id=job_id)
 
     assert processed.status is TranscriptIngestionJobStatus.failed
     assert processed.error_code == "stt_config_secret_missing"

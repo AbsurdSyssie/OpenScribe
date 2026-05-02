@@ -894,7 +894,7 @@ def stub_transcript_ingestion_enqueue(monkeypatch: pytest.MonkeyPatch):
     class FakeTaskResult:
         id = "test-task-id"
 
-    def fake_enqueue_transcript_ingestion_job(*, job_id, audio_bytes):
+    def fake_enqueue_transcript_ingestion_job(*, job_id):
         return FakeTaskResult()
 
     monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fake_enqueue_transcript_ingestion_job)

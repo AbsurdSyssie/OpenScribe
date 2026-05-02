@@ -519,6 +519,7 @@ Implemented now for `whole_file`:
   - source duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS`
 - rejection at queue time when no active team STT selection exists
 - queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
+- New Celery task payloads contain only `job_id`; workers read queued source audio from the stored Vault ref, while legacy `audio_b64` messages are accepted during rollout and moved into Vault-backed source storage before processing
 - backend worker audio normalization before provider submission
 - provider transcript text appended into `current_draft_text_encrypted`
 - transcript status set to `ready` after successful provider completion

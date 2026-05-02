@@ -157,6 +157,7 @@ What it does:
 - whole-file ingestion appending plaintext transcript content into an encrypted-at-rest transcript draft
 - STT provider execution using the team config, Vault secret, and configured response text path
 - queued STT jobs snapshotting the resolved provider/model so later team STT selection changes do not retarget already-uploaded audio
+- queued transcript-ingestion Celery tasks carrying only `job_id`, with worker audio loaded from Vault-backed `source_audio_vault_ref`; legacy `audio_b64` task messages are accepted during rollout and immediately moved into Vault-backed source storage
 - handled STT worker failures now marking the job/transcript failed without re-raising expected AppError paths into noisy Celery tracebacks
 - selected STT configs with missing saved credentials failing immediately with `stt_config_secret_missing` instead of queueing a doomed job
 - already-running STT jobs surfacing the same `stt_config_secret_missing` message if the saved credential disappears before execution

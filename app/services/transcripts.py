@@ -56,7 +56,7 @@ def _read_retry_source_audio(job: TranscriptIngestionJob) -> bytes:
         try:
             return read_transcript_ingestion_source_audio(secret_ref=job.source_audio_vault_ref)
         except AppError as exc:
-            if exc.code == "vault_read_failed" and exc.message == "Stored retry audio is missing":
+            if exc.code == "vault_read_failed":
                 raise AppError(
                     409,
                     "ingestion_retry_unavailable",
@@ -64,6 +64,33 @@ def _read_retry_source_audio(job: TranscriptIngestionJob) -> bytes:
                 ) from exc
             raise
     raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
+
+
+def _read_queued_source_audio(db: Session, job: TranscriptIngestionJob, *, legacy_audio_bytes: bytes | None = None) -> bytes:
+    if not job.source_audio_vault_ref:
+        if legacy_audio_bytes is not None:
+            job.source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job.id, audio_bytes=legacy_audio_bytes)
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            return legacy_audio_bytes
+        raise AppError(
+            409,
+            "ingestion_source_unavailable",
+            "Queued audio is no longer available. Upload the audio file again.",
+            {"job_id": str(job.id), "transcript_id": str(job.transcript_id)},
+        )
+    try:
+        return read_transcript_ingestion_source_audio(secret_ref=job.source_audio_vault_ref)
+    except AppError as exc:
+        if exc.code == "vault_read_failed":
+            raise AppError(
+                409,
+                "ingestion_source_unavailable",
+                "Queued audio is no longer available. Upload the audio file again.",
+                {"job_id": str(job.id), "transcript_id": str(job.transcript_id)},
+            ) from exc
+        raise
 
 
 def clear_ingestion_retry_source(
@@ -78,8 +105,6 @@ def clear_ingestion_retry_source(
     if job is None:
         raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
     source_audio_vault_ref = job.source_audio_vault_ref
-    if clear_storage and delete_backing_secret and source_audio_vault_ref:
-        delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
     if clear_storage:
         job.source_audio_blob = None
         job.source_audio_vault_ref = None
@@ -89,6 +114,18 @@ def clear_ingestion_retry_source(
     db.add(job)
     db.commit()
     db.refresh(job)
+    if clear_storage and delete_backing_secret and source_audio_vault_ref:
+        try:
+            delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
+        except AppError as exc:
+            job.source_audio_vault_ref = source_audio_vault_ref
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            retry_audio_logger.warning(
+                "retry_audio_delete_failed",
+                extra={"secret_ref": source_audio_vault_ref, "error_code": exc.code, "error_message": exc.message},
+            )
     return job
 
 
@@ -901,14 +938,23 @@ def queue_audio_chunk_ingestion(
         owner=owner,
         duration_seconds=measured_duration_seconds,
     )
+    job_id = uuid4()
+    source_audio_vault_ref = None
+    try:
+        source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job_id, audio_bytes=source_audio_bytes)
+    except Exception:
+        raise
+
     job = TranscriptIngestionJob(
-        id=uuid4(),
+        id=job_id,
         transcript_id=transcript.id,
         owner_user_id=transcript.owner_user_id,
         team_id=transcript.team_id,
         job_kind=TranscriptIngestionJobKind.live_chunk,
         chunk_sequence_no=chunk_sequence_no,
         source_filename=filename,
+        source_audio_blob=None,
+        source_audio_vault_ref=source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_bytes),
         declared_duration_seconds=measured_duration_seconds,
         stt_config_id=config.id,
@@ -925,7 +971,15 @@ def queue_audio_chunk_ingestion(
     transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        if source_audio_vault_ref is not None:
+            try:
+                delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
+            except AppError:
+                pass
+        raise
     db.refresh(transcript)
     db.refresh(job)
     return transcript, job
@@ -1079,7 +1133,6 @@ def retry_audio_file_ingestion(
         filename=latest_job.source_filename,
         source_audio_blob=source_audio_blob,
         source_audio_duration_seconds=source_audio_duration_seconds,
-        source_audio_vault_ref=latest_job.source_audio_vault_ref,
         exclude_job_ids=(latest_job.id,),
     )
     latest_job.source_audio_size_bytes = None
@@ -1271,7 +1324,7 @@ def process_transcript_ingestion_job(
     db: Session,
     *,
     job_id: UUID,
-    audio_bytes: bytes,
+    legacy_audio_bytes: bytes | None = None,
 ) -> TranscriptIngestionJob:
     job = db.get(TranscriptIngestionJob, job_id)
     if job is None:
@@ -1285,6 +1338,7 @@ def process_transcript_ingestion_job(
     _mark_job_processing(db, job)
 
     try:
+        audio_bytes = _read_queued_source_audio(db, job, legacy_audio_bytes=legacy_audio_bytes)
         normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=job.source_filename)
         if job.job_kind is TranscriptIngestionJobKind.audio_file:
             enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
@@ -1355,6 +1409,17 @@ def process_transcript_ingestion_job(
             job.status = TranscriptIngestionJobStatus.completed
             db.add(job)
             db.commit()
+            if job.source_audio_vault_ref:
+                try:
+                    clear_ingestion_retry_source(
+                        db,
+                        job_id=job.id,
+                        clear_storage=True,
+                        clear_accounting=False,
+                        delete_backing_secret=True,
+                    )
+                except AppError:
+                    pass
             db.refresh(transcript)
             _apply_completed_live_chunks(db, transcript)
     except AppError as exc:

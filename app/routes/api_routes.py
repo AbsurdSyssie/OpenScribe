@@ -740,7 +740,7 @@ def upload_transcript_audio_chunk(
         declared_duration_seconds=declared_duration_seconds,
     )
     try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
     except Exception as exc:
         mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue live chunk ingestion")
         raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue live chunk ingestion") from exc
@@ -772,7 +772,7 @@ def upload_transcript_audio_file(
         source_audio_blob=audio_bytes,
     )
     try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=audio_bytes)
+        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
     except Exception as exc:
         mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
         raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion") from exc
@@ -793,13 +793,13 @@ def retry_transcript_audio_file(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    transcript, job, source_audio_blob, previous_job = retry_audio_file_ingestion(
+    transcript, job, _source_audio_blob, previous_job = retry_audio_file_ingestion(
         db,
         context.user,
         transcript_id=transcript_id,
     )
     try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id, audio_bytes=source_audio_blob)
+        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
     except Exception as exc:
         mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion retry")
         raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion retry") from exc
@@ -808,7 +808,7 @@ def retry_transcript_audio_file(
         job_id=previous_job.id,
         clear_storage=True,
         clear_accounting=False,
-        delete_backing_secret=False,
+        delete_backing_secret=True,
     )
     job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript

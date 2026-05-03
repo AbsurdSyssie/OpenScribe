@@ -384,6 +384,7 @@ For development, easiest options are:
 Suggested dev option:
 
 - `MAIL_TRANSPORT=stdout`
+- `APP_ENV=local`
 
 That lets tests and local runs verify the flow without a real external provider.
 

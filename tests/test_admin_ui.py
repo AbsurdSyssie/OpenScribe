@@ -1874,6 +1874,15 @@ def test_user_transcribe_claude_page_uses_alternate_template(client, make_team, 
     assert "Follow-ups" in page.text
 
 
+def test_shared_csrf_fetch_limits_header_to_same_origin_api():
+    source = Path("app/static/js/csrf.js").read_text()
+
+    assert "input instanceof Request ? input.method" in source
+    assert "input instanceof Request ? input.headers" in source
+    assert "url.origin === window.location.origin" in source
+    assert "url.pathname.startsWith('/api/v1/')" in source
+
+
 def test_user_transcribe_glm_2_page_uses_alternate_template(client, make_team, make_user):
     team = make_team(name="Clinic GLM UI")
     make_user(email="member-glm@example.com", password="password-3", team=team, team_role=TeamRole.user)

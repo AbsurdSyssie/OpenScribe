@@ -1,3 +1,5 @@
+import { csrfFetch } from '../csrf.js';
+
 export function attachTranscribeActions({
   dom,
   routeBase,
@@ -61,7 +63,7 @@ export function attachTranscribeActions({
       return;
     }
     try {
-      const response = await fetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
+      const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -102,7 +104,7 @@ export function attachTranscribeActions({
         return;
       }
       try {
-        const response = await fetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
+        const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
           method: 'DELETE',
           credentials: 'include',
         });
@@ -278,7 +280,7 @@ export function attachTranscribeActions({
       }
       try {
         const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';
-        const response = await fetch('/api/v1/transcripts/start', {
+        const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -306,7 +308,7 @@ export function attachTranscribeActions({
       }
         try {
           await syncTranscriptTitleIfNeeded();
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -345,7 +347,7 @@ export function attachTranscribeActions({
       }
       try {
         await Promise.all(selectedIds.map(async (selectedId) => {
-          const response = await fetch(`/api/v1/transcripts/${selectedId}`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${selectedId}`, {
             method: 'DELETE',
             credentials: 'include',
           });
@@ -402,7 +404,7 @@ export function attachTranscribeActions({
         await syncTranscriptTitleIfNeeded();
         const formData = new FormData();
         formData.append('audio', dom.fileInput.files[0], dom.fileInput.files[0].name);
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
           method: 'POST',
           body: formData,
           credentials: 'include',
@@ -432,7 +434,7 @@ export function attachTranscribeActions({
       if (!templateId) return;
       try {
         await saveStructuredContext({ silent: true });
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -465,7 +467,7 @@ export function attachTranscribeActions({
         || '';
       if (!promptText) return;
       try {
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}/generate-followup`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-followup`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -523,7 +525,7 @@ export function attachTranscribeActions({
         hiddenContextInput.value = quickActionContextText;
       }
       try {
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },

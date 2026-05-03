@@ -1,5 +1,61 @@
 # Progress
 
+## 2026-05-02 API CSRF Hardening
+
+### Scope
+
+- Required CSRF verification for unsafe cookie-backed `/api/v1` requests.
+- Added shared frontend `csrfFetch` helper that sends `X-CSRF-Token` from `openscribe_csrf`.
+- Updated transcribe and smart-phrase API mutations to use `csrfFetch`.
+- Preserved unauthenticated public endpoint compatibility when no auth/trusted-device cookie exists.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/main.py`: adds `/api/v1` CSRF dependency for unsafe requests carrying session/trusted-device cookies.
+- `app/templates/_csrf_script.html`: installs a same-origin unsafe `/api/v1` fetch wrapper for legacy inline pages.
+- `app/static/js/csrf.js`: adds cookie/header helper and same-origin `/api/v1`-scoped `csrfFetch`.
+- `app/static/js/transcribe/actions.js`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/media.js`: unsafe API mutations now send CSRF header.
+- `app/static/js/home/smart-phrases.js`, `app/templates/home.html`: smart-phrase mutations now use module-based `csrfFetch`.
+- `app/templates/transcribe/_shell_extras.html`: bumps transcribe module cache key.
+- `app/api_route_audit.py`: sends CSRF for cookie-backed unsafe audit probes so auth/role expectations remain isolated.
+- `tests/conftest.py`, `tests/test_api.py`, `tests/test_admin_ui.py`, `tests/test_csrf_browser.py`: adds authenticated API, static, and optional browser CSRF regression coverage.
+- `docs/security.md`, `docs/testing.md`, `docs/progress.md`: documents API CSRF behavior and browser test setup.
+
+### Tests
+
+- Added coverage for missing, matching, and mismatched CSRF on authenticated unsafe API requests.
+- Added coverage that safe authenticated API requests do not require CSRF.
+- Added coverage that public login remains callable without CSRF when unauthenticated.
+- Added coverage that public unsafe endpoints require CSRF when an auth cookie exists.
+- Added static coverage that shared `csrfFetch` handles `Request` inputs and does not attach CSRF outside same-origin `/api/v1`.
+- Added optional Playwright browser coverage that opens `/transcribe`, clicks the rendered new-consultation control, and asserts `POST /api/v1/transcripts/start` carries `X-CSRF-Token`.
+
+### Documentation
+
+- Updated security/testing docs and this progress note.
+
+### Risks / assumptions
+
+- `openscribe_csrf` remains readable by JavaScript by design.
+- `csrfFetch` does not set default `Content-Type`, preserving multipart `FormData` upload boundaries.
+- `csrfFetch` and the legacy wrapper only attach CSRF to same-origin `/api/v1` unsafe requests.
+- Anonymous unsafe requests without cookie-backed authority fall through to existing route auth/public handling.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note content visibility or logging changed.
+- Ownership rules preserved: existing authenticated route dependencies still enforce owner/team/admin rules.
+- Deletion semantics preserved: no cascade or retention behavior changed.
+- Provider rules preserved: no provider resolution, credential, or fallback behavior changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON schema behavior changed.
+
 ## 2026-05-02 Celery Audio Payload Hardening
 
 ### Scope

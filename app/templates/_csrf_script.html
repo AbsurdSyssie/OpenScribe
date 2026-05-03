@@ -29,11 +29,58 @@
         input.value = token;
       });
       window.OpenScribeCSRF = {
+        ...(window.OpenScribeCSRF || {}),
         getToken() {
           return readCookie(COOKIE_NAME);
         },
       };
     }
+
+    function csrfHeaders(existingHeaders) {
+      const headers = new Headers(existingHeaders || {});
+      const token = readCookie(COOKIE_NAME);
+      if (token) {
+        headers.set("X-CSRF-Token", token);
+      }
+      return headers;
+    }
+
+    function isUnsafeApiRequest(input, init) {
+      const method = String(init?.method || (input instanceof Request ? input.method : "GET") || "GET").toUpperCase();
+      if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+        return false;
+      }
+      const rawUrl = input instanceof Request ? input.url : String(input || "");
+      const url = new URL(rawUrl, window.location.href);
+      return url.origin === window.location.origin && url.pathname.startsWith("/api/v1/");
+    }
+
+    function installFetchCsrf() {
+      if (window.OpenScribeCSRF?.fetchInstalled) {
+        return;
+      }
+      const originalFetch = window.fetch.bind(window);
+      const csrfFetch = (input, init = {}) => {
+        if (!isUnsafeApiRequest(input, init)) {
+          return originalFetch(input, init);
+        }
+        return originalFetch(input, {
+          ...init,
+          headers: csrfHeaders(init.headers || (input instanceof Request ? input.headers : undefined)),
+        });
+      };
+      window.fetch = csrfFetch;
+      window.OpenScribeCSRF = {
+        ...(window.OpenScribeCSRF || {}),
+        fetchInstalled: true,
+        fetch: csrfFetch,
+        getToken() {
+          return readCookie(COOKIE_NAME);
+        },
+      };
+    }
+
+    installFetchCsrf();
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", applyCsrfToken, { once: true });

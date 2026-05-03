@@ -1,3 +1,5 @@
+import { csrfFetch } from '../csrf.js';
+
 (function () {
   const root = document.querySelector('[data-smart-phrase-settings]');
   const drawer = document.querySelector('[data-smart-phrase-drawer]');
@@ -85,7 +87,7 @@
   }
 
   async function savePhrase(payload, id) {
-    const response = await fetch(id ? `/api/v1/smart-phrases/personal/${id}` : '/api/v1/smart-phrases/personal', {
+    const response = await csrfFetch(id ? `/api/v1/smart-phrases/personal/${id}` : '/api/v1/smart-phrases/personal', {
       method: id ? 'PATCH' : 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -155,7 +157,7 @@
   deleteButton.addEventListener('click', async () => {
     const id = idInput.value;
     if (!id || !window.confirm('Delete this smart phrase permanently?')) return;
-    const response = await fetch(`/api/v1/smart-phrases/personal/${id}`, { method: 'DELETE', credentials: 'include' });
+    const response = await csrfFetch(`/api/v1/smart-phrases/personal/${id}`, { method: 'DELETE', credentials: 'include' });
     if (!response.ok) {
       window.showToast?.(await parseError(response, 'Could not delete smart phrase.'), 'error');
       return;

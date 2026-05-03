@@ -44,6 +44,23 @@ The audit:
 - probes higher-trust routes with onboarding, pending-MFA, normal-user, and leader sessions where denial is expected
 - exits with status `1` on auth mismatches and `2` when a new API route lacks an audit entry
 
+## Browser CSRF regression
+
+`tests/test_csrf_browser.py` is an optional Playwright-backed browser test for rendered CSRF behavior.
+
+It starts the FastAPI app on a localhost port, logs in through the browser form, opens `/transcribe`, clicks “Create new consultation”, and verifies the browser sends `X-CSRF-Token` on `POST /api/v1/transcripts/start`.
+
+Run it with:
+
+```bash
+source .venv/bin/activate
+pip install playwright
+python -m playwright install chromium
+pytest -q tests/test_csrf_browser.py
+```
+
+If Playwright or browser binaries are unavailable, the test is skipped rather than failing the normal suite.
+
 ## Manual file-ingestion smoke test
 
 For a real end-to-end file upload against a running local app, use:

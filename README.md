@@ -84,4 +84,4 @@ Troubleshooting:
 - If the smoke test says mail is disabled, confirm `MAIL_TRANSPORT=resend` is in the active `.env` used by the running process.
 - If Resend rejects the sender, confirm `MAIL_FROM_ADDRESS` uses the verified domain exactly.
 - If reset/setup links point at localhost, set `APP_PUBLIC_URL` to the public HTTPS URL users use to reach this instance.
-- If you do not want outbound email yet, use `MAIL_TRANSPORT=disabled` for manual temporary-password setup or `MAIL_TRANSPORT=stdout` for local email-body printing.
+- If you do not want outbound email yet, use `MAIL_TRANSPORT=disabled` for manual temporary-password setup or `MAIL_TRANSPORT=stdout` plus `APP_ENV=local` for local email-body printing.

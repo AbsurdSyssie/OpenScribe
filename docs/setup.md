@@ -147,6 +147,7 @@ Cookie security uses:
 Transactional email uses:
 
 - `MAIL_TRANSPORT=disabled|stdout|resend`
+- `APP_ENV=local|test|production` for stdout transport safety
 - `APP_PUBLIC_URL`
 - `MAIL_FROM_ADDRESS`
 - `MAIL_FROM_NAME`
@@ -156,7 +157,7 @@ Transactional email uses:
 Current behavior:
 
 - `disabled` keeps the existing manual setup path with manager-created temporary passwords and no outbound email.
-- `stdout` writes transactional email bodies to server stdout for local development and tests.
+- `stdout` writes transactional email bodies to server stdout for local development and tests only when `APP_ENV`, `ENVIRONMENT`, or `ENV` is `local`, `dev`, `development`, `test`, or `testing`.
 - `resend` sends through the Resend Email API. Production deployments should verify their Resend domain and use a sending-restricted API key before enabling it.
 
 To test Resend after editing `.env`:

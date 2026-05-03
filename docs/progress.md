@@ -1,5 +1,47 @@
 # Progress
 
+## 2026-05-03 Regression Review Fixes
+
+### Scope
+
+- Documented the required local/test environment guard for `MAIL_TRANSPORT=stdout`.
+- Updated `.env.example` with `APP_ENV=local` so local stdout mail remains valid.
+- Updated stale transcribe asset-version assertions after the API CSRF cache-key bump.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: broader pre-existing suite failures still remain outside this targeted fix.
+
+### Files changed
+
+- `.env.example`: adds local app environment default.
+- `README.md`, `docs/setup.md`, `docs/account_recovery_brief.md`: document stdout mail environment requirement.
+- `tests/test_admin_ui.py`: updates stale transcribe module cache-key assertions.
+- `docs/progress.md`: records this fix.
+
+### Tests
+
+- Targeted tests run after change; see final response for result.
+
+### Documentation
+
+- Updated local setup and recovery docs for stdout mail guard.
+
+### Risks / assumptions
+
+- `APP_ENV=local` in `.env.example` is development-only guidance; production deployments should set production-like environment values explicitly.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no content access or logging behavior changed.
+- Ownership rules preserved: no route authorization behavior changed.
+- Deletion semantics preserved: no lifecycle/delete code changed.
+- Provider rules preserved: no STT/LLM/de-identification provider behavior changed.
+- Structured-note contract preserved: no EMIS/generated-document contract changed.
+
 ## 2026-05-02 API CSRF Hardening
 
 ### Scope

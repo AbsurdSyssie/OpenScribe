@@ -44,7 +44,7 @@ def issue_auth_email_token(
     purpose: AuthEmailTokenPurpose,
     created_by: User | None = None,
     expires_in: timedelta = AUTH_EMAIL_TOKEN_LIFETIME,
-) -> str:
+) -> tuple[str, AuthEmailToken]:
     now = utcnow()
     existing_tokens = db.scalars(
         select(AuthEmailToken).where(
@@ -58,18 +58,22 @@ def issue_auth_email_token(
         db.add(existing)
 
     raw_token = secrets.token_urlsafe(32)
-    db.add(
-        AuthEmailToken(
-            user_id=user.id,
-            purpose=purpose,
-            token_hash=opaque_token_hash(raw_token),
-            expires_at=now + expires_in,
-            created_by_user_id=created_by.id if created_by else None,
-            created_at=now,
-        )
+    token_record = AuthEmailToken(
+        user_id=user.id,
+        purpose=purpose,
+        token_hash=opaque_token_hash(raw_token),
+        expires_at=now + expires_in,
+        created_by_user_id=created_by.id if created_by else None,
+        created_at=now,
     )
+    db.add(token_record)
     db.commit()
-    return raw_token
+    db.refresh(token_record)
+    return raw_token, token_record
+
+
+def _auth_email_idempotency_key(*, token_record: AuthEmailToken) -> str:
+    return f"auth-email-{token_record.id}"
 
 
 def send_account_activation_email(db: Session, user: User, *, created_by: User | None = None) -> None:
@@ -87,7 +91,7 @@ def send_account_activation_email(db: Session, user: User, *, created_by: User |
             config=config,
         )
         return
-    token = issue_auth_email_token(db, user, purpose=AuthEmailTokenPurpose.account_activation, created_by=created_by)
+    token, token_record = issue_auth_email_token(db, user, purpose=AuthEmailTokenPurpose.account_activation, created_by=created_by)
     setup_url = _token_url(path="/activate-account", token=token)
     send_transactional_email(
         MailMessage(
@@ -104,7 +108,7 @@ def send_account_activation_email(db: Session, user: User, *, created_by: User |
                 f'<p><a href="{html.escape(setup_url)}">Set up account</a></p>'
                 "<p>This link expires in 1 hour. If you did not expect this email, ignore it.</p>"
             ),
-            idempotency_key=f"auth-email-{user.id}-{AuthEmailTokenPurpose.account_activation.value}-{token[:12]}",
+            idempotency_key=_auth_email_idempotency_key(token_record=token_record),
         )
     )
 
@@ -144,7 +148,7 @@ def send_password_reset_email(
             config=config,
         )
         return
-    token = issue_auth_email_token(db, user, purpose=purpose, created_by=created_by)
+    token, token_record = issue_auth_email_token(db, user, purpose=purpose, created_by=created_by)
     reset_url = _token_url(path="/reset-password", token=token)
     send_transactional_email(
         MailMessage(
@@ -161,7 +165,7 @@ def send_password_reset_email(
                 f'<p><a href="{html.escape(reset_url)}">Reset password</a></p>'
                 "<p>This link expires in 1 hour. If you did not request this, ignore it.</p>"
             ),
-            idempotency_key=f"auth-email-{user.id}-{purpose.value}-{token[:12]}",
+            idempotency_key=_auth_email_idempotency_key(token_record=token_record),
         )
     )
 

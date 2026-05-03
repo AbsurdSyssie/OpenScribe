@@ -31,11 +31,26 @@ def test_mail_config_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("MAIL_TRANSPORT", raising=False)
     monkeypatch.delenv("MAIL_FROM_ADDRESS", raising=False)
     monkeypatch.delenv("APP_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
 
     config = load_mail_config_from_env()
 
     assert config.transport == MAIL_TRANSPORT_DISABLED
+    assert config.app_environment == "production"
     validate_mail_config(config)
+
+
+def test_mail_config_reads_app_environment_aliases(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+
+    config = load_mail_config_from_env()
+
+    assert config.app_environment == "testing"
 
 
 def test_invalid_mail_transport_is_rejected(monkeypatch: pytest.MonkeyPatch):
@@ -47,8 +62,23 @@ def test_invalid_mail_transport_is_rejected(monkeypatch: pytest.MonkeyPatch):
     assert exc_info.value.code == "mail_transport_invalid"
 
 
+def test_stdout_transport_is_rejected_outside_local_or_test():
+    config = MailConfig(
+        transport=MAIL_TRANSPORT_STDOUT,
+        app_environment="production",
+        app_public_url="https://openscribe.example.com",
+        from_address="no-reply@example.com",
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        validate_mail_config(config)
+
+    assert exc_info.value.code == "mail_stdout_not_allowed"
+    assert exc_info.value.details == {"environment": "production"}
+
+
 def test_stdout_transport_requires_sender_and_public_url():
-    config = MailConfig(transport=MAIL_TRANSPORT_STDOUT)
+    config = MailConfig(transport=MAIL_TRANSPORT_STDOUT, app_environment="test")
 
     with pytest.raises(AppError) as exc_info:
         validate_mail_config(config)
@@ -56,7 +86,7 @@ def test_stdout_transport_requires_sender_and_public_url():
     assert exc_info.value.code == "mail_from_missing"
 
     with pytest.raises(AppError) as exc_info:
-        validate_mail_config(MailConfig(transport=MAIL_TRANSPORT_STDOUT, from_address="no-reply@example.com"))
+        validate_mail_config(MailConfig(transport=MAIL_TRANSPORT_STDOUT, app_environment="test", from_address="no-reply@example.com"))
 
     assert exc_info.value.code == "mail_public_url_missing"
 
@@ -65,6 +95,7 @@ def test_stdout_transport_writes_local_email():
     stream = StringIO()
     config = MailConfig(
         transport=MAIL_TRANSPORT_STDOUT,
+        app_environment="test",
         app_public_url="https://openscribe.example.com",
         from_address="no-reply@example.com",
         from_name="OpenScribe Test",

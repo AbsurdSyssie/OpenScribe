@@ -25,10 +25,14 @@ def _disable_mail(monkeypatch):
     monkeypatch.delenv("MAIL_TRANSPORT", raising=False)
     monkeypatch.delenv("APP_PUBLIC_URL", raising=False)
     monkeypatch.delenv("MAIL_FROM_ADDRESS", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("ENV", raising=False)
 
 
 def _enable_stdout_mail(monkeypatch):
     monkeypatch.setenv("MAIL_TRANSPORT", "stdout")
+    monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("APP_PUBLIC_URL", "https://openscribe.example.com")
     monkeypatch.setenv("MAIL_FROM_ADDRESS", "no-reply@example.com")
     monkeypatch.setenv("MAIL_FROM_NAME", "OpenScribe")
@@ -61,6 +65,24 @@ def test_password_reset_request_is_generic_and_uses_hashed_token(client, db_sess
     assert token_row.token_hash != raw_token
 
 
+def test_auth_email_idempotency_key_does_not_include_raw_token(client, db_session, make_user, monkeypatch):
+    _enable_stdout_mail(monkeypatch)
+    captured = []
+    monkeypatch.setattr("app.services.auth_email.send_transactional_email", lambda message: captured.append(message))
+    make_user(email="idempotency-reset@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    response = client.post("/api/v1/auth/password-reset/request", json={"email": "idempotency-reset@example.com"})
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    raw_token = _extract_token_from_message(captured[0])
+    token_row = db_session.scalar(select(AuthEmailToken).where(AuthEmailToken.purpose == AuthEmailTokenPurpose.password_reset))
+    assert token_row is not None
+    assert captured[0].idempotency_key == f"auth-email-{token_row.id}"
+    assert raw_token not in captured[0].idempotency_key
+    assert raw_token[:12] not in captured[0].idempotency_key
+
+
 def test_password_reset_request_disabled_tells_user_to_contact_admin(client, db_session, make_user, monkeypatch):
     _disable_mail(monkeypatch)
     make_user(email="reset-disabled@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
@@ -75,6 +97,7 @@ def test_password_reset_request_disabled_tells_user_to_contact_admin(client, db_
 
 def test_password_reset_request_misconfigured_mail_is_not_enumerable(client, db_session, make_user, monkeypatch):
     monkeypatch.setenv("MAIL_TRANSPORT", "stdout")
+    monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.delenv("APP_PUBLIC_URL", raising=False)
     monkeypatch.setenv("MAIL_FROM_ADDRESS", "no-reply@example.com")
     make_user(email="reset-misconfigured@example.com", password="password-1", mfa_required=False, mfa_enabled=False)

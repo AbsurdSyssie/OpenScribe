@@ -67,6 +67,7 @@ from tests.db_utils import (
 )
 
 from app.db import Base, get_db
+from app.services.auth import SESSION_COOKIE_NAME, TRUSTED_DEVICE_COOKIE_NAME
 
 
 TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
@@ -151,7 +152,13 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         def request_with_csrf(method, url, *args, **kwargs):
             method_upper = str(method).upper()
             path = str(url)
-            if method_upper in {"POST", "PUT", "PATCH", "DELETE"} and not path.startswith("/api/"):
+            unsafe_method = method_upper in {"POST", "PUT", "PATCH", "DELETE"}
+            has_cookie_backed_authority = bool(
+                test_client.cookies.get(SESSION_COOKIE_NAME)
+                or test_client.cookies.get(TRUSTED_DEVICE_COOKIE_NAME)
+            )
+            should_inject_api_csrf = path.startswith("/api/") and has_cookie_backed_authority
+            if unsafe_method and (not path.startswith("/api/") or should_inject_api_csrf):
                 if CSRF_COOKIE_NAME not in test_client.cookies:
                     original_request("GET", "/login")
                 csrf_token = test_client.cookies.get(CSRF_COOKIE_NAME, "")

@@ -386,8 +386,8 @@ class AuthenticatedContext:
 
 
 app = FastAPI(title="OpenScribe MVP")
-api = APIRouter(prefix="/api/v1")
 CSRF_COOKIE_NAME = "openscribe_csrf"
+CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -482,6 +482,26 @@ async def require_browser_csrf(
 
 
 BrowserCsrf = Annotated[None, Depends(require_browser_csrf)]
+
+
+async def require_api_csrf(
+    request: Request,
+    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> None:
+    if request.method in CSRF_SAFE_METHODS:
+        return
+
+    has_cookie_backed_authority = bool(
+        request.cookies.get(SESSION_COOKIE_NAME)
+        or request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME)
+    )
+    if not has_cookie_backed_authority:
+        return
+
+    await require_browser_csrf(request, csrf_header=csrf_header)
+
+
+api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_csrf)])
 
 
 limiter = Limiter(

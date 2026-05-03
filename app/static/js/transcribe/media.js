@@ -1,3 +1,5 @@
+import { csrfFetch } from '../csrf.js';
+
 export function createAudioCaptureController({
   dom,
   config,
@@ -409,7 +411,7 @@ export function createAudioCaptureController({
     formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
     formData.append('chunk_sequence_no', String(chunkSequenceNo));
     formData.append('declared_duration_seconds', durationSeconds.toFixed(3));
-    const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
+    const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
       method: 'POST',
       body: formData,
       credentials: 'include',
@@ -598,7 +600,7 @@ export function createAudioCaptureController({
         const { transcriptId } = getState();
         const formData = new FormData();
         formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
           method: 'POST',
           body: formData,
           credentials: 'include',

@@ -7,6 +7,7 @@ import { createStructuredEditor } from './structured.js?v=20260501-copy-review-n
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
+import { csrfFetch } from '../csrf.js';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -370,7 +371,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
           ...patch,
         };
-        const response = await fetch('/api/v1/app-preferences', {
+        const response = await csrfFetch('/api/v1/app-preferences', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -398,7 +399,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         const combinedText = dictationCombinedInput.value;
         dictationSaveInFlight = (async () => {
           try {
-            const response = await fetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation`, {
+            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation`, {
               method: 'PATCH',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
@@ -453,7 +454,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         const requestVersion = noteEditVersion;
         noteSaveInFlight = (async () => {
           try {
-            const response = await fetch(`/api/v1/generated-documents/${saveRequest.generatedDocumentId}`, {
+            const response = await csrfFetch(`/api/v1/generated-documents/${saveRequest.generatedDocumentId}`, {
               method: 'PATCH',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
@@ -1081,7 +1082,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         if (!transcriptId || !renameTitleInput) return;
         const nextTitle = renameTitleInput.value.trim();
         if (nextTitle === currentTranscriptTitle) return;
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -1135,7 +1136,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         syncTranscriptTitleIfNeeded,
         finalizeLiveCapture: async () => {
           if (!transcriptId) return null;
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
             method: 'POST',
             credentials: 'include',
           });
@@ -1190,7 +1191,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
           }
           const formData = new FormData();
           formData.append('audio', blob, blob.type === 'audio/wav' ? 'dictation-mic.wav' : 'dictation-mic.webm');
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation/audio-file`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation/audio-file`, {
             method: 'POST',
             body: formData,
             credentials: 'include',
@@ -1266,7 +1267,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         smartPhrases: bootstrap.smartPhrases || [],
         onExpanded: ({ phrase }) => {
           if (!phrase?.id) return;
-          void fetch(`/api/v1/smart-phrases/personal/${phrase.id}/used`, {
+          void csrfFetch(`/api/v1/smart-phrases/personal/${phrase.id}/used`, {
             method: 'POST',
             credentials: 'include',
           }).catch(() => {});
@@ -1458,7 +1459,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         const submitButton = piiAddForm.querySelector('button[type="submit"]');
         if (submitButton) submitButton.disabled = true;
         try {
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/manual-pii`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -1490,7 +1491,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         if (!entityId) return;
         trigger.disabled = true;
         try {
-          const response = await fetch(`/api/v1/transcripts/${transcriptId}/manual-pii/${entityId}`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/manual-pii/${entityId}`, {
             method: 'DELETE',
             credentials: 'include',
           });
@@ -1565,7 +1566,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
         if (structuredEditor.getLastSavedStructuredContext() === serializedContext) {
           return structuredContext;
         }
-        const response = await fetch(`/api/v1/transcripts/${transcriptId}`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },

@@ -17,7 +17,7 @@ from scripts.seed_dev_accounts import repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
-from app.main import app as fastapi_app, get_db, require_full_context
+from app.main import CSRF_COOKIE_NAME, app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
@@ -188,6 +188,83 @@ def finish_onboarding(client):
     skip = client.post("/api/v1/onboarding/skip-recovery-codes")
     assert skip.status_code == 200
     return skip
+
+
+def test_authenticated_unsafe_api_requires_csrf(raw_client, make_user):
+    make_user(email="csrf-user@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-user@example.com", password="password-1").status_code == 200
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "CSRF probe", "ingestion_mode": "whole_file"},
+    )
+
+    assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
+
+
+def test_authenticated_unsafe_api_accepts_matching_csrf(raw_client, make_user):
+    make_user(email="csrf-ok@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-ok@example.com", password="password-1").status_code == 200
+    csrf = "test-csrf-token"
+    raw_client.cookies.set(CSRF_COOKIE_NAME, csrf)
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "CSRF ok", "ingestion_mode": "whole_file"},
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 201
+
+
+def test_authenticated_unsafe_api_rejects_mismatched_csrf(raw_client, make_user):
+    make_user(email="csrf-mismatch@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-mismatch@example.com", password="password-1").status_code == 200
+    raw_client.cookies.set(CSRF_COOKIE_NAME, "cookie-token")
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "CSRF mismatch", "ingestion_mode": "whole_file"},
+        headers={"X-CSRF-Token": "header-token"},
+    )
+
+    assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
+
+
+def test_authenticated_safe_api_does_not_require_csrf(raw_client, make_user):
+    make_user(email="csrf-safe@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-safe@example.com", password="password-1").status_code == 200
+
+    response = raw_client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200
+
+
+def test_public_login_without_existing_auth_cookie_does_not_require_csrf(raw_client):
+    response = raw_client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "wrong"},
+    )
+
+    assert response.status_code in {401, 422}
+    assert response.json()["error"]["message"] != "CSRF verification failed"
+
+
+def test_public_unsafe_endpoint_with_auth_cookie_requires_csrf(raw_client, make_user):
+    make_user(email="csrf-public@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-public@example.com", password="password-1").status_code == 200
+
+    response = raw_client.post(
+        "/api/v1/account-requests",
+        json={
+            "requested_name": "Probe",
+            "requested_email": "probe@example.com",
+            "requested_team_name": "Probe Team",
+            "request_details": "csrf probe",
+        },
+    )
+
+    assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
 
 
 def complete_mfa_challenge(client, secret: str, *, remember_device: bool = False):

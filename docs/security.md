@@ -108,6 +108,10 @@ Current implementation:
 
 - session and trusted-device cookies are `HttpOnly`
 - the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`
+- unsafe `/api/v1` requests require `X-CSRF-Token` when a session or trusted-device cookie is present
+- `_csrf_script.html` also wraps same-origin unsafe `/api/v1` `fetch` calls for legacy inline browser pages
+- safe `/api/v1` methods (`GET`, `HEAD`, `OPTIONS`) do not require CSRF verification
+- public login, password-reset, activation, and account-request API endpoints stay callable without CSRF only when no cookie-backed authority is present
 - `COOKIE_SECURE_MODE` controls the `Secure` flag:
   - `auto`: set `Secure` on non-local HTTPS requests
   - `always`: always set `Secure`

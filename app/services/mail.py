@@ -13,6 +13,7 @@ MAIL_TRANSPORT_DISABLED = "disabled"
 MAIL_TRANSPORT_STDOUT = "stdout"
 MAIL_TRANSPORT_RESEND = "resend"
 MAIL_TRANSPORTS = {MAIL_TRANSPORT_DISABLED, MAIL_TRANSPORT_STDOUT, MAIL_TRANSPORT_RESEND}
+MAIL_STDOUT_ALLOWED_ENVIRONMENTS = {"local", "dev", "development", "test", "testing"}
 RESEND_EMAILS_URL = "https://api.resend.com/emails"
 RESEND_TIMEOUT_SECONDS = 15.0
 
@@ -22,6 +23,7 @@ mail_logger = logging.getLogger("openscribe.mail")
 @dataclass(frozen=True, slots=True)
 class MailConfig:
     transport: str = MAIL_TRANSPORT_DISABLED
+    app_environment: str = "production"
     app_public_url: str | None = None
     from_address: str | None = None
     from_name: str = "OpenScribe"
@@ -55,6 +57,19 @@ def _optional_env(name: str) -> str | None:
     return stripped or None
 
 
+def _mail_app_environment_from_env() -> str:
+    return (
+        _optional_env("APP_ENV")
+        or _optional_env("ENVIRONMENT")
+        or _optional_env("ENV")
+        or "production"
+    ).lower()
+
+
+def _normalize_app_environment(value: str | None) -> str:
+    return (value or "production").strip().lower() or "production"
+
+
 def load_mail_config_from_env() -> MailConfig:
     transport = (_optional_env("MAIL_TRANSPORT") or MAIL_TRANSPORT_DISABLED).lower()
     if transport not in MAIL_TRANSPORTS:
@@ -66,6 +81,7 @@ def load_mail_config_from_env() -> MailConfig:
         )
     return MailConfig(
         transport=transport,
+        app_environment=_mail_app_environment_from_env(),
         app_public_url=_optional_env("APP_PUBLIC_URL"),
         from_address=_optional_env("MAIL_FROM_ADDRESS"),
         from_name=_optional_env("MAIL_FROM_NAME") or "OpenScribe",
@@ -78,6 +94,15 @@ def load_mail_config_from_env() -> MailConfig:
 def validate_mail_config(config: MailConfig) -> None:
     if config.transport == MAIL_TRANSPORT_DISABLED:
         return
+    if config.transport == MAIL_TRANSPORT_STDOUT:
+        environment = _normalize_app_environment(config.app_environment)
+        if environment not in MAIL_STDOUT_ALLOWED_ENVIRONMENTS:
+            raise AppError(
+                500,
+                "mail_stdout_not_allowed",
+                "Stdout mail transport is only allowed in local or test environments",
+                {"environment": environment},
+            )
     if not config.from_address:
         raise AppError(500, "mail_from_missing", "Mail sender address is not configured")
     if not config.app_public_url:

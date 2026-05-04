@@ -6,7 +6,8 @@ from typing import Any
 
 from fastapi.routing import APIRoute
 
-from app.main import CSRF_COOKIE_NAME, app
+from app.main import app
+from app.services.csrf import CSRF_COOKIE_NAME, session_csrf_token
 from app.services.auth import SESSION_COOKIE_NAME
 
 
@@ -476,9 +477,10 @@ def send_case(client: Any, case: AuditCase, scenario: AuditScenario):
     if scenario.session_cookie is not None:
         cookies[SESSION_COOKIE_NAME] = scenario.session_cookie
         if case.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            csrf_token = "audit-csrf-token"
+            csrf_token = session_csrf_token(scenario.session_cookie)
             cookies[CSRF_COOKIE_NAME] = csrf_token
             headers["X-CSRF-Token"] = csrf_token
+            headers["Origin"] = "http://testserver"
 
     kwargs: dict[str, Any] = {"params": case.query_params, "headers": headers, "cookies": cookies}
     if case.json_body is not None:

@@ -71,6 +71,7 @@ from app.services.auth import SESSION_COOKIE_NAME, TRUSTED_DEVICE_COOKIE_NAME
 
 
 TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
+os.environ.setdefault("APP_ENV", "test")
 os.environ["RATE_LIMIT_STORAGE_URL"] = TEST_RATE_LIMIT_STORAGE_URL
 
 from app.main import CSRF_COOKIE_NAME, app
@@ -164,6 +165,7 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
                 csrf_token = test_client.cookies.get(CSRF_COOKIE_NAME, "")
                 headers = dict(kwargs.pop("headers", {}) or {})
                 headers.setdefault("X-CSRF-Token", csrf_token)
+                headers.setdefault("Origin", "http://testserver")
                 kwargs["headers"] = headers
                 data = kwargs.get("data")
                 if isinstance(data, dict):

@@ -112,11 +112,19 @@ Threats and controls for trusted devices:
 Current implementation:
 
 - session and trusted-device cookies are `HttpOnly`
-- the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`
-- unsafe `/api/v1` requests require `X-CSRF-Token` when a session or trusted-device cookie is present
+- production startup requires `COOKIE_SECURE_MODE=always`
+- production startup requires either `CSRF_SECRET`/`SECRET_KEY` or successful Vault-backed CSRF secret bootstrap
+- HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- all responses include `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`
+- the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`, but its value is HMAC-signed
+- authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
+- when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
+- anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session
+- unsafe `/api/v1` requests require same-origin `Origin` or `Referer` plus `X-CSRF-Token` when a session or trusted-device cookie is present
 - `_csrf_script.html` also wraps same-origin unsafe `/api/v1` `fetch` calls for legacy inline browser pages
 - safe `/api/v1` methods (`GET`, `HEAD`, `OPTIONS`) do not require CSRF verification
 - public login, password-reset, activation, and account-request API endpoints stay callable without CSRF only when no cookie-backed authority is present
+- logout clears session, trusted-device, and CSRF cookies
 - `COOKIE_SECURE_MODE` controls the `Secure` flag:
   - `auto`: set `Secure` on non-local HTTPS requests
   - `always`: always set `Secure`

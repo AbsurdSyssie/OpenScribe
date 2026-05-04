@@ -1,5 +1,6 @@
 import base64
 import os
+import secrets
 from pathlib import Path
 from uuid import UUID
 
@@ -16,6 +17,7 @@ VAULT_TOKEN_FILE = os.getenv("VAULT_TOKEN_FILE")
 VAULT_KV_MOUNT = os.getenv("VAULT_KV_MOUNT", "secret")
 VAULT_TRANSIT_MOUNT = os.getenv("VAULT_TRANSIT_MOUNT", "transit")
 VAULT_USER_CONTENT_KEK_KEY_NAME = os.getenv("VAULT_USER_CONTENT_KEK_KEY_NAME", "openscribe-user-content-kek")
+DEFAULT_CSRF_SECRET_REF = f"{VAULT_KV_MOUNT}:openscribe/platform/csrf"
 DEFAULT_LOCAL_VAULT_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".local" / "vault" / "root-token"
 
 
@@ -443,6 +445,52 @@ def read_mail_resend_api_key(*, secret_ref: str) -> str:
     if not api_key:
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
     return str(api_key)
+
+
+def _read_platform_secret_value(*, secret_ref: str, field: str) -> str | None:
+    mount, path = _split_secret_ref(secret_ref)
+    url = _kv_url_for_path(mount=mount, path=path)
+    try:
+        response = httpx.get(url, headers=_vault_headers(), timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    payload = response.json()
+    value = (((payload.get("data") or {}).get("data") or {}).get(field))
+    return str(value) if value else None
+
+
+def get_or_create_platform_csrf_secret(*, secret_ref: str | None = None) -> str:
+    resolved_ref = secret_ref or os.getenv("CSRF_SECRET_VAULT_REF") or DEFAULT_CSRF_SECRET_REF
+    field = "csrf_secret"
+    existing = _read_platform_secret_value(secret_ref=resolved_ref, field=field)
+    if existing:
+        return existing
+
+    mount, path = _split_secret_ref(resolved_ref)
+    url = _kv_url_for_path(mount=mount, path=path)
+    generated = secrets.token_urlsafe(48)
+    try:
+        response = httpx.post(
+            url,
+            headers=_vault_headers(),
+            json={"options": {"cas": 0}, "data": {field: generated}},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code < 400:
+        return generated
+
+    # Another instance may have created it first.
+    existing = _read_platform_secret_value(secret_ref=resolved_ref, field=field)
+    if existing:
+        return existing
+    raise AppError(502, "vault_write_failed", "Vault CSRF secret write failed")
 
 
 def transcript_ingestion_source_audio_path(job_id: UUID) -> str:

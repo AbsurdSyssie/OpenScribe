@@ -4,6 +4,7 @@ from .. import main as main_module
 from ..main import *  # noqa: F401,F403
 from ..main import (
     _clear_session_cookie,
+    _clear_trusted_device_cookie,
     _enforce_localhost_only_dev_account,
     _open_realtime_workspace_db_session,
     _require_full_context_from_token,
@@ -71,6 +72,7 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
         revoke_session_by_token(db, token, reason="logout")
     response = JSONResponse(LoginResponse(authenticated=False).model_dump(mode="json"))
     _clear_session_cookie(response)
+    _clear_trusted_device_cookie(response)
     return response
 
 

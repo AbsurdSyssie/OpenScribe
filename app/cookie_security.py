@@ -13,6 +13,24 @@ COOKIE_SECURE_MODES = {COOKIE_SECURE_AUTO, COOKIE_SECURE_ALWAYS, COOKIE_SECURE_N
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 
 
+def app_environment() -> str:
+    return (
+        os.getenv("APP_ENV")
+        or os.getenv("ENVIRONMENT")
+        or os.getenv("ENV")
+        or "production"
+    ).strip().lower()
+
+
+def enforce_production_cookie_security() -> None:
+    environment = app_environment()
+    if environment not in {"production", "prod"}:
+        return
+
+    if cookie_secure_mode() != COOKIE_SECURE_ALWAYS:
+        raise RuntimeError("COOKIE_SECURE_MODE=always is required in production")
+
+
 def _is_local_host(hostname: str | None) -> bool:
     if not hostname:
         return False

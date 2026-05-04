@@ -1,4 +1,5 @@
 import json
+import os
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -294,6 +295,13 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         created_at=preference.created_at,
         updated_at=preference.updated_at,
     )
+
+
+def break_glass_recovery_enabled() -> bool:
+    email_enabled = email_password_reset_enabled_service()
+    if os.getenv("BREAK_GLASS_RECOVERY_ENABLED", "true").lower() not in {"1", "true", "yes"}:
+        return False
+    return not email_enabled or os.getenv("BREAK_GLASS_ALLOW_WITH_MAIL_ENABLED", "false").lower() in {"1", "true", "yes"}
 
 
 def _latest_template_version(template: PromptTemplate):
@@ -724,6 +732,7 @@ def render_admin(
     }
     if resolved_admin_tab == "usage":
         usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
+    email_recovery_enabled = email_password_reset_enabled_service()
     context = {
         "request": request,
         "current_user": current_user,
@@ -782,6 +791,8 @@ def render_admin(
         "message": message,
         "message_kind": message_kind,
         "recovery_temporary_password": recovery_temporary_password,
+        "email_recovery_enabled": email_recovery_enabled,
+        "break_glass_recovery_enabled": break_glass_recovery_enabled(),
         **usage_context,
     }
     resolved_template_name = template_name or "admin.html"
@@ -946,6 +957,7 @@ def render_home(
         "clinical-nlp-settings",
     }
     resolved_home_modal = active_home_modal if active_home_modal in allowed_home_modals else None
+    email_recovery_enabled = email_password_reset_enabled_service()
 
     context = {
         "request": request,
@@ -993,6 +1005,8 @@ def render_home(
         "message": message,
         "message_kind": message_kind,
         "recovery_temporary_password": recovery_temporary_password,
+        "email_recovery_enabled": email_recovery_enabled,
+        "break_glass_recovery_enabled": break_glass_recovery_enabled(),
         "queued_transcript_id": queued_transcript_id,
         "transcribe_return_tab": transcribe_return_tab,
     }

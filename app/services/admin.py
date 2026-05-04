@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -43,6 +44,7 @@ from app.models import (
     User,
     UserMfaMethod,
     UserOnboardingState,
+    UserRecoveryMode,
     UserRecoveryCode,
     UserStatus,
     utcnow,
@@ -988,14 +990,41 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[st
 
 
 def generate_temporary_password() -> str:
-    return secrets.token_urlsafe(24)
+    return secrets.token_urlsafe(18)
 
 
-def reset_user_password_to_temporary(db: Session, user: User, *, reset_mfa: bool = False) -> str:
+BREAK_GLASS_TEMPORARY_PASSWORD_LIFETIME_MINUTES = int(os.getenv("BREAK_GLASS_TEMPORARY_PASSWORD_LIFETIME_MINUTES", "60"))
+
+
+def reset_user_password_to_temporary(
+    db: Session,
+    user: User,
+    *,
+    actor: User,
+    reset_mfa: bool = False,
+    break_glass: bool = False,
+) -> tuple[str, datetime]:
+    if user.status is not UserStatus.active:
+        raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})
+
+    now = utcnow()
     temporary_password = generate_temporary_password()
+    expires_at = now + timedelta(minutes=BREAK_GLASS_TEMPORARY_PASSWORD_LIFETIME_MINUTES)
     user.password_hash = hash_password(temporary_password)
     user.must_change_password = True
     user.onboarding_state = UserOnboardingState.pending_password_change
+    user.temporary_password_expires_at = expires_at
+    user.recovery_started_at = now
+    user.recovery_started_by_user_id = actor.id
+    user.recovery_mode = (
+        UserRecoveryMode.break_glass_account_recovery
+        if reset_mfa and break_glass
+        else UserRecoveryMode.break_glass_password_reset
+        if break_glass
+        else UserRecoveryMode.manager_account_recovery
+        if reset_mfa
+        else UserRecoveryMode.manager_password_reset
+    )
     if reset_mfa:
         user.mfa_enabled = False
         for method in db.scalars(select(UserMfaMethod).where(UserMfaMethod.user_id == user.id)):
@@ -1003,7 +1032,6 @@ def reset_user_password_to_temporary(db: Session, user: User, *, reset_mfa: bool
         for code in db.scalars(select(UserRecoveryCode).where(UserRecoveryCode.user_id == user.id)):
             db.delete(code)
 
-    now = utcnow()
     reset_purposes = {
         AuthEmailTokenPurpose.password_reset,
         AuthEmailTokenPurpose.manager_password_reset,
@@ -1022,10 +1050,10 @@ def reset_user_password_to_temporary(db: Session, user: User, *, reset_mfa: bool
 
     db.add(user)
     db.commit()
-    revoke_reason = "manager_account_recovery" if reset_mfa else "manager_password_reset"
+    revoke_reason = "break_glass_recovery" if break_glass else ("manager_account_recovery" if reset_mfa else "manager_password_reset")
     revoke_sessions_for_user(db, user, reason=revoke_reason)
     revoke_trusted_devices_for_user(db, user, reason=revoke_reason)
-    return temporary_password
+    return temporary_password, expires_at
 
 
 def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:

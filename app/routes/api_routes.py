@@ -23,10 +23,31 @@ from ..services.smart_phrases import (
 from ..web.presentation import smart_phrase_response
 
 
+def _env_enabled(name: str, default: str) -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes"}
+
+
+def _break_glass_allowed() -> bool:
+    if not _env_enabled("BREAK_GLASS_RECOVERY_ENABLED", "true"):
+        return False
+    if email_password_reset_enabled_service():
+        return _env_enabled("BREAK_GLASS_ALLOW_WITH_MAIL_ENABLED", "false")
+    return True
+
+
 @api.post("/auth/login", response_model=LoginResponse, responses=error_responses)
 @LOGIN_RATE_LIMIT
 def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.email, payload.password)
+    if user.recovery_mode is not None and user.must_change_password:
+        record_security_event(
+            db,
+            action="temporary_recovery_password_login",
+            actor=user,
+            target=user,
+            request=request,
+            details={"recovery_mode": user.recovery_mode.value},
+        )
     _enforce_localhost_only_dev_account(request, user)
     trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
     auth_level = login_auth_level(user, trusted_device)
@@ -235,11 +256,36 @@ def send_user_activation(user_id: UUID, context: AuthenticatedContext = Depends(
     return GenericMessageResponse(message="Activation email sent if mail transport is enabled")
 
 
-@api.post("/users/{user_id}/recover-password", response_model=ManagerRecoveryResponse, responses=error_responses)
-def recover_user_password(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+@api.post("/users/{user_id}/recover-password", response_model=GenericMessageResponse, responses=error_responses)
+def recover_user_password_deprecated(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager)):
+    raise AppError(
+        410,
+        "deprecated_recovery_endpoint",
+        "Use /send-password-reset for email recovery or /break-glass-password-reset when email is unavailable.",
+    )
+
+
+@api.post("/users/{user_id}/send-password-reset", response_model=GenericMessageResponse, responses=error_responses)
+def send_manager_password_reset(
+    user_id: UUID,
+    payload: ManagerRecoveryEmailRequest,
+    request: Request,
+    context: AuthenticatedContext = Depends(require_user_manager),
+    db: Session = Depends(get_db),
+):
+    if not email_password_reset_enabled_service():
+        raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
     user = get_manageable_user_for_recovery_service(db, context.user, user_id)
-    temporary_password = reset_user_password_to_temporary_service(db, user)
-    return ManagerRecoveryResponse(message="Temporary password generated. Share it with the user out of band.", temporary_password=temporary_password)
+    send_manager_password_reset_email_service(db, actor=context.user, target=user)
+    record_security_event(
+        db,
+        action="manager_password_reset_email_sent",
+        actor=context.user,
+        target=user,
+        request=request,
+        details={"reason": payload.reason},
+    )
+    return GenericMessageResponse(message="Recovery email sent if the account is eligible.")
 
 
 @api.post("/users/{user_id}/reset-mfa", response_model=UserDetail, responses=error_responses)
@@ -248,11 +294,112 @@ def reset_user_mfa(user_id: UUID, context: AuthenticatedContext = Depends(requir
     return reset_user_mfa_for_reenrollment_service(db, user=user)
 
 
-@api.post("/users/{user_id}/recover-account", response_model=ManagerRecoveryResponse, responses=error_responses)
-def recover_user_account(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager), db: Session = Depends(get_db)):
+@api.post("/users/{user_id}/recover-account", response_model=GenericMessageResponse, responses=error_responses)
+def recover_user_account_deprecated(user_id: UUID, context: AuthenticatedContext = Depends(require_user_manager)):
+    raise AppError(
+        410,
+        "deprecated_recovery_endpoint",
+        "Use /send-account-recovery for email recovery or /break-glass-account-recovery when email is unavailable.",
+    )
+
+
+@api.post("/users/{user_id}/send-account-recovery", response_model=GenericMessageResponse, responses=error_responses)
+def send_manager_account_recovery(
+    user_id: UUID,
+    payload: ManagerRecoveryEmailRequest,
+    request: Request,
+    context: AuthenticatedContext = Depends(require_user_manager),
+    db: Session = Depends(get_db),
+):
+    if not email_password_reset_enabled_service():
+        raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
     user = get_manageable_user_for_recovery_service(db, context.user, user_id)
-    temporary_password = reset_user_password_to_temporary_service(db, user, reset_mfa=True)
-    return ManagerRecoveryResponse(message="Temporary password generated and MFA reset. Share it with the user out of band.", temporary_password=temporary_password)
+    send_manager_account_recovery_email_service(db, actor=context.user, target=user)
+    record_security_event(
+        db,
+        action="manager_account_recovery_email_sent",
+        actor=context.user,
+        target=user,
+        request=request,
+        details={"reason": payload.reason},
+    )
+    return GenericMessageResponse(message="Account recovery email sent if the account is eligible.")
+
+
+@api.post("/users/{user_id}/break-glass-password-reset", response_model=ManagerRecoveryResponse, responses=error_responses)
+@MFA_RATE_LIMIT
+def break_glass_password_reset(
+    user_id: UUID,
+    payload: BreakGlassRecoveryRequest,
+    request: Request,
+    context: AuthenticatedContext = Depends(require_user_manager),
+    db: Session = Depends(get_db),
+):
+    if not payload.confirm_email_unavailable:
+        raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
+    if not _break_glass_allowed():
+        raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
+    verify_active_totp_for_user(context.user, code=payload.mfa_code)
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    temporary_password, expires_at = reset_user_password_to_temporary_service(
+        db,
+        user,
+        actor=context.user,
+        reset_mfa=False,
+        break_glass=True,
+    )
+    record_security_event(
+        db,
+        action="break_glass_password_reset_generated",
+        actor=context.user,
+        target=user,
+        request=request,
+        details={"reason": payload.reason, "expires_at": expires_at.isoformat()},
+    )
+    return ManagerRecoveryResponse(
+        message="Break-glass temporary password generated. Share it with the user out of band. It is shown once.",
+        temporary_password=temporary_password,
+        temporary_password_expires_at=expires_at,
+        recovery_mode="break_glass_password_reset",
+    )
+
+
+@api.post("/users/{user_id}/break-glass-account-recovery", response_model=ManagerRecoveryResponse, responses=error_responses)
+@MFA_RATE_LIMIT
+def break_glass_account_recovery(
+    user_id: UUID,
+    payload: BreakGlassRecoveryRequest,
+    request: Request,
+    context: AuthenticatedContext = Depends(require_user_manager),
+    db: Session = Depends(get_db),
+):
+    if not payload.confirm_email_unavailable:
+        raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
+    if not _break_glass_allowed():
+        raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
+    verify_active_totp_for_user(context.user, code=payload.mfa_code)
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
+    temporary_password, expires_at = reset_user_password_to_temporary_service(
+        db,
+        user,
+        actor=context.user,
+        reset_mfa=True,
+        break_glass=True,
+    )
+    record_security_event(
+        db,
+        action="break_glass_account_recovery_generated",
+        actor=context.user,
+        target=user,
+        request=request,
+        details={"reason": payload.reason, "expires_at": expires_at.isoformat()},
+    )
+    return ManagerRecoveryResponse(
+        message="Break-glass temporary password generated and MFA reset. Share it with the user out of band. It is shown once.",
+        temporary_password=temporary_password,
+        temporary_password_expires_at=expires_at,
+        recovery_mode="break_glass_account_recovery",
+    )
 
 
 @api.get("/users", response_model=list[UserListItem], responses=error_responses)

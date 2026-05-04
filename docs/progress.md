@@ -1,5 +1,48 @@
 # Progress
 
+## 2026-05-04 Break-Glass Review Fixes
+
+### Scope
+
+- Added route-level throttling to break-glass recovery TOTP submission paths.
+- Stopped trusting `X-Forwarded-For` for persisted security audit IPs unless explicitly enabled.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: local environment lacks `pytest`, so focused tests could not run here.
+
+### Files changed
+
+- `app/routes/api_routes.py`, `app/routes/web_team_management.py`, `app/routes/web_admin.py`: apply existing MFA limiter to break-glass routes.
+- `app/services/security_audit.py`: gate forwarded audit IP trust behind `AUDIT_TRUST_X_FORWARDED_FOR`.
+- `tests/test_auth_email.py`: cover break-glass throttling and forwarded-IP behavior.
+- `docs/auth.md`, `docs/security.md`, `docs/progress.md`: document throttling and audit IP trust policy.
+
+### Tests
+
+- Added coverage for break-glass rate limiting after repeated invalid TOTP attempts.
+- Added coverage that audit IP ignores `X-Forwarded-For` by default and honors it only when explicitly enabled.
+
+### Documentation
+
+- Updated auth brute-force controls and security audit IP guidance.
+
+### Risks / assumptions
+
+- `AUDIT_TRUST_X_FORWARDED_FOR=true` assumes upstream proxy strips client-supplied forwarded headers.
+- Break-glass currently shares the existing MFA limiter bucket; if operators need stricter policy, add a dedicated break-glass limiter later.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content access or logging added.
+- Ownership rules preserved: existing manager/admin scope checks unchanged.
+- Deletion semantics preserved: no delete, retention, or cascade behavior changed.
+- Provider rules preserved: no provider config, secret, or fallback behavior changed.
+- Structured-note contract preserved: no EMIS/generated-document behavior changed.
+
 ## 2026-05-03 Regression Review Fixes
 
 ### Scope

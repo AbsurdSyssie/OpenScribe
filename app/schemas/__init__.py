@@ -7,10 +7,12 @@ from .account_requests import (
 )
 from .auth import (
     AccountActivationConfirmRequest,
+    BreakGlassRecoveryRequest,
     CurrentUserResponse,
     GenericMessageResponse,
     LoginRequest,
     LoginResponse,
+    ManagerRecoveryEmailRequest,
     ManagerRecoveryResponse,
     MfaChallengeRequest,
     PasswordChangeRequest,
@@ -104,6 +106,7 @@ __all__ = [
     "AccountRequestListItem",
     "AccountRequestReject",
     "AccountActivationConfirmRequest",
+    "BreakGlassRecoveryRequest",
     "ClinicalNlpSelectionDetail",
     "ClinicalNlpSelectionUpsert",
     "CurrentUserResponse",
@@ -122,6 +125,7 @@ __all__ = [
     "GenericMessageResponse",
     "LoginRequest",
     "LoginResponse",
+    "ManagerRecoveryEmailRequest",
     "ManagerRecoveryResponse",
     "MfaChallengeRequest",
     "PasswordChangeRequest",

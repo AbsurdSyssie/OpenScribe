@@ -53,6 +53,7 @@ from .models import (
 from .schemas import (
     AccountRequestApprove,
     AccountActivationConfirmRequest,
+    BreakGlassRecoveryRequest,
     AccountRequestCreate,
     AccountRequestDetail,
     AccountRequestListItem,
@@ -87,6 +88,7 @@ from .schemas import (
     LlmSelectionUpsert,
     LoginRequest,
     LoginResponse,
+    ManagerRecoveryEmailRequest,
     ManagerRecoveryResponse,
     MfaChallengeRequest,
     PasswordChangeRequest,
@@ -271,6 +273,7 @@ from .services.auth import (
     trusted_device_fresh_until,
     trusted_device_satisfies_mfa,
     update_password_for_onboarding,
+    verify_active_totp_for_user,
     verify_login_totp,
     verify_totp_enrollment,
 )
@@ -285,8 +288,11 @@ from .services.auth_email import (
     request_password_reset as request_password_reset_service,
     reset_user_mfa_for_reenrollment as reset_user_mfa_for_reenrollment_service,
     send_account_activation_email as send_account_activation_email_service,
+    send_manager_account_recovery_email as send_manager_account_recovery_email_service,
+    send_manager_password_reset_email as send_manager_password_reset_email_service,
     send_password_reset_email as send_password_reset_email_service,
 )
+from .services.security_audit import record_security_event
 from .services.transcripts import (
     attach_task_id_to_ingestion_job,
     can_create_new_session as can_create_new_session_service,

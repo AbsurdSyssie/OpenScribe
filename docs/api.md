@@ -54,9 +54,12 @@ Browser navigation behavior:
 - `POST /api/v1/users/{user_id}/suspend`
 - `POST /api/v1/users/{user_id}/reactivate`
 - `POST /api/v1/users/{user_id}/send-activation`
-- `POST /api/v1/users/{user_id}/recover-password` returns a one-time visible `temporary_password`
+- `POST /api/v1/users/{user_id}/send-password-reset`
+- `POST /api/v1/users/{user_id}/break-glass-password-reset` returns a one-time visible expiring `temporary_password` when break-glass policy allows it
 - `POST /api/v1/users/{user_id}/reset-mfa`
-- `POST /api/v1/users/{user_id}/recover-account` returns a one-time visible `temporary_password` and resets MFA
+- `POST /api/v1/users/{user_id}/send-account-recovery`
+- `POST /api/v1/users/{user_id}/break-glass-account-recovery` returns a one-time visible expiring `temporary_password` and resets MFA when break-glass policy allows it
+- `POST /api/v1/users/{user_id}/recover-password` and `POST /api/v1/users/{user_id}/recover-account` are deprecated and return `410`
 - `DELETE /api/v1/users/{user_id}`
 
 ### Transcripts
@@ -278,6 +281,12 @@ These routes require a full authenticated manager session:
 - `POST /api/v1/account-requests/{request_id}/reject`
 - `POST /api/v1/users`
 - `GET /api/v1/users`
+- `POST /api/v1/users/{user_id}/send-activation`
+- `POST /api/v1/users/{user_id}/send-password-reset`
+- `POST /api/v1/users/{user_id}/send-account-recovery`
+- `POST /api/v1/users/{user_id}/break-glass-password-reset`
+- `POST /api/v1/users/{user_id}/break-glass-account-recovery`
+- `POST /api/v1/users/{user_id}/reset-mfa`
 - `POST /api/v1/users/{user_id}/suspend`
 - `POST /api/v1/users/{user_id}/reactivate`
 - `DELETE /api/v1/users/{user_id}`
@@ -305,6 +314,7 @@ Current account-administration behavior:
 - reactivated users are forced back into password-change onboarding and must re-establish MFA setup
 - delete is immediate hard delete and returns `204`
 - deleting a user removes currently implemented user-owned transcript data immediately
+- email recovery routes require configured mail transport; break-glass routes require manager TOTP, reason, explicit email-unavailable confirmation, and write metadata-only security audit rows
 
 Current STT-configuration behavior:
 

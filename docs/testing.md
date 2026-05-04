@@ -149,6 +149,7 @@ What it does:
 - STT config validation for remote HTTPS-only and leader team-selection scope
 - transcript owner-only access and version history
 - transcript start creating the root for the current user and persisting `ingestion_mode`
+- transcript create/start/update retention coverage verifies public payloads cannot extend retention and new roots use the owning team's default retention snapshot
 - transcript start provisioning an owner DEK and storing the initial draft encrypted at rest
 - transcript structured context persisting encrypted at rest while owner-facing responses still expose plaintext JSON
 - transcript list responses including the persisted `ingestion_mode`

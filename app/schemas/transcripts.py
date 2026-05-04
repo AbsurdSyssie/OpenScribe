@@ -13,7 +13,6 @@ class TranscriptCreate(BaseModel):
     current_draft_text_encrypted: str | None = None
     structured_context_json: dict | None = None
     ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.whole_file
-    retention_days_applied: int | None = Field(default=None, ge=1)
 
 
 class TranscriptStart(BaseModel):
@@ -21,7 +20,6 @@ class TranscriptStart(BaseModel):
     current_draft_text_encrypted: str | None = None
     structured_context_json: dict | None = None
     ingestion_mode: TranscriptIngestionMode = TranscriptIngestionMode.whole_file
-    retention_days_applied: int | None = Field(default=None, ge=1)
 
 
 class TranscriptCommit(BaseModel):

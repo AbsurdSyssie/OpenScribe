@@ -111,7 +111,9 @@ from app.services.transcripts import (
     create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
+    start_transcript as start_transcript_service,
 )
+from app.schemas.transcripts import TranscriptStart
 from app.services import vault as vault_service
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
 
@@ -8112,6 +8114,110 @@ def test_transcript_title_update_is_owner_only(client, db_session, make_team, ma
     login(client, email="other@example.com", password="password-2")
     forbidden = client.patch(f"/api/v1/transcripts/{transcript_id}", json={"title": "Hijacked"})
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
+def test_start_transcript_ignores_client_retention_override(client, db_session, make_team, make_user):
+    team = make_team(name="Retention API Team", default_retention_days=14)
+    owner = make_user(email="retention-start@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="retention-start@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Retention attempt",
+            "ingestion_mode": "whole_file",
+            "retention_days_applied": 999,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["retention_days_applied"] == 14
+    persisted = db_session.get(Transcript, UUID(response.json()["id"]))
+    assert persisted is not None
+    assert persisted.retention_days_applied == 14
+
+
+def test_create_transcript_endpoint_uses_team_retention_default(client, db_session, make_team, make_user):
+    team = make_team(name="Retention Create Team", default_retention_days=21)
+    owner = make_user(email="retention-create@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="retention-create@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/transcripts",
+        json={
+            "owner_user_id": str(owner.id),
+            "team_id": str(team.id),
+            "title": "Create retention attempt",
+            "ingestion_mode": "whole_file",
+            "retention_days_applied": 999,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["retention_days_applied"] == 21
+    persisted = db_session.get(Transcript, UUID(response.json()["id"]))
+    assert persisted is not None
+    assert persisted.retention_days_applied == 21
+
+
+def test_start_transcript_service_applies_team_retention_default(db_session, make_team, make_user):
+    team = make_team(name="Retention Service Team", default_retention_days=7)
+    owner = make_user(email="retention-service@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    transcript = start_transcript_service(
+        db_session,
+        owner,
+        TranscriptStart(title="Service retention", ingestion_mode=TranscriptIngestionMode.whole_file),
+    )
+
+    assert transcript.retention_days_applied == 7
+
+
+def test_update_transcript_cannot_extend_retention(client, db_session, make_team, make_user):
+    team = make_team(name="Retention Update Team", default_retention_days=10)
+    owner = make_user(email="retention-update@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="retention-update@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Initial title", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    transcript = db_session.get(Transcript, transcript_id)
+    assert transcript is not None
+    original_expires_at = transcript.retention_expires_at
+
+    updated = client.patch(
+        f"/api/v1/transcripts/{transcript_id}",
+        json={"title": "Updated title", "retention_days_applied": 999},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "Updated title"
+    assert updated.json()["retention_days_applied"] == 10
+    db_session.refresh(transcript)
+    assert transcript.retention_days_applied == 10
+    assert transcript.retention_expires_at == original_expires_at
+
+
+def test_team_retention_cannot_exceed_max(client, make_user):
+    make_user(email="retention-admin@example.com", password="password-1", is_system_admin=True)
+    login(client, email="retention-admin@example.com", password="password-1")
+
+    response = client.post(
+        "/api/v1/teams",
+        json={
+            "name": "Unsafe retention",
+            "status": "active",
+            "default_retention_days": 9999,
+        },
+    )
+
+    details = assert_error(
+        response,
+        status_code=422,
+        code="business_rule_violation",
+        message="Retention must be between 1 and 90 days",
+    )
+    assert details == {"field": "default_retention_days", "min": 1, "max": 90}
 
 
 def test_transcript_input_mode_can_switch_only_for_blank_idle_owner_session(client, db_session, make_team, make_user):

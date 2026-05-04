@@ -9,6 +9,7 @@ Repeatable XSS checks and the current probe plan are documented in [security-xss
 - transcript-derived content is owner-only
 - admin or leader authority does not imply transcript readability
 - deletion remains immediate where the architecture says deletion is final
+- transcript retention snapshots are server-owned from team policy; users cannot extend retention through transcript create/start/update payloads
 - provider secrets must not be stored raw in the database
 - session identifiers, recovery codes, and password material must not be stored in plaintext form where hashing is sufficient
 

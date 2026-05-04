@@ -1,644 +1,465 @@
-## Next slice: cookie + CSRF hardening
+## Next slice: PII response minimisation
 
-This should be the next implementation slice. It is security-critical, self-contained, and builds directly on the recovery work.
+### Goal
 
-Current state:
+Reduce the default amount of decrypted transcript/PII content returned to the browser. This does **not** replace owner checks. It reduces blast radius if a legitimate authenticated session is abused through XSS, compromised device, or account takeover.
 
-* Session cookies are `HttpOnly`, `SameSite=Lax`, but `Secure` is decided dynamically through `should_set_secure_cookie(...)`. 
-* CSRF currently uses a JS-readable `openscribe_csrf` cookie and compares it directly to `X-CSRF-Token` or form `_csrf_token`. 
-* `csrfFetch` reads the CSRF cookie and adds the header for unsafe same-origin `/api/v1` requests. 
+Current issue:
 
-## Goal
-
-Make cookie-authenticated requests safer against:
-
-* production proxy misconfiguration
-* accidental non-secure cookies
-* cross-origin POST/DELETE/PATCH abuse
-* session-independent CSRF token reuse
-* login/session rotation leaving stale CSRF tokens valid
+* `TranscriptDetail` uses response fields like `current_draft_text_encrypted`, but the response is populated with decrypted/plaintext transcript draft text. 
+* Workspace response includes active transcript, generated documents, active PII entities, redaction status, clinical NLP status, and other sensitive data in one large payload. 
+* PII entity response objects currently include original `value`. 
 
 ---
 
 # Agent brief
 
-## 1. Add production secure-cookie startup guard
+## 1. Rename plaintext response fields
 
 ### File
 
-```text id="f6whwt"
-app/cookie_security.py
+```text
+app/schemas/transcripts.py
 ```
 
-Add helpers:
+Current field:
 
-```python id="kzpnn7"
-def app_environment() -> str:
-    return (
-        os.getenv("APP_ENV")
-        or os.getenv("ENVIRONMENT")
-        or os.getenv("ENV")
-        or "production"
-    ).strip().lower()
-
-
-def enforce_production_cookie_security() -> None:
-    environment = app_environment()
-    if environment not in {"production", "prod"}:
-        return
-
-    mode = cookie_secure_mode()
-    if mode != COOKIE_SECURE_ALWAYS:
-        raise RuntimeError(
-            "COOKIE_SECURE_MODE=always is required in production"
-        )
+```python
+class TranscriptDetail(TranscriptListItem):
+    current_draft_text_encrypted: str | None = None
 ```
+
+Replace with:
+
+```python
+class TranscriptDetail(TranscriptListItem):
+    current_draft_text: str | None = None
+```
+
+Do not rename encrypted DB/model fields in this slice. Only fix API response naming.
 
 ### File
 
-```text id="b8c8jh"
-app/main.py
+```text
+app/web/transcribe_workspace.py
 ```
 
-Update import:
+Change response construction:
 
-```python id="pklp06"
-from .cookie_security import should_set_secure_cookie, enforce_production_cookie_security
+```python
+payload["current_draft_text_encrypted"] = transcript_draft_text_service(db, transcript=transcript)
 ```
 
-Call immediately after app creation or before:
+to:
 
-```python id="t8ofy2"
-enforce_production_cookie_security()
-app = FastAPI(title="OpenScribe MVP")
+```python
+payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
 ```
 
-If tests expect `APP_ENV` unset, ensure test env sets `APP_ENV=test`, or make test fixtures set `COOKIE_SECURE_MODE=always`.
+### Transitional option
+
+If frontend breakage risk is high, support both names for one release:
+
+```python
+payload["current_draft_text"] = draft_text
+payload["current_draft_text_encrypted"] = draft_text  # TODO: remove after frontend migration
+```
+
+Preferred security-clean version: remove misleading `_encrypted` response fields now and update the frontend at the same time.
 
 ---
 
-## 2. Add HSTS middleware
+## 2. Split PII entity schemas into summary vs detail
 
 ### File
 
-```text id="qz1shk"
+```text
+app/schemas/transcripts.py
+```
+
+Replace current default schema:
+
+```python
+class TranscriptPiiEntityDetail(BaseModel):
+    id: UUID | None = None
+    entity_type: str
+    value: str
+    placeholder: str
+    occurrence_count: int
+    source: str = "detected"
+```
+
+with two schemas:
+
+```python
+class TranscriptPiiEntitySummary(BaseModel):
+    id: UUID | None = None
+    entity_type: str
+    placeholder: str
+    occurrence_count: int
+    source: str = "detected"
+    has_value: bool = True
+
+
+class TranscriptPiiEntityDetail(TranscriptPiiEntitySummary):
+    value: str
+```
+
+Then update workspace schemas so default workspace payload uses summaries.
+
+Search for:
+
+```text
+active_transcript_pii_entities
+TranscriptPiiEntityDetail
+```
+
+The workspace response model should become:
+
+```python
+active_transcript_pii_entities: list[TranscriptPiiEntitySummary]
+```
+
+---
+
+## 3. Default workspace should not include original PII values
+
+### File
+
+```text
+app/web/transcribe_workspace.py
+```
+
+Current function:
+
+```python
+def transcript_pii_entities_response(db: Session, transcript: Transcript | None) -> list[TranscriptPiiEntityDetail]:
+```
+
+Change to:
+
+```python
+def transcript_pii_entities_response(
+    db: Session,
+    transcript: Transcript | None,
+    *,
+    include_values: bool = False,
+) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
+```
+
+For each detected/manual/clinical entity:
+
+```python
+if include_values:
+    return TranscriptPiiEntityDetail(
+        id=...,
+        entity_type=...,
+        value=...,
+        placeholder=...,
+        occurrence_count=...,
+        source=...,
+        has_value=True,
+    )
+
+return TranscriptPiiEntitySummary(
+    id=...,
+    entity_type=...,
+    placeholder=...,
+    occurrence_count=...,
+    source=...,
+    has_value=True,
+)
+```
+
+Then ensure `resolve_transcribe_workspace(...)` calls:
+
+```python
+"active_transcript_pii_entities": transcript_pii_entities_response(
+    db,
+    active_transcript,
+    include_values=False,
+),
+```
+
+---
+
+## 4. Add explicit PII reveal endpoint
+
+Use a separate endpoint for original values.
+
+Prefer **POST** rather than GET so the request gets CSRF/origin protection and is less likely to be prefetched/cached accidentally.
+
+### File
+
+```text
+app/routes/api_routes.py
+```
+
+Add:
+
+```python
+@api.post(
+    "/transcripts/{transcript_id}/pii-entities/reveal",
+    response_model=list[TranscriptPiiEntityDetail],
+    responses=error_responses,
+)
+def reveal_transcript_pii_entities(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = db.get(Transcript, transcript_id)
+    if transcript is None or transcript.owner_user_id != context.user.id:
+        raise AppError(
+            404,
+            "not_found",
+            "Transcript not found",
+            {"resource": "transcript", "transcript_id": str(transcript_id)},
+        )
+
+    response = transcript_pii_entities_response(
+        db,
+        transcript,
+        include_values=True,
+    )
+    return response
+```
+
+If the route returns a raw `Response` / `JSONResponse`, add `Cache-Control: no-store`. If it returns via FastAPI model, add no-store middleware as described below.
+
+Optional stronger control:
+
+```python
+if context.session.last_mfa_verified_at is older than 10 minutes:
+    raise AppError(403, "fresh_mfa_required", "Re-authenticate with MFA to reveal original PII values")
+```
+
+Only add this if the session model now tracks recent MFA. If not, leave fresh-MFA for a later slice.
+
+---
+
+## 5. Add no-store headers for sensitive API responses
+
+### File
+
+```text
 app/main.py
 ```
 
 Add helper:
 
-```python id="e4k3d8"
-def _request_is_https(request: Request) -> bool:
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    if forwarded_proto:
-        return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
-    return request.url.scheme == "https"
-```
-
-Add middleware after app creation:
-
-```python id="6gwd8f"
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-
-    if _request_is_https(request):
-        response.headers.setdefault(
-            "Strict-Transport-Security",
-            "max-age=31536000; includeSubDomains",
-        )
-
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-
-    return response
-```
-
-Do **not** emit HSTS on HTTP/local development responses.
-
----
-
-## 3. Replace plain CSRF with session-bound CSRF
-
-### Current behaviour to replace
-
-Current `require_browser_csrf` does:
-
-```python id="u9q7kw"
-cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
-submitted_token = csrf_header or form["_csrf_token"]
-submitted_token == cookie_token
-```
-
-That token is not visibly tied to the session.
-
-### New design
-
-Use an HMAC-signed CSRF token bound to the session token hash.
-
-Token shape:
-
-```text id="8kfevv"
-nonce.signature
-```
-
-Where:
-
-```text id="a2muqz"
-signature = HMAC(CSRF_SECRET, session_token_hash + "." + nonce)
-```
-
-For pre-login pages that need browser forms, support an anonymous CSRF token bound to an anonymous browser nonce cookie.
-
-Use two cookies:
-
-```text id="fn7rdx"
-openscribe_csrf
-openscribe_csrf_anon
-```
-
-* `openscribe_csrf`: JS-readable signed CSRF token.
-* `openscribe_csrf_anon`: HttpOnly random nonce used only when there is no session cookie.
-
-Why anonymous support matters: login, request-access, activation, and reset-password forms may need CSRF before the user has a session.
-
----
-
-# 4. Create CSRF service module
-
-### New file
-
-```text id="4mp15s"
-app/services/csrf.py
-```
-
-```python id="szk7d3"
-from __future__ import annotations
-
-import hmac
-import os
-import secrets
-from hashlib import sha256
-
-from app.services.auth import session_token_hash
-
-
-CSRF_COOKIE_NAME = "openscribe_csrf"
-CSRF_ANON_COOKIE_NAME = "openscribe_csrf_anon"
-CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-
-
-def _csrf_secret() -> str:
-    value = os.getenv("CSRF_SECRET") or os.getenv("SECRET_KEY")
-    if not value:
-        # Local/test fallback only. Production startup should reject this.
-        value = os.getenv("APP_ENV", "").lower() in {"local", "dev", "development", "test", "testing"} and "dev-only-csrf-secret"
-    if not value:
-        raise RuntimeError("CSRF_SECRET or SECRET_KEY is required")
-    return str(value)
-
-
-def csrf_secret_configured_for_environment() -> None:
-    environment = (
-        os.getenv("APP_ENV")
-        or os.getenv("ENVIRONMENT")
-        or os.getenv("ENV")
-        or "production"
-    ).strip().lower()
-
-    if environment in {"production", "prod"} and not (os.getenv("CSRF_SECRET") or os.getenv("SECRET_KEY")):
-        raise RuntimeError("CSRF_SECRET or SECRET_KEY is required in production")
-
-
-def _sign(subject: str, nonce: str) -> str:
-    message = f"{subject}.{nonce}".encode("utf-8")
-    return hmac.new(_csrf_secret().encode("utf-8"), message, sha256).hexdigest()
-
-
-def _encode(subject: str, nonce: str) -> str:
-    return f"{nonce}.{_sign(subject, nonce)}"
-
-
-def _decode(token: str) -> tuple[str, str] | None:
-    parts = token.split(".", 1)
-    if len(parts) != 2:
-        return None
-    nonce, signature = parts
-    if not nonce or not signature:
-        return None
-    return nonce, signature
-
-
-def session_csrf_token(raw_session_token: str) -> str:
-    nonce = secrets.token_urlsafe(24)
-    return _encode(f"session:{session_token_hash(raw_session_token)}", nonce)
-
-
-def anonymous_csrf_token(anon_nonce: str) -> str:
-    return _encode(f"anon:{anon_nonce}", anon_nonce)
-
-
-def verify_csrf_token(
-    *,
-    submitted_token: str,
-    raw_session_token: str | None,
-    anon_nonce: str | None,
-) -> bool:
-    decoded = _decode(submitted_token)
-    if decoded is None:
-        return False
-
-    nonce, signature = decoded
-
-    if raw_session_token:
-        subject = f"session:{session_token_hash(raw_session_token)}"
-    elif anon_nonce:
-        subject = f"anon:{anon_nonce}"
-        if nonce != anon_nonce:
-            return False
-    else:
-        return False
-
-    expected = _sign(subject, nonce)
-    return hmac.compare_digest(signature, expected)
-```
-
-Important: this design rotates CSRF naturally whenever a new session token is issued. A token created for the previous session hash will fail after session rotation.
-
----
-
-## 5. Validate Origin/Referer for unsafe requests
-
-### Add helper in `app/main.py` or `app/services/csrf.py`
-
-```python id="a5i13n"
-from urllib.parse import urlsplit
-
-
-def _origin_allowed(request: Request) -> bool:
-    if request.method in CSRF_SAFE_METHODS:
-        return True
-
-    origin = request.headers.get("origin")
-    referer = request.headers.get("referer")
-
-    expected_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
-    expected_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-
-    if not expected_host:
-        return False
-
-    expected_origin = f"{expected_scheme}://{expected_host}"
-
-    if origin:
-        return origin == expected_origin
-
-    if referer:
-        parsed = urlsplit(referer)
-        referer_origin = f"{parsed.scheme}://{parsed.netloc}"
-        return referer_origin == expected_origin
-
-    return False
-```
-
-Then in unsafe CSRF validation, reject when origin/referrer is missing or cross-origin.
-
-Return:
-
-```python id="c6e5ff"
-raise AppError(403, "forbidden", "Cross-origin request rejected")
-```
-
-Exception: allow test clients if the repo already has `testserver` handling. For tests, set `Origin: http://testserver`.
-
----
-
-# 6. Update CSRF middleware
-
-### File
-
-```text id="fj6fcy"
-app/main.py
-```
-
-Replace `CSRF_COOKIE_NAME`, `CSRF_SAFE_METHODS` constants with imports from `app.services.csrf`.
-
-Update imports:
-
-```python id="1z3quk"
-from .services.csrf import (
-    CSRF_ANON_COOKIE_NAME,
-    CSRF_COOKIE_NAME,
-    CSRF_SAFE_METHODS,
-    anonymous_csrf_token,
-    csrf_secret_configured_for_environment,
-    session_csrf_token,
-    verify_csrf_token,
+```python
+SENSITIVE_NO_STORE_PATH_PREFIXES = (
+    "/api/v1/transcribe",
+    "/api/v1/transcripts",
+    "/api/v1/generated-documents",
+    "/api/v1/post-consultation-dictation",
 )
 ```
 
-Call startup guard:
+Add to existing security headers middleware, or create a new middleware:
 
-```python id="74j77j"
-csrf_secret_configured_for_environment()
-```
-
-### Replace `ensure_csrf_cookie`
-
-```python id="sb77q1"
+```python
 @app.middleware("http")
-async def ensure_csrf_cookie(request: Request, call_next):
+async def add_no_store_for_sensitive_api(request: Request, call_next):
     response = await call_next(request)
 
-    if request.method not in {"GET", "HEAD"}:
-        return response
+    if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
 
-    secure_cookie = should_set_secure_cookie(
-        request_url=str(request.url),
-        forwarded_proto=request.headers.get("x-forwarded-proto"),
-    )
-
-    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
-    if raw_session_token:
-        response.set_cookie(
-            key=CSRF_COOKIE_NAME,
-            value=session_csrf_token(raw_session_token),
-            httponly=False,
-            secure=secure_cookie,
-            samesite="lax",
-            path="/",
-        )
-        response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
-        return response
-
-    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME) or secrets.token_urlsafe(24)
-    response.set_cookie(
-        key=CSRF_ANON_COOKIE_NAME,
-        value=anon_nonce,
-        httponly=True,
-        secure=secure_cookie,
-        samesite="lax",
-        path="/",
-    )
-    response.set_cookie(
-        key=CSRF_COOKIE_NAME,
-        value=anonymous_csrf_token(anon_nonce),
-        httponly=False,
-        secure=secure_cookie,
-        samesite="lax",
-        path="/",
-    )
     return response
 ```
 
-This refreshes CSRF on every GET/HEAD. That is acceptable and simple. Existing JS reads the latest cookie.
+If middleware order matters with existing middleware, combine it with the security headers middleware added in the cookie/CSRF slice.
 
 ---
 
-## 7. Update CSRF verification dependencies
+## 6. Frontend changes
 
-### Replace `require_browser_csrf`
+Search frontend code for:
 
-```python id="s9kr1u"
-async def require_browser_csrf(
-    request: Request,
-    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
-) -> None:
-    if request.method in CSRF_SAFE_METHODS:
-        return
-
-    if not _origin_allowed(request):
-        raise AppError(403, "forbidden", "Cross-origin request rejected")
-
-    submitted_token = csrf_header
-    if submitted_token is None:
-        form = await request.form()
-        submitted_token = form.get("_csrf_token")
-
-    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
-    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME)
-
-    if not submitted_token or not verify_csrf_token(
-        submitted_token=str(submitted_token),
-        raw_session_token=raw_session_token,
-        anon_nonce=anon_nonce,
-    ):
-        raise AppError(403, "forbidden", "CSRF verification failed")
+```text
+current_draft_text_encrypted
+edited_output_text_encrypted
+active_transcript_pii_entities
+value
 ```
 
-### Keep `require_api_csrf`, but make it use the stronger browser CSRF
+### Expected changes
 
-```python id="hiiuj6"
-async def require_api_csrf(
-    request: Request,
-    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
-) -> None:
-    if request.method in CSRF_SAFE_METHODS:
-        return
+Default UI should show PII entity rows without original values:
 
-    has_cookie_backed_authority = bool(
-        request.cookies.get(SESSION_COOKIE_NAME)
-        or request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME)
+```text
+Type | Placeholder | Count | Source | Reveal
+```
+
+Example row:
+
+```text
+NHS_NUMBER | [NHS_NUMBER_1] | 1 | detected | Reveal
+```
+
+When user clicks **Reveal**, call:
+
+```javascript
+await csrfFetch(`/api/v1/transcripts/${transcriptId}/pii-entities/reveal`, {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+});
+```
+
+Then render original values into the PII panel only.
+
+Do not store revealed values in `localStorage`, `sessionStorage`, data attributes, or long-lived global state. Keep them in the current in-memory panel state.
+
+---
+
+## 7. Generated document plaintext naming
+
+If generated-document responses also use misleading `_encrypted` names, apply the same approach.
+
+Search:
+
+```text
+edited_output_text_encrypted
+original_output_text_encrypted
+```
+
+If these are API response fields but contain plaintext, rename them to:
+
+```text
+edited_output_text
+original_output_text
+```
+
+Use a short compatibility window only if needed.
+
+---
+
+# Tests
+
+Add or update:
+
+```text
+tests/test_pii_response_minimisation.py
+```
+
+## 1. Workspace excludes original PII values
+
+```python
+def test_workspace_pii_entities_do_not_include_values_by_default(client, user, transcript_with_pii):
+    response = client.get(
+        "/api/v1/transcribe/workspace",
+        cookies=auth_cookies_for(user),
     )
-    if not has_cookie_backed_authority:
-        return
 
-    await require_browser_csrf(request, csrf_header=csrf_header)
+    assert response.status_code == 200
+    body = response.json()
+
+    entities = body["active_transcript_pii_entities"]
+    assert entities
+    assert "value" not in entities[0]
+    assert entities[0]["placeholder"]
+    assert entities[0]["entity_type"]
 ```
 
-This keeps Bearer/API-style non-cookie calls possible if they exist later.
+## 2. Reveal endpoint returns values for owner
 
----
-
-## 8. Rotate CSRF on login/session rotation
-
-Because the token is bound to the session token hash, rotation happens automatically after the next GET. For JSON login responses, set the new CSRF immediately so SPA/fetch flows do not need a full page reload.
-
-### Add helper
-
-```python id="y2qgtz"
-def _set_csrf_cookie_for_session(request: Request, response: Response, token: str) -> None:
-    secure_cookie = should_set_secure_cookie(
-        request_url=str(request.url),
-        forwarded_proto=request.headers.get("x-forwarded-proto"),
+```python
+def test_reveal_pii_entities_returns_values_for_owner(client, user, transcript_with_pii):
+    response = client.post(
+        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
+        cookies=auth_cookies_for(user),
+        headers=csrf_headers_for(user),
     )
-    response.set_cookie(
-        key=CSRF_COOKIE_NAME,
-        value=session_csrf_token(token),
-        httponly=False,
-        secure=secure_cookie,
-        samesite="lax",
-        path="/",
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body
+    assert body[0]["value"]
+    assert body[0]["placeholder"]
+```
+
+## 3. Reveal endpoint rejects non-owner
+
+```python
+def test_reveal_pii_entities_rejects_non_owner(client, other_user, transcript_with_pii):
+    response = client.post(
+        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
+        cookies=auth_cookies_for(other_user),
+        headers=csrf_headers_for(other_user),
     )
-    response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
+
+    assert response.status_code == 404
 ```
 
-Call this wherever a session cookie is set:
+Use `404` rather than `403` to avoid confirming transcript existence.
 
-```python id="hur5rw"
-_set_session_cookie(request, response, token)
-_set_csrf_cookie_for_session(request, response, token)
-```
+## 4. Reveal endpoint requires CSRF
 
-Search for all uses of:
-
-```text id="hc08pz"
-_set_session_cookie(
-rotate_session(
-create_session(
-```
-
-Apply after login, MFA completion, activation, password reset flows if they create/rotate sessions.
-
-On logout, clear CSRF too:
-
-```python id="4fd7lx"
-def _clear_csrf_cookie(response: JSONResponse | RedirectResponse) -> None:
-    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
-    response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
-```
-
-Call this in logout.
-
----
-
-# 9. Frontend impact
-
-`app/static/js/csrf.js` can mostly stay as-is because it reads `openscribe_csrf` and sets `X-CSRF-Token`. 
-
-No major JS change required.
-
-Check templates that set `_csrf_token`; they should still use the `csrf_token` variable from the cookie/template context. If templates currently read cookie at render time, fine. If context stores the raw cookie token, it will now be signed.
-
----
-
-# 10. Tests
-
-Add or update tests in a dedicated file:
-
-```text id="xer9c5"
-tests/test_cookie_csrf_security.py
-```
-
-## Test 1: production requires secure cookies
-
-```python id="j4v6s3"
-def test_production_requires_cookie_secure_always(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("COOKIE_SECURE_MODE", "auto")
-
-    with pytest.raises(RuntimeError, match="COOKIE_SECURE_MODE=always"):
-        enforce_production_cookie_security()
-```
-
-## Test 2: production requires CSRF secret
-
-```python id="7qpdu3"
-def test_production_requires_csrf_secret(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.delenv("CSRF_SECRET", raising=False)
-    monkeypatch.delenv("SECRET_KEY", raising=False)
-
-    with pytest.raises(RuntimeError, match="CSRF_SECRET"):
-        csrf_secret_configured_for_environment()
-```
-
-## Test 3: HSTS only on HTTPS
-
-```python id="1fojp8"
-def test_hsts_added_for_https(client):
-    response = client.get("/login", headers={"x-forwarded-proto": "https"})
-    assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
-
-
-def test_hsts_not_added_for_http(client):
-    response = client.get("/login")
-    assert "Strict-Transport-Security" not in response.headers
-```
-
-## Test 4: unsafe API rejects missing CSRF
-
-```python id="h780ar"
-def test_unsafe_cookie_api_rejects_missing_csrf(authenticated_client):
+```python
+def test_reveal_pii_entities_requires_csrf(authenticated_client, transcript_with_pii):
     response = authenticated_client.post(
-        "/api/v1/app-preferences",
-        json={},
+        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
         headers={"Origin": "http://testserver"},
     )
+
     assert response.status_code == 403
-    assert response.json()["error"]["message"] == "CSRF verification failed"
 ```
 
-## Test 5: unsafe API rejects cross-origin
+## 5. Sensitive API responses are no-store
 
-```python id="kf9vf0"
-def test_unsafe_cookie_api_rejects_cross_origin(authenticated_client, csrf_token):
-    response = authenticated_client.post(
-        "/api/v1/app-preferences",
-        json={},
-        headers={
-            "Origin": "https://evil.example",
-            "X-CSRF-Token": csrf_token,
-        },
-    )
-    assert response.status_code == 403
-    assert response.json()["error"]["message"] == "Cross-origin request rejected"
-```
-
-## Test 6: session-bound CSRF cannot be reused after login rotation
-
-```python id="1k6jgp"
-def test_csrf_bound_to_session_token(client, user):
-    # 1. GET login page, capture anonymous CSRF.
-    # 2. Login, capture session-bound CSRF.
-    # 3. Rotate session via MFA/login flow or manual rotate_session helper.
-    # 4. Attempt unsafe API call with old CSRF and new session cookie.
-    # 5. Assert 403.
-```
-
-## Test 7: anonymous CSRF works for login
-
-```python id="cpzhbo"
-def test_login_accepts_anonymous_csrf(client, user):
-    get_response = client.get("/login")
-    csrf = get_response.cookies["openscribe_csrf"]
-
-    response = client.post(
-        "/api/v1/auth/login",
-        json={"email": user.email, "password": "correct-password"},
-        headers={
-            "Origin": "http://testserver",
-            "X-CSRF-Token": csrf,
-        },
+```python
+def test_transcript_api_responses_are_no_store(client, user, transcript):
+    response = client.get(
+        f"/api/v1/transcripts/{transcript.id}",
+        cookies=auth_cookies_for(user),
     )
 
-    assert response.status_code in {200, 303}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
 ```
 
-Adjust endpoint names to match actual login API/browser tests.
+## 6. Response field names are no longer misleading
+
+```python
+def test_transcript_detail_uses_plaintext_response_name(client, user, transcript):
+    response = client.get(
+        f"/api/v1/transcripts/{transcript.id}",
+        cookies=auth_cookies_for(user),
+    )
+
+    body = response.json()
+    assert "current_draft_text" in body
+    assert "current_draft_text_encrypted" not in body
+```
+
+If a compatibility period is chosen, invert this test later and add a TODO.
 
 ---
 
 # Acceptance criteria
 
-The slice is complete when:
+This slice is done when:
 
-* Production startup fails unless `COOKIE_SECURE_MODE=always`.
-* Production startup fails without `CSRF_SECRET` or `SECRET_KEY`.
-* HTTPS responses include HSTS.
-* Unsafe cookie-authenticated requests require:
-
-  * same-origin `Origin` or `Referer`
-  * valid signed CSRF token
-  * token bound to current session token hash, or anonymous nonce for pre-login forms
-* Login/session rotation invalidates old session-bound CSRF tokens.
-* Logout clears session, trusted-device where appropriate, and CSRF cookies.
-* Existing frontend `csrfFetch` still works.
-* Browser forms still work.
-* Tests cover missing CSRF, cross-origin rejection, valid CSRF, session rotation, secure-cookie production guard, and HSTS.
+* Default workspace response does **not** include original PII entity values.
+* Original PII values are available only via explicit owner-only reveal endpoint.
+* Reveal endpoint uses unsafe method + CSRF protection.
+* Sensitive transcript/generated-document/workspace responses include `Cache-Control: no-store`.
+* Plaintext response fields are not named `_encrypted`.
+* Frontend still displays placeholders/counts by default.
+* Frontend reveals original values only after explicit user action.
+* Tests cover owner access, non-owner rejection, CSRF, no-store headers, and response shape.
 
 ---
 
-## Why this slice now
+## Next slice after this
 
-Account recovery and retention closed two direct PII/control risks. This slice hardens the browser/session layer so future XSS/CSRF/cookie misconfiguration issues have a smaller blast radius.
+After PII response minimisation, do **CSP + frontend XSS hardening**:
+
+```text
+strict CSP → nonce or remove inline scripts → self-host third-party runtime assets → reduce innerHTML
+```

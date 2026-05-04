@@ -143,8 +143,8 @@ export function createDocumentNavigator({
       card.tabIndex = 0;
       card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
-      const body = item.status === "ready" && item.edited_output_text_encrypted
-        ? `<div class="followup-card__content" data-followup-copy-body>${escapeHtml(item.edited_output_text_encrypted)}</div>`
+      const body = item.status === "ready" && item.edited_output_text
+        ? `<div class="followup-card__content" data-followup-copy-body>${escapeHtml(item.edited_output_text)}</div>`
         : item.status === "queued"
           ? '<div class="followup-card__content followup-card__content--placeholder">Waiting to be written...</div>'
           : item.status === "processing"
@@ -158,7 +158,7 @@ export function createDocumentNavigator({
         : followupDocumentLabel(item);
       const actions = `
         <div class="followup-card__actions">
-          ${item.status === "ready" && item.edited_output_text_encrypted ? `
+          ${item.status === "ready" && item.edited_output_text ? `
             <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
               <i class="w-4 h-4" data-lucide="copy"></i>
             </button>
@@ -214,7 +214,7 @@ export function createDocumentNavigator({
       kind: "note",
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
-    renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true });
+    renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });
     renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };

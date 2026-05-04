@@ -867,6 +867,27 @@ def delete_transcript_manual_pii(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@api.post(
+    "/transcripts/{transcript_id}/pii-entities/reveal",
+    response_model=list[TranscriptPiiEntityDetail],
+    responses=error_responses,
+)
+def reveal_transcript_pii_entities(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = db.get(Transcript, transcript_id)
+    if transcript is None or transcript.owner_user_id != context.user.id:
+        raise AppError(
+            404,
+            "not_found",
+            "Transcript not found",
+            {"resource": "transcript", "transcript_id": str(transcript_id)},
+        )
+    return transcript_pii_entities_response(db, transcript, include_values=True)
+
+
 @api.post("/transcripts/{transcript_id}/audio-chunks", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 @LIVE_CHUNK_UPLOAD_RATE_LIMIT
 def upload_transcript_audio_chunk(

@@ -3,13 +3,13 @@ from pydantic import BaseModel
 from .dictation import PostConsultationDictationDetail
 from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
-from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail
+from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntitySummary
 
 
 class TranscribeWorkspaceDetail(BaseModel):
     recent_transcripts: list[TranscriptListItem]
     active_transcript: TranscriptDetail | None = None
-    active_transcript_pii_entities: list[TranscriptPiiEntityDetail] = []
+    active_transcript_pii_entities: list[TranscriptPiiEntitySummary] = []
     active_transcript_redaction_status: dict | None = None
     active_transcript_clinical_nlp_status: dict | None = None
     post_consultation_dictation: PostConsultationDictationDetail | None = None

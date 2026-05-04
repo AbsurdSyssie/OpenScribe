@@ -93,6 +93,7 @@ from .transcripts import (
     TranscriptListItem,
     TranscriptManualPiiEntityCreate,
     TranscriptPiiEntityDetail,
+    TranscriptPiiEntitySummary,
     TranscriptStart,
     TranscriptUpdate,
 )
@@ -186,6 +187,7 @@ __all__ = [
     "TranscriptListItem",
     "TranscriptManualPiiEntityCreate",
     "TranscriptPiiEntityDetail",
+    "TranscriptPiiEntitySummary",
     "TranscriptStart",
     "TranscriptUpdate",
     "UserCreate",

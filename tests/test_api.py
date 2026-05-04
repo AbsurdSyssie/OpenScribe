@@ -3558,7 +3558,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert body["transcript_id"] == transcript_id
     assert body["source_template_name"] == "Team SOAP"
     assert body["status"] == "queued"
-    assert body["edited_output_text_encrypted"] == ""
+    assert body["edited_output_text"] == ""
     assert body["model_used"] == "gpt-4o-mini"
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
@@ -3575,7 +3575,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
     assert len(generated_rows.json()) == 1
-    assert generated_rows.json()[0]["edited_output_text_encrypted"] == "Generated note body"
+    assert generated_rows.json()[0]["edited_output_text"] == "Generated note body"
     assert generated_rows.json()[0]["input_token_count"] == 123
     assert generated_rows.json()[0]["output_token_count"] == 45
 
@@ -6962,7 +6962,7 @@ def test_start_transcript_encrypts_draft_at_rest_and_provisions_owner_key(client
     )
 
     assert started.status_code == 201
-    assert started.json()["current_draft_text_encrypted"] == "Sensitive transcript draft"
+    assert started.json()["current_draft_text"] == "Sensitive transcript draft"
     transcript = db_session.get(Transcript, UUID(started.json()["id"]))
     assert transcript is not None
     assert is_encrypted_envelope(transcript.current_draft_text_encrypted)
@@ -7266,7 +7266,7 @@ def test_transcript_detail_route_is_owner_only(client, make_team, make_user):
     detail = client.get(f"/api/v1/transcripts/{transcript_id}")
     assert detail.status_code == 200
     assert detail.json()["id"] == transcript_id
-    assert detail.json()["current_draft_text_encrypted"] is None
+    assert detail.json()["current_draft_text"] is None
 
     client.post("/api/v1/auth/logout")
     login(client, email="other@example.com", password="password-2")
@@ -7446,7 +7446,7 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     assert response.status_code == 200
     payload = response.json()
     assert payload["active_transcript"]["id"] == str(transcript.id)
-    assert payload["active_transcript"]["current_draft_text_encrypted"] == "Patient is improving."
+    assert payload["active_transcript"]["current_draft_text"] == "Patient is improving."
     assert payload["active_structured_context"] == {
         "problem": ["Known asthma"],
         "tasks": ["Peak flow diary"],
@@ -8024,7 +8024,7 @@ def test_transcribe_workspace_endpoint_uses_row_kek_metadata_for_dek_unwrap(
     response = client.get(f"/api/v1/transcripts/{transcript.id}")
 
     assert response.status_code == 200
-    assert response.json()["current_draft_text_encrypted"] == "Encrypted draft"
+    assert response.json()["current_draft_text"] == "Encrypted draft"
     assert unwrap_calls == [("legacy-transit", "legacy-kek")]
 
 
@@ -8102,7 +8102,7 @@ def test_transcribe_workspace_stream_returns_owner_workspace_event(client, db_se
     data_line = next(line for line in lines if line.startswith("data: "))
     payload = json.loads(data_line[6:])
     assert payload["active_transcript"]["id"] == str(transcript.id)
-    assert payload["active_transcript"]["current_draft_text_encrypted"] == "Live content"
+    assert payload["active_transcript"]["current_draft_text"] == "Live content"
 
     client.post("/api/v1/auth/logout")
     login(client, email="other-workspace-stream@example.com", password="password-2")
@@ -8492,7 +8492,7 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
 
     assert uploaded.status_code == 202
     assert uploaded.json()["transcript"]["status"] == "transcribing"
-    assert uploaded.json()["transcript"]["current_draft_text_encrypted"] == "draft-1"
+    assert uploaded.json()["transcript"]["current_draft_text"] == "draft-1"
     assert uploaded.json()["job"]["job_kind"] == "live_chunk"
     assert uploaded.json()["job"]["chunk_sequence_no"] == 1
     persisted = db_session.get(Transcript, UUID(transcript_id))
@@ -9123,7 +9123,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
 
     assert detail.status_code == 200
-    assert detail.json()["current_draft_text_encrypted"] == "draft-1\nsecond chunk"
+    assert detail.json()["current_draft_text"] == "draft-1\nsecond chunk"
     assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
     assert detail.json()["status"] == "ready"
     refreshed_transcript = db_session.get(Transcript, transcript.id)
@@ -9183,7 +9183,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processi
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
 
     assert detail.status_code == 200
-    assert detail.json()["current_draft_text_encrypted"] == "draft-1\nsecond chunk"
+    assert detail.json()["current_draft_text"] == "draft-1\nsecond chunk"
     assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
     assert detail.json()["status"] == "ready"
 

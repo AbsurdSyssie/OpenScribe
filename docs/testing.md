@@ -94,6 +94,7 @@ What it does:
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
 - workspace refreshes re-render the right-side PII table and transcript highlights from `active_transcript_pii_entities`, including newly detected clinical NLP entities, without requiring a full page reload
+- workspace PII minimisation tests verify default PII rows omit original values, owner-only reveal returns values through POST+CSRF, non-owners receive `404`, sensitive APIs are `no-store`, and plaintext response fields no longer use `_encrypted` names
 - manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
 - manual PII dedupe coverage verifies normalized value hashes are keyed owner-scoped digests rather than plain SHA-256 of low-entropy PII
 - manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation

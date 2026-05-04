@@ -821,10 +821,11 @@ import { csrfFetch } from '../csrf.js';
             occurrence_count: Number.parseInt(entity?.occurrence_count ?? 1, 10) || 1,
             source: entity?.source || 'detected',
             id: entity?.id || null,
+            has_value: Boolean(entity?.has_value),
           }))
-          .filter((entity) => entity.value.length > 0)
+          .filter((entity) => entity.value.length > 0 || entity.placeholder.length > 0)
           .filter((entity) => {
-            const key = `${entity.source}\u0000${entity.entity_type.toLowerCase()}\u0000${entity.value.toLowerCase()}`;
+            const key = `${entity.source}\u0000${entity.entity_type.toLowerCase()}\u0000${(entity.value || entity.placeholder).toLowerCase()}`;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -1319,8 +1320,8 @@ import { csrfFetch } from '../csrf.js';
           latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-ups yet.</span>';
           return;
         }
-        if (document.status === 'ready' && document.edited_output_text_encrypted) {
-          latestFollowupOutput.textContent = document.edited_output_text_encrypted;
+        if (document.status === 'ready' && document.edited_output_text) {
+          latestFollowupOutput.textContent = document.edited_output_text;
           return;
         }
         if (document.status === 'queued') {
@@ -1371,6 +1372,7 @@ import { csrfFetch } from '../csrf.js';
       const renderPiiEntities = (entities = [], options = {}) => {
         if (!piiCount || !piiTableWrap) return;
         const rawBaseEntities = Array.isArray(entities) ? entities : [];
+        const allowReveal = options.allowReveal !== false;
         const baseEntities = rawBaseEntities.length === 0 && options.useWorkspaceWhenEmpty
           ? workspaceTranscriptPiiEntities
           : rawBaseEntities;
@@ -1378,9 +1380,12 @@ import { csrfFetch } from '../csrf.js';
           ? []
           : workspaceTranscriptPiiEntities.filter((entity) => entity.source === 'manual');
         const rows = uniquePiiEntities([...baseEntities, ...manualWorkspaceEntities]);
-        currentPiiEntities = rows;
-        renderHighlightedTranscript(currentDraftText || readActiveDraftText(), rows);
-        piiCount.textContent = String(rows.length);
+        const displayRows = allowReveal
+          ? rows
+          : rows.map((entity) => ({ ...entity, value: '' }));
+        currentPiiEntities = displayRows;
+        renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);
+        piiCount.textContent = String(displayRows.length);
         const redactionStatus = workspaceRedactionStatus?.status || 'not_run';
         if (piiStatus) {
           piiStatus.classList.toggle('pii-status--error', redactionStatus === 'failed');
@@ -1406,7 +1411,7 @@ import { csrfFetch } from '../csrf.js';
             clinicalNlpStatus.textContent = 'Clinical NLP has not run for this transcript yet.';
           }
         }
-        if (rows.length === 0) {
+        if (displayRows.length === 0) {
           const emptyText = redactionStatus === 'succeeded'
             ? 'No PII identified in the latest redaction check.'
             : (redactionStatus === 'failed'
@@ -1420,12 +1425,14 @@ import { csrfFetch } from '../csrf.js';
             <thead>
               <tr>
                 <th scope="col">Type</th>
-                <th scope="col">Value</th>
+                <th scope="col">Placeholder</th>
                 <th scope="col">Count</th>
+                <th scope="col">Source</th>
+                <th scope="col">Reveal</th>
               </tr>
             </thead>
             <tbody data-pii-table-body>
-              ${rows.map((entity) => `
+              ${displayRows.map((entity) => `
                 <tr data-pii-source="${escapeHtml(entity.source || '')}" data-pii-entity-id="${escapeHtml(entity.id || '')}">
                   <td><span class="pii-type ${entity.source === 'clinical' ? 'pii-type--clinical' : ''}">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
                   <td>
@@ -1438,6 +1445,12 @@ import { csrfFetch } from '../csrf.js';
                       <button type="button" class="pii-row-delete" data-pii-delete="${escapeHtml(entity.id)}" aria-label="Remove manual PII">
                         <i class="w-3.5 h-3.5" data-lucide="trash-2"></i>
                       </button>
+                    ` : ''}
+                  </td>
+                  <td>${escapeHtml(entity.source || 'detected')}</td>
+                  <td>
+                    ${allowReveal && entity.has_value && !entity.value ? `
+                      <button type="button" class="pii-reveal" data-pii-reveal="true">Reveal</button>
                     ` : ''}
                   </td>
                 </tr>
@@ -1485,6 +1498,26 @@ import { csrfFetch } from '../csrf.js';
       });
 
       piiTableWrap?.addEventListener('click', async (event) => {
+        const revealTrigger = event.target instanceof Element ? event.target.closest('[data-pii-reveal]') : null;
+        if (revealTrigger && transcriptId) {
+          revealTrigger.disabled = true;
+          try {
+            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/pii-entities/reveal`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not reveal PII values.'));
+            }
+            workspaceTranscriptPiiEntities = uniquePiiEntities(await response.json());
+            renderPiiEntities(workspaceTranscriptPiiEntities, { includeWorkspaceManual: false });
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not reveal PII values.', 'error');
+            revealTrigger.disabled = false;
+          }
+          return;
+        }
         const trigger = event.target instanceof Element ? event.target.closest('[data-pii-delete]') : null;
         if (!trigger || !transcriptId) return;
         const entityId = trigger.dataset.piiDelete || '';
@@ -1715,7 +1748,7 @@ import { csrfFetch } from '../csrf.js';
 
         if (transcript) {
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
-          const draftText = transcript.current_draft_text_encrypted || '';
+          const draftText = transcript.current_draft_text || '';
           renderDraft(draftText);
           renderPiiEntities(workspaceTranscriptPiiEntities);
           syncGenerationAvailability(draftText);

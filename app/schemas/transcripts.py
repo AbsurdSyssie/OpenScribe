@@ -48,7 +48,7 @@ class TranscriptListItem(BaseModel):
 
 
 class TranscriptDetail(TranscriptListItem):
-    current_draft_text_encrypted: str | None = None
+    current_draft_text: str | None = None
     structured_context_json: dict | None = None
     next_live_chunk_sequence_no_upload: int | None = None
     latest_ingestion_job_status: TranscriptIngestionJobStatus | None = None
@@ -57,13 +57,17 @@ class TranscriptDetail(TranscriptListItem):
     latest_ingestion_retry_available: bool = False
 
 
-class TranscriptPiiEntityDetail(BaseModel):
+class TranscriptPiiEntitySummary(BaseModel):
     id: UUID | None = None
     entity_type: str
-    value: str
     placeholder: str
     occurrence_count: int
     source: str = "detected"
+    has_value: bool = True
+
+
+class TranscriptPiiEntityDetail(TranscriptPiiEntitySummary):
+    value: str
 
 
 class TranscriptManualPiiEntityCreate(BaseModel):

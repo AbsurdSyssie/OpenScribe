@@ -143,8 +143,8 @@ class GeneratedDocumentDetail(BaseModel):
     status: GeneratedDocumentStatus
     title: str
     document_mode: TemplateMode
-    original_output_text_encrypted: str
-    edited_output_text_encrypted: str
+    original_output_text: str = ""
+    edited_output_text: str = ""
     is_edited: bool
     retention_expires_at: datetime
     model_used: str | None
@@ -182,9 +182,9 @@ class GeneratedDocumentSectionDetail(BaseModel):
 
 class GeneratedDocumentPiiEntityDetail(BaseModel):
     entity_type: str
-    value: str
     placeholder: str
     occurrence_count: int
+    has_value: bool = True
 
 
 class GeneratedDocumentSectionUpdate(BaseModel):

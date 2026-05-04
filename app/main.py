@@ -375,6 +375,7 @@ from .web.transcribe_workspace import (
     stream_transcribe_workspace_events,
     transcript_detail_response,
     transcript_manual_pii_entity_response,
+    transcript_pii_entities_response,
 )
 
 
@@ -621,6 +622,14 @@ app.add_exception_handler(404, browser_not_found_handler)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+SENSITIVE_NO_STORE_PATH_PREFIXES = (
+    "/api/v1/transcribe",
+    "/api/v1/transcripts",
+    "/api/v1/generated-documents",
+    "/api/v1/post-consultation-dictation",
+)
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -629,6 +638,9 @@ async def add_security_headers(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
 
     return response
 

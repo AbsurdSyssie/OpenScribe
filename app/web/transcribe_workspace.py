@@ -38,6 +38,7 @@ from ..schemas import (
     TranscriptIngestionJobDetail,
     TranscriptListItem,
     TranscriptPiiEntityDetail,
+    TranscriptPiiEntitySummary,
     TranscribeWorkspaceDetail,
 )
 from ..services.auth import determine_auth_level, resolve_authenticated_session, revoke_session_by_token, session_token_hash
@@ -271,7 +272,7 @@ def _freeform_editor_rows(
         return [{"text": "", "checked": True}]
     if generated_document.document_mode is not TemplateMode.freeform:
         return []
-    raw_text = generated_document_response(db, generated_document).edited_output_text_encrypted or ""
+    raw_text = generated_document_response(db, generated_document).edited_output_text or ""
     visible_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     rows = [{"text": line, "checked": True} for line in visible_lines]
     rows.append({"text": "", "checked": True})
@@ -283,7 +284,7 @@ def _generated_note_has_content(db: Session, document: GeneratedDocument | None)
         return False
     if document.document_mode is TemplateMode.structured:
         return any(lines for lines in _document_section_lines_by_key(db, document).values())
-    raw_text = generated_document_response(db, document).edited_output_text_encrypted or ""
+    raw_text = generated_document_response(db, document).edited_output_text or ""
     return bool(raw_text.strip())
 
 
@@ -304,7 +305,42 @@ def transcript_list_item_response(db: Session, transcript: Transcript) -> Transc
     return TranscriptListItem.model_validate(payload)
 
 
-def transcript_pii_entities_response(db: Session, transcript: Transcript | None) -> list[TranscriptPiiEntityDetail]:
+def _pii_entity_response(
+    *,
+    id,
+    entity_type: str,
+    placeholder: str,
+    occurrence_count: int,
+    source: str,
+    value: str | None,
+    include_values: bool,
+) -> TranscriptPiiEntitySummary | TranscriptPiiEntityDetail:
+    if include_values:
+        return TranscriptPiiEntityDetail(
+            id=id,
+            entity_type=entity_type,
+            value=value or "",
+            placeholder=placeholder,
+            occurrence_count=occurrence_count,
+            source=source,
+            has_value=True,
+        )
+    return TranscriptPiiEntitySummary(
+        id=id,
+        entity_type=entity_type,
+        placeholder=placeholder,
+        occurrence_count=occurrence_count,
+        source=source,
+        has_value=True,
+    )
+
+
+def transcript_pii_entities_response(
+    db: Session,
+    transcript: Transcript | None,
+    *,
+    include_values: bool = False,
+) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
     if transcript is None:
         return []
     redaction_run = db.scalar(
@@ -320,13 +356,14 @@ def transcript_pii_entities_response(db: Session, transcript: Transcript | None)
         detected_entities = []
     else:
         detected_entities = [
-            TranscriptPiiEntityDetail(
+            _pii_entity_response(
                 id=None,
                 entity_type=entity.entity_type,
-                value=redaction_entity_original_value_service(db, entity=entity),
+                value=redaction_entity_original_value_service(db, entity=entity) if include_values else None,
                 placeholder=entity.placeholder,
                 occurrence_count=entity.occurrence_count,
                 source="detected",
+                include_values=include_values,
             )
             for entity in sorted(redaction_run.entities, key=lambda item: item.entity_order)
         ]
@@ -352,18 +389,19 @@ def transcript_pii_entities_response(db: Session, transcript: Transcript | None)
     clinical_entities = []
     if clinical_run is not None and clinical_run.status is RedactionRunStatus.succeeded:
         clinical_entities = [
-            TranscriptPiiEntityDetail(
+            _pii_entity_response(
                 id=None,
                 entity_type=entity.entity_type,
-                value=clinical_entity_value_service(db, entity=entity),
+                value=clinical_entity_value_service(db, entity=entity) if include_values else None,
                 placeholder="Clinical NLP",
                 occurrence_count=entity.occurrence_count,
                 source="clinical",
+                include_values=include_values,
             )
             for entity in sorted(clinical_run.entities, key=lambda item: item.entity_order)
         ]
     return detected_entities + clinical_entities + [
-        transcript_manual_pii_entity_response(db, entity)
+        transcript_manual_pii_entity_response(db, entity, include_values=include_values)
         for entity in manual_entities
     ]
 
@@ -410,14 +448,20 @@ def transcript_clinical_nlp_status_response(db: Session, transcript: Transcript 
     }
 
 
-def transcript_manual_pii_entity_response(db: Session, entity: TranscriptManualPiiEntity) -> TranscriptPiiEntityDetail:
-    return TranscriptPiiEntityDetail(
+def transcript_manual_pii_entity_response(
+    db: Session,
+    entity: TranscriptManualPiiEntity,
+    *,
+    include_values: bool = True,
+) -> TranscriptPiiEntitySummary | TranscriptPiiEntityDetail:
+    return _pii_entity_response(
         id=entity.id,
         entity_type=entity.entity_type,
-        value=manual_pii_entity_value_service(db, entity=entity),
+        value=manual_pii_entity_value_service(db, entity=entity) if include_values else None,
         placeholder="Manual",
         occurrence_count=entity.occurrence_count,
         source="manual",
+        include_values=include_values,
     )
 
 
@@ -629,7 +673,7 @@ def resolve_transcribe_workspace(
         ),
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
-        "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript),
+        "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=False),
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
@@ -644,7 +688,7 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     transcript = reconcile_transcript_status_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
     payload = transcript_list_item_response(db, transcript).model_dump()
-    payload["current_draft_text_encrypted"] = transcript_draft_text_service(db, transcript=transcript)
+    payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
     payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
     if latest_job is not None:
         payload["next_live_chunk_sequence_no_upload"] = (
@@ -770,7 +814,11 @@ def render_transcribe(
         workspace["post_consultation_dictation"] = dictation_detail_response(db, dictation=post_consultation_dictation)
     workspace["active_transcript_pii_entities"] = [
         entity.model_dump(mode="json")
-        for entity in transcript_pii_entities_response(db, active_transcript if isinstance(active_transcript, Transcript) else None)
+        for entity in transcript_pii_entities_response(
+            db,
+            active_transcript if isinstance(active_transcript, Transcript) else None,
+            include_values=False,
+        )
     ]
     workspace["active_transcript_redaction_status"] = transcript_redaction_status_response(
         db,

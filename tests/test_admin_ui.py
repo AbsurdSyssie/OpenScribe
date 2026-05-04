@@ -3484,10 +3484,17 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Clinical NLP complete:" in app_js
     assert "activeDraft.innerHTML = text" in app_js
     assert "const renderPiiEntities = (entities = [], options = {}) => {" in app_js
+    assert "const allowReveal = options.allowReveal !== false;" in app_js
+    assert "const displayRows = allowReveal" in app_js
+    assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
+    assert "currentPiiEntities = displayRows;" in app_js
+    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);" in app_js
     assert "piiAddForm?.addEventListener('submit'" in app_js
     assert "fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
     assert "data-pii-delete" in app_js
-    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true });" in documents_js
+    assert "allowReveal && entity.has_value && !entity.value" in app_js
+    assert "${displayRows.map((entity) => `" in app_js
+    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });" in documents_js
     assert "renderPiiEntities," in app_js
     assert "dom.noteHistory?.addEventListener('click'" in actions_js
     assert "const wrapper = window.document.createElement('details');" in app_js
@@ -3528,6 +3535,20 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="trash-2"' in documents_js
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
     assert "not active_note_input_available" in workspace_html
+
+
+def test_generated_document_pii_no_reveal_mode_strips_cached_values():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
+
+    assert "const allowReveal = options.allowReveal !== false;" in app_js
+    assert "const displayRows = allowReveal" in app_js
+    assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
+    assert "currentPiiEntities = displayRows;" in app_js
+    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);" in app_js
+    assert "${displayRows.map((entity) => `" in app_js
+    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });" in documents_js
 
 
 def test_transcribe_static_asset_version_bumped_for_dictation_cta():

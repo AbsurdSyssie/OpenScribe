@@ -4,6 +4,7 @@ from ..main import *  # noqa: F401,F403
 from ..main import (
     _bootstrap_allowed,
     _clear_session_cookie,
+    _clear_trusted_device_cookie,
     _current_context_optional,
     _enforce_localhost_only_dev_account,
     _page_context_or_redirect,
@@ -58,6 +59,7 @@ def logout_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Sess
         revoke_session_by_token(db, token, reason="logout")
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     _clear_session_cookie(response)
+    _clear_trusted_device_cookie(response)
     return response
 
 

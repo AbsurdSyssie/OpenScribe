@@ -115,6 +115,7 @@ from app.services.transcripts import (
 )
 from app.schemas.transcripts import TranscriptStart
 from app.services import vault as vault_service
+from app.services.auth import SESSION_COOKIE_NAME, rotate_session
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
 
 
@@ -199,6 +200,7 @@ def test_authenticated_unsafe_api_requires_csrf(raw_client, make_user):
     response = raw_client.post(
         "/api/v1/transcripts/start",
         json={"title": "CSRF probe", "ingestion_mode": "whole_file"},
+        headers={"Origin": "http://testserver"},
     )
 
     assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
@@ -207,13 +209,12 @@ def test_authenticated_unsafe_api_requires_csrf(raw_client, make_user):
 def test_authenticated_unsafe_api_accepts_matching_csrf(raw_client, make_user):
     make_user(email="csrf-ok@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
     assert login(raw_client, email="csrf-ok@example.com", password="password-1").status_code == 200
-    csrf = "test-csrf-token"
-    raw_client.cookies.set(CSRF_COOKIE_NAME, csrf)
+    csrf = raw_client.cookies.get(CSRF_COOKIE_NAME)
 
     response = raw_client.post(
         "/api/v1/transcripts/start",
         json={"title": "CSRF ok", "ingestion_mode": "whole_file"},
-        headers={"X-CSRF-Token": csrf},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
     )
 
     assert response.status_code == 201
@@ -222,12 +223,42 @@ def test_authenticated_unsafe_api_accepts_matching_csrf(raw_client, make_user):
 def test_authenticated_unsafe_api_rejects_mismatched_csrf(raw_client, make_user):
     make_user(email="csrf-mismatch@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
     assert login(raw_client, email="csrf-mismatch@example.com", password="password-1").status_code == 200
-    raw_client.cookies.set(CSRF_COOKIE_NAME, "cookie-token")
 
     response = raw_client.post(
         "/api/v1/transcripts/start",
         json={"title": "CSRF mismatch", "ingestion_mode": "whole_file"},
-        headers={"X-CSRF-Token": "header-token"},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": "header-token"},
+    )
+
+    assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
+
+
+def test_authenticated_unsafe_api_rejects_cross_origin(raw_client, make_user):
+    make_user(email="csrf-cross-origin@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-cross-origin@example.com", password="password-1").status_code == 200
+    csrf = raw_client.cookies.get(CSRF_COOKIE_NAME)
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "CSRF cross-origin", "ingestion_mode": "whole_file"},
+        headers={"Origin": "https://evil.example", "X-CSRF-Token": csrf},
+    )
+
+    assert_error(response, status_code=403, code="forbidden", message="Cross-origin request rejected")
+
+
+def test_session_bound_csrf_rejects_old_token_after_session_rotation(raw_client, db_session, make_user):
+    user = make_user(email="csrf-rotation@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert login(raw_client, email="csrf-rotation@example.com", password="password-1").status_code == 200
+    old_session = raw_client.cookies.get(SESSION_COOKIE_NAME)
+    old_csrf = raw_client.cookies.get(CSRF_COOKIE_NAME)
+    new_session = rotate_session(db_session, old_session, user)
+    raw_client.cookies.set(SESSION_COOKIE_NAME, new_session)
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "CSRF stale", "ingestion_mode": "whole_file"},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": old_csrf},
     )
 
     assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")
@@ -264,6 +295,7 @@ def test_public_unsafe_endpoint_with_auth_cookie_requires_csrf(raw_client, make_
             "requested_team_name": "Probe Team",
             "request_details": "csrf probe",
         },
+        headers={"Origin": "http://testserver"},
     )
 
     assert_error(response, status_code=403, code="forbidden", message="CSRF verification failed")

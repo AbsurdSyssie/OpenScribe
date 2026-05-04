@@ -1,11 +1,10 @@
 import asyncio
 import json
 import os
-import secrets
 from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import Annotated
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
@@ -19,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
-from .cookie_security import should_set_secure_cookie
+from .cookie_security import enforce_production_cookie_security, should_set_secure_cookie
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
 from .models import (
     DeidentificationAdapterKind,
@@ -277,6 +276,16 @@ from .services.auth import (
     verify_login_totp,
     verify_totp_enrollment,
 )
+from .services.csrf import (
+    CSRF_ANON_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    CSRF_SAFE_METHODS,
+    anonymous_csrf_token,
+    csrf_secret_configured_for_environment,
+    new_anonymous_nonce,
+    session_csrf_token,
+    verify_csrf_token,
+)
 from .services.auth_email import (
     GENERIC_PASSWORD_RESET_MESSAGE,
     PASSWORD_RESET_EMAIL_DISABLED_MESSAGE,
@@ -391,9 +400,9 @@ class AuthenticatedContext:
     token: str
 
 
+enforce_production_cookie_security()
+csrf_secret_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP")
-CSRF_COOKIE_NAME = "openscribe_csrf"
-CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -474,16 +483,60 @@ def whole_file_upload_rate_limit_key(request: Request) -> str:
     return subject
 
 
+def _request_is_https(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    if forwarded_proto:
+        return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _origin_allowed(request: Request) -> bool:
+    if request.method in CSRF_SAFE_METHODS:
+        return True
+
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    expected_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
+    expected_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+
+    if not expected_host:
+        return False
+
+    expected_origin = f"{expected_scheme}://{expected_host}"
+
+    if origin:
+        return origin == expected_origin
+
+    if referer:
+        parsed = urlsplit(referer)
+        return f"{parsed.scheme}://{parsed.netloc}" == expected_origin
+
+    return False
+
+
 async def require_browser_csrf(
     request: Request,
     csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> None:
-    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    if request.method in CSRF_SAFE_METHODS:
+        return
+
+    if not _origin_allowed(request):
+        raise AppError(403, "forbidden", "Cross-origin request rejected")
+
     submitted_token = csrf_header
     if submitted_token is None:
         form = await request.form()
         submitted_token = form.get("_csrf_token")
-    if not cookie_token or not submitted_token or submitted_token != cookie_token:
+
+    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME)
+
+    if not submitted_token or not verify_csrf_token(
+        submitted_token=str(submitted_token),
+        raw_session_token=raw_session_token,
+        anon_nonce=anon_nonce,
+    ):
         raise AppError(403, "forbidden", "CSRF verification failed")
 
 
@@ -569,25 +622,61 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+
+    if _request_is_https(request):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+
+    return response
+
+
+@app.middleware("http")
 async def ensure_csrf_cookie(request: Request, call_next):
     response = await call_next(request)
-    if request.method in {"GET", "HEAD"} and not request.cookies.get(CSRF_COOKIE_NAME):
-        secure_cookie = should_set_secure_cookie(
-            request_url=str(request.url),
-            forwarded_proto=request.headers.get("x-forwarded-proto"),
-        )
+    if request.method not in {"GET", "HEAD"}:
+        return response
+
+    secure_cookie = should_set_secure_cookie(
+        request_url=str(request.url),
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+    )
+    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if raw_session_token:
         response.set_cookie(
             key=CSRF_COOKIE_NAME,
-            value=secrets.token_urlsafe(32),
+            value=session_csrf_token(raw_session_token),
             httponly=False,
             secure=secure_cookie,
             samesite="lax",
             path="/",
         )
+        response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
+        return response
+
+    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME) or new_anonymous_nonce()
+    response.set_cookie(
+        key=CSRF_ANON_COOKIE_NAME,
+        value=anon_nonce,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=anonymous_csrf_token(anon_nonce),
+        httponly=False,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
     return response
 
 
-def _set_session_cookie(request: Request, response: JSONResponse | RedirectResponse, token: str) -> None:
+def _set_session_cookie(request: Request, response: Response, token: str) -> None:
     secure_cookie = should_set_secure_cookie(
         request_url=str(request.url),
         forwarded_proto=request.headers.get("x-forwarded-proto"),
@@ -601,9 +690,26 @@ def _set_session_cookie(request: Request, response: JSONResponse | RedirectRespo
         path="/",
         max_age=60 * 60 * 12,
     )
+    _set_csrf_cookie_for_session(request, response, token)
 
 
-def _set_trusted_device_cookie(request: Request, response: JSONResponse | RedirectResponse, token: str) -> None:
+def _set_csrf_cookie_for_session(request: Request, response: Response, token: str) -> None:
+    secure_cookie = should_set_secure_cookie(
+        request_url=str(request.url),
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=session_csrf_token(token),
+        httponly=False,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
+    response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
+
+
+def _set_trusted_device_cookie(request: Request, response: Response, token: str) -> None:
     secure_cookie = should_set_secure_cookie(
         request_url=str(request.url),
         forwarded_proto=request.headers.get("x-forwarded-proto"),
@@ -619,11 +725,17 @@ def _set_trusted_device_cookie(request: Request, response: JSONResponse | Redire
     )
 
 
-def _clear_session_cookie(response: JSONResponse | RedirectResponse) -> None:
+def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    _clear_csrf_cookie(response)
 
 
-def _clear_trusted_device_cookie(response: JSONResponse | RedirectResponse) -> None:
+def _clear_csrf_cookie(response: Response) -> None:
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
+
+
+def _clear_trusted_device_cookie(response: Response) -> None:
     response.delete_cookie(TRUSTED_DEVICE_COOKIE_NAME, path="/")
 
 

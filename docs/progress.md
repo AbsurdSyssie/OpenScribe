@@ -1,5 +1,140 @@
 # Progress
 
+## 2026-05-04 Vault-Backed CSRF Secret Bootstrap
+
+### Scope
+
+- Added automatic stable CSRF secret bootstrap through Vault KV-v2 when explicit env secrets are absent.
+- Kept `CSRF_SECRET`/`SECRET_KEY` as explicit override path.
+- Documented default Vault ref and local/production behavior.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/services/csrf.py`: resolves CSRF secret from env or Vault and caches it per process.
+- `app/services/vault.py`: reads or create-if-absent writes platform CSRF secret.
+- `tests/test_cookie_csrf_security.py`: covers production Vault fallback and failure behavior.
+- `.env.example`, `README.md`, `docs/setup.md`, `docs/security.md`, `docs/progress.md`: document automatic setup.
+
+### Tests
+
+- Added coverage that production accepts Vault-backed CSRF secret when env secret is missing.
+- Updated failure test so startup still fails when no env secret and Vault is unavailable.
+
+### Documentation
+
+- README/setup/security docs now explain `CSRF_SECRET_VAULT_REF`, default Vault path, and local vs production behavior.
+
+### Risks / assumptions
+
+- Production runtime needs Vault read/write permission for default `secret:openscribe/platform/csrf` if no explicit `CSRF_SECRET` is supplied.
+- Multi-instance startup assumes Vault KV-v2 CAS support, matching existing local Vault bootstrap.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only platform signing secret handling changed; no content access/logging added.
+- Ownership rules preserved: no route authorization or owner/team checks changed.
+- Deletion semantics preserved: no lifecycle/delete paths changed.
+- Provider rules preserved: no provider credential semantics changed.
+- Structured-note contract preserved: no generated-document behavior changed.
+
+## 2026-05-04 Startup Security Env Docs
+
+### Scope
+
+- Added explicit README/setup guidance for cookie/CSRF startup guards.
+- Added `CSRF_SECRET` to `.env.example` for local development.
+
+### Checklist
+
+- Code complete: docs/env example only.
+- Tests added/updated: not needed for documentation-only clarification.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `.env.example`: adds CSRF secret override/reference variables.
+- `README.md`, `docs/setup.md`, `docs/progress.md`: document local vs production settings.
+
+### Tests
+
+- Not run; documentation/env example only.
+
+### Documentation
+
+- README and setup docs now explain `APP_ENV`, `COOKIE_SECURE_MODE`, and `CSRF_SECRET` startup failures.
+
+### Risks / assumptions
+
+- Local/test can rely on the development-only fallback; production must use Vault auto-bootstrap or a strong explicit secret.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: documentation-only change.
+- Ownership rules preserved: no auth scope code changed.
+- Deletion semantics preserved: no lifecycle code changed.
+- Provider rules preserved: no provider behavior changed.
+- Structured-note contract preserved: no generated-document behavior changed.
+
+## 2026-05-04 Cookie And CSRF Hardening
+
+### Scope
+
+- Added production startup guards for secure cookies and CSRF secrets.
+- Added HTTPS-only HSTS plus baseline response security headers.
+- Replaced plain CSRF comparison with HMAC-signed session-bound and anonymous pre-login CSRF tokens.
+- Required same-origin `Origin`/`Referer` for unsafe cookie-backed requests.
+- Rotated CSRF on session creation/rotation and cleared CSRF/trusted-device cookies on logout.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/cookie_security.py`: production secure-cookie guard and shared environment helper.
+- `app/services/csrf.py`: signed CSRF token creation and verification.
+- `app/main.py`: startup guards, security headers, CSRF middleware/dependencies, session CSRF helpers.
+- `app/routes/api_routes.py`, `app/routes/web_pages.py`: logout now clears trusted-device cookies via existing helpers.
+- `app/api_route_audit.py`, `tests/conftest.py`: route-audit/test clients now send signed CSRF and same-origin headers.
+- `tests/test_api.py`, `tests/test_cookie_csrf_security.py`: CSRF/security regression coverage.
+- `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document hardened behavior and tests.
+
+### Tests
+
+- Added production guard tests for secure cookies and CSRF secrets.
+- Added HSTS/security-header tests for HTTPS vs HTTP.
+- Added anonymous browser-login CSRF test.
+- Updated API CSRF tests for signed tokens and same-origin headers.
+- Added cross-origin rejection and stale session-bound token tests.
+
+### Documentation
+
+- Updated security and testing docs for production guards, headers, signed CSRF, anonymous pre-login CSRF, origin checks, and logout cleanup.
+
+### Risks / assumptions
+
+- `openscribe_csrf` remains JavaScript-readable by design so existing `csrfFetch` and form helpers keep working.
+- Same-origin checks rely on trusted proxy headers (`X-Forwarded-Proto`/`X-Forwarded-Host`) matching deployment proxy configuration.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note/prompt content access or logging changed.
+- Ownership rules preserved: route auth/owner/team/admin checks unchanged; CSRF only gates browser request authenticity.
+- Deletion semantics preserved: no retention, cascade, or hard-delete path changed.
+- Provider rules preserved: no STT/LLM/de-identification provider config, secret, or fallback behavior changed.
+- Structured-note contract preserved: no EMIS/generated-document JSON behavior changed.
+
 ## 2026-05-04 Server-Owned Retention Policy
 
 ### Scope

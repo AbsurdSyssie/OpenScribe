@@ -32,6 +32,7 @@ Current behavior:
 - mail-service tests verify disabled/stdout/resend configuration validation, stdout local delivery, skipped delivery when mail is disabled, hidden Resend API key repr behavior, Resend API payload/header construction, provider-error mapping, and Vault-ref API key resolution
 - auth-email tests verify generic password reset request responses when mail is enabled, non-enumerable password reset behavior during mail misconfiguration/send failures, disabled-mail reset gating in API and browser pages, current browser shell styling for reset pages, hashed setup/reset tokens, invalid confirm tokens being rejected before password hashing, password reset session/trusted-device revocation, first-time-only activation into TOTP onboarding, manager recovery same-team authorization, one-time temporary password generation, password-only recovery preserving TOTP/recovery codes, MFA-only reset preserving pending password changes, persistent copy-modal browser display, and MFA/recovery-code clearing for full recovery
 - auth-service tests verify Argon2id password hashing, non-Argon2id hash rejection, and forced dev password rotation
+- cookie/CSRF security tests verify production startup guards, HTTPS-only HSTS emission, anonymous pre-login CSRF, same-origin unsafe request checks, signed session-bound CSRF acceptance, and stale CSRF rejection after session rotation
 
 ## API auth route audit
 
@@ -133,6 +134,7 @@ What it does:
 - whole-file upload rate limiting being isolated per authenticated user instead of globally by shared test-client IP
 - whole-file hourly byte/duration budgeting being isolated per authenticated owner
 - browser state-changing routes rejecting missing CSRF tokens
+- cookie-authenticated unsafe API requests rejecting missing CSRF, mismatched CSRF, cross-origin origins, and stale session-bound CSRF after session rotation
 - whole-file uploads rejecting oversize payloads before queueing
 - whole-file ingestion jobs failing when normalized duration exceeds the configured maximum
 - server-side security log emission on rate-limit hits

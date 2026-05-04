@@ -31,6 +31,8 @@ The app and tests use separate databases by default:
 - Celery broker/result backend: `redis://localhost:6379/2`
 - local Vault address: `http://127.0.0.1:8200`
 - local Vault token file: `.local/vault/root-token`
+- app environment: `local`
+- CSRF secret: local/test uses a development-only fallback when unset; production uses `CSRF_SECRET` or auto-bootstraps a stable Vault KV secret
 - cookie security mode: `auto`
 
 ## Apply database migrations
@@ -141,8 +143,40 @@ The queued transcript-ingestion path uses:
 
 Cookie security uses:
 
+- `APP_ENV=local|test|production`
+- `CSRF_SECRET` or `SECRET_KEY` for an explicit CSRF signing secret
+- `CSRF_SECRET_VAULT_REF` optional, defaulting to `secret:openscribe/platform/csrf` when Vault auto-bootstrap is used
 - `COOKIE_SECURE_MODE=auto` by default
-- set `COOKIE_SECURE_MODE=always` on public HTTPS deployments if proxy/scheme handling is ambiguous
+- production startup requires `COOKIE_SECURE_MODE=always`
+- local development should use `APP_ENV=local` with `COOKIE_SECURE_MODE=auto`
+
+Production CSRF secret behavior:
+
+- if `CSRF_SECRET` or `SECRET_KEY` is set, that value is used
+- otherwise OpenScribe reads or creates a stable random secret in Vault KV-v2 at `CSRF_SECRET_VAULT_REF`, or `secret:openscribe/platform/csrf` by default
+- the Vault secret field is `csrf_secret`
+- Vault creation uses create-if-absent semantics so multiple app instances can start safely
+- if Vault is unavailable and no explicit secret is set, startup fails intentionally
+
+If startup fails with `COOKIE_SECURE_MODE=always is required in production`, the app is treating the environment as production. For local development, set:
+
+```env
+APP_ENV=local
+COOKIE_SECURE_MODE=auto
+```
+
+For production HTTPS, set:
+
+```env
+APP_ENV=production
+COOKIE_SECURE_MODE=always
+```
+
+If production cannot use Vault auto-bootstrap, also set:
+
+```env
+CSRF_SECRET=<strong random secret>
+```
 
 Transactional email uses:
 

@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-04 Server-Owned Retention Policy
+
+### Scope
+
+- Removed client-controlled transcript retention from public create/start schemas.
+- Made new transcript roots always snapshot `owner.team.default_retention_days`.
+- Added explicit min/max validation for system-admin team retention policy creation.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/schemas/transcripts.py`: remove public create/start retention input.
+- `app/services/transcripts.py`: apply team retention policy server-side only.
+- `app/services/admin.py`: validate team default retention bounds.
+- `tests/test_api.py`: cover API/service retention behavior and team retention bounds.
+- `docs/api.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document server-owned retention behavior and coverage.
+
+### Tests
+
+- Added API coverage that transcript start/create ignore client retention override and return team default snapshot.
+- Added service coverage that transcript start applies team default retention.
+- Added patch coverage that transcript update cannot extend retention.
+- Added system-admin team-create coverage that excessive retention returns `business_rule_violation`.
+
+### Documentation
+
+- Updated API, security, testing, and progress docs for server-owned retention policy.
+
+### Risks / assumptions
+
+- No DB max check added because `MAX_RETENTION_DAYS` is environment-configurable.
+- Existing transcript retention snapshots are not migrated or altered.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content visibility or logging changed.
+- Ownership rules preserved: transcript routes remain owner-only and team creation remains system-admin-only.
+- Deletion semantics preserved: new retention snapshots are shorter/controlled by team policy; no cascade/delete path changed.
+- Provider rules preserved: no STT/LLM/de-identification provider behavior changed.
+- Structured-note contract preserved: no EMIS/generated-document behavior changed.
+
 ## 2026-05-04 Break-Glass Review Fixes
 
 ### Scope

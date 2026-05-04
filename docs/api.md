@@ -494,6 +494,11 @@ These require a full authenticated system-admin session:
 - `POST /api/v1/teams`
 - `GET /api/v1/teams`
 
+Team retention policy:
+
+- `POST /api/v1/teams` accepts `default_retention_days` only as admin-managed team policy
+- `default_retention_days` must be between `1` and `MAX_RETENTION_DAYS` days; default max is `90`
+
 ### Transcript routes
 
 Transcript routes require a full authenticated user and remain owner-only:
@@ -536,7 +541,8 @@ Current transcript-start behavior:
   - `whole_file`
   - `live_chunked`
 - if the caller omits `ingestion_mode`, the route currently implies `whole_file`
-- team retention defaults are applied when no explicit retention override is supplied
+- team retention defaults are server-owned and always applied to new transcript roots
+- public transcript create/start/update payloads cannot extend `retention_days_applied` or `retention_expires_at`
 - transcript JSON responses remain owner-plaintext even though transcript drafts, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document sections, follow-up prompts, redaction output text, and redaction entity values are now stored encrypted at rest per owner
 - transcript and generated-document `title` fields remain plaintext metadata in this slice
 

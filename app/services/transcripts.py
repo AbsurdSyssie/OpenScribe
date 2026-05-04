@@ -158,14 +158,13 @@ def _create_transcript_row(
     current_draft_text_encrypted: str | None,
     structured_context_json: dict | None,
     ingestion_mode: TranscriptIngestionMode,
-    retention_days_applied: int | None,
 ) -> Transcript:
     if owner.is_system_admin or owner.team_id is None:
         raise AppError(403, "forbidden", "System-admin accounts cannot own transcript content")
     if owner.team is None:
         raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(owner.team_id)})
 
-    retention_days = retention_days_applied or owner.team.default_retention_days
+    retention_days = owner.team.default_retention_days
     transcript_id = uuid4()
     transcript = Transcript(
         id=transcript_id,
@@ -219,7 +218,6 @@ def start_transcript(db: Session, owner: User, payload: TranscriptStart) -> Tran
         current_draft_text_encrypted=payload.current_draft_text_encrypted,
         structured_context_json=payload.structured_context_json,
         ingestion_mode=payload.ingestion_mode,
-        retention_days_applied=payload.retention_days_applied,
     )
 
 
@@ -246,7 +244,6 @@ def create_transcript_from_payload(db: Session, actor: User, payload: Transcript
         current_draft_text_encrypted=payload.current_draft_text_encrypted,
         structured_context_json=payload.structured_context_json,
         ingestion_mode=payload.ingestion_mode,
-        retention_days_applied=payload.retention_days_applied,
     )
 
 

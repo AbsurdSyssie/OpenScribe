@@ -68,6 +68,23 @@ from app.services.transcripts import delete_retry_sources_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
 cleanup_logger = logging.getLogger("openscribe.cleanup")
+MIN_RETENTION_DAYS = 1
+MAX_RETENTION_DAYS = int(os.getenv("MAX_RETENTION_DAYS", "90"))
+
+
+def validate_retention_days(value: int) -> int:
+    if value < MIN_RETENTION_DAYS or value > MAX_RETENTION_DAYS:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            f"Retention must be between {MIN_RETENTION_DAYS} and {MAX_RETENTION_DAYS} days",
+            {
+                "field": "default_retention_days",
+                "min": MIN_RETENTION_DAYS,
+                "max": MAX_RETENTION_DAYS,
+            },
+        )
+    return value
 
 
 @dataclass(slots=True)
@@ -1058,11 +1075,12 @@ def reset_user_password_to_temporary(
 
 def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
     stripped_name = payload.name.strip()
+    default_retention_days = validate_retention_days(payload.default_retention_days)
     team = Team(
         name=stripped_name,
         name_key=normalize_team_name_key(stripped_name),
         status=payload.status,
-        default_retention_days=payload.default_retention_days,
+        default_retention_days=default_retention_days,
     )
     db.add(team)
     try:

@@ -25,3 +25,4 @@ tests/oscar.mp3
 .playwright-mcp/
 
 docs/Compliance/Hazard Log/*
+security_remediation_plan.md

@@ -2270,20 +2270,40 @@ Create a new team member
                     <input type="hidden" name="return_tab" value="team-management">
                     <button type="submit" class="member-menu__item"><span>Send setup link</span></button>
                   </form>
-                  <form method="post" action="/home/users/{{ user.id }}/recover-password">
+                  {% if email_recovery_enabled %}
+                  <form method="post" action="/home/users/{{ user.id }}/send-password-reset">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
                     <input type="hidden" name="return_tab" value="team-management">
-                    <button type="submit" class="member-menu__item"><span>Generate temp password</span></button>
+                    <button type="submit" class="member-menu__item"><span>Send password reset email</span></button>
                   </form>
+                  <form method="post" action="/home/users/{{ user.id }}/send-account-recovery">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <button type="submit" class="member-menu__item member-menu__item--warning"><span>Send account recovery email</span></button>
+                  </form>
+                  {% endif %}
+                  {% if break_glass_recovery_enabled %}
+                  <form method="post" action="/home/users/{{ user.id }}/break-glass-password-reset">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <input type="text" name="reason" required minlength="3" maxlength="500" placeholder="Reason">
+                    <input type="text" name="mfa_code" inputmode="numeric" autocomplete="one-time-code" required minlength="6" maxlength="8" placeholder="Your TOTP code">
+                    <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email unavailable</label>
+                    <button type="submit" class="member-menu__item member-menu__item--warning"><span>Generate break-glass password</span></button>
+                  </form>
+                  <form method="post" action="/home/users/{{ user.id }}/break-glass-account-recovery" onsubmit="return confirm('Generate a break-glass password and reset MFA for this user?');">
+                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
+                    <input type="hidden" name="return_tab" value="team-management">
+                    <input type="text" name="reason" required minlength="3" maxlength="500" placeholder="Reason">
+                    <input type="text" name="mfa_code" inputmode="numeric" autocomplete="one-time-code" required minlength="6" maxlength="8" placeholder="Your TOTP code">
+                    <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email unavailable</label>
+                    <button type="submit" class="member-menu__item member-menu__item--danger"><span>Break-glass password + reset MFA</span></button>
+                  </form>
+                  {% endif %}
                   <form method="post" action="/home/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
                     <input type="hidden" name="return_tab" value="team-management">
                     <button type="submit" class="member-menu__item member-menu__item--warning"><span>Reset MFA</span></button>
-                  </form>
-                  <form method="post" action="/home/users/{{ user.id }}/recover-account" onsubmit="return confirm('Reset password and MFA for this user?');">
-                    <input type="hidden" name="return_view" value="{{ home_return_view }}">
-                    <input type="hidden" name="return_tab" value="team-management">
-                    <button type="submit" class="member-menu__item member-menu__item--warning"><span>Recover account</span></button>
                   </form>
                   <a class="member-menu__item" href="mailto:{{ user.email }}"><svg class="member-menu__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.25h11v7.5h-11zm0 .25L8 8.5l5.5-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2"/></svg><span>Email</span></a>
                   <form method="post" action="/home/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');">

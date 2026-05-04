@@ -52,6 +52,10 @@ Invite acceptance is not the active MVP onboarding path anymore.
 - successful password reset revokes active sessions and trusted devices
 - account setup links are restricted to first password setup and do not grant full access; users still complete TOTP onboarding
 - manager-assisted recovery is same-team/system-admin scoped and does not expose transcript, note, prompt, TOTP secret, recovery code, or token content
+- manager recovery prefers email reset/account-recovery links when mail transport is configured
+- temporary-password manager recovery is a break-glass path only when mail recovery is unavailable, unless explicitly enabled by deployment config
+- break-glass recovery requires manager TOTP, a rate-limited request path, a reason, explicit email-unavailable confirmation, session/trusted-device revocation, one-time display, expiry, and a metadata-only `security_audit_events` record
+- temporary recovery-password login creates onboarding-only access; normal app and transcript routes stay blocked until the user sets a permanent password and completes required MFA setup
 
 ### Session storage behavior
 
@@ -230,6 +234,7 @@ Current implementation note:
 
 - audit persistence is currently logger-based metadata, not a dedicated DB audit-events write path
 - account-lifecycle audit should still move into persistent `audit_events` storage later so suspend, reactivate, and delete actions survive process restarts and log rotation
+- persisted security-audit request IPs use `request.client.host` by default; deployments may set `AUDIT_TRUST_X_FORWARDED_FOR=true` only when a trusted proxy sanitizes forwarded headers
 
 Required safety checks:
 

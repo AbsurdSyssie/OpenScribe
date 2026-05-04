@@ -2152,23 +2152,45 @@
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Send setup link</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/recover-password" style="margin-top: 10px;">
+                {% if email_recovery_enabled %}
+                <form method="post" action="/admin/users/{{ user.id }}/send-password-reset" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
-                  <button type="submit">Generate temp password</button>
+                  <button type="submit">Send password reset email</button>
                 </form>
+                <form method="post" action="/admin/users/{{ user.id }}/send-account-recovery" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <button type="submit">Send account recovery email</button>
+                </form>
+                {% endif %}
+                {% if break_glass_recovery_enabled %}
+                <form method="post" action="/admin/users/{{ user.id }}/break-glass-password-reset" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <label>Reason <input type="text" name="reason" required minlength="3" maxlength="500"></label>
+                  <label>Your TOTP code <input type="text" name="mfa_code" inputmode="numeric" autocomplete="one-time-code" required minlength="6" maxlength="8"></label>
+                  <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email recovery unavailable</label>
+                  <button type="submit">Generate break-glass temp password</button>
+                </form>
+                <form method="post" action="/admin/users/{{ user.id }}/break-glass-account-recovery" onsubmit="return confirm('Generate a break-glass password and reset MFA for this user?');" style="margin-top: 10px;">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="directory">
+                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
+                  <label>Reason <input type="text" name="reason" required minlength="3" maxlength="500"></label>
+                  <label>Your TOTP code <input type="text" name="mfa_code" inputmode="numeric" autocomplete="one-time-code" required minlength="6" maxlength="8"></label>
+                  <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email recovery unavailable</label>
+                  <button type="submit">Break-glass password + reset MFA</button>
+                </form>
+                {% endif %}
                 <form method="post" action="/admin/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Reset MFA</button>
-                </form>
-                <form method="post" action="/admin/users/{{ user.id }}/recover-account" onsubmit="return confirm('Reset password and MFA for this user?');" style="margin-top: 10px;">
-                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
-                  <input type="hidden" name="return_tab" value="directory">
-                  <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
-                  <button type="submit">Recover account</button>
                 </form>
                 <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">

@@ -84,6 +84,16 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
         raise AppError(401, "unauthorized", "Invalid email or password")
     if user.status is not UserStatus.active:
         raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})
+    if (
+        user.must_change_password
+        and user.temporary_password_expires_at is not None
+        and user.temporary_password_expires_at <= utcnow()
+    ):
+        raise AppError(
+            403,
+            "temporary_password_expired",
+            "Temporary password has expired. Ask your team leader or administrator to generate a new recovery password.",
+        )
     if password_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     user.last_login_at = utcnow()
@@ -245,6 +255,10 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
         raise AppError(409, "conflict", "Password change is not pending for this user")
     user.password_hash = new_password_hash
     user.must_change_password = False
+    user.temporary_password_expires_at = None
+    user.recovery_mode = None
+    user.recovery_started_at = None
+    user.recovery_started_by_user_id = None
     user.onboarding_state = (
         UserOnboardingState.complete
         if user.mfa_enabled and active_primary_totp_method(user) is not None
@@ -254,6 +268,16 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
     db.commit()
     db.refresh(user)
     return user
+
+
+def verify_active_totp_for_user(user: User, *, code: str) -> None:
+    method = active_primary_totp_method(user)
+    if method is None:
+        raise AppError(403, "fresh_mfa_required", "A verified TOTP method is required for this action")
+
+    totp = pyotp.TOTP(method.secret)
+    if not totp.verify(code, valid_window=1):
+        raise AppError(422, "business_rule_violation", "Invalid TOTP code")
 
 
 def verify_login_totp(

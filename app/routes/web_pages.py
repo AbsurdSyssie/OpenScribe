@@ -28,6 +28,15 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 def login_submit(request: Request, email: str = Form(...), password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     try:
         user = authenticate_user(db, email, password)
+        if user.recovery_mode is not None and user.must_change_password:
+            record_security_event(
+                db,
+                action="temporary_recovery_password_login",
+                actor=user,
+                target=user,
+                request=request,
+                details={"recovery_mode": user.recovery_mode.value},
+            )
         _enforce_localhost_only_dev_account(request, user)
     except AppError as exc:
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)

@@ -166,6 +166,13 @@ class AuthEmailTokenPurpose(str, enum.Enum):
     manager_account_recovery = "manager_account_recovery"
 
 
+class UserRecoveryMode(str, enum.Enum):
+    manager_password_reset = "manager_password_reset"
+    manager_account_recovery = "manager_account_recovery"
+    break_glass_password_reset = "break_glass_password_reset"
+    break_glass_account_recovery = "break_glass_account_recovery"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -232,8 +239,16 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    temporary_password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recovery_mode: Mapped[UserRecoveryMode | None] = mapped_column(Enum(UserRecoveryMode), nullable=True)
+    recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recovery_started_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     team: Mapped[Team | None] = relationship(back_populates="users")
+    recovery_started_by: Mapped["User | None"] = relationship(
+        foreign_keys=[recovery_started_by_user_id],
+        remote_side=[id],
+    )
     transcripts: Mapped[list["Transcript"]] = relationship(back_populates="owner")
     post_consultation_dictations: Mapped[list["PostConsultationDictation"]] = relationship(back_populates="owner")
     post_consultation_dictation_segments: Mapped[list["PostConsultationDictationSegment"]] = relationship(back_populates="owner")
@@ -296,6 +311,29 @@ class User(Base):
     encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(back_populates="owner")
     smart_phrases: Mapped[list["SmartPhrase"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+
+
+class SecurityAuditEvent(Base):
+    __tablename__ = "security_audit_events"
+    __table_args__ = (
+        Index("ix_security_audit_events_actor_created", "actor_user_id", "created_at"),
+        Index("ix_security_audit_events_target_created", "target_user_id", "created_at"),
+        Index("ix_security_audit_events_action_created", "action", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    action: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    target_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    team_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    request_ip: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    actor: Mapped["User | None"] = relationship(foreign_keys=[actor_user_id])
+    target: Mapped["User | None"] = relationship(foreign_keys=[target_user_id])
+    team: Mapped["Team | None"] = relationship()
 
 
 class SmartPhrase(Base):

@@ -173,6 +173,28 @@ def send_password_reset_email(
     )
 
 
+def send_manager_password_reset_email(db: Session, *, actor: User, target: User) -> None:
+    if target.status is not UserStatus.active:
+        raise AppError(403, "forbidden", "User account is not active", {"status": target.status.value})
+    send_password_reset_email(
+        db,
+        target,
+        purpose=AuthEmailTokenPurpose.manager_password_reset,
+        created_by=actor,
+    )
+
+
+def send_manager_account_recovery_email(db: Session, *, actor: User, target: User) -> None:
+    if target.status is not UserStatus.active:
+        raise AppError(403, "forbidden", "User account is not active", {"status": target.status.value})
+    send_password_reset_email(
+        db,
+        target,
+        purpose=AuthEmailTokenPurpose.manager_account_recovery,
+        created_by=actor,
+    )
+
+
 def _consume_token(db: Session, *, raw_token: str, allowed_purposes: set[AuthEmailTokenPurpose]) -> AuthEmailToken:
     token = db.scalar(
         select(AuthEmailToken)
@@ -227,6 +249,10 @@ def confirm_password_reset(db: Session, *, raw_token: str, new_password: str) ->
     user = token.user
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
+    user.temporary_password_expires_at = None
+    user.recovery_mode = None
+    user.recovery_started_at = None
+    user.recovery_started_by_user_id = None
     if token.purpose is AuthEmailTokenPurpose.manager_account_recovery:
         user.onboarding_state = UserOnboardingState.pending_totp_enrollment
         user.mfa_enabled = False

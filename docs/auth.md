@@ -146,14 +146,17 @@ For users whose onboarding is already complete:
 - activation/setup links are only valid before first password setup; they set the user's first real password and then force TOTP onboarding before full access
 - manager recovery actions are metadata-only and never expose transcript-derived content:
   - `POST /api/v1/users/{user_id}/send-activation`
-  - `POST /api/v1/users/{user_id}/recover-password` generates a random temporary password, stores only its hash, revokes sessions/trusted devices, forces `pending_password_change`, preserves existing TOTP/recovery-code state, and browser UI shows the password in a persistent copy modal
+  - `POST /api/v1/users/{user_id}/send-password-reset` sends a manager-created email reset token when mail is enabled
+  - `POST /api/v1/users/{user_id}/send-account-recovery` sends a manager-created email recovery token that resets password and MFA on confirmation
+  - `POST /api/v1/users/{user_id}/break-glass-password-reset` is available only when break-glass policy allows it, requires the manager's current TOTP code, reason, and confirmation that email is unavailable, then generates an expiring temporary password, stores only its hash, revokes sessions/trusted devices, forces `pending_password_change`, preserves existing TOTP/recovery-code state, and records a security audit event
   - `POST /api/v1/users/{user_id}/reset-mfa` clears TOTP/recovery-code state, revokes sessions/trusted devices, and forces TOTP reenrollment unless the user is still in `pending_password_change`
-  - `POST /api/v1/users/{user_id}/recover-account` generates a random temporary password and clears MFA/recovery-code state before forced password/TOTP onboarding; browser UI shows the password in a persistent copy modal
+  - `POST /api/v1/users/{user_id}/break-glass-account-recovery` performs the same break-glass checks and temporary-password flow, and also clears MFA/recovery-code state before forced password/TOTP onboarding
+  - legacy `recover-password` and `recover-account` endpoints fail closed with `410 deprecated_recovery_endpoint`
 
 ## Brute-force protection
 
 - login routes are rate-limited at `5 per 5 minutes` per client IP
-- TOTP challenge routes are rate-limited at `10 per 10 minutes` per client IP
+- TOTP challenge and break-glass recovery routes are rate-limited at `10 per 10 minutes` per client IP
 - public account-request submission is rate-limited at `3 per hour` per client IP
 - whole-file transcription upload routes are rate-limited at:
   - `1 per 5 seconds`

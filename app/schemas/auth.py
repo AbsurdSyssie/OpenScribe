@@ -41,6 +41,18 @@ class GenericMessageResponse(BaseModel):
 class ManagerRecoveryResponse(BaseModel):
     message: str
     temporary_password: str
+    temporary_password_expires_at: datetime
+    recovery_mode: str
+
+
+class ManagerRecoveryEmailRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class BreakGlassRecoveryRequest(BaseModel):
+    mfa_code: str = Field(min_length=6, max_length=8)
+    reason: str = Field(min_length=3, max_length=500)
+    confirm_email_unavailable: bool = False
 
 
 class TotpEnrollmentStartResponse(BaseModel):

@@ -169,6 +169,9 @@ Current implementation:
 - transcript routes require full authenticated access
 - system-admin or leader authority does not grant transcript-content access
 - this remains true even when leaders or admins manage team transcription endpoints and credentials
+- default workspace PII rows omit original values; owners reveal original values only through `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal`
+- sensitive transcript, workspace, generated-document, and post-consultation dictation API responses are marked `Cache-Control: no-store`
+- plaintext API response fields avoid misleading `_encrypted` suffixes while encrypted DB fields keep their storage names
 
 ### Metadata access
 

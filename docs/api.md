@@ -536,6 +536,10 @@ Current transcript-start behavior:
   - duplicate type/value rows for the same transcript return/update the existing row rather than creating another
   - saved manual PII is also applied as an outbound redaction layer for LLM generation and added to the PHI placeholder index for output validation/reidentification
 - `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}` hard-deletes one owner-created manual PII row
+- `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal` returns original PII values for the owning user only:
+  - non-owners receive `404` so transcript existence is not confirmed
+  - default workspace and generated-document PII rows omit `value` and include `has_value` for explicit reveal UI
+  - route uses POST so browser CSRF/origin checks apply
 - system-admin accounts are blocked from owning transcript content
 - `ingestion_mode` is persisted on the transcript root and currently supports:
   - `whole_file`
@@ -543,7 +547,10 @@ Current transcript-start behavior:
 - if the caller omits `ingestion_mode`, the route currently implies `whole_file`
 - team retention defaults are server-owned and always applied to new transcript roots
 - public transcript create/start/update payloads cannot extend `retention_days_applied` or `retention_expires_at`
-- transcript JSON responses remain owner-plaintext even though transcript drafts, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document sections, follow-up prompts, redaction output text, and redaction entity values are now stored encrypted at rest per owner
+- transcript JSON detail responses expose plaintext draft as `current_draft_text`; DB/request storage fields keep `current_draft_text_encrypted`
+- generated-document JSON responses expose plaintext output as `original_output_text` and `edited_output_text`; DB storage fields keep `_encrypted` names
+- sensitive transcript/workspace/generated-document API responses include `Cache-Control: no-store` and `Pragma: no-cache`
+- transcript JSON responses remain owner-plaintext where explicitly requested even though transcript drafts, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document sections, follow-up prompts, redaction output text, and redaction entity values are now stored encrypted at rest per owner
 - transcript and generated-document `title` fields remain plaintext metadata in this slice
 
 Current live chunk-ingestion behavior:
@@ -641,9 +648,9 @@ Current whole-file ingestion behavior:
   - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
   - supports bulk-delete of selected transcript sessions from the session rail
   - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
-  - exposes `active_transcript_pii_entities` as owner-only detected PII rows from the latest successful redaction run, disease/symptom rows from the latest successful clinical NLP run, plus owner-created manual PII rows for the active transcript
+  - exposes `active_transcript_pii_entities` as owner-only summary rows from the latest successful redaction run, disease/symptom rows from the latest successful clinical NLP run, plus owner-created manual PII rows for the active transcript; original values are omitted until explicit reveal
   - exposes `active_transcript_redaction_status` and `active_transcript_clinical_nlp_status` so empty review rows can distinguish not-run, failed, and succeeded-with-zero-results states without exposing transcript text
-  - includes note-level `generated_documents[].pii_entities` so switching selected notes refreshes the PII panel without a page reload
+  - includes note-level `generated_documents[].pii_entities` summary rows without original values so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
   - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
   - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected

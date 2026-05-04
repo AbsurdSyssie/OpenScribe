@@ -1,5 +1,133 @@
 # Progress
 
+## 2026-05-04 Generated Document PII Value Sanitisation
+
+### Scope
+
+- Sanitised PII rows during no-reveal generated-document renders so cached workspace values cannot appear in the generated-document PII panel.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: strips `value` from displayed/current PII rows when `allowReveal:false`.
+- `tests/test_admin_ui.py`: asserts no-reveal renders use sanitised display rows.
+- `docs/progress.md`: records change.
+
+### Tests
+
+- Updated UI source regression coverage for no-reveal PII row sanitisation.
+
+### Documentation
+
+- Progress note added for generated-document PII value sanitisation.
+
+### Risks / assumptions
+
+- Source-level frontend regression test covers current JS architecture; no browser DOM test was added.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no-reveal generated-document PII renders do not expose raw original values from workspace cache.
+- Ownership rules preserved: owner-only reveal endpoint unchanged.
+- Deletion semantics preserved: no retention or cascade behavior changed.
+- Provider rules preserved: no STT/LLM/de-identification behavior changed.
+- Structured-note contract preserved: no EMIS keys or structured JSON contract changed.
+
+## 2026-05-04 Generated Document PII Reveal Guard
+
+### Scope
+
+- Hid transcript PII reveal controls while selected generated-document PII summaries are displayed, avoiding replacement with active transcript PII values.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: adds render option to suppress PII reveal buttons.
+- `app/static/js/transcribe/documents.js`: disables reveal for generated-document PII rows.
+- `tests/test_admin_ui.py`: asserts generated-document PII renders with reveal disabled.
+- `docs/progress.md`: records change.
+
+### Tests
+
+- Updated UI source regression coverage for reveal suppression on generated-document PII rows.
+
+### Documentation
+
+- Progress note added for PII reveal guard.
+
+### Risks / assumptions
+
+- No document-specific reveal endpoint added; generated-document PII remains minimised until backend/API contract is designed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: generated-document PII summaries no longer expose or trigger unrelated transcript PII reveal.
+- Ownership rules preserved: backend owner-only reveal remains unchanged.
+- Deletion semantics preserved: no retention or cascade behavior changed.
+- Provider rules preserved: no provider selection or secret handling changed.
+- Structured-note contract preserved: no EMIS keys or structured JSON contract changed.
+
+## 2026-05-04 PII Response Minimisation
+
+### Scope
+
+- Renamed owner-facing plaintext response fields away from `_encrypted` names for transcript drafts and generated-document body text.
+- Changed default workspace PII rows to summaries without original values.
+- Changed default generated-document PII rows to summaries without original values.
+- Added owner-only `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal` for explicit value reveal.
+- Added no-store headers for sensitive transcript/workspace/generated-document API paths.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: broader `tests/test_admin_ui.py` still has pre-existing unrelated failures noted in final response.
+
+### Files changed
+
+- `app/schemas/transcripts.py`, `app/schemas/workspace.py`, `app/schemas/templates.py`, `app/schemas/__init__.py`: response contracts for plaintext names and PII summary/detail split.
+- `app/web/transcribe_workspace.py`, `app/web/presentation.py`: build minimised workspace rows and plaintext response fields.
+- `app/routes/api_routes.py`, `app/api_route_audit.py`: add reveal endpoint and audit manifest entry.
+- `app/main.py`: no-store sensitive API headers.
+- `app/static/js/transcribe/*.js`, `app/templates/transcribe/_workspace.html`, `app/templates/glm-3.html`: frontend consumes new response names and reveals PII explicitly.
+- `tests/test_pii_response_minimisation.py`, `tests/test_api.py`: response minimisation and renamed-field coverage.
+- `docs/api.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document behavior and tests.
+
+### Tests
+
+- Added coverage for default workspace and generated-document PII summaries omitting `value`.
+- Added owner reveal, non-owner `404`, CSRF rejection, no-store headers, and renamed transcript/generated-document response fields.
+
+### Documentation
+
+- API/security/testing docs now describe summary-vs-detail PII payloads, generated-document summary minimisation, reveal endpoint, no-store headers, and plaintext response names.
+
+### Risks / assumptions
+
+- Fresh-MFA reveal was not added because current session model does not track a recent MFA verification timestamp for this path.
+- Generated-document section response fields still mirror DB encrypted field names; plan only covered top-level generated document body fields.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: default workspace and generated-document responses no longer return original PII values; reveal stays owner-only.
+- Ownership rules preserved: reveal uses full auth and owner check with non-owner `404`.
+- Deletion semantics preserved: no retention, cascade, or hard-delete behavior changed.
+- Provider rules preserved: no STT/LLM/de-identification selection or secret behavior changed.
+- Structured-note contract preserved: no EMIS section keys or structured JSON output contract changed.
+
 ## 2026-05-04 Vault-Backed CSRF Secret Bootstrap
 
 ### Scope

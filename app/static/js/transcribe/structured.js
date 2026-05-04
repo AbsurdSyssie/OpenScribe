@@ -740,7 +740,7 @@ export function createStructuredEditor({
       generatedDocument
       && generatedDocument.status === 'ready'
       && generatedDocument.document_mode === 'freeform'
-    ) ? collectFreeformLinesFromText(generatedDocument.edited_output_text_encrypted || '') : [];
+    ) ? collectFreeformLinesFromText(generatedDocument.edited_output_text || '') : [];
     return {
       documentId: generatedDocument?.id || '',
       templateId: dom.generateOutputTemplateSelect?.value || '',
@@ -1232,8 +1232,8 @@ export function createStructuredEditor({
       syncNoteEditorToolbar();
       return;
     }
-    if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text_encrypted) {
-      dom.latestGeneratedOutput.textContent = generatedDocument.edited_output_text_encrypted;
+    if (generatedDocument.status === 'ready' && generatedDocument.edited_output_text) {
+      dom.latestGeneratedOutput.textContent = generatedDocument.edited_output_text;
       syncNoteEditorToolbar();
       return;
     }
@@ -1281,7 +1281,7 @@ export function createStructuredEditor({
         id: dom.latestGeneratedOutput?.dataset.latestGeneratedId || '',
         status: 'ready',
         document_mode: 'freeform',
-        edited_output_text_encrypted: collectSelectedNoteLines({ includeUnselected: true, mode: 'freeform' }).map((line) => line.text).join('\n'),
+        edited_output_text: collectSelectedNoteLines({ includeUnselected: true, mode: 'freeform' }).map((line) => line.text).join('\n'),
       });
       renderFreeformLines(generatedFreeformDraft);
       dom.generatedStructuredPanel.hidden = true;

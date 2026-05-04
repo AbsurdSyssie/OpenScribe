@@ -77,7 +77,6 @@ from ..services.deidentification import (
     list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
 )
 from ..services.redaction import (
-    redaction_entity_original_value as redaction_entity_original_value_service,
     redaction_run_text as redaction_run_text_service,
 )
 from ..services.stt import (
@@ -395,8 +394,8 @@ def smart_phrase_response(phrase: SmartPhrase) -> SmartPhraseDetail:
 def generated_document_response(db: Session, document: GeneratedDocument) -> GeneratedDocumentDetail:
     payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
     payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
-    payload["original_output_text_encrypted"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
-    payload["edited_output_text_encrypted"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
+    payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
+    payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
     payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
     payload["sections"] = [
         GeneratedDocumentSectionDetail.model_validate(
@@ -416,9 +415,9 @@ def generated_document_response(db: Session, document: GeneratedDocument) -> Gen
     payload["pii_entities"] = [
         GeneratedDocumentPiiEntityDetail(
             entity_type=entity.entity_type,
-            value=redaction_entity_original_value_service(db, entity=entity),
             placeholder=entity.placeholder,
             occurrence_count=entity.occurrence_count,
+            has_value=True,
         ).model_dump()
         for entity in sorted(getattr(redaction_run, "entities", []) or [], key=lambda item: item.entity_order)
     ] if redaction_run is not None else []

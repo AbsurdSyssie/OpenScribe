@@ -222,7 +222,7 @@ aria-expanded="false">
 class="note-editor-toolbar note-editor-toolbar--header"
 data-note-editor-toolbar
 data-note-editor-header-toolbar
-{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted)) %}hidden{% endif %}>
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text)) %}hidden{% endif %}>
 <span class="note-editor-toolbar__status text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite">Select the note lines you want to copy.</span>
 <div class="note-editor-toolbar__actions flex items-center gap-2">
 <button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
@@ -240,7 +240,7 @@ data-note-editor-header-toolbar
 <button
 type="submit"
 class="btn-primary btn-primary--compact"
-{% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text_encrypted and not active_structured_context) %}disabled{% endif %}>
+{% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text and not active_structured_context) %}disabled{% endif %}>
 <i class="w-4 h-4" data-lucide="zap"></i>
 Create
 </button>
@@ -314,9 +314,9 @@ data-latest-generated-status="{{ latest_generated_document.status.value if lates
 data-latest-generated-id="{{ latest_generated_document.id if latest_generated_document else '' }}"
 data-latest-generated-mode="{{ latest_generated_document.document_mode.value if latest_generated_document else '' }}"
 data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isoformat() if latest_generated_document else '' }}"
-{% if latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted) %}hidden{% endif %}>
-{% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text_encrypted %}
-{{ latest_generated_document.edited_output_text_encrypted }}
+{% if latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) %}hidden{% endif %}>
+{% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text %}
+{{ latest_generated_document.edited_output_text }}
 {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
 <span class="text-slate">Your note is waiting to be written.</span>
 {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
@@ -409,7 +409,7 @@ data-generated-structured-panel
 <div
 class="freeform-note-panel"
 data-generated-freeform-panel
-{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text_encrypted) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
 <div class="note-editor-empty-state" data-freeform-note-empty-state>
 <div class="note-editor-empty-state__title">No note lines yet</div>
 <div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
@@ -588,7 +588,7 @@ Create
 {% endif %}
 </div>
 <div class="followup-card__actions">
-{% if document.status.value == "ready" and document.edited_output_text_encrypted %}
+{% if document.status.value == "ready" and document.edited_output_text %}
 <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
 <i class="w-4 h-4" data-lucide="copy"></i>
 </button>
@@ -602,8 +602,8 @@ Create
 <span class="followup-status followup-status--{{ document.status.value }}">{{ document.status.value }}</span>
 <span class="followup-card__date">{{ document.created_at }}</span>
 </div>
-{% if document.status.value == "ready" and document.edited_output_text_encrypted %}
-<div class="followup-card__content" data-followup-copy-body>{{ document.edited_output_text_encrypted }}</div>
+{% if document.status.value == "ready" and document.edited_output_text %}
+<div class="followup-card__content" data-followup-copy-body>{{ document.edited_output_text }}</div>
 {% elif document.status.value == "queued" %}
 <div class="followup-card__content followup-card__content--placeholder">Waiting to be written...</div>
 {% elif document.status.value == "processing" %}
@@ -666,8 +666,8 @@ Create
 <div class="transcript-review-grid{% if post_consultation_dictation %} transcript-review-grid--dictation-open{% endif %}" data-transcript-review-grid>
 <section class="transcript-review-grid__transcript">
 <div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
-{% if active_transcript and active_transcript.current_draft_text_encrypted %}
-{{ active_transcript.current_draft_text_encrypted }}
+{% if active_transcript and active_transcript.current_draft_text %}
+{{ active_transcript.current_draft_text }}
 {% else %}
 <span class="text-slate">No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds.</span>
 {% endif %}
@@ -717,8 +717,10 @@ Clinical NLP has not run for this transcript yet.
 <thead>
 <tr>
 <th scope="col">Type</th>
-<th scope="col">Value</th>
+<th scope="col">Placeholder</th>
 <th scope="col">Count</th>
+<th scope="col">Source</th>
+<th scope="col">Reveal</th>
 </tr>
 </thead>
 <tbody data-pii-table-body>
@@ -726,7 +728,6 @@ Clinical NLP has not run for this transcript yet.
 <tr>
 <td><span class="pii-type{% if entity.source == 'clinical' %} pii-type--clinical{% endif %}">{{ entity.entity_type|replace('_', ' ') }}</span></td>
 <td>
-<span class="pii-value">{{ entity.value }}</span>
 <span class="pii-placeholder">{{ entity.placeholder }}</span>
 </td>
 <td class="pii-count-cell">
@@ -737,6 +738,8 @@ Clinical NLP has not run for this transcript yet.
 </button>
 {% endif %}
 </td>
+<td>{{ entity.source }}</td>
+<td>{% if entity.has_value %}<button type="button" class="pii-reveal" data-pii-reveal="true">Reveal</button>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -812,8 +815,8 @@ Ready for live dictation.
 <div class="structured-workspace__footer">
 <div class="flex items-center justify-between gap-4 text-xs text-slate">
 <span data-transcript-stats>
-{% if active_transcript and active_transcript.current_draft_text_encrypted %}
-{{ active_transcript.current_draft_text_encrypted.split('\n')|length }} blocks · {{ active_transcript.current_draft_text_encrypted.split()|length }} words
+{% if active_transcript and active_transcript.current_draft_text %}
+{{ active_transcript.current_draft_text.split('\n')|length }} blocks · {{ active_transcript.current_draft_text.split()|length }} words
 {% else %}
 0 blocks · 0 words
 {% endif %}

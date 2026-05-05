@@ -1,5 +1,98 @@
 # Progress
 
+## 2026-05-05 Admin2 Preview Route
+
+- Follow-up parity pass: admin2 now exposes user lifecycle/recovery/delete forms, account-request approval fields, provider inspect/test/delete/create forms, provider selection clear actions, de-identification assignment controls, and default asset creation forms while keeping the dark inline-expanded design.
+- Follow-up provider IA pass: admin2 now includes CSRF auto-fill script, separates Clinical NLP into its own provider registry page, and moves de-identification/clinical NLP team assignment controls into Workspace -> Teams.
+- Follow-up teams/people polish: Teams table now starts fully collapsed and can remain collapsed, People renders team names instead of team IDs, and People row actions are collapsed into an Actions dropdown with Lucide delete icon.
+- Follow-up request review polish: Account requests now render as cards with separated request metadata, approve form, and reject form instead of cramped inline table controls.
+- Follow-up template editor polish: `/admin2` template forms now hide Structured EMIS section prompts whenever mode is switched to `freeform`.
+- Follow-up theme polish: `/admin2` now has browser-persisted dark/light appearance mode using CSS variables and a Preferences toggle.
+- Follow-up workspace sizing: `/admin2` usable area widened for table-heavy admin screens while retaining responsive page padding.
+- Follow-up divider polish: `/admin2` setting row separators now stop before action/control columns, avoiding lines running under selects/buttons in light mode.
+- Follow-up hierarchy polish: `/admin2` two-column section headings now align at the top, with stronger headings and more spacing around clear-action button rows.
+- Follow-up dropdown polish: `/admin2` custom action dropdowns now use Notion-like 250px scrollable popovers, move to the front of the DOM while open, close on click-away/Escape/resize, and auto-close after 3 seconds without hover.
+- Follow-up select polish: `/admin2` native `.select` controls are progressively enhanced into Notion-like custom listboxes that portal to `body`, scroll when long, close on click-away/Escape/resize/idle hover, and sync back to the real select for form submission.
+- Follow-up usage polish: `/admin2` Usage now has local Overview, Teams, and Providers tabs; provider tab exposes only aggregate provider/model metadata.
+- Follow-up people/usage controls: `/admin2` Usage > Teams now splits Active/Suspended; People table header icons sort by name/age/team/role/status; one auto-closing filter popover contains team/status selects.
+- Follow-up tab preservation fix: `/admin2` Failures now loads aggregate failure rows, and default quick-action save/duplicate/delete returns to Quick actions instead of Templates.
+
+### Scope
+
+- Added `/admin2` as a system-admin-only preview route for `app/templates/admin2.html`.
+- Wired `admin2` return-view handling so admin form redirects can stay on `/admin2`.
+- Cleaned `admin2.html` by removing inline styles and fixing EMIS section label rendering.
+- Filled missing admin functionality in `/admin2` using existing backend admin routes and CSRF/return-view handling.
+- Fixed browser CSRF submissions by including the shared CSRF script that fills `_csrf_token` fields from the CSRF cookie.
+- Split Clinical NLP from De-identification in the provider registry while keeping team assignment/selection in the Teams workflow.
+- Updated Teams and People UX so no team details open by default, row collapse does not open another team, and user actions are tucked behind a dropdown.
+- Reworked Account requests layout to avoid overlapping requester text and approval/rejection controls.
+- Reworked admin2 template mode handling so freeform templates show only global prompt controls while structured mode keeps EMIS section prompts visible.
+- Added `/admin2` light theme variables and a localStorage-backed Preferences toggle without server-side preference or schema changes.
+- Increased `/admin2` content width caps from narrow Notion-style defaults to broader admin-console caps for better table/form fit.
+- Adjusted `/admin2` setting separators so divider borders live on the descriptive text cell instead of the whole grid row.
+- Removed unintended top margin from second sections inside two-column grids and tightened section-header hierarchy/action spacing.
+- Restyled custom admin2 action dropdown menus while keeping the theme as a toggle; native provider `<select>` popups remain browser-native.
+- Added custom combobox/listbox enhancement for admin2 select menus while preserving original select values for POST handlers and validation.
+- Added local Usage sub-tabs for Teams and Providers so aggregate metadata views are easier to scan.
+- Added client-side admin2 People table controls: column-header sort buttons plus one metadata filter popover with synced selects.
+- Fixed `/admin2` Failures data loading and quick-action return-tab preservation.
+- Kept `/admin` and `/admin-restyled` behavior unchanged.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/routes/web_admin.py`: adds `/admin2` route with admin auth, template selection, admin2-specific tabs, and quick-action return-tab support.
+- `app/web/presentation.py`: supports `admin2` return route, optional preview tab set, and aggregate usage context for Failures.
+- `app/templates/admin2.html`: removes CSP-hostile inline styles, renders structured EMIS section labels from context correctly, and sends quick-action return-tab fields.
+- `tests/test_admin_ui.py`: covers `/admin2` render, redirect preservation, Failures rows, and quick-action tab preservation.
+- `docs/admin_brief.md`: documents `/admin2` preview route.
+- `docs/progress.md`: records change.
+
+### Tests
+
+- `/admin2?tab=llm` renders for system admins and carries `return_view=admin2`.
+- `/admin2` render avoids inline `style` attributes so CSP remains compatible.
+- `/admin2` render exposes lifecycle, recovery, account request, provider inspect/test/delete/create, de-identification assignment, and model-selection controls.
+- `/admin2` render includes the CSRF helper script and exposes Clinical NLP as its own provider registry page.
+- `/admin2` De-identification page no longer shows team assignment controls; Teams page now contains those assignment controls.
+- `/admin2` Teams starts collapsed; People shows team names, Lucide actions menu, and no table-cell team IDs.
+- `/admin2` Account requests use request-card layout with distinct approve/reject forms.
+- `/admin2` Templates dynamically hides structured EMIS controls for freeform mode.
+- `/admin2` Preferences exposes a dark/light theme toggle persisted as `openscribe_admin2_theme` in browser localStorage.
+- `/admin2` uses wider content containers (`wide` 1440px, `inner` 1240px) with responsive horizontal padding.
+- `/admin2` setting dividers no longer overrun into adjacent controls.
+- `/admin2` section headings align across columns and action button rows have clearer spacing.
+- `/admin2` custom action menus portal to `body` while open so they layer over tables/forms and remain scrollable when long.
+- `/admin2` select controls now use front-layer custom dropdowns; underlying native selects remain in the form and receive synced values.
+- `/admin2` Usage tabs split overview charts, team rollups, and provider/model rollups without adding new content access paths.
+- `/admin2` People filters/sort operate on already-rendered account metadata only; no backend access model changed.
+- STT config save with `return_view=admin2` redirects back to `/admin2`.
+- `/admin2?tab=failures` renders aggregate failure rows.
+- Default quick-action save from `/admin2` redirects back to `tab=quick-actions`.
+
+### Documentation
+
+- Admin brief now notes `/admin2` as preview route using same backend routes and protections.
+
+### Risks / assumptions
+
+- `admin2.html` remains preview UI. Backend actions still use existing admin forms/routes.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: route exposes only admin metadata already rendered by admin context; no transcript or generated-note content added.
+- Ownership rules preserved: route requires system-admin session and does not change transcript ownership checks.
+- Deletion semantics preserved: destructive actions still submit existing explicit admin POST routes.
+- Provider rules preserved: provider secrets remain Vault-backed references and are not rendered as plaintext.
+- Structured-note contract preserved: default structured template fields still use existing EMIS section contract.
+
 ## 2026-05-05 Source Transcript PII Visibility Fix
 
 - Follow-up UI cleanup: PII sidebar now shows Type, Value, and Count only. Placeholder, Source, and Reveal columns removed from source/generic sidebar table.

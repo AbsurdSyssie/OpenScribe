@@ -672,6 +672,7 @@ def render_admin(
     admin_page_route: str = "/admin",
     admin_return_view: str = "",
     template_name: str | None = None,
+    extra_admin_tabs: set[str] | None = None,
 ):
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
@@ -707,6 +708,8 @@ def render_admin(
     default_template_latest_version = _latest_template_version(selected_default_template) if selected_default_template is not None else None
     default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
     available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults"}
+    if extra_admin_tabs:
+        available_admin_tabs = available_admin_tabs | extra_admin_tabs
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
     available_provider_tabs = {"stt", "llm", "deidentification"}
     if active_provider_tab in available_provider_tabs:
@@ -729,7 +732,7 @@ def render_admin(
         "usage_ingestion_rows": [],
         "usage_failure_rows": [],
     }
-    if resolved_admin_tab == "usage":
+    if resolved_admin_tab in {"usage", "failures"}:
         usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
     email_recovery_enabled = email_password_reset_enabled_service()
     context = {
@@ -799,10 +802,14 @@ def render_admin(
 
 
 def admin_page_route_from_return_view(return_view: str | None) -> str:
+    if return_view == "admin2":
+        return "/admin2"
     return "/admin-restyled" if return_view == "restyled" else "/admin"
 
 
 def admin_return_view_value(return_view: str | None) -> str:
+    if return_view == "admin2":
+        return "admin2"
     return "restyled" if return_view == "restyled" else ""
 
 

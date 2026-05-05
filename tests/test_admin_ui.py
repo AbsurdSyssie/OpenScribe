@@ -1408,6 +1408,152 @@ def test_admin_restyled_preview_route_renders_for_system_admin(client, make_team
     assert 'name="return_view" value="restyled"' in page.text
 
 
+def test_admin2_preview_route_renders_for_system_admin(client, make_team, make_user):
+    team = make_team(name="Clinic Admin2 Preview")
+    make_user(email="admin2-preview@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin2-preview@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin2?team_id={team.id}&tab=llm")
+
+    assert page.status_code == 200
+    assert 'class="app"' in page.text
+    assert "Writing assistant" in page.text
+    assert 'data-admin-tab-target="llm"' in page.text
+    assert 'data-provider-tab-target="llm" aria-selected="true"' in page.text
+    assert 'href="/admin2?tab=directory"' in page.text
+    assert 'name="return_view" value="admin2"' in page.text
+    assert 'style="' not in page.text
+    assert 'const COOKIE_NAME = "openscribe_csrf";' in page.text
+    assert 'Clinical NLP' in page.text
+    assert '/static/vendor/lucide/1.8.0/lucide.min.js' in page.text
+    assert 'body[data-admin-theme="light"]' in page.text
+    assert 'const THEME_KEY = "openscribe_admin2_theme";' in page.text
+    assert 'data-theme-toggle' in page.text
+    assert 'width:250px' in page.text
+    assert '@keyframes menu-pop' in page.text
+    assert 'document.body.appendChild(panel);' in page.text
+    assert 'window.setTimeout(() => closeActionMenu(menu), 3000);' in page.text
+    assert 'document.addEventListener("pointerdown"' in page.text
+    assert 'select.classList.add("is-enhanced");' in page.text
+    assert 'className = "custom-select__menu"' in page.text
+    assert 'role", "listbox"' in page.text
+    assert 'select.dispatchEvent(new Event("change", { bubbles: true }));' in page.text
+    assert 'data-usage-tab-target="teams"' in page.text
+    assert 'data-usage-tab-target="providers"' in page.text
+    assert 'data-usage-tab-panel="providers"' in page.text
+    assert 'data-usage-team-status="active"' in page.text
+    assert 'data-usage-team-status="suspended"' in page.text
+    assert 'function showUsageTab(tab)' in page.text
+    assert 'function showUsageTeamStatus(status)' in page.text
+    assert 'data-people-sort="created-desc"' in page.text
+    assert 'data-people-filter-menu' in page.text
+    assert 'data-people-team-select' in page.text
+    assert 'data-people-status-select' in page.text
+    assert 'function closeActionMenusExceptOwner(node)' in page.text
+    assert 'function applyPeopleControls()' in page.text
+    assert 'width:min(1440px,100%)' in page.text
+    assert 'width:min(1240px,100%)' in page.text
+    assert '.setting > :first-child' in page.text
+    assert '.inline-grid > .section + .section { margin-top:0; }' in page.text
+    assert '.section-head h2 { font-size:16px; font-weight:650;' in page.text
+
+    new_template = client.get("/admin2?tab=templates&default_template_id=new")
+    assert new_template.status_code == 200
+    assert 'data-template-mode-select' in new_template.text
+    assert 'data-template-structured-section' in new_template.text
+    assert 'sections.hidden = modeSelect.value !== "structured";' in new_template.text
+
+    collapsed = client.get("/admin2?tab=directory")
+    assert collapsed.status_code == 200
+    assert "settings</h2>" not in collapsed.text
+    assert 'href="/admin2?tab=directory">Collapse</a>' not in collapsed.text
+
+
+def test_admin2_exposes_admin_lifecycle_and_provider_controls(
+    client,
+    make_team,
+    make_user,
+    make_account_request,
+    make_stt_config,
+    make_llm_config,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+):
+    team = make_team(name="Clinic Admin2 Controls")
+    admin = make_user(email="admin2-controls@example.com", password="password-1", is_system_admin=True)
+    make_user(email="admin2-member@example.com", password="password-2", team=team)
+    make_account_request(requested_name="New User", requested_email="new-user@example.com", requested_team_name=team.name)
+    stt_config = make_stt_config(team=team, actor=admin, label="Admin2 STT")
+    llm_config = make_llm_config(team=team, actor=admin, label="Admin2 LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini", "gpt-4.1-mini"])
+    deid_provider = make_deidentification_provider(
+        actor=admin,
+        label="Admin2 Deid",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=deid_provider, actor=admin)
+
+    client.post("/login", data={"email": "admin2-controls@example.com", "password": "password-1"}, follow_redirects=False)
+
+    people = client.get(f"/admin2?team_id={team.id}&tab=people")
+    assert people.status_code == 200
+    assert 'name="full_name"' in people.text
+    assert 'name="status"' in people.text
+    assert "Clinic Admin2 Controls" in people.text
+    assert f"<span>{team.id}</span>" not in people.text
+    assert 'class="actions-menu"' in people.text
+    assert 'data-people-sort="role"' in people.text
+    assert 'data-people-row' in people.text
+    assert 'data-created-at=' in people.text
+    assert 'aria-label="Filter people"' in people.text
+    assert 'data-people-team-select' in people.text
+    assert 'data-people-status-select' in people.text
+    assert 'data-lucide="trash-2"' in people.text
+    assert f'/admin/users/' in people.text and '/suspend' in people.text
+    assert '/reset-mfa' in people.text
+
+    requests = client.get(f"/admin2?team_id={team.id}&tab=requests")
+    assert requests.status_code == 200
+    assert 'class="request-card"' in requests.text
+    assert 'class="request-card__actions"' in requests.text
+    assert 'action="/admin/account-requests/' in requests.text
+    assert 'name="temporary_password"' in requests.text
+    assert 'name="team_role"' in requests.text
+
+    stt = client.get(f"/admin2?team_id={team.id}&tab=stt&stt_config_id={stt_config.id}")
+    assert stt.status_code == 200
+    assert f'action="/admin/stt-configs/{stt_config.id}/test"' in stt.text
+    assert f'action="/admin/stt-configs/{stt_config.id}/delete"' in stt.text
+    assert 'formaction="/admin/stt-configs/inspect"' in stt.text
+    assert 'name="provider_model"' in stt.text
+
+    llm = client.get(f"/admin2?team_id={team.id}&tab=llm&llm_config_id={llm_config.id}")
+    assert llm.status_code == 200
+    assert f'action="/admin/llm-configs/{llm_config.id}/delete"' in llm.text
+    assert 'formaction="/admin/llm-configs/inspect"' in llm.text
+    assert 'name="allowed_model_names" value="gpt-4.1-mini"' in llm.text
+
+    deid = client.get(f"/admin2?team_id={team.id}&tab=deidentification&deidentification_provider_id={deid_provider.id}")
+    assert deid.status_code == 200
+    assert 'Team assignments' not in deid.text
+    assert 'Team assignment and selection now happens under Workspace' in deid.text
+    assert 'formaction="/admin/deidentification-providers/inspect"' in deid.text
+
+    clinical_nlp = client.get(f"/admin2?team_id={team.id}&tab=clinical-nlp&deidentification_provider_id={deid_provider.id}")
+    assert clinical_nlp.status_code == 200
+    assert 'data-admin-tab-panel="clinical-nlp"' in clinical_nlp.text
+    assert 'New clinical NLP endpoint' in client.get(f"/admin2?team_id={team.id}&tab=clinical-nlp&deidentification_provider_id=new").text
+    assert 'Team assignment and selection happens under Workspace' in clinical_nlp.text
+
+    teams = client.get(f"/admin2?team_id={team.id}&tab=directory")
+    assert teams.status_code == 200
+    assert 'Team provider assignments' in teams.text
+    assert 'action="/admin/deidentification-provider-assignments/remove"' in teams.text
+    assert 'action="/admin/clinical-nlp-selection"' in teams.text
+
+
 def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
     make_user(email="admin-flat-layout@example.com", password="password-1", is_system_admin=True)
 
@@ -1497,6 +1643,87 @@ def test_admin_restyled_stt_config_redirect_preserves_preview_route(client, db_s
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
+
+
+def test_admin2_stt_config_redirect_preserves_preview_route(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Admin2 STT")
+    make_user(email="admin2-stt@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin2-stt@example.com", "password": "password-1"}, follow_redirects=False)
+    save = client.post(
+        "/admin/stt-configs",
+        data={
+            "team_id": str(team.id),
+            "label": "Admin2 STT",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:7000",
+            "bearer_token": "secret-token",
+            "provider_model": "whisper-1",
+            "language": "en",
+            "extra_form_fields_json": "{\"chunk_mode\":\"memory\"}",
+            "is_active": "true",
+            "return_view": "admin2",
+            "return_tab": "stt",
+        },
+        follow_redirects=False,
+    )
+
+    assert save.status_code == 303
+    assert save.headers["location"] == f"/admin2?team_id={team.id}&tab=stt"
+    saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+    assert saved_config is not None
+    assert saved_config.label == "Admin2 STT"
+
+
+def test_admin2_quick_action_redirect_preserves_quick_actions_tab(client, db_session, make_user, make_default_quick_action):
+    admin = make_user(email="admin2-quick-actions@example.com", password="password-1", is_system_admin=True)
+    quick_action = make_default_quick_action(actor=admin, name="Admin2 existing action")
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin2?tab=quick-actions&default_quick_action_id={quick_action.id}")
+    assert page.status_code == 200
+    assert 'name="return_tab" value="quick-actions"' in page.text
+
+    saved = client.post(
+        "/admin/default-quick-actions",
+        data={
+            "quick_action_id": str(quick_action.id),
+            "name": "Admin2 saved action",
+            "description": "Preserve tab",
+            "prompt_text": "Write follow-up.",
+            "is_active": "true",
+            "return_view": "admin2",
+            "return_tab": "quick-actions",
+        },
+        follow_redirects=False,
+    )
+
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/admin2?tab=quick-actions"
+    db_session.refresh(quick_action)
+    assert quick_action.name == "Admin2 saved action"
+
+
+def test_admin2_failures_tab_loads_failure_rows(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Admin2 Failures")
+    admin = make_user(email="admin2-failures@example.com", password="password-1", is_system_admin=True)
+    db_session.add(
+        ProviderUsageEvent(
+            team_id=team.id,
+            feature_type=ProviderFeatureType.llm_generation,
+            event_type=ProviderUsageEventType.failed,
+            error_code="llm_timeout",
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin2?team_id={team.id}&tab=failures")
+
+    assert page.status_code == 200
+    assert 'data-admin-tab-panel="failures"' in page.text
+    assert "LLM generation" in page.text
+    assert "llm_timeout" in page.text
 
 
 def test_admin_restyled_account_request_reject_preserves_preview_route(client, db_session, make_team, make_user, make_account_request):

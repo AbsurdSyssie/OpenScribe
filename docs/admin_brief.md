@@ -15,6 +15,21 @@ This page is for system admins only.
 ## Layout notes
 
 - `/admin` uses a flat sidebar workspace with card-based sections for providers, defaults, directory, usage, and requests.
+- `/admin2` is a system-admin-only dark UI preview for testing `admin2.html`; it reuses the same admin context, POST endpoints, CSRF fields, and return-route handling as `/admin`.
+- `/admin2` now exposes the same operational action families as `/admin`: team/user lifecycle, recovery emails/break-glass forms, account-request approval/rejection, provider create/edit/inspect/test/delete, team provider selection clear actions, de-identification assignment/selection controls from the Teams page, default template/quick-action create/edit/duplicate/delete, and usage/failure metadata views.
+- `/admin2` splits provider registry into distinct STT, LLM, De-identification, and Clinical NLP pages. Provider rows are created in registry pages; team assignment and selection happen from Workspace -> Teams.
+- `/admin2` Teams starts with all teams collapsed; opening a team requires choosing its row, and collapse returns to no open team. People rows show team names and collapse lifecycle/recovery/delete actions into an Actions dropdown.
+- `/admin2` Account requests use card-style review rows so request metadata, approval inputs, and rejection inputs do not compete for table-cell space.
+- `/admin2` template create/edit forms show EMIS section prompts only while mode is `structured`; switching to `freeform` leaves only the global prompt visible.
+- `/admin2` Preferences includes a dark/light theme toggle. Choice is stored in browser `localStorage` as `openscribe_admin2_theme`, avoiding schema changes.
+- `/admin2` uses wider content containers for admin-heavy tables/forms: `wide` pages cap at 1440px and `inner` pages cap at 1240px with responsive padding.
+- `/admin2` setting-row dividers are scoped to the descriptive cell so horizontal rules do not run beneath adjacent selects/buttons.
+- `/admin2` section headings align across two-column grids, use stronger heading weight, and leave more space before/after clear-action button rows.
+- `/admin2` custom action dropdowns use a Notion-like popover style. Open menus portal to `body`, layer above other content, scroll up to 70vh/400px, close on click-away/Escape/resize, and auto-close after 3 seconds without hover. Theme remains a simple toggle; native provider `<select>` controls remain browser-native.
+- `/admin2` select fields are progressively enhanced into custom listbox dropdowns with the same front-layer, scrollable, click-away, Escape, resize, and hover-timeout behavior. Original `<select>` elements remain present and synced so existing POST handlers continue to receive normal form values.
+- `/admin2` Usage has local Overview, Teams, and Providers tabs. Teams shows team-level metadata only; Providers shows provider/model counts, token totals, estimated cost, latency, and success rate without transcript, prompt, or note content.
+- `/admin2` Usage > Teams has Active and Suspended status tabs. `/admin2` People table header icons sort by name, age/newest/oldest, team, role, and status. One People filter popover contains team/status selects and uses the same auto-closing dropdown behavior.
+- `/admin2` Failures loads aggregate failure source/code/count rows from the same usage metadata context; quick-action forms preserve the `quick-actions` tab on save, duplicate, and delete.
 - Provider setup is split into STT, LLM, and de-identification subtabs while preserving the same backend forms and routes.
 - LLM and de-identification inspect/ping responses reopen their originating provider subtab instead of resetting to STT.
 - Provider and directory cards display operational metadata only; transcript-derived text and generated clinical content remain absent from this page.

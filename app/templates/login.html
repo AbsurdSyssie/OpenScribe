@@ -4,10 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Login</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{{ request.state.csp_nonce }}">
     :root {
       --bg: #FAF8F5;
       --parchment: #F5F1EB;
@@ -456,7 +453,7 @@
     </section>
   </main>
   <div class="toast-container" data-toast-container></div>
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (() => {
       const toastContainer = document.querySelector('[data-toast-container]');
       if (!toastContainer) return;

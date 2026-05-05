@@ -9,10 +9,7 @@
   {% set current_version = default_template_latest_version if is_default_editor else (team_template_latest_version if is_team_editor else personal_template_latest_version) %}
   {% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
   <title>{{ "Default" if is_default_editor else ("Team" if is_team_editor else "Personal") }} template editor</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Fraunces:wght@500&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{{ request.state.csp_nonce }}">
     :root {
       --bg: #F7F3EC;
       --card: #FFFFFF;
@@ -398,7 +395,7 @@
       </div>
     </main>
   </div>
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (() => {
       const modeSelect = document.querySelector('[data-template-mode-select]');
       const sections = document.querySelector('[data-template-sections]');

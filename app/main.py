@@ -49,6 +49,7 @@ from .models import (
     transcript_expiry,
     utcnow,
 )
+from .security_headers import content_security_policy, new_csp_nonce
 from .schemas import (
     AccountRequestApprove,
     AccountActivationConfirmRequest,
@@ -632,12 +633,21 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    request.state.csp_nonce = new_csp_nonce()
     response = await call_next(request)
+    is_https = _request_is_https(request)
 
-    if _request_is_https(request):
+    if is_https:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        content_security_policy(request.state.csp_nonce, upgrade_insecure_requests=is_https),
+    )
     if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"

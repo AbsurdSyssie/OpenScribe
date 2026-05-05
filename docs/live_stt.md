@@ -115,6 +115,14 @@ Current asset loading is the pinned browser quick-start path from the official d
 
 This keeps the page server-rendered while still moving VAD quality above the hand-rolled RMS implementation.
 
+The pinned self-hosted `onnxruntime-web` asset set must include both threaded WASM binaries and matching threaded module loaders so `MicVAD.new(...)` can initialize across browser worker/thread paths:
+
+- `ort.wasm.min.js`
+- `ort-wasm-simd-threaded.wasm`
+- `ort-wasm-simd-threaded.jsep.wasm`
+- `ort-wasm-simd-threaded.mjs`
+- `ort-wasm-simd-threaded.jsep.mjs`
+
 Known weakness:
 
 - `MicVAD` does not natively provide the exact OpenScribe `30s` forced mid-speech split behavior
@@ -218,7 +226,7 @@ This exact design is reasonable, but there are caveats:
 
 - `2s` silence can feel a bit slow for quick back-and-forth speech
 - a hard `30s` flush can cut mid-sentence
-- the current implementation depends on pinned CDN assets instead of self-hosted static files
+- the current implementation depends on pinned vendored browser assets staying complete and version-matched
 
 Why still use it:
 
@@ -231,7 +239,6 @@ Why still use it:
 
 Potential follow-ups after this first live slice:
 
-- self-host the `vad-web` and `onnxruntime-web` assets under a FastAPI static mount instead of loading them from CDN
 - continue tuning the forced-flush overlap window against real microphone and STT behavior
 - smarter low-energy cut-point search near the `30s` cap
 - visual live waveform / speech activity indicator

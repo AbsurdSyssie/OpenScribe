@@ -4,10 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Home</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{{ request.state.csp_nonce }}">
     :root {
       --bg: #F7F3EC;
       --parchment: #F8F5EF;
@@ -1682,7 +1679,7 @@ padding: 1rem 0;
 <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px;">
 <button type="submit" class="btn-primary btn-sm">Save preference</button>
 {% if user_llm_preference %}
-<form method="post" action="/home/llm-preference/clear" onsubmit="return confirm('Clear your personal writing assistant preference?');" style="margin: 0;">
+<form method="post" action="/home/llm-preference/clear" data-confirm-submit="Clear your personal writing assistant preference?" style="margin: 0;">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="overview">
 <button type="submit" class="btn-ghost btn-sm">Use team default</button>
@@ -1721,7 +1718,7 @@ padding: 1rem 0;
 <div class="asset-row__actions">
 <a href="/home/templates/editor?scope=personal&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
 <form method="post" action="/home/personal-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/personal-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this personal template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
+<form method="post" action="/home/personal-templates/{{ template.id }}/delete" data-confirm-submit="Delete this personal template permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1737,7 +1734,7 @@ padding: 1rem 0;
 <div class="asset-row__actions">
 <a href="/home/templates/editor?scope=team&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
 <form method="post" action="/home/team-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/team-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this team template permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
+<form method="post" action="/home/team-templates/{{ template.id }}/delete" data-confirm-submit="Delete this team template permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1766,7 +1763,7 @@ padding: 1rem 0;
 <div class="asset-row__actions">
 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
 <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1781,7 +1778,7 @@ padding: 1rem 0;
 <div class="asset-row__actions">
 <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
 <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1817,7 +1814,7 @@ padding: 1rem 0;
               <td><div class="asset-table-actions">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
                 <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this personal quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -1856,7 +1853,7 @@ padding: 1rem 0;
               <td><div class="asset-table-actions">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
                 <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this team quick action permanently?');" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -1951,7 +1948,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if stt_selection %}
-<form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Remove the current speech service?');" style="margin:0;">
+<form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove the current speech service?" style="margin:0;">
 <input type="hidden" name="purpose" value="conversation">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
@@ -1959,7 +1956,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </form>
 {% endif %}
 {% if stt_dictation_selection %}
-<form method="post" action="/home/stt-selection/clear" onsubmit="return confirm('Remove current dictation speech service?');" style="margin:0;">
+<form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current dictation speech service?" style="margin:0;">
 <input type="hidden" name="purpose" value="post_consultation_dictation">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
@@ -2026,7 +2023,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if llm_selection %}
-<form method="post" action="/home/llm-selection/clear" onsubmit="return confirm('Remove the current writing assistant?');" style="margin:0;">
+<form method="post" action="/home/llm-selection/clear" data-confirm-submit="Remove the current writing assistant?" style="margin:0;">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Clear</button>
@@ -2097,7 +2094,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if deidentification_selection %}
-<form method="post" action="/home/deidentification-selection/clear" onsubmit="return confirm('Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.');" style="margin:0;">
+<form method="post" action="/home/deidentification-selection/clear" data-confirm-submit="Clear the current de-identification selection? The team will fall back to Built-in Native Presidio." style="margin:0;">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Clear</button>
@@ -2147,7 +2144,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if clinical_nlp_selection %}
-<form method="post" action="/home/clinical-nlp-selection/clear" onsubmit="return confirm('Disable clinical NLP for your team?');" style="margin:0;">
+<form method="post" action="/home/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP for your team?" style="margin:0;">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Disable</button>
@@ -2291,7 +2288,7 @@ Create a new team member
                     <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email unavailable</label>
                     <button type="submit" class="member-menu__item member-menu__item--warning"><span>Generate break-glass password</span></button>
                   </form>
-                  <form method="post" action="/home/users/{{ user.id }}/break-glass-account-recovery" onsubmit="return confirm('Generate a break-glass password and reset MFA for this user?');">
+                  <form method="post" action="/home/users/{{ user.id }}/break-glass-account-recovery" data-confirm-submit="Generate a break-glass password and reset MFA for this user?">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
                     <input type="hidden" name="return_tab" value="team-management">
                     <input type="text" name="reason" required minlength="3" maxlength="500" placeholder="Reason">
@@ -2300,13 +2297,13 @@ Create a new team member
                     <button type="submit" class="member-menu__item member-menu__item--danger"><span>Break-glass password + reset MFA</span></button>
                   </form>
                   {% endif %}
-                  <form method="post" action="/home/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');">
+                  <form method="post" action="/home/users/{{ user.id }}/reset-mfa" data-confirm-submit="Reset MFA for this user and revoke sessions?">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
                     <input type="hidden" name="return_tab" value="team-management">
                     <button type="submit" class="member-menu__item member-menu__item--warning"><span>Reset MFA</span></button>
                   </form>
                   <a class="member-menu__item" href="mailto:{{ user.email }}"><svg class="member-menu__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.25h11v7.5h-11zm0 .25L8 8.5l5.5-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2"/></svg><span>Email</span></a>
-                  <form method="post" action="/home/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');">
+                  <form method="post" action="/home/users/{{ user.id }}/delete" data-confirm-submit="Delete this user and all owned transcript content immediately?">
                     <input type="hidden" name="return_view" value="{{ home_return_view }}">
                     <input type="hidden" name="return_tab" value="team-management">
                     <button type="submit" class="member-menu__item member-menu__item--danger"><svg class="member-menu__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6.25 4V3h3.5v1m-4.75 0 .55 7.25h4.4L10.5 4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2"/></svg><span>Delete</span></button>
@@ -2391,8 +2388,8 @@ Create a new team member
   </div>
 </div>
 <div class="toast-container" data-toast-container></div>
-<script src="https://unpkg.com/lucide@latest"></script>
-<script>
+<script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>
+<script nonce="{{ request.state.csp_nonce }}">
 (() => {
 /* ── Toast notifications ── */
 const toastContainer = document.querySelector('[data-toast-container]');
@@ -2488,6 +2485,15 @@ document.addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') memberMenus.forEach(closeMemberMenu);
+});
+
+document.addEventListener('submit', (event) => {
+  const form = event.target.closest('form[data-confirm-submit]');
+  if (!form) return;
+  const message = form.dataset.confirmSubmit;
+  if (message && !window.confirm(message)) {
+    event.preventDefault();
+  }
 });
 })();
 (() => {

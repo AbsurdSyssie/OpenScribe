@@ -6,7 +6,7 @@
 Copied to clipboard
 </div>
 
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function() {
 window.refreshLucideIcons = function(root) {
 if (!window.lucide?.createIcons) return;
@@ -208,7 +208,7 @@ syncRecordButtonLabel();
     </div>
   </div>
 
-  <script id="transcribe-bootstrap" type="application/json">
+  <script id="transcribe-bootstrap" type="application/json" nonce="{{ request.state.csp_nonce }}">
     {{ {
       "activeTranscriptId": active_transcript_id,
       "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,

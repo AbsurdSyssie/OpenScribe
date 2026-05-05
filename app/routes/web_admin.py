@@ -76,6 +76,54 @@ def admin_restyled_page(
     )
 
 
+@app.get("/admin2", response_class=HTMLResponse)
+def admin2_page(
+    request: Request,
+    team_id: str | None = None,
+    stt_config_id: str | None = None,
+    llm_config_id: str | None = None,
+    deidentification_provider_id: str | None = None,
+    default_template_id: str | None = None,
+    default_quick_action_id: str | None = None,
+    tab: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    provider_tabs = {"stt", "llm", "deidentification"}
+    active_provider_tab = tab if tab in provider_tabs else None
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=stt_config_id,
+        selected_llm_config_id=llm_config_id,
+        selected_deidentification_provider_id=deidentification_provider_id,
+        selected_default_template_id=default_template_id,
+        selected_default_quick_action_id=default_quick_action_id,
+        active_admin_tab=tab,
+        active_provider_tab=active_provider_tab,
+        admin_page_route="/admin2",
+        admin_return_view="admin2",
+        template_name="admin2.html",
+        extra_admin_tabs={
+            "deidentification",
+            "failures",
+            "clinical-nlp",
+            "llm",
+            "people",
+            "preferences",
+            "quick-actions",
+            "stt",
+            "templates",
+        },
+    )
+
+
 @app.post("/admin/teams", response_class=HTMLResponse)
 def admin_create_team(
     request: Request,
@@ -326,6 +374,7 @@ def admin_upsert_default_quick_action(
     request: Request,
     quick_action_id: str = Form(""),
     return_view: str = Form(""),
+    return_tab: str = Form("defaults"),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -361,11 +410,11 @@ def admin_upsert_default_quick_action(
             message=detail,
             message_kind="error",
             status_code=status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab or "defaults",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "defaults"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/default-quick-actions/{quick_action_id}/delete", response_class=HTMLResponse)
@@ -373,6 +422,7 @@ def admin_delete_default_quick_action(
     request: Request,
     quick_action_id: UUID,
     return_view: str = Form(""),
+    return_tab: str = Form("defaults"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -392,11 +442,11 @@ def admin_delete_default_quick_action(
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab or "defaults",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "defaults"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/default-quick-actions/{quick_action_id}/duplicate", response_class=HTMLResponse)
@@ -404,6 +454,7 @@ def admin_duplicate_default_quick_action(
     request: Request,
     quick_action_id: UUID,
     return_view: str = Form(""),
+    return_tab: str = Form("defaults"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -423,11 +474,11 @@ def admin_duplicate_default_quick_action(
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab or "defaults",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "defaults"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users", response_class=HTMLResponse)

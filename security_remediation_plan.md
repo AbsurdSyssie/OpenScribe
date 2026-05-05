@@ -1,268 +1,89 @@
-## Next slice: PII response minimisation
+## Fix: enforce CSP and stop loading runtime JS from public CDNs
 
-### Goal
+The repo currently sets HSTS, `nosniff`, referrer policy, and no-store for sensitive paths, but no CSP.  The transcribe page also loads Tailwind, Lucide, ONNX Runtime, and VAD from public CDNs.  The JS config then points VAD/ONNX runtime paths back to jsDelivr.  That conflicts with the project rule requiring strict CSP because XSS can abuse authenticated endpoints from the victim session. 
 
-Reduce the default amount of decrypted transcript/PII content returned to the browser. This does **not** replace owner checks. It reduces blast radius if a legitimate authenticated session is abused through XSS, compromised device, or account takeover.
-
-Current issue:
-
-* `TranscriptDetail` uses response fields like `current_draft_text_encrypted`, but the response is populated with decrypted/plaintext transcript draft text. 
-* Workspace response includes active transcript, generated documents, active PII entities, redaction status, clinical NLP status, and other sensitive data in one large payload. 
-* PII entity response objects currently include original `value`. 
+Use this fix.
 
 ---
 
-# Agent brief
+# 1. Add CSP builder
 
-## 1. Rename plaintext response fields
-
-### File
-
-```text
-app/schemas/transcripts.py
-```
-
-Current field:
+Create `app/security_headers.py`:
 
 ```python
-class TranscriptDetail(TranscriptListItem):
-    current_draft_text_encrypted: str | None = None
-```
-
-Replace with:
-
-```python
-class TranscriptDetail(TranscriptListItem):
-    current_draft_text: str | None = None
-```
-
-Do not rename encrypted DB/model fields in this slice. Only fix API response naming.
-
-### File
-
-```text
-app/web/transcribe_workspace.py
-```
-
-Change response construction:
-
-```python
-payload["current_draft_text_encrypted"] = transcript_draft_text_service(db, transcript=transcript)
-```
-
-to:
-
-```python
-payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
-```
-
-### Transitional option
-
-If frontend breakage risk is high, support both names for one release:
-
-```python
-payload["current_draft_text"] = draft_text
-payload["current_draft_text_encrypted"] = draft_text  # TODO: remove after frontend migration
-```
-
-Preferred security-clean version: remove misleading `_encrypted` response fields now and update the frontend at the same time.
-
----
-
-## 2. Split PII entity schemas into summary vs detail
-
-### File
-
-```text
-app/schemas/transcripts.py
-```
-
-Replace current default schema:
-
-```python
-class TranscriptPiiEntityDetail(BaseModel):
-    id: UUID | None = None
-    entity_type: str
-    value: str
-    placeholder: str
-    occurrence_count: int
-    source: str = "detected"
-```
-
-with two schemas:
-
-```python
-class TranscriptPiiEntitySummary(BaseModel):
-    id: UUID | None = None
-    entity_type: str
-    placeholder: str
-    occurrence_count: int
-    source: str = "detected"
-    has_value: bool = True
+import secrets
+from dataclasses import dataclass
 
 
-class TranscriptPiiEntityDetail(TranscriptPiiEntitySummary):
-    value: str
-```
+@dataclass(frozen=True)
+class CspConfig:
+    report_only: bool = False
 
-Then update workspace schemas so default workspace payload uses summaries.
 
-Search for:
+def new_csp_nonce() -> str:
+    return secrets.token_urlsafe(24)
 
-```text
-active_transcript_pii_entities
-TranscriptPiiEntityDetail
-```
 
-The workspace response model should become:
+def content_security_policy(nonce: str) -> str:
+    # wasm-unsafe-eval is needed by onnxruntime-web WASM.
+    # Keep this narrow: script source is still only self + this response nonce.
+    directives = {
+        "default-src": ["'self'"],
+        "base-uri": ["'self'"],
+        "object-src": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "form-action": ["'self'"],
+        "script-src": ["'self'", f"'nonce-{nonce}'", "'wasm-unsafe-eval'"],
+        "script-src-attr": ["'none'"],
+        "style-src": ["'self'", f"'nonce-{nonce}'"],
+        "style-src-attr": ["'unsafe-inline'"],
+        "img-src": ["'self'", "data:", "blob:"],
+        "font-src": ["'self'", "data:"],
+        "connect-src": ["'self'"],
+        "media-src": ["'self'", "blob:"],
+        "worker-src": ["'self'", "blob:"],
+        "manifest-src": ["'self'"],
+        "upgrade-insecure-requests": [],
+    }
 
-```python
-active_transcript_pii_entities: list[TranscriptPiiEntitySummary]
-```
-
----
-
-## 3. Default workspace should not include original PII values
-
-### File
-
-```text
-app/web/transcribe_workspace.py
-```
-
-Current function:
-
-```python
-def transcript_pii_entities_response(db: Session, transcript: Transcript | None) -> list[TranscriptPiiEntityDetail]:
-```
-
-Change to:
-
-```python
-def transcript_pii_entities_response(
-    db: Session,
-    transcript: Transcript | None,
-    *,
-    include_values: bool = False,
-) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
-```
-
-For each detected/manual/clinical entity:
-
-```python
-if include_values:
-    return TranscriptPiiEntityDetail(
-        id=...,
-        entity_type=...,
-        value=...,
-        placeholder=...,
-        occurrence_count=...,
-        source=...,
-        has_value=True,
+    return "; ".join(
+        name if not values else f"{name} {' '.join(values)}"
+        for name, values in directives.items()
     )
-
-return TranscriptPiiEntitySummary(
-    id=...,
-    entity_type=...,
-    placeholder=...,
-    occurrence_count=...,
-    source=...,
-    has_value=True,
-)
 ```
 
-Then ensure `resolve_transcribe_workspace(...)` calls:
-
-```python
-"active_transcript_pii_entities": transcript_pii_entities_response(
-    db,
-    active_transcript,
-    include_values=False,
-),
-```
+`style-src-attr 'unsafe-inline'` is a temporary compatibility allowance for existing inline style attributes. Do **not** allow `script-src 'unsafe-inline'`.
 
 ---
 
-## 4. Add explicit PII reveal endpoint
+# 2. Wire CSP into `app/main.py`
 
-Use a separate endpoint for original values.
-
-Prefer **POST** rather than GET so the request gets CSRF/origin protection and is less likely to be prefetched/cached accidentally.
-
-### File
-
-```text
-app/routes/api_routes.py
-```
-
-Add:
+Add imports:
 
 ```python
-@api.post(
-    "/transcripts/{transcript_id}/pii-entities/reveal",
-    response_model=list[TranscriptPiiEntityDetail],
-    responses=error_responses,
-)
-def reveal_transcript_pii_entities(
-    transcript_id: UUID,
-    context: AuthenticatedContext = Depends(require_full_context),
-    db: Session = Depends(get_db),
-):
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None or transcript.owner_user_id != context.user.id:
-        raise AppError(
-            404,
-            "not_found",
-            "Transcript not found",
-            {"resource": "transcript", "transcript_id": str(transcript_id)},
-        )
-
-    response = transcript_pii_entities_response(
-        db,
-        transcript,
-        include_values=True,
-    )
-    return response
+from .security_headers import content_security_policy, new_csp_nonce
 ```
 
-If the route returns a raw `Response` / `JSONResponse`, add `Cache-Control: no-store`. If it returns via FastAPI model, add no-store middleware as described below.
-
-Optional stronger control:
-
-```python
-if context.session.last_mfa_verified_at is older than 10 minutes:
-    raise AppError(403, "fresh_mfa_required", "Re-authenticate with MFA to reveal original PII values")
-```
-
-Only add this if the session model now tracks recent MFA. If not, leave fresh-MFA for a later slice.
-
----
-
-## 5. Add no-store headers for sensitive API responses
-
-### File
-
-```text
-app/main.py
-```
-
-Add helper:
-
-```python
-SENSITIVE_NO_STORE_PATH_PREFIXES = (
-    "/api/v1/transcribe",
-    "/api/v1/transcripts",
-    "/api/v1/generated-documents",
-    "/api/v1/post-consultation-dictation",
-)
-```
-
-Add to existing security headers middleware, or create a new middleware:
+Replace the current `add_security_headers` middleware with:
 
 ```python
 @app.middleware("http")
-async def add_no_store_for_sensitive_api(request: Request, call_next):
+async def add_security_headers(request: Request, call_next):
+    request.state.csp_nonce = new_csp_nonce()
     response = await call_next(request)
+
+    if _request_is_https(request):
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains",
+        )
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", content_security_policy(request.state.csp_nonce))
 
     if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
         response.headers["Cache-Control"] = "no-store"
@@ -271,195 +92,216 @@ async def add_no_store_for_sensitive_api(request: Request, call_next):
     return response
 ```
 
-If middleware order matters with existing middleware, combine it with the security headers middleware added in the cookie/CSRF slice.
+---
+
+# 3. Add nonces to inline scripts and styles
+
+Every inline `<script>` and `<style>` must receive:
+
+```html
+nonce="{{ request.state.csp_nonce }}"
+```
+
+At minimum, update `app/templates/_csrf_script.html` because it is an inline script: 
+
+```html
+<script nonce="{{ request.state.csp_nonce }}">
+  ...
+</script>
+```
+
+Update `app/templates/transcribe/_head_assets.html`:
+
+```html
+<script nonce="{{ request.state.csp_nonce }}">
+  ...
+</script>
+
+<style nonce="{{ request.state.csp_nonce }}">
+  ...
+</style>
+```
+
+Also update every template returned by this search set:
+
+* `app/templates/login.html`
+* `app/templates/home.html`
+* `app/templates/admin.html`
+* `app/templates/onboarding.html`
+* `app/templates/mfa_challenge.html`
+* `app/templates/request_access.html`
+* `app/templates/password_reset_request.html`
+* `app/templates/password_reset_confirm.html`
+* `app/templates/template_editor.html`
+* `app/templates/transcribe/_shell_extras.html`
 
 ---
 
-## 6. Frontend changes
+# 4. Replace CDN runtime JS with local static files
 
-Search frontend code for:
+Change the top of `app/templates/transcribe/_head_assets.html` from CDN scripts to local paths:
 
-```text
-current_draft_text_encrypted
-edited_output_text_encrypted
-active_transcript_pii_entities
-value
+```html
+<link rel="stylesheet" href="/static/css/transcribe-tailwind.css">
+<script src="/static/vendor/lucide/1.8.0/lucide.min.js" defer></script>
+<script src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js" defer></script>
+<script src="/static/vendor/vad-web/0.0.29/bundle.min.js" defer></script>
 ```
 
-### Expected changes
+Remove these external lines entirely:
 
-Default UI should show PII entity rows without original values:
-
-```text
-Type | Placeholder | Count | Source | Reveal
+```html
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@1.8.0"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/..." rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
 ```
 
-Example row:
+Then update `app/static/js/transcribe/app.js`:
 
-```text
-NHS_NUMBER | [NHS_NUMBER_1] | 1 | detected | Reveal
+```js
+const liveVadBundleVersion = '0.0.29';
+const liveVadModel = 'v5';
+const liveVadAssetBasePath = `/static/vendor/vad-web/${liveVadBundleVersion}/`;
+const liveVadOnnxBasePath = '/static/vendor/onnxruntime-web/1.22.0/';
 ```
-
-When user clicks **Reveal**, call:
-
-```javascript
-await csrfFetch(`/api/v1/transcripts/${transcriptId}/pii-entities/reveal`, {
-  method: "POST",
-  credentials: "include",
-  headers: { "Content-Type": "application/json" },
-});
-```
-
-Then render original values into the PII panel only.
-
-Do not store revealed values in `localStorage`, `sessionStorage`, data attributes, or long-lived global state. Keep them in the current in-memory panel state.
 
 ---
 
-## 7. Generated document plaintext naming
+# 5. Vendor the browser assets into the repo or build artifact
 
-If generated-document responses also use misleading `_encrypted` names, apply the same approach.
-
-Search:
+Expected layout:
 
 ```text
-edited_output_text_encrypted
-original_output_text_encrypted
+app/static/vendor/
+  lucide/1.8.0/lucide.min.js
+  onnxruntime-web/1.22.0/ort.wasm.min.js
+  onnxruntime-web/1.22.0/ort-wasm-simd-threaded.wasm
+  onnxruntime-web/1.22.0/ort-wasm-simd-threaded.mjs
+  onnxruntime-web/1.22.0/ort-wasm-simd-threaded.jsep.wasm
+  onnxruntime-web/1.22.0/ort-wasm-simd-threaded.jsep.mjs
+  vad-web/0.0.29/bundle.min.js
+  vad-web/0.0.29/silero_vad_v5.onnx
+app/static/css/transcribe-tailwind.css
 ```
 
-If these are API response fields but contain plaintext, rename them to:
+Recommended build approach:
 
-```text
-edited_output_text
-original_output_text
+```bash
+npm install --save-dev tailwindcss@3.4.17
+npx tailwindcss \
+  -i app/static/css/transcribe-tailwind.input.css \
+  -o app/static/css/transcribe-tailwind.css \
+  --minify
 ```
 
-Use a short compatibility window only if needed.
+For VAD/ONNX/Lucide, either commit the pinned static files or download them in CI from exact versioned package URLs and verify SHA-256 checksums before copying into `app/static/vendor`.
+
+Do **not** keep runtime browser dependencies on `cdn.tailwindcss.com`, `unpkg.com`, `cdn.jsdelivr.net`, `fonts.googleapis.com`, or `fonts.gstatic.com`.
 
 ---
 
-# Tests
+# 6. Add tests
 
-Add or update:
-
-```text
-tests/test_pii_response_minimisation.py
-```
-
-## 1. Workspace excludes original PII values
+Extend `tests/test_cookie_csrf_security.py`:
 
 ```python
-def test_workspace_pii_entities_do_not_include_values_by_default(client, user, transcript_with_pii):
-    response = client.get(
-        "/api/v1/transcribe/workspace",
-        cookies=auth_cookies_for(user),
-    )
+import re
 
-    assert response.status_code == 200
-    body = response.json()
 
-    entities = body["active_transcript_pii_entities"]
-    assert entities
-    assert "value" not in entities[0]
-    assert entities[0]["placeholder"]
-    assert entities[0]["entity_type"]
+def test_csp_header_added(raw_client):
+    response = raw_client.get("/login")
+
+    csp = response.headers["Content-Security-Policy"]
+
+    assert "default-src 'self'" in csp
+    assert "base-uri 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "script-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    assert re.search(r"'nonce-[A-Za-z0-9_-]+'", csp)
+
+
+def test_csp_nonce_changes_per_response(raw_client):
+    first = raw_client.get("/login").headers["Content-Security-Policy"]
+    second = raw_client.get("/login").headers["Content-Security-Policy"]
+
+    assert first != second
+
+
+def test_transcribe_head_assets_do_not_use_public_cdns():
+    html = Path("app/templates/transcribe/_head_assets.html").read_text()
+
+    forbidden = [
+        "cdn.tailwindcss.com",
+        "unpkg.com",
+        "cdn.jsdelivr.net",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+    ]
+
+    for host in forbidden:
+        assert host not in html
 ```
 
-## 2. Reveal endpoint returns values for owner
+Add this import:
 
 ```python
-def test_reveal_pii_entities_returns_values_for_owner(client, user, transcript_with_pii):
-    response = client.post(
-        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
-        cookies=auth_cookies_for(user),
-        headers=csrf_headers_for(user),
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-
-    assert body
-    assert body[0]["value"]
-    assert body[0]["placeholder"]
+from pathlib import Path
 ```
 
-## 3. Reveal endpoint rejects non-owner
+Also add a simple static check for JS paths:
 
 ```python
-def test_reveal_pii_entities_rejects_non_owner(client, other_user, transcript_with_pii):
-    response = client.post(
-        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
-        cookies=auth_cookies_for(other_user),
-        headers=csrf_headers_for(other_user),
-    )
+def test_transcribe_js_uses_local_vad_assets():
+    js = Path("app/static/js/transcribe/app.js").read_text()
 
-    assert response.status_code == 404
+    assert "cdn.jsdelivr.net" not in js
+    assert "/static/vendor/vad-web/" in js
+    assert "/static/vendor/onnxruntime-web/" in js
 ```
 
-Use `404` rather than `403` to avoid confirming transcript existence.
-
-## 4. Reveal endpoint requires CSRF
-
-```python
-def test_reveal_pii_entities_requires_csrf(authenticated_client, transcript_with_pii):
-    response = authenticated_client.post(
-        f"/api/v1/transcripts/{transcript_with_pii.id}/pii-entities/reveal",
-        headers={"Origin": "http://testserver"},
-    )
-
-    assert response.status_code == 403
-```
-
-## 5. Sensitive API responses are no-store
-
-```python
-def test_transcript_api_responses_are_no_store(client, user, transcript):
-    response = client.get(
-        f"/api/v1/transcripts/{transcript.id}",
-        cookies=auth_cookies_for(user),
-    )
-
-    assert response.headers["Cache-Control"] == "no-store"
-    assert response.headers["Pragma"] == "no-cache"
-```
-
-## 6. Response field names are no longer misleading
-
-```python
-def test_transcript_detail_uses_plaintext_response_name(client, user, transcript):
-    response = client.get(
-        f"/api/v1/transcripts/{transcript.id}",
-        cookies=auth_cookies_for(user),
-    )
-
-    body = response.json()
-    assert "current_draft_text" in body
-    assert "current_draft_text_encrypted" not in body
-```
-
-If a compatibility period is chosen, invert this test later and add a TODO.
+Tests/docs are mandatory for this project’s change workflow. 
 
 ---
 
-# Acceptance criteria
+# 7. Update docs
 
-This slice is done when:
+Add to `docs/security.md`:
 
-* Default workspace response does **not** include original PII entity values.
-* Original PII values are available only via explicit owner-only reveal endpoint.
-* Reveal endpoint uses unsafe method + CSRF protection.
-* Sensitive transcript/generated-document/workspace responses include `Cache-Control: no-store`.
-* Plaintext response fields are not named `_encrypted`.
-* Frontend still displays placeholders/counts by default.
-* Frontend reveals original values only after explicit user action.
-* Tests cover owner access, non-owner rejection, CSRF, no-store headers, and response shape.
+```md
+## Browser CSP and local runtime assets
+
+OpenScribe enforces a response-specific nonce-based Content Security Policy.
+
+Browser pages must not load runtime JavaScript, WASM, ONNX models, CSS, or fonts from public CDNs in production. Runtime browser assets are served from `/static/vendor` or compiled into `/static/css`.
+
+Current CSP goals:
+
+- script execution only from `'self'` and response nonces
+- no `script-src 'unsafe-inline'`
+- no third-party `script-src`, `style-src`, `font-src`, or `connect-src`
+- `frame-ancestors 'none'`
+- `object-src 'none'`
+- same-origin API/WebSocket/EventSource connections only
+- WASM allowed only through the narrow ONNX Runtime requirement
+```
 
 ---
 
-## Next slice after this
+## PR acceptance checklist
 
-After PII response minimisation, do **CSP + frontend XSS hardening**:
+Before merging:
 
-```text
-strict CSP → nonce or remove inline scripts → self-host third-party runtime assets → reduce innerHTML
+```bash
+pytest tests/test_cookie_csrf_security.py
+grep -R "cdn.jsdelivr.net\|cdn.tailwindcss.com\|unpkg.com\|fonts.googleapis.com\|fonts.gstatic.com" app/templates app/static/js
 ```
+
+Expected grep result: no matches.
+
+This fix does not change ownership, auth, deletion, provider resolution, or transcript-content visibility. It only narrows browser execution sources and removes runtime public-CDN dependency.

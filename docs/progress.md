@@ -1,5 +1,136 @@
 # Progress
 
+## 2026-05-05 Transcribe Tailwind Runtime Class Coverage
+
+### Scope
+
+- Added transcribe JavaScript files to Tailwind content scanning so utility classes emitted by runtime renderers are compiled.
+- Added regression coverage for runtime-only transcribe history classes in generated CSS.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `tailwind.transcribe.config.js`: scans `app/static/js/transcribe/**/*.js` in addition to transcribe templates.
+- `app/static/css/transcribe-tailwind.css`: regenerated Tailwind bundle with runtime JS classes included.
+- `tests/test_cookie_csrf_security.py`: asserts config and compiled CSS include runtime-only classes.
+- `docs/progress.md`: records Tailwind scan fix.
+
+### Tests
+
+- Added source-level coverage that checks Tailwind scans transcribe JS and compiled CSS contains `bg-teal-pale/35`, `border-teal-muted/35`, and `hover:bg-parchment/50`.
+
+### Documentation
+
+- Progress note added for transcribe Tailwind runtime class coverage.
+
+### Risks / assumptions
+
+- Generated CSS remains committed from local Tailwind build output; future runtime JS class additions depend on this scan glob staying in place.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: static CSS build coverage does not expose transcript or note content.
+- Ownership rules preserved: no owner/team/auth scope logic changed.
+- Deletion semantics preserved: no retention or cascade behavior changed.
+- Provider rules preserved: no provider selection or secret handling changed.
+- Structured-note contract preserved: no EMIS or generated-document schema contract changed.
+
+## 2026-05-05 ONNX Runtime Threaded VAD Assets
+
+### Scope
+
+- Added missing vendored `onnxruntime-web` threaded module loaders required by browser `MicVAD` startup paths.
+- Added regression coverage that asserts complete pinned ONNX runtime asset set exists under `/static/vendor`.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/static/vendor/onnxruntime-web/1.22.0/ort-wasm-simd-threaded.mjs`: vendored threaded ONNX loader.
+- `app/static/vendor/onnxruntime-web/1.22.0/ort-wasm-simd-threaded.jsep.mjs`: vendored JSEP threaded ONNX loader.
+- `tests/test_cookie_csrf_security.py`: asserts required ONNX runtime files exist locally.
+- `docs/live_stt.md`, `security_remediation_plan.md`, `docs/progress.md`: document complete self-hosted ONNX asset contract.
+
+### Tests
+
+- Added source-level regression coverage for required self-hosted ONNX runtime JS/WASM/module files used by browser live VAD.
+
+### Documentation
+
+- Live STT and remediation docs now note that pinned ONNX runtime assets must include matching threaded `.mjs` loaders, not only `.wasm` binaries.
+
+### Risks / assumptions
+
+- Vendored browser assets remain version-pinned in repo; future ONNX runtime bumps must refresh both `.wasm` and matching `.mjs` files together.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: static runtime asset completeness fix does not widen transcript or note access.
+- Ownership rules preserved: no auth, owner, or team checks changed.
+- Deletion semantics preserved: no transcript lifecycle or cascade logic changed.
+- Provider rules preserved: no STT/LLM/de-identification selection or secret handling changed.
+- Structured-note contract preserved: no generated-document or EMIS schema behavior changed.
+
+## 2026-05-04 CSP And Local Runtime Assets
+
+### Scope
+
+- Added nonce-based CSP headers to HTML responses.
+- Replaced public CDN runtime dependencies with self-hosted static browser assets.
+- Updated inline script/style blocks to use CSP nonces.
+- Fixed CSP regressions by moving destructive confirmations and auto-submit controls off inline handlers.
+- Scoped `upgrade-insecure-requests` to HTTPS responses so localhost HTTP dev stays usable.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/security_headers.py`: builds per-response CSP nonce and policy string.
+- `app/main.py`: injects CSP nonce and sends hardened response headers.
+- `app/templates/*.html`, `app/templates/transcribe/*.html`: remove public CDN refs, add CSP nonces, and migrate blocked inline handlers to nonced listeners/data attributes.
+- `app/static/js/transcribe/app.js`: points VAD and ONNX runtime to local vendor assets.
+- `app/static/css/transcribe-tailwind.input.css`, `tailwind.transcribe.config.js`, generated static vendor/css assets: local browser runtime asset pipeline.
+- `tests/test_cookie_csrf_security.py`: CSP and no-public-CDN regression coverage.
+- `docs/security.md`, `docs/progress.md`: document CSP and local asset rules.
+
+### Tests
+
+- Added CSP header coverage, nonce rotation coverage, HTTPS-only upgrade coverage, public-CDN static scan coverage, local VAD asset path coverage, and inline-handler regression coverage.
+
+### Documentation
+
+- Security doc now records nonce-based CSP, same-origin browser runtime asset rule, and acceptance checks.
+
+### Risks / assumptions
+
+- Auth and home pages now rely on fallback local fonts because public Google Fonts loads were removed.
+- Self-hosted vendor files are pinned by version in repo; checksum verification in CI is still future work.
+- Remaining inline handler compatibility risk reduced by moving current `home` and `admin` destructive/auto-submit flows onto nonced script listeners.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: CSP narrows browser execution sources and does not widen content access.
+- Ownership rules preserved: no owner/team/auth scope logic changed.
+- Deletion semantics preserved: no retention or cascade behavior changed.
+- Provider rules preserved: no provider resolution or secret handling changed.
+- Structured-note contract preserved: no EMIS or generated-document schema contract changed.
+
 ## 2026-05-04 Generated Document PII Value Sanitisation
 
 ### Scope

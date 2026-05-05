@@ -4,10 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Admin</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{{ request.state.csp_nonce }}">
     :root {
       --bg: #FAF8F5;
       --parchment: #F5F1EB;
@@ -1046,7 +1043,7 @@
           <input type="hidden" name="tab" value="providers">
           <label>
             Team
-            <select name="team_id" onchange="this.form.submit()">
+            <select name="team_id" data-auto-submit>
               <option value="">Select a team</option>
               {% for team in teams %}
               <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
@@ -1076,7 +1073,7 @@
               <div class="eyebrow">Active for conversation</div>
               <div class="active-selection__label">{{ stt_selection.config.label }}</div>
             </div>
-        <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear the active STT selection for this team?');">
+        <form method="post" action="/admin/stt-selection/clear" data-confirm-submit="Clear the active STT selection for this team?">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="purpose" value="conversation">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1095,7 +1092,7 @@
               <div class="eyebrow">Active for dictation</div>
               <div class="active-selection__label">{{ stt_dictation_selection.config.label }}</div>
             </div>
-        <form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear active dictation STT selection for this team?');">
+        <form method="post" action="/admin/stt-selection/clear" data-confirm-submit="Clear active dictation STT selection for this team?">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="purpose" value="post_consultation_dictation">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1204,7 +1201,7 @@
                   <input type="hidden" name="return_tab" value="providers">
                   <button type="submit" class="quick-action">Use for dictation</button>
                 </form>
-                <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned STT endpoint and its saved secret?');">
+                <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
@@ -1425,7 +1422,7 @@
               <div class="eyebrow">Active LLM provider</div>
               <div class="active-selection__label">{{ llm_selection.config.label }}</div>
             </div>
-        <form method="post" action="/admin/llm-selection/clear" onsubmit="return confirm('Clear the active LLM selection for this team?');">
+        <form method="post" action="/admin/llm-selection/clear" data-confirm-submit="Clear the active LLM selection for this team?">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
@@ -1513,7 +1510,7 @@
                   <input type="hidden" name="tab" value="providers">
                   <button type="submit" class="quick-action">Edit</button>
                 </form>
-                <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" onsubmit="return confirm('Delete this provisioned LLM provider and its saved secret?');">
+                <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned LLM provider and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
@@ -1642,7 +1639,7 @@
               <div class="eyebrow">Active de-identification provider</div>
               <div class="active-selection__label">{{ deidentification_selection.provider.label }}</div>
             </div>
-        <form method="post" action="/admin/deidentification-selection/clear" onsubmit="return confirm('Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.');">
+        <form method="post" action="/admin/deidentification-selection/clear" data-confirm-submit="Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
@@ -1663,7 +1660,7 @@
               <div class="eyebrow">Active clinical NLP endpoint</div>
               <div class="active-selection__label">{{ clinical_nlp_selection.provider.label }}</div>
             </div>
-            <form method="post" action="/admin/clinical-nlp-selection/clear" onsubmit="return confirm('Disable clinical NLP for this team?');">
+            <form method="post" action="/admin/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP for this team?">
               <input type="hidden" name="team_id" value="{{ selected_team_id }}">
               <input type="hidden" name="return_view" value="{{ admin_return_view }}">
               <input type="hidden" name="return_tab" value="providers">
@@ -1696,7 +1693,7 @@
               </td>
               <td><small>{{ assignment.created_at.strftime('%Y-%m-%d %H:%M') if assignment.created_at else '' }}</small></td>
               <td>
-                <form method="post" action="/admin/deidentification-provider-assignments/remove" onsubmit="return confirm('Remove this team assignment? If it is selected, the team will fall back to Built-in Native Presidio.');">
+                <form method="post" action="/admin/deidentification-provider-assignments/remove" data-confirm-submit="Remove this team assignment? If it is selected, the team will fall back to Built-in Native Presidio.">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="provider_id" value="{{ assignment.provider_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1778,7 +1775,7 @@
                   <input type="hidden" name="tab" value="providers">
                   <button type="submit">Edit</button>
                 </form>
-                <form method="post" action="/admin/deidentification-providers/{{ provider.id }}/delete" onsubmit="return confirm('Delete this de-identification provider and its saved secret?');">
+                <form method="post" action="/admin/deidentification-providers/{{ provider.id }}/delete" data-confirm-submit="Delete this de-identification provider and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
@@ -2094,7 +2091,7 @@
               <td><span class="pill">{{ team.status.value }}</span></td>
               <td>{{ team.default_retention_days }} days</td>
               <td>
-                <form method="post" action="/admin/teams/{{ team.id }}/delete" onsubmit="return confirm('Delete this team, all team users, and all team-owned data immediately?');">
+                <form method="post" action="/admin/teams/{{ team.id }}/delete" data-confirm-submit="Delete this team, all team users, and all team-owned data immediately?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <button type="submit">Delete permanently</button>
@@ -2176,7 +2173,7 @@
                   <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email recovery unavailable</label>
                   <button type="submit">Generate break-glass temp password</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/break-glass-account-recovery" onsubmit="return confirm('Generate a break-glass password and reset MFA for this user?');" style="margin-top: 10px;">
+                <form method="post" action="/admin/users/{{ user.id }}/break-glass-account-recovery" data-confirm-submit="Generate a break-glass password and reset MFA for this user?" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2186,13 +2183,13 @@
                   <button type="submit">Break-glass password + reset MFA</button>
                 </form>
                 {% endif %}
-                <form method="post" action="/admin/users/{{ user.id }}/reset-mfa" onsubmit="return confirm('Reset MFA for this user and revoke sessions?');" style="margin-top: 10px;">
+                <form method="post" action="/admin/users/{{ user.id }}/reset-mfa" data-confirm-submit="Reset MFA for this user and revoke sessions?" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Reset MFA</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/delete" onsubmit="return confirm('Delete this user and all owned transcript content immediately?');" style="margin-top: 10px;">
+                <form method="post" action="/admin/users/{{ user.id }}/delete" data-confirm-submit="Delete this user and all owned transcript content immediately?" style="margin-top: 10px;">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2247,7 +2244,7 @@
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <button type="submit">Duplicate</button>
                 </form>
-                <form method="post" action="/admin/default-templates/{{ template.id }}/delete" onsubmit="return confirm('Delete this default template permanently?');">
+                <form method="post" action="/admin/default-templates/{{ template.id }}/delete" data-confirm-submit="Delete this default template permanently?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <button type="submit">Delete</button>
                 </form>
@@ -2308,7 +2305,7 @@
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <button type="submit">Duplicate</button>
                 </form>
-                <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/delete" onsubmit="return confirm('Delete this default quick action permanently?');">
+                <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this default quick action permanently?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <button type="submit">Delete</button>
                 </form>
@@ -2335,7 +2332,7 @@
             <input type="hidden" name="tab" value="usage">
             <label>
               Team filter
-              <select name="team_id" onchange="this.form.submit()">
+              <select name="team_id" data-auto-submit>
                 <option value="">All teams</option>
                 {% for team in teams %}
                 <option value="{{ team.id }}" {% if selected_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>
@@ -2785,7 +2782,7 @@
     </main>
   </div>
   <div class="toast-container" data-toast-container></div>
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (() => {
       const toastContainer = document.querySelector('[data-toast-container]');
       const showToast = (message, kind = 'success', duration = 4000) => {
@@ -2823,9 +2820,24 @@
         showToast(message, kind);
         flash.hidden = true;
       });
+
+      document.addEventListener('submit', (event) => {
+        const form = event.target.closest('form[data-confirm-submit]');
+        if (!form) return;
+        const message = form.dataset.confirmSubmit;
+        if (message && !window.confirm(message)) {
+          event.preventDefault();
+        }
+      });
+
+      document.addEventListener('change', (event) => {
+        const control = event.target.closest('[data-auto-submit]');
+        if (!control?.form) return;
+        control.form.requestSubmit();
+      });
     })();
   </script>
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (() => {
       document.querySelectorAll('[data-tab-shell]').forEach((shell) => {
         const nav = document.querySelector('[data-tab-nav]');

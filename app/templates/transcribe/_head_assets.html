@@ -1,42 +1,8 @@
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/lucide@1.8.0"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
-<script>
-tailwind.config = {
-theme: {
-extend: {
-fontFamily: {
-display: ['Fraunces', 'serif'],
-sans: ['DM Sans', 'sans-serif'],
-},
-colors: {
-cream: '#FAF8F5',
-parchment: '#F5F1EB',
-stone: '#E8E4DD',
-slate: '#2D3748',
-ink: '#1A202C',
-teal: {
-deep: '#1D4F5E',
-muted: '#3D7A8C',
-soft: '#5BA3B5',
-pale: '#E0F2F5',
-},
-sage: '#7A9E7E',
-amber: '#D4A574',
-coral: '#D97D54',
-error: '#C53030',
-success: '#38A169',
-warning: '#D69E2E',
-}
-}
-}
-};
-</script>
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
-<style>
+<link rel="stylesheet" href="/static/css/transcribe-tailwind.css">
+<script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>
+<script src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js" defer></script>
+<script src="/static/vendor/vad-web/0.0.29/bundle.min.js" defer></script>
+<style nonce="{{ request.state.csp_nonce }}">
 :root {
 --bg: #FAF8F5;
 --fg: #1A202C;

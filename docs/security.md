@@ -115,7 +115,8 @@ Current implementation:
 - production startup requires `COOKIE_SECURE_MODE=always`
 - production startup requires either `CSRF_SECRET`/`SECRET_KEY` or successful Vault-backed CSRF secret bootstrap
 - HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-- all responses include `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`
+- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, and `Cross-Origin-Resource-Policy: same-origin`
+- all HTML responses include nonce-based `Content-Security-Policy`
 - the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`, but its value is HMAC-signed
 - authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
 - when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
@@ -129,6 +130,31 @@ Current implementation:
   - `auto`: set `Secure` on non-local HTTPS requests
   - `always`: always set `Secure`
   - `never`: never set `Secure` and use only for local development
+
+## Browser CSP and local runtime assets
+
+OpenScribe enforces a response-specific nonce-based Content Security Policy.
+
+Browser pages must not load runtime JavaScript, WASM, ONNX models, CSS, or fonts from public CDNs in production. Runtime browser assets are served from `/static/vendor` or compiled into `/static/css`.
+
+Current CSP goals:
+
+- script execution only from `'self'` and response nonces
+- no `script-src 'unsafe-inline'`
+- no third-party `script-src`, `style-src`, `font-src`, or `connect-src`
+- `frame-ancestors 'none'`
+- `object-src 'none'`
+- same-origin API/WebSocket/EventSource connections only
+- WASM allowed only through narrow ONNX Runtime requirement
+
+Before merging this area:
+
+```bash
+pytest tests/test_cookie_csrf_security.py
+rg "cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com" app/templates app/static/js
+```
+
+Expected search result: no matches.
 
 ## Local infrastructure exposure
 

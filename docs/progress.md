@@ -1,5 +1,58 @@
 # Progress
 
+## 2026-05-05 Source Transcript PII Visibility Fix
+
+- Follow-up UI cleanup: PII sidebar now shows Type, Value, and Count only. Placeholder, Source, and Reveal columns removed from source/generic sidebar table.
+- Follow-up sidebar fix: generated-note selection no longer replaces source transcript PII rows with generated-document no-value summaries.
+- Follow-up copy fix: Copy transcript now prefers raw transcript state so browser-only masking is not copied.
+
+### Scope
+
+- Restored owner source-transcript PII values in workspace/API bootstrap responses.
+- Added browser-only Hide PII / Show PII masking for source transcript PII values.
+- Kept generated-document PII values minimised by default and stopped note PII renders from blanking source highlights.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/web/transcribe_workspace.py`: source transcript workspace PII now includes owner-visible values.
+- `app/schemas/workspace.py`: workspace schema reflects detailed source PII rows.
+- `app/static/js/transcribe/app.js`: masks PII locally and highlights source PII/clinical entities from source cache.
+- `app/static/js/transcribe/documents.js`: generated-document PII sidebar no longer overwrites source transcript highlights.
+- `app/templates/transcribe/_workspace.html`: adds Hide PII control and initial value display.
+- `app/templates/transcribe/_shell_extras.html`: bumps transcribe asset version.
+- `tests/test_pii_response_minimisation.py` and `tests/test_admin_ui.py`: update PII visibility/minimisation regressions.
+- `docs/progress.md`: records fix.
+
+### Tests
+
+- Owner workspace source transcript PII includes values by default.
+- Generated-document PII remains value-minimised by default.
+- Transcribe UI source includes hide/show control, source value display, clinical styling, and no generated-doc highlight overwrite.
+
+### Documentation
+
+- Progress note added for source transcript PII visibility fix.
+
+### Risks / assumptions
+
+- Reveal endpoint remains for existing guarded uses; source transcript owner view no longer depends on it.
+- Plaintext PII is sent only through authenticated owner workspace/source transcript responses.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: generated-document PII still omits values by default; owner source transcript is privileged.
+- Ownership rules preserved: workspace selection and reveal routes still require transcript owner access.
+- Deletion semantics preserved: no retention, cascade, or hard-delete behavior changed.
+- Provider rules preserved: no provider URL validation or secret handling changed.
+- Structured-note contract preserved: no generated document or EMIS JSON schema behavior changed.
+
 ## 2026-05-05 Transcribe Tailwind Runtime Class Coverage
 
 ### Scope

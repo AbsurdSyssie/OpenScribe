@@ -1727,7 +1727,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js" in page.text
     assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260502-api-csrf"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260505-pii-source-visible"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -1995,6 +1995,10 @@ def test_user_transcribe_page_shows_owner_pii_sidebar(
     assert "John Smith" in page.text
     assert "07123 456789" in page.text
     assert "PHONE NUMBER" in page.text
+    assert '<th scope="col">Source</th>' not in page.text
+    assert '<th scope="col">Reveal</th>' not in page.text
+    assert 'data-toggle-pii-visibility' in page.text
+    assert 'data-pii-reveal="true"' not in page.text
 
 
 def test_user_transcribe_page_shows_clinical_entities_in_pii_area(
@@ -2067,6 +2071,7 @@ def test_user_transcribe_page_shows_clinical_entities_in_pii_area(
     assert "dizziness" in page.text
     assert "Clinical NLP" in page.text
     assert "pii-type--clinical" in page.text
+    assert 'data-toggle-pii-visibility' in page.text
 
 
 def test_transcribe_workspace_refresh_renders_updated_pii_entities():
@@ -2121,7 +2126,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260502-api-csrf" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260505-pii-source-visible" in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
 
@@ -3478,23 +3483,32 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-pii-add-form' in workspace_html
     assert 'data-pii-add-value' in workspace_html
     assert "const piiCount = document.querySelector('[data-pii-count]');" in app_js
-    assert "const renderHighlightedTranscript = (text, entities = []) => {" in app_js
+    assert "const piiVisibilityToggle = document.querySelector('[data-toggle-pii-visibility]');" in app_js
+    assert "let piiMasked = false;" in app_js
+    assert "const renderHighlightedTranscript = (text, entities = [], options = {}) => {" in app_js
     assert "const clinicalNlpStatus = document.querySelector('[data-clinical-nlp-status]');" in app_js
     assert "workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };" in app_js
     assert "Clinical NLP complete:" in app_js
     assert "activeDraft.innerHTML = text" in app_js
     assert "const renderPiiEntities = (entities = [], options = {}) => {" in app_js
     assert "const allowReveal = options.allowReveal !== false;" in app_js
+    assert "const updateTranscriptHighlights = options.updateTranscriptHighlights !== false;" in app_js
     assert "const displayRows = allowReveal" in app_js
     assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
     assert "currentPiiEntities = displayRows;" in app_js
-    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);" in app_js
+    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });" in app_js
+    assert "getTranscriptText: () => currentDraftText," in app_js
+    assert "getTranscriptText?.()" in actions_js
+    assert "dom.activeDraft?.textContent" in actions_js
+    assert '<th scope="col">Source</th>' not in app_js
+    assert '<th scope="col">Reveal</th>' not in app_js
+    assert 'class="pii-placeholder"' not in app_js
     assert "piiAddForm?.addEventListener('submit'" in app_js
     assert "fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
     assert "data-pii-delete" in app_js
-    assert "allowReveal && entity.has_value && !entity.value" in app_js
+    assert "piiVisibilityToggle?.addEventListener('click'" in app_js
     assert "${displayRows.map((entity) => `" in app_js
-    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });" in documents_js
+    assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
     assert "renderPiiEntities," in app_js
     assert "dom.noteHistory?.addEventListener('click'" in actions_js
     assert "const wrapper = window.document.createElement('details');" in app_js
@@ -3543,19 +3557,20 @@ def test_generated_document_pii_no_reveal_mode_strips_cached_values():
     documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
 
     assert "const allowReveal = options.allowReveal !== false;" in app_js
+    assert "const updateTranscriptHighlights = options.updateTranscriptHighlights !== false;" in app_js
     assert "const displayRows = allowReveal" in app_js
     assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
     assert "currentPiiEntities = displayRows;" in app_js
-    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);" in app_js
+    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });" in app_js
     assert "${displayRows.map((entity) => `" in app_js
-    assert "renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });" in documents_js
+    assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
 
 
-def test_transcribe_static_asset_version_bumped_for_dictation_cta():
+def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260502-api-csrf" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260505-pii-source-visible" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

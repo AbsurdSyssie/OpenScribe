@@ -679,6 +679,7 @@ Create
 <div class="pii-sidebar__kicker">PII</div>
 <h3 class="pii-sidebar__title">Review items</h3>
 </div>
+<button type="button" class="btn-ghost-sm" data-toggle-pii-visibility aria-pressed="false">Hide PII</button>
 <span class="pii-sidebar__count" data-pii-count>{{ active_transcript_pii_entities|length if active_transcript_pii_entities else 0 }}</span>
 </div>
 <form class="pii-add-form" data-pii-add-form>
@@ -717,10 +718,8 @@ Clinical NLP has not run for this transcript yet.
 <thead>
 <tr>
 <th scope="col">Type</th>
-<th scope="col">Placeholder</th>
+<th scope="col">Value</th>
 <th scope="col">Count</th>
-<th scope="col">Source</th>
-<th scope="col">Reveal</th>
 </tr>
 </thead>
 <tbody data-pii-table-body>
@@ -728,7 +727,7 @@ Clinical NLP has not run for this transcript yet.
 <tr>
 <td><span class="pii-type{% if entity.source == 'clinical' %} pii-type--clinical{% endif %}">{{ entity.entity_type|replace('_', ' ') }}</span></td>
 <td>
-<span class="pii-placeholder">{{ entity.placeholder }}</span>
+<span class="pii-value" data-real-value="{{ entity.value if entity.value is defined else '' }}">{{ entity.value if entity.value is defined else '' }}</span>
 </td>
 <td class="pii-count-cell">
 <span>{{ entity.occurrence_count }}</span>
@@ -738,8 +737,6 @@ Clinical NLP has not run for this transcript yet.
 </button>
 {% endif %}
 </td>
-<td>{{ entity.source }}</td>
-<td>{% if entity.has_value %}<button type="button" class="pii-reveal" data-pii-reveal="true">Reveal</button>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>

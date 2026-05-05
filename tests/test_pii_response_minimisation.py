@@ -99,7 +99,7 @@ def _link_document_to_redaction_run(db_session, *, document, transcript):
     return document
 
 
-def test_workspace_pii_entities_do_not_include_values_by_default(client, db_session, make_user):
+def test_owner_workspace_source_transcript_pii_entities_include_values_by_default(client, db_session, make_user):
     user = make_user(email="pii-owner@example.com", mfa_required=False, mfa_enabled=False)
     transcript = _transcript_with_pii(db_session, owner=user)
     assert _login(client, email=user.email).status_code == 200
@@ -109,7 +109,7 @@ def test_workspace_pii_entities_do_not_include_values_by_default(client, db_sess
     assert response.status_code == 200
     entities = response.json()["active_transcript_pii_entities"]
     assert entities
-    assert "value" not in entities[0]
+    assert entities[0]["value"] == "John Smith"
     assert entities[0]["placeholder"] == "[PHI-1]"
     assert entities[0]["entity_type"] == "PERSON"
     assert entities[0]["has_value"] is True

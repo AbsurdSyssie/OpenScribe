@@ -214,7 +214,6 @@ export function createDocumentNavigator({
       kind: "note",
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
-    renderPiiEntities?.(selectedNote?.pii_entities || [], { includeWorkspaceManual: true, useWorkspaceWhenEmpty: true, allowReveal: false });
     renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };

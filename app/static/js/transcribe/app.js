@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260421-pii-refresh';
+import { attachTranscribeActions } from './actions.js?v=20260505-pii-copy-raw';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260421-pii-refresh';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -58,6 +58,7 @@ import { csrfFetch } from '../csrf.js';
       let currentDraftText = '';
       let currentPiiEntities = [];
       let workspaceTranscriptPiiEntities = Array.isArray(bootstrap.activeTranscriptPiiEntities) ? [...bootstrap.activeTranscriptPiiEntities] : [];
+      let piiMasked = false;
       let workspaceRedactionStatus = bootstrap.activeTranscriptRedactionStatus || { status: 'not_run', entity_count: 0, error_code: null };
       let workspaceClinicalNlpStatus = bootstrap.activeTranscriptClinicalNlpStatus || { status: 'not_run', entity_count: 0, error_code: null };
       const showRedactionDebug = bootstrap.showRedactionDebug;
@@ -74,6 +75,7 @@ import { csrfFetch } from '../csrf.js';
       const piiStatus = document.querySelector('[data-pii-status]');
       const clinicalNlpStatus = document.querySelector('[data-clinical-nlp-status]');
       const piiTableWrap = document.querySelector('[data-pii-table-wrap]');
+      const piiVisibilityToggle = document.querySelector('[data-toggle-pii-visibility]');
       const piiAddForm = document.querySelector('[data-pii-add-form]');
       const piiAddTypeInput = document.querySelector('[data-pii-add-type]');
       const piiAddValueInput = document.querySelector('[data-pii-add-value]');
@@ -834,8 +836,11 @@ import { csrfFetch } from '../csrf.js';
 
       const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      const renderHighlightedTranscript = (text, entities = []) => {
+      const maskedPiiText = (value) => value.replace(/\S/g, '•');
+
+      const renderHighlightedTranscript = (text, entities = [], options = {}) => {
         if (!activeDraft) return;
+        const maskPii = Boolean(options.maskPii);
         if (!text.trim()) {
           activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
           return;
@@ -856,7 +861,8 @@ import { csrfFetch } from '../csrf.js';
             const source = sourceByValue.get(part.toLowerCase());
             if (!source) return escapeHtml(part);
             const className = source === 'clinical' ? 'clinical-highlight' : 'pii-highlight';
-            return `<mark class="${className}">${escapeHtml(part)}</mark>`;
+            const visibleText = maskPii && source !== 'clinical' ? maskedPiiText(part) : part;
+            return `<mark class="${className}" data-real-value="${escapeHtml(part)}">${escapeHtml(visibleText)}</mark>`;
           })
           .join('');
       };
@@ -871,7 +877,7 @@ import { csrfFetch } from '../csrf.js';
           renderTranscriptStats(nextText);
           return;
         }
-        renderHighlightedTranscript(nextText, currentPiiEntities);
+        renderHighlightedTranscript(nextText, workspaceTranscriptPiiEntities, { maskPii: piiMasked });
         renderTranscriptStats(nextText);
       };
 
@@ -1373,6 +1379,7 @@ import { csrfFetch } from '../csrf.js';
         if (!piiCount || !piiTableWrap) return;
         const rawBaseEntities = Array.isArray(entities) ? entities : [];
         const allowReveal = options.allowReveal !== false;
+        const updateTranscriptHighlights = options.updateTranscriptHighlights !== false;
         const baseEntities = rawBaseEntities.length === 0 && options.useWorkspaceWhenEmpty
           ? workspaceTranscriptPiiEntities
           : rawBaseEntities;
@@ -1384,7 +1391,13 @@ import { csrfFetch } from '../csrf.js';
           ? rows
           : rows.map((entity) => ({ ...entity, value: '' }));
         currentPiiEntities = displayRows;
-        renderHighlightedTranscript(currentDraftText || readActiveDraftText(), displayRows);
+        if (updateTranscriptHighlights) {
+          renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });
+        }
+        if (piiVisibilityToggle) {
+          piiVisibilityToggle.textContent = piiMasked ? 'Show PII' : 'Hide PII';
+          piiVisibilityToggle.setAttribute('aria-pressed', piiMasked ? 'true' : 'false');
+        }
         piiCount.textContent = String(displayRows.length);
         const redactionStatus = workspaceRedactionStatus?.status || 'not_run';
         if (piiStatus) {
@@ -1425,10 +1438,8 @@ import { csrfFetch } from '../csrf.js';
             <thead>
               <tr>
                 <th scope="col">Type</th>
-                <th scope="col">Placeholder</th>
+                <th scope="col">Value</th>
                 <th scope="col">Count</th>
-                <th scope="col">Source</th>
-                <th scope="col">Reveal</th>
               </tr>
             </thead>
             <tbody data-pii-table-body>
@@ -1436,8 +1447,7 @@ import { csrfFetch } from '../csrf.js';
                 <tr data-pii-source="${escapeHtml(entity.source || '')}" data-pii-entity-id="${escapeHtml(entity.id || '')}">
                   <td><span class="pii-type ${entity.source === 'clinical' ? 'pii-type--clinical' : ''}">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
                   <td>
-                    <span class="pii-value">${escapeHtml(entity.value || '')}</span>
-                    <span class="pii-placeholder">${escapeHtml(entity.placeholder || (entity.source === 'manual' ? 'Manual' : ''))}</span>
+                    <span class="pii-value" data-real-value="${escapeHtml(entity.value || '')}">${escapeHtml(piiMasked && entity.source !== 'clinical' ? maskedPiiText(entity.value || '') : (entity.value || ''))}</span>
                   </td>
                   <td class="pii-count-cell">
                     <span>${escapeHtml(entity.occurrence_count ?? 0)}</span>
@@ -1447,12 +1457,6 @@ import { csrfFetch } from '../csrf.js';
                       </button>
                     ` : ''}
                   </td>
-                  <td>${escapeHtml(entity.source || 'detected')}</td>
-                  <td>
-                    ${allowReveal && entity.has_value && !entity.value ? `
-                      <button type="button" class="pii-reveal" data-pii-reveal="true">Reveal</button>
-                    ` : ''}
-                  </td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1460,6 +1464,11 @@ import { csrfFetch } from '../csrf.js';
         `;
         refreshIcons(piiTableWrap);
       };
+
+      piiVisibilityToggle?.addEventListener('click', () => {
+        piiMasked = !piiMasked;
+        renderPiiEntities(currentPiiEntities, { includeWorkspaceManual: false });
+      });
 
       piiAddForm?.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -1957,6 +1966,7 @@ import { csrfFetch } from '../csrf.js';
         },
         routeBase,
         getTranscriptId: () => transcriptId,
+        getTranscriptText: () => currentDraftText,
         getActiveIngestionMode: () => activeIngestionMode,
         getIsLiveCaptureUiActive: () => isLiveCaptureUiActive(),
         getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',

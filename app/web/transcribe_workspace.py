@@ -673,7 +673,7 @@ def resolve_transcribe_workspace(
         ),
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
-        "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=False),
+        "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=True),
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
@@ -817,7 +817,7 @@ def render_transcribe(
         for entity in transcript_pii_entities_response(
             db,
             active_transcript if isinstance(active_transcript, Transcript) else None,
-            include_values=False,
+            include_values=True,
         )
     ]
     workspace["active_transcript_redaction_status"] = transcript_redaction_status_response(

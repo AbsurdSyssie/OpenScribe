@@ -4,6 +4,7 @@ export function attachTranscribeActions({
   dom,
   routeBase,
   getTranscriptId,
+  getTranscriptText,
   getActiveIngestionMode,
   getIsLiveCaptureUiActive,
   getIsRecordingSwitchBlocked,
@@ -127,9 +128,10 @@ export function attachTranscribeActions({
   if (dom.copyTranscriptButton) {
     dom.copyTranscriptButton.addEventListener('click', async () => {
       const text = (
-        dom.activeDraft instanceof HTMLTextAreaElement || dom.activeDraft instanceof HTMLInputElement
+        getTranscriptText?.()
+        || (dom.activeDraft instanceof HTMLTextAreaElement || dom.activeDraft instanceof HTMLInputElement
           ? dom.activeDraft.value
-          : dom.activeDraft?.textContent
+          : dom.activeDraft?.textContent)
       )?.trim() || '';
       if (!text) return;
       try {

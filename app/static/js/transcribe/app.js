@@ -207,10 +207,15 @@ import { csrfFetch } from '../csrf.js';
       const liveMaxChunkMs = 30000;
       const liveMinChunkMs = 400;
       const liveChunkOverlapMs = 800;
+      const liveChunkUploadMinIntervalMs = 1100;
+      const liveChunkRateLimitRetryMs = 1200;
       const liveRestartDelayMs = 150;
       const batchVadPreRollMs = 800;
       const batchVadSilenceThresholdMs = 1200;
       const batchVadTrailingBufferMs = 350;
+      const batchRolloverMaxDurationMs = 12 * 60 * 1000;
+      const batchRolloverMaxBytes = 22 * 1024 * 1024;
+      const batchRolloverConflictRetryMs = 5000;
       const structuredSectionDefinitions = bootstrap.emisSections;
 
       let currentAssistantTab = bootstrap.activeTab;
@@ -634,7 +639,7 @@ import { csrfFetch } from '../csrf.js';
 
       const isConsultationCaptureActive = () => {
         const label = String(recordToggleLabel?.textContent || '').toLowerCase();
-        return Boolean(captureController?.isLiveCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
+        return Boolean(captureController?.isCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
       };
 
       const setDictationPanelOpen = (isOpen) => {
@@ -1111,13 +1116,18 @@ import { csrfFetch } from '../csrf.js';
           uploadForm,
         },
         config: {
-          batchUploadSuccessMessage: 'Dictation recording sent.',
+          batchUploadSuccessMessage: 'Recording sent to be turned into text.',
           batchVadPreRollMs,
+          batchRolloverConflictRetryMs,
+          batchRolloverMaxBytes,
+          batchRolloverMaxDurationMs,
           batchVadSilenceThresholdMs,
           batchVadTrailingBufferMs,
           liveChunkOverlapMs,
           liveMaxChunkMs,
           liveMinChunkMs,
+          liveChunkRateLimitRetryMs,
+          liveChunkUploadMinIntervalMs,
           liveOnnxBasePath: liveVadOnnxBasePath,
           livePostRollTrimMs,
           livePreRollMs,
@@ -1176,12 +1186,15 @@ import { csrfFetch } from '../csrf.js';
           uploadForm: dictationUploadForm,
         },
         config: {
+          batchUploadSuccessMessage: 'Dictation recording sent.',
           batchVadPreRollMs,
           batchVadSilenceThresholdMs,
           batchVadTrailingBufferMs,
           liveChunkOverlapMs,
           liveMaxChunkMs,
           liveMinChunkMs,
+          liveChunkRateLimitRetryMs,
+          liveChunkUploadMinIntervalMs,
           liveOnnxBasePath: liveVadOnnxBasePath,
           livePostRollTrimMs,
           livePreRollMs,
@@ -1192,13 +1205,13 @@ import { csrfFetch } from '../csrf.js';
           liveVadOnnxBasePath,
           liveVadSampleRate,
         },
-        uploadBatchAudio: async (blob) => {
-          if (!transcriptId) {
+        uploadBatchAudio: async (blob, { transcriptId: uploadTranscriptId = transcriptId } = {}) => {
+          if (!uploadTranscriptId) {
             throw new Error('Open consultation before sending dictation audio.');
           }
           const formData = new FormData();
           formData.append('audio', blob, blob.type === 'audio/wav' ? 'dictation-mic.wav' : 'dictation-mic.webm');
-          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation/audio-file`, {
+          const response = await csrfFetch(`/api/v1/transcripts/${uploadTranscriptId}/post-consultation-dictation/audio-file`, {
             method: 'POST',
             body: formData,
             credentials: 'include',
@@ -1806,7 +1819,7 @@ import { csrfFetch } from '../csrf.js';
         structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));
         structuredEditor.syncStructuredContextHiddenInputs();
         structuredEditor.syncStructuredEditorAvailability();
-        setMicButtons(isLiveCaptureUiActive());
+        setMicButtons(isCaptureUiActive());
         setDictationMicButtons(false);
         syncDictationPanelState(dictation);
         if (!preserveDirtyNoteEditor) {
@@ -1848,6 +1861,10 @@ import { csrfFetch } from '../csrf.js';
 
       const isLiveCaptureUiActive = () => {
         return captureController.isLiveCaptureUiActive();
+      };
+
+      const isCaptureUiActive = () => {
+        return captureController.isCaptureUiActive();
       };
 
       const shouldPreserveLiveMicStatus = () => {

@@ -660,6 +660,7 @@ Current whole-file ingestion behavior:
   - switches the active session in place by refetching `GET /api/v1/transcribe/workspace?transcript_id=...` instead of full-page navigation
   - patches transcript session title and EMIS working context through `PATCH /api/v1/transcripts/{transcript_id}`
   - queues whole-file upload directly through `POST /api/v1/transcripts/{transcript_id}/audio-file`
+  - recorded microphone upload rolls over before browser-captured WAV parts approach whole-file limits, sends each part through the same owner-only whole-file endpoint, and holds later parts in memory while the backend's one-active-file-job rule clears
   - offers retry through the same workspace when `active_transcript.latest_ingestion_retry_available` is true
   - queues note/follow-up/quick-action generation directly through the corresponding `/api/v1/transcripts/{transcript_id}/...` JSON routes
   - enforces the same 4000-character limit for quick-action additional context on the API path as the browser textarea, trimming blank-only values to null server-side

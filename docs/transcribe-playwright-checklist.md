@@ -108,6 +108,7 @@ Recommended seeded account:
   - timer starts
   - stop button becomes enabled while recording
   - upload queues when recording stops
+  - long recorded-upload capture rolls over before whole-file size/duration caps, sends the current part, and immediately resumes capture
 
 ## Redaction debug
 

@@ -1,0 +1,231 @@
+/*
+ * Mobile presentation rules for transcribe workspace.
+ * Presentation-only: no ownership, content-access, deletion, provider, or encryption behavior changes.
+ */
+
+:root {
+  --mobile-sidebar-width: min(88vw, 22rem);
+  --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-safe-top: env(safe-area-inset-top, 0px);
+}
+
+.mobile-sidebar-toggle,
+.mobile-sidebar-scrim {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body.mobile-sidebar-open {
+    overflow: hidden;
+  }
+
+  [data-workspace-endpoint] {
+    width: 100%;
+  }
+
+  [data-workspace-endpoint] > aside {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 180;
+    width: var(--mobile-sidebar-width);
+    max-width: var(--mobile-sidebar-width);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+    box-shadow: 24px 0 60px rgba(26, 32, 44, 0.18);
+  }
+
+  body.mobile-sidebar-open [data-workspace-endpoint] > aside {
+    transform: translateX(0);
+  }
+
+  .mobile-sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 170;
+    display: block;
+    border: 0;
+    background: rgba(26, 32, 44, 0.36);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  body.mobile-sidebar-open .mobile-sidebar-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--card);
+    color: var(--fg);
+  }
+
+  main > header {
+    padding-top: max(0.75rem, var(--mobile-safe-top));
+  }
+
+  main > header > div:first-child {
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  main > header input[data-transcript-title-input],
+  [data-session-title-display] {
+    font-size: 1.35rem;
+    line-height: 1.2;
+  }
+
+  [data-tour-target="record-controls"] {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    gap: 0.5rem;
+  }
+
+  [data-tour-target="record-controls"] > * {
+    min-width: 0;
+  }
+
+  [data-active-status-pill],
+  .record-split-button,
+  .dictation-global-cta,
+  .btn-upload {
+    width: 100%;
+  }
+
+  .record-split-button {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .record-split-button__main {
+    min-width: 0;
+  }
+
+  .record-split-button__main span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .record-split-button__menu {
+    left: 0;
+    right: 0;
+    width: auto;
+  }
+
+  .dictation-global-cta__status {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  [data-split-workspace] > div:first-child {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  [data-split-workspace] > div:first-child > div:first-child {
+    min-width: max-content;
+  }
+
+  .main-tab {
+    padding: 0.8rem 0.9rem;
+    white-space: nowrap;
+  }
+
+  .structured-workspace__header {
+    padding: 0.75rem;
+  }
+
+  .note-header-row,
+  .note-header-left,
+  .note-header-right {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .note-header-hint {
+    white-space: normal;
+  }
+
+  .template-picker-button--compact {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .note-editor-toolbar--header {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .statement-row,
+  .statement {
+    grid-template-columns: 1rem 1.35rem minmax(0, 1fr);
+    gap: 0.45rem;
+    padding: 0.62rem 0.75rem 0.62rem 0.4rem;
+  }
+
+  .statement-drag-handle {
+    opacity: 1;
+  }
+
+  .statement-editor,
+  .statement-input {
+    font-size: 1rem;
+    line-height: 1.55;
+  }
+
+  .toast-container {
+    top: auto;
+    right: 0.75rem;
+    bottom: calc(0.75rem + var(--mobile-safe-bottom));
+    left: 0.75rem;
+  }
+
+  .toast {
+    max-width: none;
+  }
+
+  .tour-overlay__card {
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+}
+
+@media (max-width: 480px) {
+  [data-tour-target="record-controls"] {
+    grid-template-columns: 1fr;
+  }
+
+  main > header {
+    padding-inline: 0.75rem;
+  }
+
+  [data-split-workspace] > div:first-child {
+    padding-inline: 0.5rem;
+  }
+
+  .main-tab {
+    padding-inline: 0.75rem;
+    font-size: 0.82rem;
+  }
+}

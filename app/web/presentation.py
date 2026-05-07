@@ -858,6 +858,7 @@ def render_home(
     home_return_view: str = "",
     transcribe_return_tab: str | None = None,
     template_editor_scope: str | None = None,
+    home_style_variant: str = "",
 ):
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
     stt_selection = None
@@ -1015,6 +1016,7 @@ def render_home(
         "break_glass_recovery_enabled": break_glass_recovery_enabled(),
         "queued_transcript_id": queued_transcript_id,
         "transcribe_return_tab": transcribe_return_tab,
+        "home_style_variant": home_style_variant,
     }
     return templates.TemplateResponse(request, template_name, context, status_code=status_code)
 
@@ -1024,6 +1026,8 @@ def home_template_name_from_return_view(return_view: str | None) -> str:
 
 
 def home_page_route_from_return_view(return_view: str | None) -> str:
+    if return_view == "home2":
+        return "/home2"
     return "/home-restyled" if return_view == "restyled" else "/home"
 
 
@@ -1048,6 +1052,8 @@ def home_template_editor_url(
 
 
 def home_return_view_value(return_view: str | None) -> str:
+    if return_view == "home2":
+        return "home2"
     if return_view == "restyled":
         return "restyled"
     if return_view == "transcribe":
@@ -1068,7 +1074,7 @@ def home_redirect_url(
             params["transcript_id"] = queued_transcript_id
         params["tab"] = transcribe_tab or ("followups" if return_tab == "quick-actions" else "output")
         return f"/transcribe?{urlencode(params)}" if params else "/transcribe"
-    base = "/home-restyled" if return_view == "restyled" else "/home"
+    base = "/home2" if return_view == "home2" else ("/home-restyled" if return_view == "restyled" else "/home")
     if return_tab:
         return f"{base}?tab={return_tab}"
     return base

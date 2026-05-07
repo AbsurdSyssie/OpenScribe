@@ -30,6 +30,13 @@ export function createAudioCaptureController({
   let liveVadInstance = null;
   let batchVadInstance = null;
   let batchSpeechSegments = [];
+  let batchRolloverTimeoutId = null;
+  let batchForceRolloverRequested = false;
+  let batchStopRequested = false;
+  let batchRestartPending = false;
+  let batchRolloverUploadPending = false;
+  let batchUploadQueue = Promise.resolve();
+  let batchCaptureGeneration = 0;
   let liveChunkTimeoutId = null;
   let liveStopRequested = false;
   let liveForceContinueRequested = false;
@@ -37,6 +44,7 @@ export function createAudioCaptureController({
   let liveRestartPending = false;
   let livePendingOverlapAudio = null;
   let liveChunkProcessing = Promise.resolve();
+  let liveLastChunkUploadStartedAt = 0;
   let startedAt = null;
   let timerId = null;
   let recordingTranscriptId = null;
@@ -209,6 +217,13 @@ export function createAudioCaptureController({
     } catch (_) {}
   };
 
+  const clearBatchRolloverTimeout = () => {
+    if (batchRolloverTimeoutId) {
+      window.clearTimeout(batchRolloverTimeoutId);
+      batchRolloverTimeoutId = null;
+    }
+  };
+
   const resetRecordingState = () => {
     finalizeAccumulatedTimer();
     if (timerId) {
@@ -216,18 +231,25 @@ export function createAudioCaptureController({
       timerId = null;
     }
     clearLiveChunkTimeout();
+    clearBatchRolloverTimeout();
     startedAt = null;
     recordingTranscriptId = null;
     accumulatedBeforeCurrentSegmentMs = 0;
     renderTimer();
     captureMode = 'batch';
+    batchCaptureGeneration += 1;
     batchSpeechSegments = [];
+    batchForceRolloverRequested = false;
+    batchStopRequested = false;
+    batchRestartPending = false;
+    batchRolloverUploadPending = false;
     liveStopRequested = false;
     liveForceContinueRequested = false;
     liveSpeechActive = false;
     liveRestartPending = false;
     livePendingOverlapAudio = null;
     liveChunkProcessing = Promise.resolve();
+    liveLastChunkUploadStartedAt = 0;
     stopStreamTracks();
     cleanupLiveVad();
     cleanupBatchVad();
@@ -351,6 +373,17 @@ export function createAudioCaptureController({
 
   const durationSecondsForVadAudio = (audio) => Math.max(0.1, audio.length / config.liveVadSampleRate);
 
+  const sleep = (durationMs) => new Promise((resolve) => window.setTimeout(resolve, Math.max(0, durationMs)));
+
+  const waitForLiveChunkUploadSlot = async () => {
+    const minIntervalMs = Number(config.liveChunkUploadMinIntervalMs || 0);
+    if (minIntervalMs <= 0 || liveLastChunkUploadStartedAt <= 0) return;
+    const waitMs = minIntervalMs - (Date.now() - liveLastChunkUploadStartedAt);
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+  };
+
   const createVadMicStream = async () => {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     return mediaStream;
@@ -397,6 +430,52 @@ export function createAudioCaptureController({
     return combined;
   };
 
+  const durationMsForVadSegments = (segments) => (
+    (concatVadAudioSegments(segments).length / config.liveVadSampleRate) * 1000
+  );
+
+  const wavByteSizeForSampleCount = (sampleCount) => 44 + (Math.max(0, sampleCount) * 2);
+
+  const byteSizeForVadSegments = (segments) => (
+    wavByteSizeForSampleCount(concatVadAudioSegments(segments).length)
+  );
+
+  const batchRolloverEnabled = () => (
+    Number(config.batchRolloverMaxDurationMs || 0) > 0
+    || Number(config.batchRolloverMaxBytes || 0) > 0
+  );
+
+  const batchRolloverThresholdReached = (segments) => {
+    if (!batchRolloverEnabled() || segments.length === 0) return false;
+    const maxDurationMs = Number(config.batchRolloverMaxDurationMs || 0);
+    const maxBytes = Number(config.batchRolloverMaxBytes || 0);
+    return (
+      (maxDurationMs > 0 && durationMsForVadSegments(segments) >= maxDurationMs)
+      || (maxBytes > 0 && byteSizeForVadSegments(segments) >= maxBytes)
+    );
+  };
+
+  const armBatchRolloverTimeout = () => {
+    clearBatchRolloverTimeout();
+    if (!batchRolloverEnabled() || batchStopRequested || !batchVadInstance) return;
+    const maxDurationMs = Number(config.batchRolloverMaxDurationMs || 0);
+    if (maxDurationMs <= 0) return;
+    const elapsedMs = durationMsForVadSegments(batchSpeechSegments);
+    const remainingMs = Math.max(config.liveMinChunkMs, maxDurationMs - elapsedMs);
+    batchRolloverTimeoutId = window.setTimeout(() => {
+      if (!batchVadInstance || batchStopRequested) return;
+      batchForceRolloverRequested = true;
+      setMicStatus('Recording limit nearly reached. Sending this part and continuing...');
+      setSessionProgress('Recording part reached its limit. Uploading it, then continuing capture.');
+      try {
+        batchVadInstance.pause();
+      } catch (_) {
+        resetRecordingState();
+        setMicStatus('Could not split the recording before the limit.', 'error');
+      }
+    }, remainingMs);
+  };
+
   const uploadLiveChunk = async (blob, durationSeconds) => {
     const { transcriptId, nextLiveChunkSequenceNo } = getState();
     if (!transcriptId) {
@@ -411,17 +490,32 @@ export function createAudioCaptureController({
     formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
     formData.append('chunk_sequence_no', String(chunkSequenceNo));
     formData.append('declared_duration_seconds', durationSeconds.toFixed(3));
-    const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include',
-    });
-    if (!response.ok) {
-      setNextLiveChunkSequenceNo(chunkSequenceNo);
-      throw new Error(await parseErrorMessage(response, 'Could not send this live audio part.'));
+    const maxAttempts = 3;
+    let lastMessage = 'Could not send this live audio part.';
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      await waitForLiveChunkUploadSlot();
+      liveLastChunkUploadStartedAt = Date.now();
+      const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      });
+      if (response.ok) {
+        reflectBackendStatus('transcribing');
+        scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+        return;
+      }
+      lastMessage = await parseErrorMessage(response, 'Could not send this live audio part.');
+      if (response.status !== 429 || attempt === maxAttempts) {
+        setNextLiveChunkSequenceNo(chunkSequenceNo);
+        throw new Error(lastMessage);
+      }
+      setSessionProgress('Live upload rate limit reached. Waiting briefly, then retrying the same audio part...');
+      setMicStatus('Live upload is catching up...');
+      await sleep(Number(config.liveChunkRateLimitRetryMs || 1200));
     }
-    reflectBackendStatus('transcribing');
-    scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+    setNextLiveChunkSequenceNo(chunkSequenceNo);
+    throw new Error(lastMessage);
   };
 
   const finalizeLiveCaptureIfNeeded = async () => {
@@ -587,38 +681,64 @@ export function createAudioCaptureController({
     return liveChunkProcessing;
   };
 
-  const uploadMicrophoneBatch = async (blob) => {
-    setMicStatus('Uploading your microphone recording...');
+  const activeBatchTranscriptId = () => recordingTranscriptId || getState().transcriptId || null;
+
+  const uploadMicrophoneBatch = async (blob, { rollover = false, transcriptId = null } = {}) => {
+    const uploadLabel = rollover ? 'recording part' : 'microphone recording';
+    setMicStatus(`Uploading your ${uploadLabel}...`);
     setVisibleStatus('uploading');
-    setSessionProgress('Uploading your microphone recording...');
+    setSessionProgress(`Uploading your ${uploadLabel}...`);
     setRetryAvailability(false);
     try {
-      await syncTranscriptTitleIfNeeded();
+      const uploadTranscriptId = transcriptId || getState().transcriptId;
+      if (!uploadTranscriptId) {
+        throw new Error('Open consultation before sending microphone audio.');
+      }
+      if (uploadTranscriptId === getState().transcriptId) {
+        await syncTranscriptTitleIfNeeded();
+      }
       if (typeof uploadBatchAudio === 'function') {
-        await uploadBatchAudio(blob);
+        await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });
       } else {
-        const { transcriptId } = getState();
         const formData = new FormData();
         formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
-        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
-          method: 'POST',
-          body: formData,
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not send the microphone recording.'));
+        let response = null;
+        let lastMessage = 'Could not send the microphone recording.';
+        for (;;) {
+          response = await csrfFetch(`/api/v1/transcripts/${uploadTranscriptId}/audio-file`, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+          });
+          if (response.ok) break;
+          lastMessage = await parseErrorMessage(response, 'Could not send the microphone recording.');
+          if (!rollover || response.status !== 409) {
+            throw new Error(lastMessage);
+          }
+          setSessionProgress('Previous recording part is still transcribing. Holding the next part locally, then retrying...');
+          setMicStatus('Waiting for the previous recording part to finish...');
+          await sleep(Number(config.batchRolloverConflictRetryMs || 5000));
         }
       }
-      showFlash(config.batchUploadSuccessMessage || 'Recording sent to be turned into text.', 'success');
+      showFlash(rollover ? 'Recording part sent. Capture continues.' : (config.batchUploadSuccessMessage || 'Recording sent to be turned into text.'), 'success');
       await fetchWorkspace();
       scheduleWorkspaceRefreshBurst();
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not send the microphone recording.';
       setMicStatus(message, 'error');
       showFlash(message, 'error');
       reflectBackendStatus('failed', message);
       setRetryAvailability(false);
+      return false;
     }
+  };
+
+  const queueMicrophoneBatchUpload = (blob, options = {}) => {
+    batchUploadQueue = batchUploadQueue
+      .catch(() => {})
+      .then(() => uploadMicrophoneBatch(blob, options));
+    return batchUploadQueue;
   };
 
   const buildBatchVadInstance = async () => {
@@ -635,11 +755,19 @@ export function createAudioCaptureController({
           setVisibleStatus('recording');
           setSessionProgress('Speech detected. Keeping voiced audio locally until you stop.');
           setMicStatus('Speech detected. Voice-only batch capture is running...');
+          armBatchRolloverTimeout();
         },
         onSpeechEnd: (audio) => {
+          clearBatchRolloverTimeout();
           const preparedAudio = trimLiveVadSamples(audio, Math.max(0, config.batchVadSilenceThresholdMs - config.batchVadTrailingBufferMs));
           if (preparedAudio.length >= sampleCountForDurationMs(config.liveMinChunkMs)) {
             batchSpeechSegments.push(preparedAudio);
+          }
+          const shouldRollover = batchForceRolloverRequested || batchRolloverThresholdReached(batchSpeechSegments);
+          batchForceRolloverRequested = false;
+          if (shouldRollover && !batchStopRequested) {
+            void rolloverMicrophoneBatchCapture();
+            return;
           }
           if (!batchVadInstance) {
             return;
@@ -649,6 +777,13 @@ export function createAudioCaptureController({
           setMicStatus('Listening for speech...');
         },
         onVADMisfire: () => {
+          clearBatchRolloverTimeout();
+          if (batchForceRolloverRequested && !batchStopRequested && batchSpeechSegments.length > 0) {
+            batchForceRolloverRequested = false;
+            void rolloverMicrophoneBatchCapture();
+            return;
+          }
+          batchForceRolloverRequested = false;
           if (!batchVadInstance) {
             return;
           }
@@ -660,7 +795,83 @@ export function createAudioCaptureController({
     });
   };
 
+  const restartMicrophoneBatchAfterRollover = async () => {
+    if (batchStopRequested) return;
+    const restartGeneration = batchCaptureGeneration;
+    try {
+      batchRestartPending = true;
+      cleanupBatchVad();
+      batchVadInstance = await buildBatchVadInstance();
+      if (batchStopRequested || batchCaptureGeneration !== restartGeneration) {
+        batchRestartPending = false;
+        cleanupBatchVad();
+        return;
+      }
+      batchRestartPending = false;
+      batchVadInstance.start();
+      setMicVisualizerVadActive(false);
+      setVisibleStatus('recording');
+      setSessionProgress('New recording part started. Previous part is being uploaded for transcription.');
+      setMicStatus('Recording restarted. Listening for speech...');
+    } catch (_) {
+      batchRestartPending = false;
+      if (batchStopRequested || batchCaptureGeneration !== restartGeneration) {
+        return;
+      }
+      resetRecordingState();
+      setMicStatus('Could not restart recording after sending the previous part.', 'error');
+    }
+  };
+
+  const rolloverMicrophoneBatchCapture = async () => {
+    if (!batchVadInstance || batchSpeechSegments.length === 0) return;
+    const combinedAudio = concatVadAudioSegments(batchSpeechSegments);
+    const blob = createLiveVadWavBlob(combinedAudio);
+    if (!blob || blob.size === 0) return;
+    const transcriptId = activeBatchTranscriptId();
+    const rolloverGeneration = batchCaptureGeneration;
+    batchRestartPending = true;
+    batchRolloverUploadPending = true;
+    cleanupBatchVad();
+    setMicStatus('Recording part ready. Uploading before capture continues...');
+    setVisibleStatus('uploading');
+    setSessionProgress('Sending recording part for transcription before the limit is reached. Capture will resume after this part is accepted.');
+    const uploaded = await queueMicrophoneBatchUpload(blob, { rollover: true, transcriptId });
+    batchRolloverUploadPending = false;
+    if (batchCaptureGeneration !== rolloverGeneration) {
+      batchRestartPending = false;
+      return;
+    }
+    if (!uploaded) {
+      batchRestartPending = false;
+      batchStopRequested = true;
+      clearBatchRolloverTimeout();
+      stopStreamTracks();
+      resetMicVisualizer();
+      finalizeAccumulatedTimer();
+      if (timerId) {
+        window.clearInterval(timerId);
+        timerId = null;
+      }
+      setMicButtons(false);
+      setVisibleStatus('failed');
+      setSessionProgress('Recording stopped because this part could not be uploaded. No later audio was recorded after the failed part.');
+      return;
+    }
+    if (batchStopRequested) {
+      batchRestartPending = false;
+      resetRecordingState();
+      const micStatusState = getDefaultMicStatusState();
+      setMicStatus(micStatusState.message, micStatusState.kind);
+      return;
+    }
+    batchSpeechSegments = [];
+    batchRestartPending = false;
+    await restartMicrophoneBatchAfterRollover();
+  };
+
   const finalizeMicrophoneBatchCapture = async () => {
+    const transcriptId = activeBatchTranscriptId();
     const combinedAudio = concatVadAudioSegments(batchSpeechSegments);
     resetRecordingState();
     if (combinedAudio.length === 0) {
@@ -673,7 +884,7 @@ export function createAudioCaptureController({
       return;
     }
     setMicStatus('Voice activity captured. Preparing upload...', 'success');
-    await uploadMicrophoneBatch(blob);
+    await queueMicrophoneBatchUpload(blob, { transcriptId });
   };
 
   const beginLiveTranscription = async () => {
@@ -743,6 +954,11 @@ export function createAudioCaptureController({
     }
     try {
       captureMode = 'batch';
+      batchCaptureGeneration += 1;
+      batchStopRequested = false;
+      batchForceRolloverRequested = false;
+      batchRestartPending = false;
+      batchRolloverUploadPending = false;
       batchSpeechSegments = [];
       batchVadInstance = await buildBatchVadInstance();
       beginAccumulatedTimer();
@@ -760,13 +976,25 @@ export function createAudioCaptureController({
   };
 
   const endMicrophoneBatch = () => {
-    if (!batchVadInstance) return;
+    if (!batchVadInstance && !batchRestartPending) return;
+    batchStopRequested = true;
+    clearBatchRolloverTimeout();
     setMicStatus('Stopping voice-only microphone recording...');
     setVisibleStatus('uploading');
     setSessionProgress('Finishing your last speech segment...');
     const instance = batchVadInstance;
     batchVadInstance = null;
     try {
+      if (!instance) {
+        if (batchRolloverUploadPending) {
+          setSessionProgress('Stopping after the in-flight recording part upload finishes...');
+          return;
+        }
+        window.setTimeout(() => {
+          void finalizeMicrophoneBatchCapture();
+        }, 0);
+        return;
+      }
       instance.pause();
       window.setTimeout(() => {
         void finalizeMicrophoneBatchCapture();
@@ -779,7 +1007,7 @@ export function createAudioCaptureController({
 
   const handleRecordToggle = () => {
     const liveCaptureActive = captureMode === 'live' && (Boolean(liveVadInstance) || liveRestartPending);
-    const batchCaptureActive = Boolean(batchVadInstance);
+    const batchCaptureActive = Boolean(batchVadInstance) || batchRestartPending;
     if (liveCaptureActive || batchCaptureActive) {
       if (captureMode === 'live') {
         endLiveTranscription();
@@ -819,12 +1047,37 @@ export function createAudioCaptureController({
         dom.uploadForm.requestSubmit();
       });
     }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden || captureMode !== 'live' || !liveVadInstance || liveStopRequested || !liveSpeechActive) {
+        return;
+      }
+      liveForceContinueRequested = true;
+      setSessionProgress('Tab moved to background. Flushing the current live speech segment before browser throttling can delay it...');
+      try {
+        liveVadInstance.pause();
+      } catch (_) {
+        resetRecordingState();
+        setMicStatus('Could not keep live capture running after tab backgrounding.', 'error');
+      }
+    });
     renderTimer();
   };
 
   return {
     attachDomListeners,
     syncDisplayedDuration: renderTimer,
+    isCaptureUiActive: () => (
+      (
+        captureMode === 'live'
+        && !liveStopRequested
+        && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+      )
+      || (
+        captureMode === 'batch'
+        && !batchStopRequested
+        && (Boolean(batchVadInstance) || batchRestartPending)
+      )
+    ),
     isLiveCaptureUiActive: () => (
       getState().activeIngestionMode === 'live_chunked'
       && captureMode === 'live'

@@ -1545,22 +1545,70 @@ padding: 1rem 0;
       h1 { font-size: 1.5rem; }
       .card-grid { grid-template-columns: 1fr; }
     }
+    {% if home_style_variant == "home2" %}
+    {% include "_home2_admin2_style.html" %}
+    {% endif %}
   </style>
 </head>
-<body>
+<body{% if home_style_variant == "home2" %} data-admin-theme="dark" class="home2"{% endif %}>
   <main class="home-pane">
       <header class="home-pane__header">
         <div>
           <div class="eyebrow">Clinical workspace</div>
           <h1>Your OpenScribe home</h1>
+          {% if home_style_variant == "home2" %}
+          <p class="home2-signed-in">Signed in as {{ current_user.full_name or current_user.email }}.</p>
+          {% else %}
           <p>Keep overview fast. Use sections below for settings, assets, service policy, team admin.</p>
+          {% endif %}
         </div>
         <div class="home-pane__header-actions">
           <div class="pill role">{{ current_user.team_role.value if current_user.team_role else "user" }}</div>
           <form method="post" action="/logout"><button type="submit" class="btn-secondary">Sign out</button></form>
         </div>
+        {% if home_style_variant == "home2" %}
+        <nav class="tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Home sections">
+          <button type="button" class="tab-shell__tab" data-tab-target="overview" data-tab-url="{{ home_page_route }}?tab=overview" role="tab" aria-selected="true" data-tour-target="overview-tab">Overview</button>
+          {% if not current_user.is_system_admin and current_user.team_id %}
+          <button type="button" class="tab-shell__tab" data-tab-target="templates" data-tab-url="{{ home_page_route }}?tab=templates" role="tab" aria-selected="false" data-tour-target="templates-tab">Templates</button>
+          <button type="button" class="tab-shell__tab" data-tab-target="quick-actions" data-tab-url="{{ home_page_route }}?tab=quick-actions" role="tab" aria-selected="false" data-tour-target="saved-prompts-tab">Quick actions</button>
+          <button type="button" class="tab-shell__tab" data-tab-target="smart-phrases" data-tab-url="{{ home_page_route }}?tab=smart-phrases" role="tab" aria-selected="false">Smart phrases</button>
+          {% endif %}
+          {% if is_manager %}
+          <button type="button" class="tab-shell__tab" data-tab-target="ai-services" data-tab-url="{{ home_page_route }}?tab=ai-services" role="tab" aria-selected="false" data-tour-target="ai-services-tab">AI Services</button>
+          <button type="button" class="tab-shell__tab" data-tab-target="team-management" data-tab-url="{{ home_page_route }}?tab=team-management" role="tab" aria-selected="false" data-tour-target="team-tab">Team</button>
+          <button type="button" class="tab-shell__tab" data-tab-target="account-requests" data-tab-url="{{ home_page_route }}?tab=account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
+          {% endif %}
+        </nav>
+        <section class="stat-grid">
+          <article class="panel stat-card">
+            <div class="stat-card__icon">ST</div>
+            <div>
+              <div class="stat-card__label">Speech service</div>
+              <div class="stat-card__value">{% if stt_selection %}{{ stt_selection.config.label }}{% else %}Not configured{% endif %}</div>
+            </div>
+          </article>
+          <article class="panel stat-card">
+            <div class="stat-card__icon stat-card__icon--llm">LL</div>
+            <div>
+              <div class="stat-card__label">Writing assistant</div>
+              <div class="stat-card__value">
+                {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
+              </div>
+            </div>
+          </article>
+          <article class="panel stat-card">
+            <div class="stat-card__icon stat-card__icon--templates">TP</div>
+            <div>
+              <div class="stat-card__label">Templates</div>
+              <div class="stat-card__value">{{ (team_templates|length if is_manager else 0) + (personal_templates|length if personal_templates is defined else 0) }} saved</div>
+            </div>
+          </article>
+        </section>
+        {% endif %}
       </header>
 
+      {% if home_style_variant != "home2" %}
       <nav class="tab-shell__nav" data-tab-nav hidden role="tablist" aria-label="Home sections">
         <button type="button" class="tab-shell__tab" data-tab-target="overview" data-tab-url="{{ home_page_route }}?tab=overview" role="tab" aria-selected="true" data-tour-target="overview-tab">Overview</button>
         {% if not current_user.is_system_admin and current_user.team_id %}
@@ -1574,15 +1622,19 @@ padding: 1rem 0;
         <button type="button" class="tab-shell__tab" data-tab-target="account-requests" data-tab-url="{{ home_page_route }}?tab=account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
         {% endif %}
       </nav>
+      {% endif %}
 
     <section class="topbar">
       <div class="hero-copy">
         <div class="hero-meta">
+          {% if home_style_variant != "home2" %}
           <p>Signed in as {{ current_user.full_name or current_user.email }}.</p>
+          {% endif %}
         </div>
       </div>
     </section>
 
+    {% if home_style_variant != "home2" %}
     <section class="stat-grid">
       <article class="panel stat-card">
         <div class="stat-card__icon">ST</div>
@@ -1608,6 +1660,7 @@ padding: 1rem 0;
         </div>
       </article>
     </section>
+    {% endif %}
 
     {% if message %}
     <div class="panel flash {{ message_kind }}">{{ message }}</div>
@@ -1646,7 +1699,7 @@ padding: 1rem 0;
 {% elif not stt_selection %}
 <p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to set it up.</small></p>
 {% endif %}
-<div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open consultation notes</button></a></div>
+<div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open scribe</button></a></div>
 <div style="margin-top: 10px;"><button type="button" class="btn-secondary btn-sm" data-home-guide>Guide</button></div>
 </div>
 <div class="panel">
@@ -1702,11 +1755,17 @@ padding: 1rem 0;
 <span class="settings-header__hint">Save reusable templates for yourself or your team.</span>
 </div>
 <p><small>Sectioned EMIS note templates live here too.</small></p>
-<div class="section-action-group" style="margin-bottom:1rem;">
+<div class="settings-stack">
+<div class="asset-row asset-row--create">
+<div class="asset-row__info">
+<div class="asset-row__title">Create template</div>
+<div class="asset-row__status">Start a personal template or shared team template.</div>
+</div>
+<div class="asset-row__actions">
 <a href="/home/templates/editor?scope=personal{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-primary btn-sm">New personal template</button></a>
 {% if is_manager %}<a href="/home/templates/editor?scope=team{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}"><button type="button" class="btn-secondary btn-sm">New team template</button></a>{% endif %}
 </div>
-<div class="settings-stack">
+</div>
 {% for template in personal_templates %}
 {% set latest_version = template.versions|sort(attribute='version_no')|last %}
 <div class="asset-row">
@@ -1748,11 +1807,17 @@ padding: 1rem 0;
 <h2>Quick actions</h2>
 <span class="settings-header__hint">Save reusable instructions for letters, follow-up messages, and one-off tasks.</span>
 </div>
-<div class="section-action-group" style="margin-bottom:1rem;">
+<div class="settings-stack">
+<div class="asset-row asset-row--create">
+<div class="asset-row__info">
+<div class="asset-row__title">Create quick action</div>
+<div class="asset-row__status">Add reusable instructions for repeat follow-up work.</div>
+</div>
+<div class="asset-row__actions">
 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action"><button type="button" class="btn-primary btn-sm">New personal quick action</button></a>
 {% if is_manager %}<a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action"><button type="button" class="btn-secondary btn-sm">New team quick action</button></a>{% endif %}
 </div>
-<div class="settings-stack">
+</div>
 {% for quick_action in personal_quick_actions %}
 <div class="asset-row">
 <div class="asset-row__info">
@@ -1871,10 +1936,16 @@ padding: 1rem 0;
 <h2>Smart phrases</h2>
 <span class="settings-header__hint">Type /CESRF in a note line and press Enter or Tab to insert the phrase.</span>
 </div>
-<button type="button" class="btn-primary-sm" data-smart-phrase-new>New phrase</button>
 </div>
 
 <div class="panel panel--interactive" data-smart-phrase-settings>
+<div class="asset-row asset-row--create">
+<div class="asset-row__info">
+<div class="asset-row__title">Create smart phrase</div>
+<div class="asset-row__status">Add a slash trigger expansion for note editing.</div>
+</div>
+<div class="asset-row__actions"><button type="button" class="btn-primary-sm" data-smart-phrase-new>New phrase</button></div>
+</div>
 <label>Search smart phrases<input type="search" data-smart-phrase-search placeholder="Search trigger or expansion"></label>
 <div class="settings-stack" data-smart-phrase-list>
 {% for phrase in personal_smart_phrases|sort(attribute='trigger') %}
@@ -2535,6 +2606,9 @@ const tourOverlay = document.querySelector('[data-tour-overlay]');
           tabs.forEach((tab) => tab.setAttribute('aria-selected', tab.dataset.tabTarget === name ? 'true' : 'false'));
           panels.forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== name; });
           shell.dataset.activeTab = name;
+          if (document.body.classList.contains('home2')) {
+            shell.scrollTop = 0;
+          }
         }
         tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget)));
         activateTab(defaultTab);

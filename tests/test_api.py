@@ -9052,6 +9052,33 @@ def test_finalize_live_capture_with_pending_chunk_defers_preview_redaction(clien
     assert db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).count() == 0
 
 
+def test_finalize_live_capture_without_pending_chunks_marks_ready(client, db_session, make_team, make_user):
+    team = make_team(name="Live Empty Finalize Team")
+    owner = make_user(email="owner-live-empty-finalize@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live empty finalize",
+        current_draft_text_encrypted=None,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.recording,
+        next_live_chunk_sequence_no_applied=1,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="owner-live-empty-finalize@example.com", password="password-1")
+    finalized = client.post(f"/api/v1/transcripts/{transcript.id}/finalize-live-capture")
+
+    assert finalized.status_code == 200
+    assert finalized.json()["status"] == "ready"
+    refreshed = db_session.get(Transcript, transcript.id)
+    assert refreshed is not None
+    assert refreshed.status is TranscriptStatus.ready
+
+
 def test_finalize_live_capture_rejects_non_live_transcripts(client, db_session, make_team, make_user):
     team = make_team(name="Non Live Finalize Team")
     owner = make_user(email="owner-non-live-finalize@example.com", password="password-1", team=team, team_role=TeamRole.user)

@@ -186,7 +186,8 @@ For `live_chunked` sessions:
 - the same primary record control becomes live capture
 - mic activity visualizer beside record control uses current `MicVAD` frame stream for bar motion and flips red/green from current VAD speech state
 - the workspace keeps polling while live capture is active so newly applied transcript text appears without a manual refresh
-- when the tab is backgrounded during active speech, the browser pauses `MicVAD` to flush the current segment before background timer throttling can delay the forced split
+- when the tab is backgrounded, the browser pauses `MicVAD` to flush live capture before background timer throttling can delay chunking
+- when the tab is unloaded, the browser stops local mic state and sends a best-effort keepalive finalize request so already uploaded chunks are reconciled instead of leaving the transcript stuck in `recording`
 - status copy changes to live-specific text:
   - `Listening for speech...`
   - `Speech detected. Building live chunk...`

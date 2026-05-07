@@ -3651,6 +3651,11 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const beginAccumulatedTimer = () => {" in media_js
     assert "const finalizeAccumulatedTimer = () => {" in media_js
     assert "syncDisplayedDuration: renderTimer," in media_js
+    assert "handlePageLifecycleExit," in media_js
+    assert "void finalizeLiveCaptureIfNeeded({ keepalive: true });" in media_js
+    assert "captureController?.handlePageLifecycleExit?.();" in app_js
+    assert "finalizeLiveCapture: async ({ keepalive = false } = {}) => {" in app_js
+    assert "Tab moved to background. Flushing live capture before browser throttling can delay it..." in media_js
     assert "readActiveDraftText" in app_js
     assert "document.querySelectorAll('[data-legacy-note-workspace] .section-block')" in structured_js
     assert "row.className = 'statement-row';" in structured_js

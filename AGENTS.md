@@ -138,6 +138,18 @@ Do not skip checklist/checkpoint workflow.
 
 Every meaningful change needs relevant tests.
 
+Run pytest from the project virtualenv, not the system Python:
+
+```bash
+.venv/bin/pytest -q
+```
+
+For focused checks, keep the same virtualenv entrypoint:
+
+```bash
+.venv/bin/pytest -q tests/test_api.py -k "finalize_live_capture"
+```
+
 ### Add/update as applicable
 - unit tests
 - integration/API tests

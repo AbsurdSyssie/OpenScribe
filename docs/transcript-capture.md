@@ -215,6 +215,12 @@ For the other planned modes:
 - `whole_file` with file-upload source: the client uploads one file without live chunking
 - `whole_file` with microphone-batch source: the client keeps local voice-only segments with VAD pre/post buffer and uploads one batch at the end
 
+Lifecycle handling for `live_chunked`:
+
+- backgrounding the browser tab pauses `MicVAD` and flushes live capture before timer throttling can delay chunk upload
+- unloading the browser tab stops local mic state and sends a best-effort keepalive finalize request
+- finalize reconciles already uploaded chunks and prevents sessions from remaining in `recording` when no chunks are pending
+
 ### 5. User uploads a chunk
 
 The client sends the audio blob plus chunk metadata to the backend.
@@ -487,6 +493,7 @@ Implemented now for `live_chunked`:
 - backend worker audio normalization before provider submission
 - provider text append into `current_draft_text_encrypted` only when completed chunks can be applied in order
 - live hourly budgeting is now based on server-inspected audio duration, not trusted client form input
+- live finalize is used as the unload recovery path so already uploaded chunks are reconciled before the tab exits
 
 Planned start request additions:
 

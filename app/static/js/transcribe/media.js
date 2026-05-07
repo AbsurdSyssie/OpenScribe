@@ -518,7 +518,7 @@ export function createAudioCaptureController({
     throw new Error(lastMessage);
   };
 
-  const finalizeLiveCaptureIfNeeded = async () => {
+  const finalizeLiveCaptureIfNeeded = async ({ keepalive = false } = {}) => {
     const { transcriptId } = getState();
     if (!transcriptId || typeof finalizeLiveCapture !== 'function') {
       if (transcriptId) {
@@ -529,7 +529,7 @@ export function createAudioCaptureController({
     setVisibleStatus('transcribing');
     setSessionProgress('Finalizing live capture and checking redaction...');
     try {
-      await finalizeLiveCapture();
+      await finalizeLiveCapture({ keepalive });
       setSessionProgress('Live capture finalized. Review identified PII before generating notes.');
       scheduleWorkspaceRefreshBurst({ attempts: 45, minimumAttempts: 4 });
     } catch (error) {
@@ -1048,11 +1048,11 @@ export function createAudioCaptureController({
       });
     }
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden || captureMode !== 'live' || !liveVadInstance || liveStopRequested || !liveSpeechActive) {
+      if (!document.hidden || captureMode !== 'live' || !liveVadInstance || liveStopRequested) {
         return;
       }
       liveForceContinueRequested = true;
-      setSessionProgress('Tab moved to background. Flushing the current live speech segment before browser throttling can delay it...');
+      setSessionProgress('Tab moved to background. Flushing live capture before browser throttling can delay it...');
       try {
         liveVadInstance.pause();
       } catch (_) {
@@ -1063,8 +1063,39 @@ export function createAudioCaptureController({
     renderTimer();
   };
 
+  const handlePageLifecycleExit = () => {
+    const liveCaptureActive = (
+      captureMode === 'live'
+      && !liveStopRequested
+      && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+    );
+    if (!liveCaptureActive) {
+      return false;
+    }
+
+    liveStopRequested = true;
+    liveForceContinueRequested = false;
+    clearLiveChunkTimeout();
+    finalizeAccumulatedTimer();
+    if (timerId) {
+      window.clearInterval(timerId);
+      timerId = null;
+    }
+    setMicButtons(false);
+    setVisibleStatus('transcribing');
+    setSessionProgress('Browser is closing or unloading this tab. Finalizing live capture with uploaded chunks...');
+    try {
+      liveVadInstance?.pause();
+    } catch (_) {}
+    stopStreamTracks();
+    cleanupLiveVad();
+    void finalizeLiveCaptureIfNeeded({ keepalive: true });
+    return true;
+  };
+
   return {
     attachDomListeners,
+    handlePageLifecycleExit,
     syncDisplayedDuration: renderTimer,
     isCaptureUiActive: () => (
       (

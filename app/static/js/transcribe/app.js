@@ -1151,11 +1151,12 @@ import { csrfFetch } from '../csrf.js';
         },
         getDefaultMicStatusState: defaultMicStatusState,
         syncTranscriptTitleIfNeeded,
-        finalizeLiveCapture: async () => {
+        finalizeLiveCapture: async ({ keepalive = false } = {}) => {
           if (!transcriptId) return null;
           const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
             method: 'POST',
             credentials: 'include',
+            keepalive,
           });
           if (!response.ok) {
             throw new Error(await parseErrorMessage(response, 'Could not finalize live capture.'));
@@ -2051,6 +2052,7 @@ import { csrfFetch } from '../csrf.js';
       }).attach();
 
       window.addEventListener('pagehide', () => {
+        captureController?.handlePageLifecycleExit?.();
         clearWorkspaceRefreshBurst();
         closeWorkspaceEventSource();
         if (noteSaveTimer) {

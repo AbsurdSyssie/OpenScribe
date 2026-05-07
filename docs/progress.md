@@ -1,5 +1,95 @@
 # Progress
 
+## 2026-05-07 Agent Pytest Instruction
+
+### Scope
+
+- Added explicit `AGENTS.md` guidance to run pytest through `.venv/bin/pytest`.
+- Included full-suite and focused-test command examples.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: not needed, docs-only agent instruction change
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `AGENTS.md`: documents virtualenv pytest command.
+- `docs/progress.md`: records this docs-only change.
+
+### Tests
+
+- Not run; docs-only wording change.
+
+### Documentation
+
+- Updated `AGENTS.md` and this progress entry.
+
+### Risks / assumptions
+
+- Assumes project virtualenv remains at `.venv`.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no application behavior changed.
+- Ownership rules preserved: no authz behavior changed.
+- Deletion semantics preserved: no lifecycle behavior changed.
+- Provider rules preserved: no provider behavior changed.
+- Structured-note contract preserved: no structured output behavior changed.
+
+## 2026-05-07 Live Chunk Lifecycle Recovery
+
+### Scope
+
+- Hardened current `live_chunked` capture against background/unload browser behavior.
+- Backgrounding now pauses `MicVAD` even while listening, so capture flushes before browser timer throttling can stall chunking.
+- Page unload now stops local mic state and sends a best-effort keepalive finalize request so uploaded chunks are reconciled instead of leaving a stale `recording` session.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: sudden tab/process kill can still lose an unuploaded in-memory speech segment; true continuous resilience needs ASR/provider streaming or a browser-resumable local chunk queue.
+
+### Files changed
+
+- `app/static/js/transcribe/media.js`: adds lifecycle-exit handling and broadens background flush behavior.
+- `app/static/js/transcribe/app.js`: passes `keepalive` to live finalize and invokes media lifecycle cleanup on `pagehide`.
+- `tests/test_api.py`: adds finalize regression for live sessions with no pending chunks.
+- `tests/test_admin_ui.py`: locks frontend lifecycle wiring.
+- `docs/live_stt.md`, `docs/transcript-capture.md`, `docs/progress.md`: document lifecycle behavior and residual limits.
+
+### Tests
+
+- Added API coverage that live finalize moves a no-pending `recording` transcript to `ready`.
+- Added static frontend coverage for unload lifecycle finalize wiring.
+- `node --check app/static/js/transcribe/media.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/python -m py_compile tests/test_api.py tests/test_admin_ui.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "finalize_live_capture"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls"`: failed after the new lifecycle assertions on an existing `manual-pii` string assertion in `app.js`.
+
+### Documentation
+
+- Updated live STT and transcript capture docs with background/unload recovery behavior.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Browser `fetch(..., keepalive: true)` is best-effort; it cannot guarantee delivery after abrupt process death.
+- Raw live audio still remains browser-local until chunk upload; this preserves privacy but means an unuploaded current segment can be lost on hard unload.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only owner browser calls existing owner-only finalize; no transcript content exposed to admins/leaders.
+- Ownership rules preserved: no authz path changed; finalize still resolves transcript through owner check.
+- Deletion semantics preserved: no transcript-root or child cascade behavior changed.
+- Provider rules preserved: no STT provider resolution or secret handling changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-07 Recorded Upload Rollover Failure Handling
 
 ### Scope

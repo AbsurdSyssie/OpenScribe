@@ -121,6 +121,62 @@ def home_restyled_page(
     )
 
 
+@app.get("/home2", response_class=HTMLResponse)
+def home2_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    return_view: str = "",
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+    tab: str | None = None,
+    modal: str | None = None,
+    team_template_id: str | None = None,
+    personal_template_id: str | None = None,
+    team_quick_action_id: str | None = None,
+    personal_quick_action_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if modal in {"personal-template", "team-template"}:
+        scope = "team" if modal == "team-template" else "personal"
+        selected_template_id = team_template_id if scope == "team" else personal_template_id
+        return RedirectResponse(
+            url=_home_template_editor_url(
+                scope=scope,
+                template_id=selected_template_id,
+                return_view=return_view or "home2",
+                queued_transcript_id=queued_transcript_id,
+                transcribe_tab=transcribe_tab,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_template_id=team_template_id,
+        selected_personal_template_id=personal_template_id,
+        selected_team_quick_action_id=team_quick_action_id,
+        selected_personal_quick_action_id=personal_quick_action_id,
+        message=message,
+        message_kind=safe_message_kind,
+        queued_transcript_id=queued_transcript_id,
+        active_home_tab=tab,
+        active_home_modal=modal,
+        template_name="home.html",
+        home_page_route="/home2",
+        home_return_view=_home_return_view_value(return_view or "home2"),
+        transcribe_return_tab=transcribe_tab,
+        home_style_variant="home2",
+    )
+
+
 @app.get("/home/templates/editor", response_class=HTMLResponse)
 def home_template_editor_page(
     request: Request,

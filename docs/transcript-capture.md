@@ -63,14 +63,17 @@ Characteristics:
 
 ### 2. Microphone batch transcription
 
-User records from the microphone locally, then submits the whole captured recording as one batch at the end.
+User records from the microphone locally. The browser normally submits captured voice audio when the user stops, but it rolls over before the local WAV approaches the whole-file upload limits: the current part is sent to the normal whole-file transcription endpoint and capture restarts for the same transcript only after that part is accepted. Each queued part carries the transcript id captured at recording time, so delayed uploads cannot drift to a newly selected consultation.
 
 Characteristics:
 
-- one logical recording session
-- upload occurs after stop rather than during recording
+- one logical recording session with one or more uploaded recording parts
+- upload occurs after stop, or automatically during recording when a part approaches size/duration limits
 - backend still normalizes audio before STT submission
 - useful when low latency is not required
+- if the server still has a whole-file job in progress, the browser keeps the next part in memory and retries so the existing one-job-at-a-time backend rule is preserved
+- if a rollover part cannot upload, capture stops instead of recording later audio that would create a silent transcript gap after the failed part
+- workspace refreshes must keep the local microphone control in the active `Stop` state while batch capture or rollover restart is still running, even though this mode is not live chunked capture
 
 ### 3. Live chunked transcription
 
@@ -472,6 +475,7 @@ Implemented now for `live_chunked`:
 - `chunk_sequence_no`
 - optional `declared_duration_seconds`
 - `1 request/second` rate limiting per authenticated user/session bucket
+- browser-side live upload pacing at `1100ms` between request starts plus short same-sequence retry on route-level `429`
 - rolling hourly audio budgeting per authenticated owner, default `3600` uploaded seconds/hour
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `live_chunked`

@@ -266,6 +266,43 @@ def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, mak
     assert "/home-restyled?tab=templates" in response.text
 
 
+def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, make_team, make_user):
+    team = make_team(name="Clinic Home2")
+    make_user(email="home2-user@example.com", password="password-1", team=team)
+    make_user(email="home2-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": "home2-user@example.com", "password": "password-1"}, follow_redirects=False)
+    user_response = client.get("/home2")
+
+    assert user_response.status_code == 200
+    assert "Your OpenScribe home" in user_response.text
+    assert 'class="home2"' in user_response.text
+    assert "_home2_admin2_style" not in user_response.text
+    assert 'data-tab-target="templates"' in user_response.text
+    assert 'data-tab-target="team-management"' not in user_response.text
+    assert 'name="return_view" value="home2"' in user_response.text
+    assert "/home2?tab=templates" in user_response.text
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": "home2-leader@example.com", "password": "password-2"}, follow_redirects=False)
+    leader_response = client.get("/home2")
+
+    assert leader_response.status_code == 200
+    assert 'data-tab-target="ai-services"' in leader_response.text
+    assert 'data-tab-target="team-management"' in leader_response.text
+    assert "Choose speech and writing services for your team." in leader_response.text
+
+
+def test_home2_blocks_system_admins_from_user_home(client, make_user):
+    make_user(email="home2-admin@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "home2-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.get("/home2", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+
+
 def test_leader_home_separates_ai_services_from_team_member_admin(client, make_team, make_user, make_stt_config, make_llm_config):
     team = make_team(name="Clinic Services Split")
     admin = make_user(email="services-admin@example.com", password="password-2", is_system_admin=True)
@@ -1944,18 +1981,42 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-tour-scrim="top"' in page.text
     assert 'data-tour-scrim="right"' in page.text
     assert "background: var(--accent);" in page.text
-    assert "https://unpkg.com/lucide@1.8.0" in page.text
+    assert 'src="/static/vendor/lucide/1.8.0/lucide.min.js"' in page.text
     assert 'data-lucide="mic"' in page.text
     assert 'data-lucide="upload"' in page.text
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
     assert 'data-route-base="/transcribe"' in page.text
     assert 'data-workspace-stream-endpoint="' in page.text
-    assert "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js" in page.text
-    assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
+    assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
+    assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
     assert 'src="/static/js/transcribe/app.js?v=20260505-pii-source-visible"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_user):
+    team = make_team(name="Clinic Mobile")
+    make_user(
+        email="mobile-user@example.com",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+
+    client.post(
+        "/login",
+        data={"email": "mobile-user@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    page = client.get("/transcribe")
+
+    assert page.status_code == 200
+    assert "/static/css/transcribe-mobile.css" in page.text
+    assert "/static/js/transcribe/mobile.js" in page.text
+    assert 'data-workspace-endpoint="' in page.text
 
 
 def test_user_transcribe_page_namespaces_legacy_note_tabs(client, make_team, make_user):
@@ -3574,6 +3635,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
     sidebar_html = (root / "app" / "templates" / "transcribe" / "_sidebar.html").read_text(encoding="utf-8")
     head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+    shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
     assert "const generateOutputTemplateSelect = document.querySelector('[data-template-select]');" in app_js
     assert "const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';" in actions_js
@@ -4158,6 +4220,39 @@ def test_user_transcribe_page_reloads_persisted_structured_emis_context(
     assert 'name="context_problem"' in page.text
     assert "Known asthma" in page.text
     assert "Peak flow diary" in page.text
+
+
+def test_recorded_upload_microphone_rolls_over_before_whole_file_limits():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
+    capture_docs = (root / "docs" / "transcript-capture.md").read_text(encoding="utf-8")
+
+    assert "const batchRolloverMaxDurationMs = 12 * 60 * 1000;" in app_js
+    assert "const batchRolloverMaxBytes = 22 * 1024 * 1024;" in app_js
+    assert "batchRolloverConflictRetryMs," in app_js
+    assert "batchForceRolloverRequested = true;" in media_js
+    assert "void rolloverMicrophoneBatchCapture();" in media_js
+    assert "batchRolloverUploadPending = true;" in media_js
+    assert "const uploaded = await queueMicrophoneBatchUpload(blob, { rollover: true, transcriptId });" in media_js
+    assert "if (!uploaded) {" in media_js
+    assert "No later audio was recorded after the failed part." in media_js
+    assert "batchSpeechSegments = [];" in media_js
+    assert "await restartMicrophoneBatchAfterRollover();" in media_js
+    assert "batchCaptureGeneration !== restartGeneration" in media_js
+    assert "Previous recording part is still transcribing. Holding the next part locally, then retrying..." in media_js
+    assert "const transcriptId = activeBatchTranscriptId();" in media_js
+    assert "return true;" in media_js
+    assert "return false;" in media_js
+    assert "await queueMicrophoneBatchUpload(blob, { transcriptId });" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });" in media_js
+    assert "`/api/v1/transcripts/${uploadTranscriptId}/audio-file`" in media_js
+    assert "uploadBatchAudio: async (blob, { transcriptId: uploadTranscriptId = transcriptId } = {}) => {" in app_js
+    assert "isCaptureUiActive: () => (" in media_js
+    assert "setMicButtons(isCaptureUiActive());" in app_js
+    assert "captureController?.isCaptureUiActive?.()" in app_js
+    assert "capture restarts for the same transcript only after that part is accepted" in capture_docs
+    assert "capture stops instead of recording later audio" in capture_docs
 
 
 def test_user_transcribe_page_exposes_workspace_api_endpoint(

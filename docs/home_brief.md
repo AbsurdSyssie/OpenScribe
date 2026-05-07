@@ -12,6 +12,8 @@ Goal:
 
 System admin flow is out of scope here because system admins are redirected away from this page into admin-specific UI.
 
+`/home2` is a user/team-leader preview of the same Home capabilities with Admin2-style dark workspace styling. It uses the same data, form handlers, and role gates as `/home`; only route chrome and CSS differ. Its section tabs live in the left sidebar, signed-in identity sits under the sidebar title, and the speech/writing/template summary is docked at the bottom of that sidebar. Section create actions sit inside their list/panel areas instead of floating above them.
+
 ## Audience Split
 
 ### Shown to normal users and leaders

@@ -94,6 +94,8 @@ Recommended initial constants:
 - trailing silence trimmed after a normal pause: `1000ms`
 - forced chunk flush: `30000ms`
 - minimum speech duration before sending: `400ms`
+- minimum spacing between live chunk upload attempts: `1100ms`
+- retry delay after a live chunk `429`: `1200ms`
 
 These values are intentionally conservative and easy to adjust after real clinical testing.
 
@@ -162,6 +164,7 @@ The live browser path uses existing owner-only routes:
 The live chunk upload route is rate-limited to `1 request/second` per authenticated user/session bucket.
 Live chunk queueing also enforces a rolling hourly declared-audio budget per authenticated owner, defaulting to `3600` uploaded seconds per hour via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS`.
 Each queued live chunk now persists `source_audio_size_bytes` and `declared_duration_seconds` for later usage reporting.
+The browser paces live uploads so request starts are at least `1100ms` apart and retries a `429` response with the same `chunk_sequence_no` before surfacing failure.
 
 No new transcript-content visibility is introduced.
 
@@ -183,6 +186,7 @@ For `live_chunked` sessions:
 - the same primary record control becomes live capture
 - mic activity visualizer beside record control uses current `MicVAD` frame stream for bar motion and flips red/green from current VAD speech state
 - the workspace keeps polling while live capture is active so newly applied transcript text appears without a manual refresh
+- when the tab is backgrounded during active speech, the browser pauses `MicVAD` to flush the current segment before background timer throttling can delay the forced split
 - status copy changes to live-specific text:
   - `Listening for speech...`
   - `Speech detected. Building live chunk...`
@@ -195,6 +199,7 @@ For `live_chunked` sessions:
 
 If a live chunk upload fails:
 
+- transient route-level `429` responses are retried briefly with the same sequence number
 - the browser should stop active capture
 - the UI should surface the error clearly
 - the transcript remains owner-only and in its existing backend state

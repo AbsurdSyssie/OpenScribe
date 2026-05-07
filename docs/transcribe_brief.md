@@ -343,6 +343,7 @@ The redesign must preserve:
 - some is editable draft state
 - some is generated artifact history
 - the UI should make those differences obvious without losing flow
+- on narrow screens, the recent-consultation rail may collapse into an off-canvas drawer so the owner workspace remains usable without changing any content access or transcript-root behavior
 
 ## Recommended use of this brief
 

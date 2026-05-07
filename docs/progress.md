@@ -1,5 +1,312 @@
 # Progress
 
+## 2026-05-07 Recorded Upload Rollover Failure Handling
+
+### Scope
+
+- Fixed recorded-upload rollover so capture resumes only after the current part upload succeeds.
+- If a rollover part upload fails, capture stops and no later audio is recorded after the failed part.
+- Stop clicks during an in-flight rollover upload now wait for that upload instead of submitting the same segment twice.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser-held rollover parts are still not durable across refresh/tab close before upload succeeds
+
+### Files changed
+
+- `app/static/js/transcribe/media.js`: makes rollover upload return success/failure, waits before restart, stops on failed rollover upload, and guards stop-during-rollover duplicate upload.
+- `tests/test_admin_ui.py`: extends static rollover regression coverage for wait-before-restart and failed-upload stop behavior.
+- `docs/transcript-capture.md`, `docs/progress.md`: document failure handling.
+
+### Tests
+
+- Updated static UI coverage to verify rollover waits for upload result and stops instead of continuing after failed upload.
+
+### Documentation
+
+- Updated capture docs and this progress entry.
+
+### Risks / assumptions
+
+- Browser memory still holds in-flight parts only while the tab remains open.
+- Non-409 upload failures stop capture rather than silently retrying forever.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: audio still uploads only through existing authenticated transcript endpoints; no content logs added.
+- Ownership rules preserved: rollover parts still use captured transcript ids and server-side owner checks.
+- Deletion semantics preserved: no transcript root or cascade behavior changed.
+- Provider rules preserved: existing team STT selection and whole-file processing path remain unchanged.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-06 Recorded Upload Rollover
+
+### Scope
+
+- Added recorded-upload microphone rollover before browser-captured WAV parts approach whole-file upload limits.
+- Current recording part is queued to the existing owner-only whole-file transcription endpoint, then capture restarts for the same transcript.
+- If backend still has a file job in progress, browser holds next part in memory and retries instead of bypassing server lifecycle rules.
+- Fixed rollover stop/upload races so post-stop restart continuations abort and queued blobs keep their original transcript id.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser-held rollover parts are not durable across refresh/tab close before upload succeeds
+
+### Files changed
+
+- `app/static/js/transcribe/media.js`: adds batch rollover thresholds, forced VAD pause/restart, queued upload retry on active-job conflicts, post-await stop abort, and captured transcript id upload binding.
+- `app/static/js/transcribe/app.js`: wires main consultation rollover config below whole-file server caps and lets dictation uploads use captured transcript ids.
+- `tests/test_admin_ui.py`: adds static regression checks for rollover config, upload retry behavior, stop-race guard, and transcript id binding.
+- `docs/transcript-capture.md`, `docs/api.md`, `docs/transcribe-playwright-checklist.md`, `docs/progress.md`: document rollover behavior and test checklist.
+
+### Tests
+
+- Added static UI coverage for rollover threshold config, forced split/restart, existing endpoint reuse, active-job retry messaging, post-stop restart abort, and queued upload transcript binding.
+
+### Documentation
+
+- Updated capture/API/checklist docs and this progress entry.
+
+### Risks / assumptions
+
+- Assumes normal worker ordering processes same-transcript whole-file jobs in acceptable order once backend active-job guard clears.
+- Browser memory queue protects active capture and captured transcript routing, but refresh/tab close can lose a part that has not yet uploaded.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: audio parts use existing owner-only upload path and captured transcript ids; no transcript text or note content logs added.
+- Ownership rules preserved: server still resolves authenticated owner and transcript before queueing each part; client no longer retargets delayed blobs to a changed active consultation.
+- Deletion semantics preserved: all jobs remain children of the same transcript root and existing cascade behavior applies.
+- Provider rules preserved: each part uses existing team STT selection/resolution and credential checks.
+- Structured-note contract preserved: no EMIS/generated-document JSON contract changed.
+
+## 2026-05-06 Mobile Transcribe Layout
+
+### Scope
+
+- Added mobile presentation rules for `/transcribe`.
+- Added mobile sidebar controller so recent consultations become an off-canvas drawer below `768px`.
+- Kept change frontend-only.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: manual browser pass on 390px, 430px, and tablet widths still recommended.
+
+### Files changed
+
+- `app/templates/transcribe.html`: loads mobile CSS and JS assets.
+- `app/static/css/transcribe-mobile.css`: responsive layout rules for mobile workspace, controls, tabs, toasts, and note rows.
+- `app/static/js/transcribe/mobile.js`: off-canvas consultation drawer behavior and accessibility state.
+- `tests/test_admin_ui.py`: verifies mobile assets are included on `/transcribe`.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document mobile layout behavior.
+
+### Tests
+
+- Added transcribe page smoke assertion for mobile CSS/JS assets and workspace endpoint marker.
+
+### Documentation
+
+- Transcribe brief now notes mobile off-canvas rail behavior.
+- Progress note added.
+
+### Risks / assumptions
+
+- Assumes current desktop sidebar should become an off-canvas drawer below `768px`.
+- Manual visual testing is still needed on real mobile/tablet devices.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content access path or logging changed.
+- Ownership rules preserved: existing owner-only transcribe route and workspace APIs unchanged.
+- Deletion semantics preserved: existing selected-session delete form and transcript-root cascade unchanged.
+- Provider rules preserved: STT/LLM/de-identification selection and secret handling unchanged.
+- Structured-note contract preserved: EMIS keys and generated-document JSON behavior unchanged.
+
+## 2026-05-06 Home2 Spacing And Section Polish
+
+### Scope
+
+- Tightened `/home2` vertical spacing.
+- Moved signed-in identity into the sidebar top area and removed the overview helper copy from `/home2`.
+- Restyled section headers to follow `/admin2` section-head spacing.
+- Moved Templates, Quick actions, and Smart phrases create buttons into their list/panel areas.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: no new tests for styling-only template polish.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/templates/home.html`: adjusts `/home2` sidebar identity and moves create actions into section bodies.
+- `app/templates/_home2_admin2_style.html`: tightens Home2 layout, hides empty topbar, adds Admin2-style section headers and list rows.
+- `docs/home_brief.md`, `docs/progress.md`: document Home2 chrome behavior.
+
+### Tests
+
+- Existing `/home2` access tests cover role gates; local run status recorded in final response.
+
+### Documentation
+
+- Home brief now documents sidebar identity and create actions inside content areas.
+
+### Risks / assumptions
+
+- Presentation-only change; normal `/home` layout remains gated by variant conditionals.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content fields or visibility paths changed.
+- Ownership rules preserved: route and role gates unchanged.
+- Deletion semantics preserved: no delete, retention, or cascade path changed.
+- Provider rules preserved: provider labels already visible to current user are only repositioned.
+- Structured-note contract preserved: no generated-document or EMIS behavior changed.
+
+## 2026-05-06 Home2 Sidebar Navigation Polish
+
+### Scope
+
+- Moved `/home2` section tabs into the left sidebar.
+- Docked the speech service, writing assistant, and template summary at the bottom-left of the sidebar.
+- Adjusted `/home2` main content spacing to more closely match `/admin2`.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: no new tests for styling-only template restructure.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/templates/home.html`: renders `/home2` tabs and service summary inside sidebar while keeping normal `/home` layout unchanged.
+- `app/templates/_home2_admin2_style.html`: makes sidebar nav vertical and docks compact service summary at sidebar bottom.
+- `docs/home_brief.md`, `docs/progress.md`: document `/home2` sidebar behavior.
+
+### Tests
+
+- Existing `/home2` access tests cover route/role gates; local run status recorded in final response.
+
+### Documentation
+
+- Home brief now notes `/home2` sidebar tabs and bottom-docked service summary.
+
+### Risks / assumptions
+
+- This is presentation-only. Existing forms still post to existing `/home/...` handlers.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content fields or visibility paths changed.
+- Ownership rules preserved: route and role gates unchanged.
+- Deletion semantics preserved: no delete, retention, or cascade path changed.
+- Provider rules preserved: only provider labels already visible to user/leader are repositioned.
+- Structured-note contract preserved: no generated-document or EMIS behavior changed.
+
+## 2026-05-06 Live Capture Throttle Hardening
+
+### Scope
+
+- Hardened browser live capture against route-level burst throttling and active-speech tab backgrounding.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: no new JS harness exists for `app/static/js/transcribe`; existing API tests could not run because local `pytest` is unavailable.
+- Docs added/updated: yes.
+- Open issues: browser background recording remains subject to browser/OS microphone and timer policies.
+
+### Files changed
+
+- `app/static/js/transcribe/media.js`: paces live chunk uploads, retries `429` with same sequence number, and flushes active speech when tab is hidden.
+- `app/static/js/transcribe/app.js`: passes live pacing/retry timing constants into capture controllers.
+- `docs/live_stt.md`, `docs/transcript-capture.md`: document live upload pacing, retry, and background flush behavior.
+- `docs/progress.md`: records change.
+
+### Tests
+
+- JS syntax checks passed for `app/static/js/transcribe/media.js` and `app/static/js/transcribe/app.js`.
+- Existing live chunk API rate-limit coverage remains the server guard for `1 request/second` enforcement, but could not run locally because `pytest` is not installed in this environment.
+- Manual-code inspection covers frontend-only pacing because no JS test runner/package manifest exists in repo.
+
+### Documentation
+
+- Live STT and transcript capture docs now state client pacing, short `429` retry, and active-speech background flush.
+
+### Risks / assumptions
+
+- This reduces accidental burst `429` and foreground-to-background loss, but cannot guarantee continuous recording if browser/OS suspends microphone capture for hidden tabs.
+- Retry is intentionally short and same-sequence only; no persisted per-chunk retry queue was added.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content visibility or logging added.
+- Ownership rules preserved: owner-only upload route and sequence checks unchanged.
+- Deletion semantics preserved: no transcript root, cascade, retention, or job deletion behavior changed.
+- Provider rules preserved: STT provider resolution and Vault-backed credential handling unchanged.
+- Structured-note contract preserved: no generated-document or EMIS behavior changed.
+
+## 2026-05-06 Home2 Admin2-Styled Preview
+
+- Added `/home2` as user/team-leader Home preview with Admin2-style dark shell and shared home capabilities.
+
+### Scope
+
+- `/home2` renders existing Home tabs/actions for normal users and team leaders.
+- System admins remain redirected to `/admin`.
+- Home return-view handling now supports `home2` so form redirects can return to `/home2`.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: verification result recorded in final response.
+
+### Files changed
+
+- `app/routes/web_home_transcribe.py`: adds `/home2` route using same Home context and access rules.
+- `app/web/presentation.py`: adds `home2` return-view and style variant support.
+- `app/templates/home.html`: includes optional Home2 style partial and body marker.
+- `app/templates/_home2_admin2_style.html`: adds Admin2-inspired dark styling for existing Home markup.
+- `tests/test_admin_ui.py`: covers normal user, team leader, and system-admin `/home2` access.
+- `docs/home_brief.md`: documents `/home2` as styling-only Home preview.
+- `docs/progress.md`: records change.
+
+### Tests
+
+- `/home2` renders for normal users with personal Home tabs and `return_view=home2`.
+- `/home2` renders for team leaders with AI services and team-management tabs.
+- `/home2` redirects system admins to `/admin`.
+
+### Documentation
+
+- Home brief notes `/home2` uses same Home data/actions/role gates with Admin2 styling.
+
+### Risks / assumptions
+
+- `/home2` is a preview route; backend forms still post to existing `/home/...` handlers.
+- CSS is shared by inclusion inside existing CSP-nonced Home style block, not as external static CSS.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content fields or visibility paths changed.
+- Ownership rules preserved: route uses same `render_home` services and role-scoped lists as `/home`.
+- Deletion semantics preserved: delete forms still use existing explicit `/home/.../delete` POST routes.
+- Provider rules preserved: service selection display and updates still use existing provider selection services.
+- Structured-note contract preserved: template editor/EMIS section handling unchanged.
+
 ## 2026-05-05 Admin2 Preview Route
 
 - Follow-up parity pass: admin2 now exposes user lifecycle/recovery/delete forms, account-request approval fields, provider inspect/test/delete/create forms, provider selection clear actions, de-identification assignment controls, and default asset creation forms while keeping the dark inline-expanded design.

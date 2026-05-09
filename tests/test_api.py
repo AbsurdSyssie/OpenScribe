@@ -92,7 +92,7 @@ from app.services.content_crypto import (
 )
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
-from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
+from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
@@ -1424,6 +1424,54 @@ def test_owner_can_upload_and_edit_post_consultation_dictation(
     assert refreshed.json()["combined_edited_text_encrypted"] == ""
 
 
+def test_owner_can_preview_post_consultation_dictation_without_persisting(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Dictation Preview")
+    admin = make_user(email="admin-dictation-preview@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-dictation-preview@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-dictation-preview@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Dictation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.dictations.transcribe_with_team_stt",
+        lambda db, **kwargs: "Preview-only clinician summary.",
+    )
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Preview Dictation"})
+    transcript_id = transcript_created.json()["id"]
+
+    preview = client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+    assert preview.status_code == 200
+    assert preview.json() == {"text": "Preview-only clinician summary."}
+    assert db_session.scalar(select(PostConsultationDictation).where(PostConsultationDictation.transcript_id == UUID(transcript_id))) is None
+    assert db_session.scalar(select(PostConsultationDictationSegment)) is None
+
+    client.post("/auth/logout")
+    login(client, email=other.email, password="password-3")
+    forbidden = client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
 def test_post_consultation_dictation_upload_requires_dictation_stt_selection(
     client,
     make_team,
@@ -1454,6 +1502,42 @@ def test_post_consultation_dictation_upload_requires_dictation_stt_selection(
     )
     assert_error(
         uploaded,
+        status_code=422,
+        code="business_rule_violation",
+        message="No active STT selection for team and purpose",
+    )
+
+
+def test_post_consultation_dictation_preview_requires_dictation_stt_selection(
+    client,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Missing Dictation Preview STT")
+    admin = make_user(email="admin-missing-dictation-preview@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-missing-dictation-preview@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Conversation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Consultation Dictation"})
+    transcript_id = transcript_created.json()["id"]
+
+    preview = client.post(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file",
+        files={"audio": ("dictation.mp3", b"raw-dictation", "audio/mpeg")},
+    )
+    assert_error(
+        preview,
         status_code=422,
         code="business_rule_violation",
         message="No active STT selection for team and purpose",
@@ -3068,6 +3152,108 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
     )
 
 
+def test_clinical_detection_chunks_long_local_analyze_requests(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_clinical_nlp_selection,
+):
+    from app.services.clinical_nlp import CLINICAL_NLP_MAX_CHUNK_CHARS
+
+    team = make_team(name="Clinic Chunked Clinical NLP")
+    admin = make_user(email="clinical-chunk-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-chunk-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Chunked OpenMedNER",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="http://localhost:8090",
+        detect_path="/analyze",
+        auth_mode=DeidentificationAuthMode.none,
+        response_entities_path="entities",
+        response_type_field="label",
+        response_score_field="confidence",
+        clinical_detection_enabled=True,
+        clinical_detection_allow_unredacted=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    source_text = ("Patient has asthma. " * 800).strip()
+    assert len(source_text) > CLINICAL_NLP_MAX_CHUNK_CHARS
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Chunked clinical NLP",
+        current_draft_text_encrypted=source_text,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext=source_text,
+    )
+    db_session.commit()
+
+    captured_bodies = []
+
+    class FakeClinicalResponse:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            start = self.body["text"].index("asthma")
+            return {"entities": [{"start": start, "end": start + len("asthma"), "label": "DISEASE", "confidence": 0.97}]}
+
+    def fake_post(url, json, headers, timeout):
+        captured_bodies.append(json)
+        return FakeClinicalResponse(json)
+
+    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+
+    run = ensure_clinical_entity_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert run is not None
+    assert run.status is RedactionRunStatus.succeeded
+    assert run.entity_count == len(captured_bodies)
+    assert len(captured_bodies) >= 2
+    assert all(len(body["text"]) <= CLINICAL_NLP_MAX_CHUNK_CHARS for body in captured_bodies)
+    assert all(body["sentence_detection"] is False for body in captured_bodies)
+    db_session.flush()
+    entities = list(db_session.scalars(select(ClinicalEntity).where(ClinicalEntity.clinical_entity_run_id == run.id)))
+    assert len(entities) == len(captured_bodies)
+    assert all(clinical_entity_value(db_session, entity=entity) == "asthma" for entity in entities)
+
+
+def test_clinical_text_chunks_keep_offsets_and_sentence_boundaries():
+    from app.services.clinical_nlp import _clinical_text_chunks
+
+    text = "Alpha asthma. Beta diabetes. Gamma chest pain. Delta cough."
+    chunks = _clinical_text_chunks(text, max_chars=28)
+
+    assert chunks == [
+        (0, "Alpha asthma."),
+        (14, "Beta diabetes."),
+        (29, "Gamma chest pain."),
+        (47, "Delta cough."),
+    ]
+
+
 def test_clinical_detection_reruns_after_provider_config_update(
     db_session,
     monkeypatch,
@@ -4489,6 +4675,99 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     assert "John Smith should book blood tests." not in captured["user_message"]
     assert processed.title == "John Smith review"
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should book review."
+
+
+def test_process_generated_document_redacts_dictation_only_session_before_provider_call(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Dictation Only Redaction")
+    admin = make_user(email="admin-dictation-only-redaction@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-dictation-only-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Dictation only note", prompt_text="Write a note.")
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Dictation-only session",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="John Smith needs blood tests.")
+
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    assert transcript_version is not None
+
+    empty_provider_calls = []
+
+    def reject_empty_persistent_redaction(db, text: str, *, provider, start_index: int = 1):
+        empty_provider_calls.append(text)
+        if not text.strip():
+            raise AssertionError("empty transcript text should not be sent to de-identification provider")
+        return {
+            "redacted_text": text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": provider.label,
+            "api_model_or_version": None,
+        }
+
+    monkeypatch.setattr("app.services.redaction.redact_text_with_mapping", reject_empty_persistent_redaction)
+
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
+        if DICTATION_SOURCE_SPLIT_MARKER in text:
+            return {
+                "redacted_text": f"{DICTATION_SOURCE_SPLIT_MARKER}[PHI-1] needs blood tests.",
+                "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
+                "phi_index": [{"index": 1, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]"}],
+                "phi_count": 1,
+                "api_provider": "native_presidio",
+                "api_model_or_version": "en_core_web_sm",
+            }
+        return {
+            "redacted_text": text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured["user_message"] = kwargs["user_message"]
+        return (
+            '{"title":"Dictation only","content":"[PHI-1] needs blood tests."}',
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert empty_provider_calls == []
+    assert "Post-consultation dictation:\n[PHI-1] needs blood tests." in captured["user_message"]
+    assert "John Smith needs blood tests." not in captured["user_message"]
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith needs blood tests."
 
 
 def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
@@ -7571,12 +7850,12 @@ def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
     assert response.status_code == 200
     payload = response.json()
     expected_transcript_entities = [
-        {"id": None, "entity_type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]", "occurrence_count": 1, "source": "detected"},
-        {"id": None, "entity_type": "PHONE_NUMBER", "value": "07123 456789", "placeholder": "[PHI-2]", "occurrence_count": 1, "source": "detected"},
+        {"id": None, "entity_type": "PERSON", "value": "John Smith", "has_value": True, "placeholder": "[PHI-1]", "occurrence_count": 1, "source": "detected"},
+        {"id": None, "entity_type": "PHONE_NUMBER", "value": "07123 456789", "has_value": True, "placeholder": "[PHI-2]", "occurrence_count": 1, "source": "detected"},
     ]
     expected_document_entities = [
-        {"entity_type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]", "occurrence_count": 1},
-        {"entity_type": "PHONE_NUMBER", "value": "07123 456789", "placeholder": "[PHI-2]", "occurrence_count": 1},
+        {"entity_type": "PERSON", "has_value": True, "placeholder": "[PHI-1]", "occurrence_count": 1},
+        {"entity_type": "PHONE_NUMBER", "has_value": True, "placeholder": "[PHI-2]", "occurrence_count": 1},
     ]
     assert payload["active_transcript_pii_entities"] == expected_transcript_entities
     assert payload["active_transcript_redaction_status"] == {
@@ -8282,7 +8561,7 @@ def test_transcript_input_mode_can_switch_only_for_blank_idle_owner_session(clie
         blocked,
         status_code=409,
         code="business_rule_violation",
-        message="Switch input mode before recording, uploading, or adding transcript content",
+        message="Wait for the current session transcription to finish before switching input mode",
     )
 
     client.post("/api/v1/auth/logout")
@@ -8333,7 +8612,9 @@ def test_transcript_start_rejects_second_empty_latest_session_until_content_exis
     latest = db_session.get(Transcript, first_id)
     assert latest is not None
     latest.status = TranscriptStatus.ready
+    job.status = TranscriptIngestionJobStatus.applied
     db_session.add(latest)
+    db_session.add(job)
     db_session.commit()
 
     allowed = client.post("/api/v1/transcripts/start", json={"title": "Second", "ingestion_mode": "whole_file"})
@@ -9378,7 +9659,7 @@ def test_processing_live_audio_chunk_requires_active_team_stt_selection(client, 
         queued,
         status_code=422,
         code="business_rule_violation",
-        message="No active STT selection for team",
+        message="No active STT selection for team and purpose",
     )
 
 
@@ -10783,7 +11064,7 @@ def test_processing_audio_file_requires_active_team_stt_selection(client, make_t
         response,
         status_code=422,
         code="business_rule_violation",
-        message="No active STT selection for team",
+        message="No active STT selection for team and purpose",
     )
 
 

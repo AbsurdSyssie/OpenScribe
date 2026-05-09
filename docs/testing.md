@@ -251,6 +251,10 @@ What it does:
 - owner transcription workspace exposing API-driven new-session and selected-session delete hooks
 - owner transcription workspace marking non-empty transcript sessions for client-side delete confirmation without rendering transcript text in the session rail
 - owner transcription workspace rendering detected and owner-created manual PII in a bounded right-side table next to the transcript content
+- owner transcription workspace rendering post-consultation dictation as a modal recording/editing flow plus compact separate-source history block
+- owner transcription workspace dictation modal making the primary recording button stop active capture, moving pause/resume into a small icon button, automatically preview-transcribing recorded dictation on stop, and keeping failed preview audio retryable locally
+- post-consultation dictation preview STT returning text without persisting dictation rows/segments, while preserving owner-only auth, size/duration limits, and dictation STT selection requirements
+- dictation-only note generation allowing an empty transcript snapshot when saved dictation exists and redacting dictation before the LLM provider call
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active

@@ -419,6 +419,8 @@ Current generation behavior:
 - clinical NLP snapshots are created beside successful redaction runs when the team has selected a clinical NLP endpoint:
   - `clinical_entity_runs` records owner/team/transcript/version scope, provider snapshot metadata, status, and whether the submitted source text was redacted
   - `clinical_entities` stores detected disease/symptom values encrypted per owner, with owner-keyed normalized hashes for duplicate matching
+  - long clinical NLP payloads are split into bounded text chunks before generic REST calls; returned spans are offset back into the original transcript text before persistence
+  - local `/analyze` clinical endpoints default to `sentence_detection=false` unless the provider config explicitly supplies that field, avoiding observed long-input timeouts on the OpenMedNER dev service
   - deleting a clinical NLP provider clears active clinical NLP selections and preserves historical clinical runs by setting their provider reference to null
   - clinical detection failure does not expose provider output or transcript text through admin routes
 - a dev-only verification endpoint now exists for localhost seeded test accounts:

@@ -24,7 +24,7 @@ from .auth import (
     TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
-from .dictation import PostConsultationDictationDetail, PostConsultationDictationUpdate
+from .dictation import PostConsultationDictationDetail, PostConsultationDictationPreview, PostConsultationDictationUpdate
 from .deidentification import (
     ClinicalNlpSelectionDetail,
     ClinicalNlpSelectionUpsert,
@@ -112,6 +112,7 @@ __all__ = [
     "ClinicalNlpSelectionUpsert",
     "CurrentUserResponse",
     "PostConsultationDictationDetail",
+    "PostConsultationDictationPreview",
     "PostConsultationDictationUpdate",
     "DeidentificationInspectEntity",
     "DeidentificationInspectFieldTip",

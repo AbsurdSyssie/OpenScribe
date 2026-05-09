@@ -72,6 +72,7 @@ from .schemas import (
     DefaultPromptTemplateUpsert,
     DefaultQuickActionUpsert,
     PostConsultationDictationDetail,
+    PostConsultationDictationPreview,
     PostConsultationDictationUpdate,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
@@ -229,6 +230,7 @@ from .services.dictations import (
     append_post_consultation_dictation_audio,
     dictation_detail_response,
     get_post_consultation_dictation,
+    transcribe_post_consultation_dictation_audio,
     update_post_consultation_dictation,
 )
 from .services.admin import (

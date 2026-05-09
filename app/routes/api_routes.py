@@ -4,7 +4,6 @@ from .. import main as main_module
 from ..main import *  # noqa: F401,F403
 from ..main import (
     _clear_session_cookie,
-    _clear_trusted_device_cookie,
     _enforce_localhost_only_dev_account,
     _open_realtime_workspace_db_session,
     _require_full_context_from_token,
@@ -72,7 +71,6 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
         revoke_session_by_token(db, token, reason="logout")
     response = JSONResponse(LoginResponse(authenticated=False).model_dump(mode="json"))
     _clear_session_cookie(response)
-    _clear_trusted_device_cookie(response)
     return response
 
 
@@ -275,9 +273,9 @@ def send_manager_password_reset(
     context: AuthenticatedContext = Depends(require_user_manager),
     db: Session = Depends(get_db),
 ):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     if not email_password_reset_enabled_service():
         raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
-    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     send_manager_password_reset_email_service(db, actor=context.user, target=user)
     record_security_event(
         db,
@@ -313,9 +311,9 @@ def send_manager_account_recovery(
     context: AuthenticatedContext = Depends(require_user_manager),
     db: Session = Depends(get_db),
 ):
+    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     if not email_password_reset_enabled_service():
         raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
-    user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     send_manager_account_recovery_email_service(db, actor=context.user, target=user)
     record_security_event(
         db,
@@ -1013,6 +1011,31 @@ def update_transcript_dictation(
 ):
     dictation = update_post_consultation_dictation(db, context.user, transcript_id=transcript_id, combined_text=payload.combined_text)
     return dictation_detail_response(db, dictation=dictation)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file",
+    response_model=PostConsultationDictationPreview,
+    responses=error_responses,
+)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def preview_transcript_dictation_audio_file(
+    request: Request,
+    transcript_id: UUID,
+    audio: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    audio_bytes = audio.file.read()
+    text = transcribe_post_consultation_dictation_audio(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=audio.filename or "audio.bin",
+    )
+    return PostConsultationDictationPreview(text=text)
 
 
 @api.post(

@@ -8,6 +8,10 @@ class PostConsultationDictationUpdate(BaseModel):
     combined_text: str = Field(default="")
 
 
+class PostConsultationDictationPreview(BaseModel):
+    text: str
+
+
 class PostConsultationDictationDetail(BaseModel):
     id: UUID
     transcript_id: UUID

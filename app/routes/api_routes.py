@@ -422,6 +422,11 @@ def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext
     return inspect_stt_contract_service(db, context.user, payload)
 
 
+@api.post("/stt-configs/{config_id}/inspect", response_model=SttConfigDetail, responses=error_responses)
+def reinspect_stt_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return stt_config_response(reinspect_stt_config_service(db, context.user, config_id=config_id, team_id=team_id))
+
+
 @api.post("/stt-configs", response_model=SttConfigDetail, responses=error_responses)
 def upsert_stt_config(payload: SttConfigUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return stt_config_response(upsert_stt_config_service(db, context.user, payload))
@@ -471,6 +476,11 @@ def list_llm_configs(team_id: UUID | None = None, context: AuthenticatedContext 
 @api.post("/llm-configs/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
 def inspect_llm_config(payload: LlmInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return inspect_llm_contract_service(db, context.user, payload)
+
+
+@api.post("/llm-configs/{config_id}/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
+def inspect_saved_llm_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return inspect_saved_llm_config_service(db, context.user, config_id=config_id, team_id=team_id)
 
 
 @api.post("/llm-configs", response_model=LlmConfigDetail, responses=error_responses)

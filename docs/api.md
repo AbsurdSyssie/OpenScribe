@@ -113,6 +113,7 @@ Browser navigation behavior:
 - `GET /api/v1/stt-configs`
 - `GET /api/v1/stt-configs/{config_id}`
 - `POST /api/v1/stt-configs/inspect`
+- `POST /api/v1/stt-configs/{config_id}/inspect`
 - `POST /api/v1/stt-configs`
 - `DELETE /api/v1/stt-configs/{config_id}`
 - `GET /api/v1/stt-selection`
@@ -126,13 +127,18 @@ Browser navigation behavior:
 - `POST /api/v1/stt-selection` now accepts `purpose` in JSON body with same values
 - these are metadata and secret-reference routes, not transcript-content routes
 - inspect proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
+- STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
+- create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
+- create/update with a bearer token stores the secret in Vault, validates/inspects server-side, and records `verified`, `partial`, or rejects invalid credentials with no retained DB row
+- saved-provider re-inspection uses `POST /api/v1/stt-configs/{config_id}/inspect` and the saved Vault reference; credential rejection marks the provider `invalid` and clears active STT selections using it
 - old clients that omit STT model/language field names keep `model` and `language` defaults when values are present
-- bearer tokens supplied to inspect are never returned; admins must re-enter tokens to save credentials
+- bearer tokens supplied to standalone inspect are never returned; save-and-inspect tokens are written to Vault and never returned
 
 ### Team LLM configuration
 
 - `GET /api/v1/llm-configs`
 - `POST /api/v1/llm-configs/inspect`
+- `POST /api/v1/llm-configs/{config_id}/inspect`
 - `POST /api/v1/llm-configs`
 - `DELETE /api/v1/llm-configs/{config_id}`
 - `GET /api/v1/llm-selection`
@@ -148,6 +154,7 @@ Browser navigation behavior:
 - these are metadata and secret-reference routes, not transcript-content routes
 - LLM inspect returns `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, fallback, manual-required, and failed discovery states
 - LLM inspect remains scoped to known adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
+- saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
 
 ### Shared NLP endpoint configuration
 

@@ -567,6 +567,7 @@ def admin_upsert_stt_config(
     segment_speaker_field: str = Form(""),
     extra_form_fields_json: str = Form(""),
     is_active: str | None = Form(default=None),
+    confirm_duplicate: str | None = Form(default=None),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -603,6 +604,7 @@ def admin_upsert_stt_config(
                 segment_speaker_field=segment_speaker_field or None,
                 extra_form_fields_json=parse_extra_form_fields_json(extra_form_fields_json),
                 is_active=is_active == "true",
+                confirm_duplicate=confirm_duplicate == "true",
             ),
         )
     except (ValueError, AppError) as exc:
@@ -707,6 +709,53 @@ def admin_test_stt_config(
         stt_test_result=stt_test_result,
         message="STT test completed.",
         message_kind="success" if stt_test_result.get("success") else "error",
+        active_admin_tab=return_tab or "providers",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
+    )
+
+
+@app.post("/admin/stt-configs/{config_id}/inspect", response_class=HTMLResponse)
+def admin_reinspect_stt_config(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        config = main_module.reinspect_stt_config_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT re-inspection request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_stt_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=str(config.id),
+        message=f"STT provider re-inspected: {config.credential_status.value}.",
+        message_kind="success" if config.credential_status in {ProviderCredentialStatus.verified, ProviderCredentialStatus.partial} else "error",
         active_admin_tab=return_tab or "providers",
         admin_page_route=_admin_page_route_from_return_view(return_view),
         admin_return_view=_admin_return_view_value(return_view),
@@ -933,6 +982,56 @@ def admin_inspect_llm_config(
             "preserved_bearer_token": "",
         },
         message="LLM models discovered. Review the inferred fields before saving.",
+        active_admin_tab=return_tab or "providers",
+        active_provider_tab="llm",
+        admin_page_route=_admin_page_route_from_return_view(return_view),
+        admin_return_view=_admin_return_view_value(return_view),
+    )
+
+
+@app.post("/admin/llm-configs/{config_id}/inspect", response_class=HTMLResponse)
+def admin_inspect_saved_llm_config(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        inspection = main_module.inspect_saved_llm_config_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid saved LLM inspection request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_llm_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="llm",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_llm_config_id=str(config_id),
+        llm_inspection=inspection,
+        message="LLM provider re-inspected using saved credential.",
+        message_kind="success" if inspection.discovery_status == "fetched" else "error",
         active_admin_tab=return_tab or "providers",
         active_provider_tab="llm",
         admin_page_route=_admin_page_route_from_return_view(return_view),

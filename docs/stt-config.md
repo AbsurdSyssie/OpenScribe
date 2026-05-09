@@ -93,7 +93,7 @@ Current adapter families:
 - UI should ask only for:
   - label
   - API key at inspect time
-  - then model selection and optional language on save
+  - then model selection and optional language on save-and-inspect
 - the model dropdown now marks each option as:
   - `(fetched)` when returned by the live SDK model lookup
   - `(default)` when OpenScribe is using its built-in fallback list
@@ -222,7 +222,9 @@ This keeps the first implementation practical for local STT services while still
 - the UI may indicate whether a secret is configured
 - the UI must never reveal the current secret value
 - inspect/discover responses never render the entered bearer token back into HTML or JSON
-- after inspection, admins must re-enter the token when saving credentials
+- save-and-inspect writes the submitted credential to Vault once, validates/inspects server-side, and does not require second key entry
+- duplicate detection uses same team, adapter, base URL, and a server-side non-reversible credential fingerprint; unconfirmed duplicates warn before Vault write or provider inspection
+- saved-provider re-inspection reads the Vault reference and never asks the admin to re-enter the token
 
 First implementation rules:
 
@@ -233,6 +235,14 @@ First implementation rules:
 - if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
 - leaders should eventually configure team policy without touching raw credential material
 - responses and logs must never echo the raw secret
+
+Credential statuses:
+
+- `unknown`: existing/no-auth provider not yet inspected through combined flow
+- `verified`: credential validation and useful metadata inspection succeeded
+- `partial`: credential was saved but metadata discovery failed or fell back after validation attempt
+- `degraded`: saved-provider re-inspection failed without credential rejection
+- `invalid`: saved-provider re-inspection saw credential rejection; new selections are blocked and active selections using it are cleared
 
 ## Database fit
 
@@ -358,8 +368,12 @@ Current routes:
   - returns inferred or adapter-default request/response fields without saving config
 - `POST /api/v1/stt-configs`
   - system-admin-only create/update of a provisioned endpoint row
+  - with bearer token, saves and inspects in one pass
+  - accepts `confirm_duplicate` for explicit duplicate override
+- `POST /api/v1/stt-configs/{config_id}/inspect`
+  - system-admin-only saved-provider re-inspection using Vault reference
 - `DELETE /api/v1/stt-configs/{config_id}`
-  - system-admin-only delete of a provisioned endpoint row and its Vault-backed secret
+  - system-admin-only delete of a provisioned endpoint row and its Vault-backed secret; active selection rows are cleared before the DB row is removed, then Vault cleanup runs after commit
 - `GET /api/v1/stt-selection`
   - leader for own team
   - system admin with explicit `team_id`
@@ -394,7 +408,8 @@ Current routes:
 - the app returns a filtered `available_models` list for `openai_cloud`
 - inspection does not persist anything by itself
 - inspection never returns the provided bearer token
-- users still need to save the final config explicitly
+- standalone inspection does not persist anything by itself
+- save-and-inspect persists the final config and sanitized status/metadata in one request
 
 ## Security rules
 

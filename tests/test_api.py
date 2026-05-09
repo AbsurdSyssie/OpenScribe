@@ -38,6 +38,7 @@ from app.models import (
     DeidentificationAuthMode,
     ProviderUsageEvent,
     ProviderUsageEventType,
+    ProviderCredentialStatus,
     PromptTemplate,
     PromptTemplateVersion,
     PostConsultationDictation,
@@ -706,12 +707,15 @@ def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_rev
     assert body["team_id"] == str(team.id)
     assert body["has_secret"] is True
     assert body["adapter_kind"] == "openai_compatible_rest"
+    assert body["credential_status"] == "verified"
     assert "vault_secret_ref" not in body
-    assert body["available_models_json"] == []
+    assert "super-secret-token" not in created.text
 
     persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == UUID(body["id"])))
     assert persisted is not None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
+    assert persisted.credential_fingerprint
+    assert persisted.credential_status is ProviderCredentialStatus.verified
 
     listed = client.get(f"/api/v1/stt-configs?team_id={team.id}")
     assert listed.status_code == 200
@@ -721,6 +725,126 @@ def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_rev
     assert fetched.status_code == 200
     assert fetched.json()["label"] == "Clinic STT"
     assert "super-secret-token" not in fetched.text
+
+
+def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-duplicate-stt@example.com", password="password-1", is_system_admin=True)
+    login(client, email="admin-duplicate-stt@example.com", password="password-1")
+    first = client.post(
+        "/api/v1/stt-configs",
+        json={"team_id": str(team.id), "label": "Clinic STT", "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "same-secret", "model_name": "whisper-1"},
+    )
+    assert first.status_code == 200
+
+    writes: list[str] = []
+    inspections: list[str] = []
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", lambda **kwargs: writes.append(kwargs["bearer_token"]) or "secret:unexpected")
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: inspections.append("called"))
+
+    duplicate = client.post(
+        "/api/v1/stt-configs",
+        json={"team_id": str(team.id), "label": "Duplicate STT", "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "same-secret", "model_name": "whisper-1"},
+    )
+
+    assert_error(
+        duplicate,
+        status_code=409,
+        code="provider_credential_duplicate_warning",
+        message="A saved STT provider for this team, adapter, endpoint, and credential already exists. Confirm duplicate to save anyway.",
+    )
+    assert writes == []
+    assert inspections == []
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Duplicate STT")) is None
+
+
+def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-confirm-duplicate-stt@example.com", password="password-1", is_system_admin=True)
+    login(client, email="admin-confirm-duplicate-stt@example.com", password="password-1")
+    payload = {"team_id": str(team.id), "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "same-secret", "model_name": "whisper-1"}
+    first = client.post("/api/v1/stt-configs", json={**payload, "label": "Clinic STT"})
+    second = client.post("/api/v1/stt-configs", json={**payload, "label": "Duplicate STT", "confirm_duplicate": True})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Duplicate STT")) is not None
+
+
+def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-invalid-stt@example.com", password="password-1", is_system_admin=True)
+    events: list[str] = []
+
+    def fake_inspect(*args, **kwargs):
+        raise AppError(401, "unauthorized", "Provider rejected credential")
+
+    def fake_delete(*, team_id, config_id):
+        assert db_session.get(TeamSttConfig, config_id) is None
+        events.append("deleted")
+
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
+
+    login(client, email="admin-invalid-stt@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/stt-configs",
+        json={"team_id": str(team.id), "label": "Bad STT", "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "bad-secret", "model_name": "whisper-1"},
+    )
+
+    assert_error(created, status_code=422, code="provider_credential_invalid", message="STT provider rejected the supplied credential")
+    assert events == ["deleted"]
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Bad STT")) is None
+
+
+def test_stt_config_valid_secret_with_discovery_failure_saves_partial(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-partial-stt@example.com", password="password-1", is_system_admin=True)
+
+    def fake_inspect(*args, **kwargs):
+        raise AppError(502, "stt_inspection_failed", "Provider metadata discovery failed")
+
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    login(client, email="admin-partial-stt@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/stt-configs",
+        json={"team_id": str(team.id), "label": "Partial STT", "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "secret", "model_name": "whisper-1"},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["credential_status"] == "partial"
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Partial STT"))
+    assert persisted is not None
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
+    assert persisted.credential_status is ProviderCredentialStatus.partial
+
+
+def test_stt_reinspect_uses_saved_vault_secret_and_invalid_clears_selection(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-reinspect-stt@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, has_secret=True)
+    make_stt_selection(config=config, actor=admin)
+    reads: list[str] = []
+
+    def fake_read(*, team_id, config_id):
+        reads.append(str(config_id))
+        return "saved-secret"
+
+    def fake_inspect(*args, **kwargs):
+        raise AppError(401, "unauthorized", "Provider rejected credential")
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+
+    login(client, email="admin-reinspect-stt@example.com", password="password-1")
+    reinspected = client.post(f"/api/v1/stt-configs/{config.id}/inspect?team_id={team.id}")
+
+    assert reinspected.status_code == 200
+    assert reads == [str(config.id)]
+    assert reinspected.json()["credential_status"] == "invalid"
+    db_session.refresh(config)
+    assert config.credential_status is ProviderCredentialStatus.invalid
+    assert db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id)) is None
 
 
 def test_system_admin_can_provision_openai_compatible_stt_without_secret(client, db_session, make_team, make_user):
@@ -749,9 +873,9 @@ def test_system_admin_can_provision_openai_compatible_stt_without_secret(client,
     assert persisted.vault_secret_ref == ""
 
 
-def test_system_admin_can_clear_saved_stt_secret_when_switching_to_no_auth(client, db_session, make_team, make_user, make_stt_config, monkeypatch):
+def test_system_admin_edit_preserves_saved_stt_secret_when_token_blank(client, db_session, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
-    admin = make_user(email="admin-clear-stt-secret@example.com", password="password-1", is_system_admin=True)
+    admin = make_user(email="admin-preserve-stt-secret@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
     deleted: list[tuple[str, str]] = []
 
@@ -761,13 +885,13 @@ def test_system_admin_can_clear_saved_stt_secret_when_switching_to_no_auth(clien
 
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
 
-    login(client, email="admin-clear-stt-secret@example.com", password="password-1")
+    login(client, email="admin-preserve-stt-secret@example.com", password="password-1")
     updated = client.post(
         "/api/v1/stt-configs",
         json={
             "config_id": str(config.id),
             "team_id": str(team.id),
-            "label": "Parakeet no auth",
+            "label": "Parakeet edited",
             "adapter_kind": "openai_compatible_rest",
             "base_url": "http://127.0.0.1:8000",
             "transcribe_path": "/v1/audio/transcriptions",
@@ -784,8 +908,8 @@ def test_system_admin_can_clear_saved_stt_secret_when_switching_to_no_auth(clien
     assert updated.status_code == 200
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is not None
-    assert persisted.vault_secret_ref == ""
-    assert deleted == [(str(team.id), str(config.id))]
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
+    assert deleted == []
 
 
 def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
@@ -1808,6 +1932,38 @@ def test_system_admin_llm_inspection_exposes_manual_required_state(client, make_
     assert body["discovery_status"] == "manual_required"
     assert body["default_model_source"] == "manual"
     assert body["warnings"] == ["Could not load region-specific Bedrock models. Enter a model ID manually or inspect again with credentials."]
+
+
+def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic LLM Saved Inspect")
+    admin = make_user(email="admin-saved-llm-inspect@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, available_models_json=["old-model"], model_name="old-model", has_secret=True)
+    reads: list[str] = []
+
+    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+        reads.append(str(config_id))
+        return "saved-llm-key"
+
+    def fake_list_openai_chat_models(*, api_key, base_url):
+        assert api_key == "saved-llm-key"
+        assert base_url == "https://api.openai.com/v1"
+        return ["gpt-4.1", "gpt-4.1-mini"]
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm._list_openai_chat_models", fake_list_openai_chat_models)
+
+    login(client, email="admin-saved-llm-inspect@example.com", password="password-1")
+    inspected = client.post(f"/api/v1/llm-configs/{config.id}/inspect?team_id={team.id}")
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["discovery_status"] == "fetched"
+    assert body["available_models"] == ["gpt-4.1", "gpt-4.1-mini"]
+    assert "saved-llm-key" not in inspected.text
+    assert reads == [str(config.id)]
+    db_session.refresh(config)
+    assert config.available_models_json == ["gpt-4.1", "gpt-4.1-mini"]
+    assert config.model_name == "gpt-4.1"
 
 
 def test_system_admin_can_provision_bedrock_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):

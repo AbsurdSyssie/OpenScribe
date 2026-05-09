@@ -317,6 +317,10 @@ Implemented now in the STT configuration slice:
 - Postgres stores only `vault_secret_ref` plus non-secret request metadata
 - the UI and API expose only whether a secret exists, not the secret value
 - onboarding-only and pending-MFA sessions are blocked from STT management routes
+- STT save-and-inspect stores submitted credentials once in Vault, records only a Vault reference plus a server-side HMAC fingerprint for duplicate warnings, and never returns raw credentials
+- unconfirmed duplicate STT credentials warn before Vault write and before provider inspection
+- invalid first-add STT credentials remove the DB row before Vault cleanup; saved-provider delete clears active selection rows and removes the DB row before best-effort Vault cleanup
+- STT re-inspection uses saved Vault references, marks rejected credentials `invalid`, and clears active STT selections that referenced the invalid provider
 
 Implemented now in the first transcript chunk-ingestion slice:
 

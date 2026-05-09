@@ -224,6 +224,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "segment_start_field",
         "segment_end_field",
         "segment_speaker_field",
+        "credential_status",
+        "credential_fingerprint",
+        "inspection_metadata_json",
     } <= stt_columns
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns

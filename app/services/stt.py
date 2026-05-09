@@ -1,5 +1,8 @@
 import io
+import hashlib
+import hmac
 import logging
+import os
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -12,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import SttAdapterKind, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User
+from app.models import ProviderCredentialStatus, SttAdapterKind, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User
 from app.schemas import (
     SttConfigUpsert,
     SttInspectFieldTip,
@@ -60,6 +63,90 @@ def _resolve_admin_scoped_team(db: Session, actor: User, *, team_id: UUID | None
     return _resolve_team(db, team_id=team_id)
 
 
+def _provider_fingerprint_secret() -> bytes:
+    material = os.getenv("PROVIDER_CREDENTIAL_FINGERPRINT_SECRET") or os.getenv("SECRET_KEY") or os.getenv("CSRF_SECRET") or "openscribe-dev-provider-fingerprint"
+    return material.encode("utf-8")
+
+
+def _credential_fingerprint(secret: str | None) -> str | None:
+    if not secret:
+        return None
+    return hmac.new(_provider_fingerprint_secret(), secret.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _status_metadata_from_inspection(inspection: SttInspectResult, *, status: ProviderCredentialStatus, warning: str | None = None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "adapter_kind": inspection.adapter_kind.value,
+        "candidate_paths": list(inspection.candidate_paths),
+        "available_models_count": len(inspection.available_models),
+        "notes": list(inspection.notes),
+    }
+    if warning:
+        metadata["warning"] = warning
+    metadata["status"] = status.value
+    return metadata
+
+
+def _inspection_status(inspection: SttInspectResult, *, had_secret: bool) -> ProviderCredentialStatus:
+    if had_secret and any("failed" in note.lower() or "fallback" in note.lower() for note in inspection.notes):
+        return ProviderCredentialStatus.partial
+    return ProviderCredentialStatus.verified
+
+
+def _is_credential_rejection(exc: AppError) -> bool:
+    return exc.status_code in {401, 403} or exc.code in {"unauthorized", "provider_credential_invalid", "stt_credential_invalid"}
+
+
+def _duplicate_stt_config(
+    db: Session,
+    *,
+    team_id: UUID,
+    adapter_kind: SttAdapterKind,
+    base_url: str,
+    fingerprint: str | None,
+    exclude_config_id: UUID | None = None,
+) -> TeamSttConfig | None:
+    if not fingerprint:
+        return None
+    stmt = select(TeamSttConfig).where(
+        TeamSttConfig.team_id == team_id,
+        TeamSttConfig.adapter_kind == adapter_kind,
+        TeamSttConfig.base_url == base_url,
+        TeamSttConfig.credential_fingerprint == fingerprint,
+    )
+    if exclude_config_id is not None:
+        stmt = stmt.where(TeamSttConfig.id != exclude_config_id)
+    return db.scalar(stmt.limit(1))
+
+
+def _apply_stt_inspection_to_config(config: TeamSttConfig, inspection: SttInspectResult) -> None:
+    config.adapter_kind = inspection.adapter_kind
+    config.base_url = inspection.base_url
+    config.transcribe_path = inspection.transcribe_path
+    config.model_name = inspection.model_name
+    config.model_field_name = inspection.model_field_name or ("model" if inspection.model_name else None)
+    config.available_models_json = list(inspection.available_models)
+    config.file_field_name = inspection.file_field_name
+    config.language = inspection.language
+    config.language_field_name = inspection.language_field_name or ("language" if inspection.language else None)
+    config.response_text_path = inspection.response_text_path
+    config.segments_path = inspection.segments_path
+    config.segment_text_field = inspection.segment_text_field
+    config.segment_start_field = inspection.segment_start_field
+    config.segment_end_field = inspection.segment_end_field
+    config.segment_speaker_field = inspection.segment_speaker_field
+    config.extra_form_fields_json = inspection.extra_form_fields_json
+
+
+def _clear_stt_selections_for_config(db: Session, *, config_id: UUID) -> int:
+    selections = list(db.scalars(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config_id)))
+    for selection in selections:
+        db.delete(selection)
+    if selections:
+        db.flush()
+    return len(selections)
+
+
 def _resolve_selection_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
     if actor.is_system_admin:
         if team_id is None:
@@ -105,14 +192,18 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this STT config while transcription jobs are queued or processing",
             {"config_id": str(config.id)},
         )
-    selections = list(db.scalars(select(TeamSttSelection).where(TeamSttSelection.stt_config_id == config.id)))
-    for selection in selections:
-        db.delete(selection)
-    if selections:
-        db.flush()
-    delete_team_stt_bearer_token(team_id=config.team_id, config_id=config.id)
+    secret_team_id = config.team_id
+    secret_config_id = config.id
+    _clear_stt_selections_for_config(db, config_id=config.id)
     db.delete(config)
     db.commit()
+    try:
+        delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id)
+    except AppError as exc:
+        logger.warning(
+            "stt_config_secret_cleanup_failed",
+            extra={"config_id": str(secret_config_id), "team_id": str(secret_team_id), "error_code": exc.code},
+        )
 
 
 def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
@@ -143,10 +234,13 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
             TeamSttConfig.id == payload.stt_config_id,
             TeamSttConfig.team_id == team.id,
             TeamSttConfig.is_active.is_(True),
+            TeamSttConfig.credential_status != ProviderCredentialStatus.invalid,
         )
     )
     if config is None:
         raise AppError(404, "not_found", "Selectable STT config not found", {"resource": "stt_config", "config_id": str(payload.stt_config_id)})
+    if config.credential_status is ProviderCredentialStatus.invalid:
+        raise AppError(422, "business_rule_violation", "Invalid STT provider credentials cannot be selected", {"field": "stt_config_id"})
     ensure_stt_config_credential_ready(team_id=team.id, config=config)
 
     provider_models = list(config.available_models_json or [])
@@ -838,6 +932,24 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 {"config_id": str(config.id)},
             )
     creating = config is None
+    fingerprint = _credential_fingerprint(payload.bearer_token)
+    duplicate = _duplicate_stt_config(
+        db,
+        team_id=team.id,
+        adapter_kind=payload.adapter_kind,
+        base_url=payload.base_url,
+        fingerprint=fingerprint,
+        exclude_config_id=payload.config_id,
+    )
+    if duplicate is not None and not payload.confirm_duplicate:
+        raise AppError(
+            409,
+            "provider_credential_duplicate_warning",
+            "A saved STT provider for this team, adapter, endpoint, and credential already exists. Confirm duplicate to save anyway.",
+            {"duplicate_config_id": str(duplicate.id), "team_id": str(team.id), "provider_type": "stt"},
+        )
+    if payload.adapter_kind is SttAdapterKind.openai_cloud and not payload.bearer_token and config is None:
+        raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
 
     available_models_json: list[str] = []
     if payload.adapter_kind is SttAdapterKind.openai_cloud:
@@ -874,6 +986,9 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             segment_speaker_field=payload.segment_speaker_field,
             extra_form_fields_json=payload.extra_form_fields_json,
             vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
+            credential_status=ProviderCredentialStatus.pending_inspection if payload.bearer_token else ProviderCredentialStatus.unknown,
+            credential_fingerprint=fingerprint,
+            inspection_metadata_json={},
             is_active=payload.is_active,
         )
         db.add(config)
@@ -899,17 +1014,94 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.extra_form_fields_json = payload.extra_form_fields_json
         config.is_active = payload.is_active
         config.updated_by_user_id = actor.id
+        if fingerprint:
+            config.credential_fingerprint = fingerprint
         db.add(config)
 
+    delete_after_commit = False
+    old_config_id = config.id
+    old_team_id = team.id
     if payload.bearer_token:
         config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-    elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
-        if config.vault_secret_ref:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
+        config.credential_status = ProviderCredentialStatus.pending_inspection
+    elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest} and creating:
         config.vault_secret_ref = ""
+        config.credential_fingerprint = None
+        config.credential_status = ProviderCredentialStatus.unknown
     elif payload.adapter_kind is SttAdapterKind.openai_cloud and not config.vault_secret_ref:
         raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
 
+    if payload.bearer_token:
+        try:
+            inspection = inspect_stt_contract(
+                db,
+                actor,
+                SttInspectRequest(team_id=team.id, adapter_kind=payload.adapter_kind, base_url=payload.base_url, bearer_token=payload.bearer_token),
+            )
+        except AppError as exc:
+            if _is_credential_rejection(exc):
+                secret_config_id = config.id
+                db.delete(config)
+                db.commit()
+                try:
+                    delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
+                except AppError as cleanup_exc:
+                    logger.warning(
+                        "stt_config_invalid_secret_cleanup_failed",
+                        extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
+                    )
+                raise AppError(422, "provider_credential_invalid", "STT provider rejected the supplied credential", {"provider_type": "stt"}) from exc
+            config.credential_status = ProviderCredentialStatus.partial
+            config.inspection_metadata_json = {"status": "partial", "warning": exc.message, "error_code": exc.code}
+        else:
+            if inspection.available_models:
+                config.available_models_json = list(inspection.available_models)
+            config.credential_status = _inspection_status(inspection, had_secret=True)
+            config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
+
+    db.commit()
+    if delete_after_commit:
+        try:
+            delete_team_stt_bearer_token(team_id=old_team_id, config_id=old_config_id)
+        except AppError as exc:
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(old_config_id), "team_id": str(old_team_id), "error_code": exc.code})
+    db.refresh(config)
+    return config
+
+
+def reinspect_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> TeamSttConfig:
+    config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
+    bearer_token = _read_saved_stt_bearer_token(team_id=config.team_id, config=config)
+    try:
+        inspection = inspect_stt_contract(
+            db,
+            actor,
+            SttInspectRequest(
+                team_id=config.team_id,
+                adapter_kind=config.adapter_kind,
+                base_url=config.base_url,
+                bearer_token=bearer_token,
+            ),
+        )
+    except AppError as exc:
+        if _is_credential_rejection(exc):
+            config.credential_status = ProviderCredentialStatus.invalid
+            config.inspection_metadata_json = {"status": "invalid", "error_code": exc.code, "warning": exc.message}
+            _clear_stt_selections_for_config(db, config_id=config.id)
+        else:
+            config.credential_status = ProviderCredentialStatus.degraded
+            config.inspection_metadata_json = {"status": "degraded", "error_code": exc.code, "warning": exc.message}
+        config.updated_by_user_id = actor.id
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+        return config
+
+    _apply_stt_inspection_to_config(config, inspection)
+    config.credential_status = _inspection_status(inspection, had_secret=bool(bearer_token))
+    config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
+    config.updated_by_user_id = actor.id
+    db.add(config)
     db.commit()
     db.refresh(config)
     return config

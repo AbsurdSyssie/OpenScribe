@@ -146,9 +146,11 @@ What it does:
 - reactivation resetting a user into password-change onboarding
 - hard-delete user removal with transcript/version cascade
 - system-admin STT config provisioning, fetch, inspection, and delete for a selected team
+- STT save-and-inspect duplicate warning before Vault write/provider inspection, confirmed duplicate override, invalid first-add cleanup, partial discovery status, saved-provider re-inspection via Vault reference, and invalid re-inspection clearing active selections
 - STT OpenAPI inspection inferring provider-specific `model_field_name`/`language_field_name` and runtime sending those saved field names instead of hard-coded `model`/`language`
 - STT response extraction accepting JSONPath-style indexed paths as well as legacy dot paths
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
+- saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
 - leader team STT selection and clear flow using admin-provisioned options
 - STT browser model selection using provider-populated dropdowns instead of free-text overrides
 - STT provisioning/selection route blocking for unauthenticated, ordinary-user, onboarding, and pending-MFA callers

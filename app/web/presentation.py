@@ -123,6 +123,8 @@ def stt_config_response(config) -> SttConfigDetail:
         segment_end_field=config.segment_end_field,
         segment_speaker_field=config.segment_speaker_field,
         extra_form_fields_json=config.extra_form_fields_json or {},
+        credential_status=config.credential_status,
+        inspection_metadata_json=config.inspection_metadata_json or {},
         is_active=config.is_active,
         has_secret=bool(config.vault_secret_ref),
         created_by_user_id=config.created_by_user_id,

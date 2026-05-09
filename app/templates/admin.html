@@ -1167,6 +1167,7 @@
                   <span class="provider-card__meta-item"><strong>Model:</strong> {{ config.model_name or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Language:</strong> {{ config.language or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Secret:</strong> {{ "yes" if config.vault_secret_ref else "no" }}</span>
+                  <span class="provider-card__meta-item"><strong>Status:</strong> {{ config.credential_status.value }}</span>
                 </div>
               </div>
               <div class="provider-card__actions">
@@ -1182,6 +1183,12 @@
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
                   <button type="submit" class="quick-action">Test</button>
+                </form>
+                <form method="post" action="/admin/stt-configs/{{ config.id }}/inspect">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit" class="quick-action">Re-inspect</button>
                 </form>
                 </div>
                 <div class="quick-actions">
@@ -1220,7 +1227,7 @@
         <div class="section-header">
           <div>
             <h3>{% if stt_config %}Edit provisioned endpoint{% else %}Add provisioned endpoint{% endif %}</h3>
-            <p>Inspect endpoint metadata before saving credentials and defaults.</p>
+            <p>Optionally preview endpoint metadata, then save and inspect credentials in one server-side pass.</p>
           </div>
         </div>
         <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
@@ -1254,7 +1261,7 @@
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key for inspection{% else %}Bearer token for inspection (optional){% endif %}</span>
             <input type="password" name="bearer_token">
           </label>
-          <button type="submit">Inspect endpoint</button>
+          <button type="submit">Preview contract</button>
         </form>
         {% if stt_inspection %}
         <p><small>Detected adapter: {{ stt_inspection.adapter_kind.value }}. Path: {{ stt_inspection.transcribe_path }}. Candidate endpoints: {{ stt_inspection.candidate_paths | join(", ") }}.</small></p>
@@ -1290,7 +1297,7 @@
         </div>
         {% endif %}
         {% endif %}
-        <p><small>Only the fields relevant to the selected adapter are required. Re-enter bearer token to save credentials; inspect tokens are not retained or rendered.</small></p>
+        <p><small>Save and inspect stores the credential once, then validates it server-side. Raw tokens are not retained in HTML or returned by JSON.</small></p>
         <form method="post" action="/admin/stt-configs" data-stt-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ stt_form.config_id }}">
@@ -1329,7 +1336,7 @@
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
             <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
           </label>
-          <p><small>Re-enter bearer token to save credentials. Leave blank only for self-hosted STT endpoints that do not require bearer auth.</small></p>
+          <p><small>Enter bearer token once for save and inspect. Leave blank only for self-hosted STT endpoints that do not require bearer auth.</small></p>
           <label>
             Model
             {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
@@ -1377,8 +1384,12 @@
             <input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}>
             Active
           </label>
+          <label>
+            <input type="checkbox" name="confirm_duplicate" value="true">
+            Confirm duplicate credential if warned
+          </label>
           <div class="stack">
-            <button type="submit">{% if stt_form.config_id %}Save endpoint{% else %}Add endpoint{% endif %}</button>
+            <button type="submit">{% if stt_form.config_id %}Save and inspect endpoint{% else %}Add and inspect endpoint{% endif %}</button>
             {% if stt_form.config_id %}
             <button type="submit" formaction="/admin/stt-configs/{{ stt_form.config_id }}/test" formmethod="post">Test STT</button>
             {% endif %}
@@ -1525,6 +1536,12 @@
                   <input type="hidden" name="tab" value="providers">
                   <button type="submit" class="quick-action">Edit</button>
                 </form>
+                <form method="post" action="/admin/llm-configs/{{ config.id }}/inspect">
+                  <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+                  <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+                  <input type="hidden" name="return_tab" value="providers">
+                  <button type="submit" class="quick-action">Re-inspect models</button>
+                </form>
                 <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned LLM provider and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1543,7 +1560,7 @@
         <div class="section-header">
           <div>
             <h3>{% if llm_config %}Edit provisioned LLM provider{% else %}Add provisioned LLM provider{% endif %}</h3>
-            <p>Inspect available models, then save provider metadata and secret reference.</p>
+            <p>Discover with a supplied key for setup, or re-inspect existing providers with the saved Vault credential.</p>
           </div>
         </div>
         <form method="post" action="/admin/llm-configs/inspect" data-llm-inspect-form>
@@ -1600,7 +1617,7 @@
         </ul>
         {% endif %}
         {% endif %}
-        <p><small>Re-enter API key to save credentials; discovery tokens are not retained or rendered.</small></p>
+        <p><small>Standalone discovery tokens are not retained or rendered. Existing providers can be re-inspected with the saved Vault credential.</small></p>
         <form method="post" action="/admin/llm-configs" data-llm-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ llm_form.config_id }}">
@@ -1629,7 +1646,7 @@
             <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
           </label>
-          <p><small>Re-enter API key to save credentials. Ollama can be saved without a token.</small></p>
+          <p><small>Enter a new API key to replace the saved credential. Leave blank to keep the saved key. Ollama can be saved without a token.</small></p>
           <label>
             Model
             {% if llm_form.available_model_options %}
@@ -1646,7 +1663,12 @@
             <input type="checkbox" name="is_active" value="true" {% if llm_form.is_active %}checked{% endif %}>
             Active
           </label>
-          <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
+          <div class="stack">
+            <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
+            {% if llm_form.config_id %}
+            <button type="submit" formaction="/admin/llm-configs/{{ llm_form.config_id }}/inspect" formmethod="post">Re-inspect saved credential</button>
+            {% endif %}
+          </div>
         </form>
         </div>
 

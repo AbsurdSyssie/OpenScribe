@@ -155,6 +155,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.system_admin,
         json_body=_json(team_id=PLACEHOLDER_UUID, adapter_kind="openai_compatible_rest", base_url="http://127.0.0.1:9000", bearer_token="secret"),
     ),
+    AuditCase("POST", f"/api/v1/stt-configs/{PLACEHOLDER_UUID}/inspect", AccessTier.system_admin),
     AuditCase(
         "POST",
         "/api/v1/stt-configs",
@@ -181,6 +182,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.system_admin,
         json_body=_json(team_id=PLACEHOLDER_UUID, adapter_kind="ollama_chat", base_url="http://127.0.0.1:11434"),
     ),
+    AuditCase("POST", f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/inspect", AccessTier.system_admin),
     AuditCase(
         "POST",
         "/api/v1/llm-configs",

@@ -592,7 +592,7 @@
         <!-- STT REGISTRY -->
         <section class="page {{ 'active' if active_tab == 'stt' or (active_tab == 'providers' and active_provider_tab == 'stt') else '' }}" data-admin-tab-panel="stt" data-provider-tab-panel="stt">
           <h1>Speech to text</h1>
-          <p class="lead">Add, inspect, test, and maintain reusable STT providers. Team selection happens under Workspace → Teams.</p>
+          <p class="lead">Add STT providers with one Save and inspect pass, then re-inspect saved credentials from Vault. Team selection happens under Workspace → Teams.</p>
           <div class="tools">
             <div class="tabs"><button class="tab active" type="button">Providers {{ stt_configs|length if stt_configs else 0 }}</button></div>
             <a class="btn blue" href="{{ admin_page_route }}?tab=stt&stt_config_id=new">Add provider</a>
@@ -606,12 +606,12 @@
                 <div class="title"><span class="dot blue">{{ config.label[:1]|upper }}</span><span><strong>{{ config.label }}</strong><br><span class="desc">{{ config.base_url }}{{ config.transcribe_path }}</span></span></div>
                 <span>{{ config.adapter_kind.value if config.adapter_kind else '' }}</span>
                 <span>{{ config.model_name or '—' }}</span>
-                <span class="status {{ 'green' if config.is_active else '' }}">{{ 'Active' if config.is_active else 'Inactive' }}{% if config.has_secret %} · secret{% endif %}</span>
-                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=stt&team_id={{ config.team_id }}&stt_config_id={{ config.id }}">Edit</a><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/test">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Test</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
+                <span class="status {{ 'green' if config.is_active and config.credential_status.value != 'invalid' else 'red' if config.credential_status.value == 'invalid' else '' }}">{{ config.credential_status.value }}{% if config.has_secret %} · secret{% endif %}{% if not config.is_active %} · inactive{% endif %}</span>
+                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=stt&team_id={{ config.team_id }}&stt_config_id={{ config.id }}">Edit</a><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/inspect">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Re-inspect</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/test">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Test</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
               </div>
               {% if is_expanded %}
                 <div class="expanded"><div class="expanded-inner">
-                  <div class="inline-header"><div class="inline-title"><span class="dot blue">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Provider registry item · not team-specific.</div></div></div></div>
+                  <div class="inline-header"><div class="inline-title"><span class="dot blue">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Credential status: {{ config.credential_status.value }} · re-inspect uses saved Vault credential.</div></div></div></div>
                   <form method="post" action="/admin/stt-configs">
                     {{ return_fields('stt') }}
                     <input type="hidden" name="config_id" value="{{ config.id }}">
@@ -625,16 +625,17 @@
                       </section>
                       <section class="section"><div class="section-head"><h2>Contract</h2></div>
                         <div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer">bearer</option></select></div>
-                        <div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Vault secret stored' if config.has_secret else 'Paste token' }}"></div>
+                        <div class="field"><label>Bearer token for save and inspect</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Leave blank to keep saved Vault secret' if config.has_secret else 'Paste token once' }}"></div>
                         <div class="field"><label>Model</label><input class="input" name="provider_model" value="{{ config.model_name or '' }}"></div>
                         <div class="field"><label>File field name</label><input class="input" name="file_field_name" value="{{ config.file_field_name or 'file' }}"></div>
                         <div class="field"><label>Language</label><input class="input" name="language" value="{{ config.language or '' }}"></div>
                         <div class="field"><label>Response text path</label><input class="input" name="response_text_path" value="{{ config.response_text_path or 'text' }}"></div>
                         <div class="field"><label>Extra form fields JSON</label><textarea class="textarea" name="extra_form_fields_json">{{ config.extra_form_fields_json or '{}' }}</textarea></div>
                         <label><input type="checkbox" name="is_active" value="true" {% if config.is_active %}checked{% endif %}> Active</label>
+                        <label><input type="checkbox" name="confirm_duplicate" value="true"> Confirm duplicate credential if warned</label>
                       </section>
                     </div>
-                    <div class="control"><input type="hidden" name="openapi_path" value=""><button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Inspect provider contract</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/test" formmethod="post">Test saved config</button><button class="btn blue" type="submit">Save provider</button></div>
+                    <div class="control"><input type="hidden" name="openapi_path" value=""><button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Preview contract</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/inspect" formmethod="post">Re-inspect saved credential</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/test" formmethod="post">Test saved config</button><button class="btn blue" type="submit">Save and inspect provider</button></div>
                   </form>
                 </div></div>
               {% endif %}
@@ -644,14 +645,14 @@
           </div>
           {% if selected_stt_id == 'new' %}
             <div class="expanded"><div class="expanded-inner">
-              <div class="inline-header"><div class="inline-title"><span class="dot blue">+</span><div><h2>New STT provider</h2><div class="desc">Create reusable speech provider metadata. Secret is stored as Vault reference.</div></div></div></div>
+              <div class="inline-header"><div class="inline-title"><span class="dot blue">+</span><div><h2>New STT provider</h2><div class="desc">Enter credential once. Save and inspect stores a Vault reference and validates server-side.</div></div></div></div>
               <form method="post" action="/admin/stt-configs">
                 {{ return_fields('stt') }}
                 <div class="inline-grid">
                   <section class="section"><div class="section-head"><h2>Provider</h2></div><div class="field"><label>Label</label><input class="input" name="label" required></div><div class="field"><label>Team</label><select class="select" name="team_id">{% for team in teams_list %}<option value="{{ team.id }}" {% if expanded_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}</select></div><div class="field"><label>Adapter</label><select class="select" name="adapter_kind"><option value="openai_compatible_rest">openai_compatible_rest</option><option value="openai_cloud">openai_cloud</option><option value="generic_rest">generic_rest</option></select></div><div class="field"><label>Base URL</label><input class="input" name="base_url" required></div><div class="field"><label>Transcribe path</label><input class="input" name="transcribe_path" value="/audio/transcriptions"></div></section>
-                  <section class="section"><div class="section-head"><h2>Contract</h2></div><div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password"></div><div class="field"><label>Model</label><input class="input" name="provider_model" value="whisper-1"></div><div class="field"><label>File field name</label><input class="input" name="file_field_name" value="file"></div><div class="field"><label>Language</label><input class="input" name="language" value="en"></div><div class="field"><label>Response text path</label><input class="input" name="response_text_path" value="text"></div><div class="field"><label>Extra form fields JSON</label><textarea class="textarea" name="extra_form_fields_json">{}</textarea></div><label><input type="checkbox" name="is_active" value="true" checked> Active</label></section>
+                  <section class="section"><div class="section-head"><h2>Contract</h2></div><div class="field"><label>Bearer token for save and inspect</label><input class="input" name="bearer_token" type="password"></div><div class="field"><label>Model</label><input class="input" name="provider_model" value="whisper-1"></div><div class="field"><label>File field name</label><input class="input" name="file_field_name" value="file"></div><div class="field"><label>Language</label><input class="input" name="language" value="en"></div><div class="field"><label>Response text path</label><input class="input" name="response_text_path" value="text"></div><div class="field"><label>Extra form fields JSON</label><textarea class="textarea" name="extra_form_fields_json">{}</textarea></div><label><input type="checkbox" name="is_active" value="true" checked> Active</label><label><input type="checkbox" name="confirm_duplicate" value="true"> Confirm duplicate credential if warned</label></section>
                 </div>
-                <div class="control"><input type="hidden" name="openapi_path" value=""><button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Inspect provider contract</button><button class="btn blue" type="submit">Save provider</button></div>
+                <div class="control"><input type="hidden" name="openapi_path" value=""><button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Preview contract</button><button class="btn blue" type="submit">Save and inspect provider</button></div>
               </form>
             </div></div>
           {% endif %}
@@ -670,11 +671,11 @@
                 <div class="title"><span class="dot purp">{{ config.label[:1]|upper }}</span><span><strong>{{ config.label }}</strong><br><span class="desc">{{ config.base_url }}</span></span></div>
                 <span>{{ config.adapter_kind.value if config.adapter_kind else '' }}</span><span>{{ config.model_name or '—' }}</span>
                 <span class="status {{ 'green' if config.is_active else '' }}">{{ 'Active' if config.is_active else 'Inactive' }}{% if config.has_secret %} · secret{% endif %}</span>
-                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=llm&team_id={{ config.team_id }}&llm_config_id={{ config.id }}">Edit</a><form class="inline" method="post" action="/admin/llm-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned LLM provider and its saved secret?">{{ return_fields('llm') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
+                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=llm&team_id={{ config.team_id }}&llm_config_id={{ config.id }}">Edit</a><form class="inline" method="post" action="/admin/llm-configs/{{ config.id }}/inspect">{{ return_fields('llm') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Re-inspect</button></form><form class="inline" method="post" action="/admin/llm-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned LLM provider and its saved secret?">{{ return_fields('llm') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
               </div>
               {% if is_expanded %}
                 <div class="expanded"><div class="expanded-inner">
-                  <div class="inline-header"><div class="inline-title"><span class="dot purp">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Provider registry item · not team-specific.</div></div></div></div>
+                  <div class="inline-header"><div class="inline-title"><span class="dot purp">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Re-inspect uses saved Vault credential to refresh models.</div></div></div></div>
                   <form method="post" action="/admin/llm-configs">
                     {{ return_fields('llm') }}
                     <input type="hidden" name="config_id" value="{{ config.id }}">
@@ -687,13 +688,13 @@
                       </section>
                       <section class="section"><div class="section-head"><h2>Model and auth</h2></div>
                         <div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer" {% if config.auth_mode.value == 'bearer' %}selected{% endif %}>bearer</option><option value="none" {% if config.auth_mode.value == 'none' %}selected{% endif %}>none</option></select></div>
-                        <div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Vault secret stored' if config.has_secret else 'Paste token' }}"></div>
+                        <div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Leave blank to keep saved Vault secret' if config.has_secret else 'Paste token' }}"></div>
                         <div class="field"><label>Bedrock region</label><input class="input" name="bedrock_region" value=""></div>
                         <div class="field"><label>Model name</label><input class="input" name="provider_model" value="{{ config.model_name or '' }}"></div>
                         <label><input type="checkbox" name="is_active" value="true" {% if config.is_active %}checked{% endif %}> Active</label>
                       </section>
                     </div>
-                    <div class="control"><button class="btn" type="submit" formaction="/admin/llm-configs/inspect" formmethod="post">Inspect models</button><button class="btn blue" type="submit">Save provider</button></div>
+                    <div class="control"><button class="btn" type="submit" formaction="/admin/llm-configs/inspect" formmethod="post">Preview models with entered key</button><button class="btn" type="submit" formaction="/admin/llm-configs/{{ config.id }}/inspect" formmethod="post">Re-inspect saved credential</button><button class="btn blue" type="submit">Save provider</button></div>
                   </form>
                 </div></div>
               {% endif %}
@@ -710,7 +711,7 @@
                   <section class="section"><div class="section-head"><h2>Provider</h2></div><div class="field"><label>Label</label><input class="input" name="label" required></div><div class="field"><label>Team</label><select class="select" name="team_id">{% for team in teams_list %}<option value="{{ team.id }}" {% if expanded_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}</select></div><div class="field"><label>Adapter</label><select class="select" name="adapter_kind"><option value="openai_chat">openai_chat</option><option value="bedrock_chat">bedrock_chat</option><option value="ollama_chat">ollama_chat</option></select></div><div class="field"><label>Base URL</label><input class="input" name="base_url" value="https://api.openai.com/v1" required></div></section>
                   <section class="section"><div class="section-head"><h2>Model and auth</h2></div><div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer">bearer</option><option value="none">none</option></select></div><div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password"></div><div class="field"><label>Bedrock region</label><input class="input" name="bedrock_region" value=""></div><div class="field"><label>Model name</label><input class="input" name="provider_model" value="gpt-4o-mini"></div><label><input type="checkbox" name="is_active" value="true" checked> Active</label></section>
                 </div>
-                <div class="control"><button class="btn" type="submit" formaction="/admin/llm-configs/inspect" formmethod="post">Inspect models</button><button class="btn blue" type="submit">Save provider</button></div>
+                <div class="control"><button class="btn" type="submit" formaction="/admin/llm-configs/inspect" formmethod="post">Preview models</button><button class="btn blue" type="submit">Save provider</button></div>
               </form>
             </div></div>
           {% endif %}

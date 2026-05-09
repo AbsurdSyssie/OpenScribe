@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models import SttAdapterKind, SttAuthMode, SttSelectionPurpose
+from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttSelectionPurpose
 
 
 def _validate_stt_base_url(value: str) -> str:
@@ -51,6 +51,7 @@ class SttConfigUpsert(BaseModel):
     segment_speaker_field: str | None = Field(default=None, max_length=255)
     extra_form_fields_json: dict[str, str] = Field(default_factory=dict)
     is_active: bool = True
+    confirm_duplicate: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -170,6 +171,8 @@ class SttConfigDetail(BaseModel):
     segment_end_field: str | None
     segment_speaker_field: str | None
     extra_form_fields_json: dict[str, str]
+    credential_status: ProviderCredentialStatus
+    inspection_metadata_json: dict
     is_active: bool
     has_secret: bool
     created_by_user_id: UUID

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
 from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference
-from app.schemas import LlmConfigInspectResult, LlmConfigUpsert, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.schemas import LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.vault import delete_team_llm_bearer_token, read_team_llm_bearer_token, write_team_llm_bearer_token
 
 
@@ -237,6 +237,25 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         warnings=warnings,
         notes=notes,
     )
+
+
+def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> LlmConfigInspectResult:
+    config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
+    bearer_token = read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id) if config.vault_secret_ref else None
+    inspection = inspect_llm_contract(
+        db,
+        actor,
+        LlmInspectRequest(team_id=config.team_id, adapter_kind=config.adapter_kind, base_url=config.base_url, bearer_token=bearer_token),
+    )
+    if inspection.available_models:
+        config.available_models_json = list(inspection.available_models)
+        if config.model_name not in inspection.available_models:
+            config.model_name = inspection.model_name
+        config.updated_by_user_id = actor.id
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    return inspection
 
 
 def list_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:

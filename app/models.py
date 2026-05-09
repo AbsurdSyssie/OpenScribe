@@ -93,6 +93,15 @@ class SttAdapterKind(str, enum.Enum):
     openai_compatible_rest = "openai_compatible_rest"
 
 
+class ProviderCredentialStatus(str, enum.Enum):
+    unknown = "unknown"
+    pending_inspection = "pending_inspection"
+    verified = "verified"
+    partial = "partial"
+    degraded = "degraded"
+    invalid = "invalid"
+
+
 class SttSelectionPurpose(str, enum.Enum):
     conversation = "conversation"
     post_consultation_dictation = "post_consultation_dictation"
@@ -513,6 +522,14 @@ class TeamSttConfig(Base):
     segment_speaker_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     extra_form_fields_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
     vault_secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    credential_status: Mapped[ProviderCredentialStatus] = mapped_column(
+        Enum(ProviderCredentialStatus),
+        default=ProviderCredentialStatus.unknown,
+        server_default=ProviderCredentialStatus.unknown.value,
+        nullable=False,
+    )
+    credential_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    inspection_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'"), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     updated_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

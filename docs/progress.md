@@ -1,5 +1,139 @@
 # Progress
 
+## 2026-05-09 Provider Credential Combined Flow Implementation
+
+### Scope
+
+- Implemented STT save-and-inspect flow: one submitted bearer token is saved to Vault, inspected server-side, and never returned.
+- Added credential status, safe duplicate fingerprinting, duplicate warning/confirmation, saved-provider re-inspection, invalid-selection clearing, and DB-before-Vault cleanup ordering for STT configs.
+- Updated admin UI copy/actions for save-and-inspect, re-inspect, status display, and duplicate confirmation.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: LLM and de-identification remain on their existing provider-specific flows; this implementation applies the combined flow to current STT provider credential routes.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/20260509_002_add_stt_credential_inspection_status.py`: add STT credential status, fingerprint, and sanitized inspection metadata.
+- `app/schemas/stt.py`, `app/web/presentation.py`: expose status/metadata and duplicate confirmation without exposing Vault refs or secrets.
+- `app/services/stt.py`: add HMAC duplicate checks, save-and-inspect, saved re-inspection, invalid cleanup, and DB-before-Vault delete ordering.
+- `app/routes/api_routes.py`, `app/routes/web_admin.py`, `app/api_route_audit.py`, `app/main.py`, `app/templates/admin.html`, `app/templates/admin2.html`: add re-inspect endpoint/action, status UI, and save-and-inspect copy.
+- `tests/test_api.py`, `tests/test_migrations.py`: cover duplicate warning/override, invalid cleanup, partial status, saved re-inspection, selection clearing, and migration columns.
+- `docs/api.md`, `docs/admin_brief.md`, `docs/stt-config.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document behavior and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_config"`: passed, 9 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "stt_config or stt or admin_restyled"`: passed, 20 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "stt_selection_purposes_per_team or new_stt_adapter_values or alembic_head_adds_onboarding_and_session_tables"`: passed, 3 tests.
+- `.venv/bin/pytest -q`: passed, 534 tests passed, 1 skipped.
+
+### Documentation
+
+- Updated API, admin brief, STT config, security, testing, and progress docs for STT combined save-and-inspect semantics.
+
+### Risks / assumptions
+
+- Provider credential HMAC uses deployment secret material from `PROVIDER_CREDENTIAL_FINGERPRINT_SECRET`, `SECRET_KEY`, or `CSRF_SECRET`; local/dev fallback exists for tests/dev.
+- `partial` means the credential was retained while metadata discovery/inspection did not fully succeed; provider-specific runtime may still fail later if endpoint contract is wrong.
+- LLM/de-identification combined flow remains future work unless explicitly requested as a separate slice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: inspection uses provider metadata/known contracts only; no transcript/note/generated content enters admin inspection.
+- Ownership rules preserved: STT credential provisioning/re-inspection/delete stay system-admin-only; team leaders still select policy only and never see raw credentials.
+- Deletion semantics preserved: invalid first-add removes DB row before Vault cleanup; delete clears selections and commits DB removal before best-effort Vault cleanup.
+- Provider rules preserved: raw credentials remain Vault-backed; Postgres stores only Vault reference, HMAC fingerprint, status, and sanitized metadata.
+- Structured-note contract preserved: no EMIS or generated-document JSON behavior changed.
+
+## 2026-05-09 Saved LLM Re-Inspection Uses Vault Key
+
+### Scope
+
+- Added saved LLM provider re-inspection endpoint/action that reads the stored Vault-backed key to discover models.
+- Updated `/admin` and `/admin2` LLM provider controls to expose `Re-inspect models` / `Re-inspect saved credential` separately from setup-time model preview.
+- Saved re-inspection refreshes sanitized available-model metadata and never returns the raw API key.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no LLM credential status column added; this is model-refresh behavior only.
+
+### Files changed
+
+- `app/services/llm.py`: add `inspect_saved_llm_config` using `read_team_llm_bearer_token`.
+- `app/routes/api_routes.py`, `app/routes/web_admin.py`, `app/main.py`, `app/api_route_audit.py`: add saved LLM inspect route wiring.
+- `app/templates/admin.html`, `app/templates/admin2.html`: add saved credential re-inspect actions and clarify blank token keeps saved key.
+- `tests/test_api.py`: verifies saved LLM inspection uses Vault key, refreshes models, and does not leak the key.
+- `docs/api.md`, `docs/admin_brief.md`, `docs/testing.md`, `docs/progress.md`: document saved LLM model re-inspection.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "saved_llm_inspection or llm_inspection or can_inspect_bedrock"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py tests/test_admin_ui.py -k "api_route_audit or llm"`: passed, 9 tests.
+
+### Documentation
+
+- Updated API, admin brief, testing guide, and this progress entry.
+
+### Risks / assumptions
+
+- Re-inspection updates `available_models_json` and default model when fetched list no longer contains current default.
+- Existing standalone inspect remains useful for first-time setup with an entered key; saved inspect is for existing providers only.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: model discovery uses provider metadata only, no transcript/note/generated content.
+- Ownership rules preserved: saved LLM re-inspection remains system-admin-only.
+- Deletion semantics unchanged.
+- Provider rules preserved: raw key stays in Vault, API/UI responses contain only sanitized model metadata.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-09 Provider Credential Combined Flow Plan
+
+### Scope
+
+- Documented admin-only combined provider credential create flow where admins enter API keys once, then server saves and validates/inspects in one pass.
+- Captured duplicate warning, status semantics, re-inspection, active-selection clearing, Vault cleanup order, audit logging, and test/doc scope.
+
+### Checklist
+
+- Code complete: docs-only plan, no code changes.
+- Tests added/updated: not applicable for docs-only plan.
+- Docs added/updated: yes.
+- Open issues: exact endpoint/schema names to resolve during implementation.
+
+### Files changed
+
+- `docs/provider-credential-combined-flow-plan.md`: adds implementation plan and architecture checkpoints for combined save+inspect flow.
+- `docs/progress.md`: records planning checkpoint.
+
+### Tests
+
+- Not run; documentation-only change.
+
+### Documentation
+
+- Added provider credential combined flow plan.
+
+### Risks / assumptions
+
+- Assumes duplicate detection can use safe server-side fingerprint/HMAC without exposing or comparing raw secrets.
+- Assumes existing providers should remain runtime-usable as `unknown` until manually re-inspected.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: plan forbids transcript/note content in inspection and forbids raw secrets/raw provider bodies in responses/logs.
+- Ownership rules preserved: provisioning remains system-admin only; team leaders do not gain credential visibility.
+- Deletion semantics preserved: DB references/selections are removed or cleared before Vault cleanup, with retry/compensation for cleanup failure.
+- Provider rules preserved: credentials remain Vault-backed; invalid first-add credentials are cleaned up; existing providers require explicit delete.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-09 Provider Inspection Upgrade
 
 ### Scope

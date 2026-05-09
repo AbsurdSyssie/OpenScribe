@@ -82,7 +82,7 @@ def transcribe_claude_page(
         request,
         db,
         current_user=context.user,
-        template_name="transcribe_claude.html",
+        template_name="transcribe.html",
         transcript_id=transcript_id,
         queued_transcript_id=queued_transcript_id,
         active_tab=tab,

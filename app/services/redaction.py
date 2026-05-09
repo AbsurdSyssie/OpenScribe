@@ -295,8 +295,14 @@ def _detect_with_generic_rest(
     entities: list[str] | None,
     bearer_token_override: str | None = None,
     excluded_entities: set[str] | None = None,
+    extra_body_overrides: dict[str, Any] | None = None,
+    failure_code: str = "redaction_failed",
+    failure_message: str = "PHI redaction failed",
 ) -> DeidentificationDetectionResult:
     body: dict[str, Any] = dict(provider.extra_body_json or {})
+    if extra_body_overrides:
+        for key, value in extra_body_overrides.items():
+            body.setdefault(key, value)
     body[provider.request_text_field] = text
     if provider.request_language_field:
         body[provider.request_language_field] = language
@@ -308,9 +314,9 @@ def _detect_with_generic_rest(
     try:
         response = httpx.post(url, json=body, headers=headers, timeout=20.0)
     except httpx.HTTPError as exc:  # pragma: no cover
-        raise AppError(502, "redaction_failed", "PHI redaction failed") from exc
+        raise AppError(502, failure_code, failure_message) from exc
     if response.status_code >= 400:
-        raise AppError(502, "redaction_failed", "PHI redaction failed")
+        raise AppError(502, failure_code, failure_message)
     try:
         payload = response.json()
     except ValueError as exc:
@@ -526,6 +532,24 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
             )
             or ""
         )
+        if not transcript_text.strip():
+            run.redacted_text_encrypted = encrypt_text_for_owner(
+                db,
+                owner_user_id=transcript_version.transcript.owner_user_id,
+                table="redaction_runs",
+                field="redacted_text_encrypted",
+                record_id=run.id,
+                plaintext="",
+            )
+            run.mapping_hash = _mapping_hash([])
+            run.entity_count = 0
+            run.api_model_or_version = None
+            run.error_code = None
+            run.failed_at = None
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            return run
         result = redact_text_with_mapping(db, transcript_text, provider=provider)
         run.redacted_text_encrypted = encrypt_text_for_owner(
             db,

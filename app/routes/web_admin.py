@@ -1754,9 +1754,9 @@ def admin_send_password_reset(request: Request, user_id: UUID, reason: str = For
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         if not email_password_reset_enabled_service():
             raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
-        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         send_manager_password_reset_email_service(db, actor=context.user, target=user)
         record_security_event(db, action="manager_password_reset_email_sent", actor=context.user, target=user, request=request, details={"reason": reason or None})
     except AppError as exc:
@@ -1819,9 +1819,9 @@ def admin_send_account_recovery(request: Request, user_id: UUID, reason: str = F
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
+        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         if not email_password_reset_enabled_service():
             raise AppError(503, "mail_transport_disabled", "Email recovery is not enabled. Use break-glass recovery if appropriate.")
-        user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         send_manager_account_recovery_email_service(db, actor=context.user, target=user)
         record_security_event(db, action="manager_account_recovery_email_sent", actor=context.user, target=user, request=request, details={"reason": reason or None})
     except AppError as exc:

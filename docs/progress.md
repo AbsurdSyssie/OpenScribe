@@ -1,5 +1,103 @@
 # Progress
 
+## 2026-05-09 Dictation-Only Redaction Guard
+
+### Scope
+
+- Fixed empty transcript redaction for dictation-only generation so strict remote de-identification providers are not called with an empty transcript snapshot.
+- Kept dictation text in the transient redaction path before LLM generation.
+- Fixed follow-on suite issues found during review: missing transcribe route template, recovery authorization ordering, and remembered-device logout persistence.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: full-suite rerun result noted below
+
+### Files changed
+
+- `app/services/redaction.py`: creates a successful empty redaction run locally when transcript snapshot text is empty.
+- `app/routes/web_transcribe.py`: points the legacy Claude transcribe route at the active transcribe template.
+- `app/routes/api_routes.py`, `app/routes/web_admin.py`, `app/routes/web_team_management.py`: check target-user manageability before mail-transport availability for recovery actions; keep trusted-device cookies across normal logout.
+- `tests/test_admin_ui.py`, `tests/test_api.py`, `tests/test_auth_email.py`, `tests/test_migrations.py`: update regressions for current UI/provider copy, PII response shape, recovery authorization, and schema table list.
+- `docs/progress.md`: records review-fix checkpoint.
+
+### Tests
+
+- Added regression coverage for dictation-only generation with empty transcript text and non-empty dictation.
+- `.venv/bin/python -m py_compile app/services/redaction.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "dictation_only_session_before_provider_call or redacts_dictation_before_provider_call"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "...focused failing admin UI tests..."`: passed, 24 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "...focused failing API tests..." tests/test_auth_email.py::test_leader_cannot_recover_cross_team_user tests/test_migrations.py::test_alembic_upgrade_head_creates_expected_schema`: passed, 8 tests.
+- `.venv/bin/python -m py_compile app/routes/api_routes.py app/routes/web_admin.py app/routes/web_team_management.py app/routes/web_transcribe.py app/services/redaction.py tests/test_admin_ui.py tests/test_api.py tests/test_auth_email.py tests/test_migrations.py`: passed.
+- `.venv/bin/pytest -q`: passed, 522 tests passed, 1 skipped.
+
+### Documentation
+
+- Added progress entry here.
+
+### Risks / assumptions
+
+- Assumes empty transcript snapshots should still produce a reusable successful redaction run with zero entities.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript or note content visibility changed.
+- Ownership rules preserved: redaction run remains tied to same owner, team, transcript, and transcript version.
+- Deletion semantics preserved: new empty run remains transcript-derived and cascades through existing transcript-root relationships.
+- Provider rules preserved: selected de-identification provider still handles non-empty transcript/dictation text; empty transcript text is not sent remotely.
+- Structured-note contract preserved: generated-document JSON/EMIS behavior unchanged.
+
+## 2026-05-08 Clinical NLP Chunking
+
+### Scope
+
+- Added bounded chunking for clinical NLP generic REST calls so long `/analyze` payloads no longer sit behind one slow provider request.
+- Preserved returned span offsets by adding chunk offsets before encrypted clinical entity persistence.
+- Defaulted local `/analyze` clinical calls to `sentence_detection=false` unless provider config explicitly overrides it.
+- Recorded synthetic-only benchmark findings for the local OpenMed service.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: focused test run result noted below
+
+### Files changed
+
+- `app/services/clinical_nlp.py`: adds chunk splitting, offset correction, clinical-specific REST detection, and `/analyze` request defaults.
+- `app/services/redaction.py`: lets generic REST detection accept caller-specific extra body defaults and failure labels.
+- `tests/test_api.py`: adds chunking regression coverage and chunk offset/sentence-boundary unit coverage.
+- `docs/api.md`: documents clinical NLP chunked runtime behavior.
+- `docs/clinical-nlp-synthetic-benchmark.md`: records synthetic payload timing observations and selected technique.
+- `docs/progress.md`: records this checkpoint.
+
+### Tests
+
+- Added focused tests for long clinical NLP chunking, `sentence_detection=false` defaulting, offset preservation, and chunk boundary behavior.
+- `.venv/bin/python -m py_compile app/services/clinical_nlp.py app/services/redaction.py tests/test_api.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "clinical_detection or clinical_nlp or generic_rest_deidentification_spans_are_normalized_and_filtered"`: passed, 7 tests.
+- Live synthetic `/analyze` check with `~11.9k` chars and `sentence_detection=false`: returned `200` in about `9.9s`.
+
+### Documentation
+
+- Updated API notes and added synthetic benchmark document.
+
+### Risks / assumptions
+
+- Assumes local OpenMedNER `/analyze` benefits from `sentence_detection=false`; provider config can override by explicitly setting `sentence_detection`.
+- Chunking keeps each request bounded but total runtime can still grow with very long transcripts or a single-worker provider.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content logged or exposed; synthetic benchmark uses no real content.
+- Ownership rules preserved: clinical values still come from owner-scoped transcript versions and store with owner DEK.
+- Deletion semantics preserved: no table or cascade behavior changed.
+- Provider rules preserved: active team clinical NLP provider selection remains unchanged; only request execution is chunked.
+- Structured-note contract preserved: no generated-document JSON or EMIS section contract changed.
+
 ## 2026-05-07 Agent Pytest Instruction
 
 ### Scope

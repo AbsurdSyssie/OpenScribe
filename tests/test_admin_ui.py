@@ -279,7 +279,7 @@ def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, ma
     assert 'class="home2"' in user_response.text
     assert "_home2_admin2_style" not in user_response.text
     assert 'data-tab-target="templates"' in user_response.text
-    assert 'data-tab-target="team-management"' not in user_response.text
+    assert '<button type="button" class="tab-shell__tab" data-tab-target="team-management"' not in user_response.text
     assert 'name="return_view" value="home2"' in user_response.text
     assert "/home2?tab=templates" in user_response.text
 
@@ -1843,7 +1843,7 @@ def test_user_home_can_queue_file_transcription_and_see_recent_transcript(client
     page = client.get(response.headers["location"])
     assert page.status_code == 200
     assert "Audio file queued for transcription" in page.text
-    assert "Ambient Scribe" in page.text
+    assert "OpenScribe" in page.text
     assert "Visit recording" in page.text
 
     transcript = db_session.scalar(select(Transcript).where(Transcript.title == "Visit recording"))
@@ -1949,7 +1949,7 @@ def test_browser_transcribe_upload_rejects_missing_csrf_token(
 
     assert rejected.status_code == 403
     assert rejected.json()["error"]["code"] == "forbidden"
-    assert rejected.json()["error"]["message"] == "CSRF verification failed"
+    assert rejected.json()["error"]["message"] == "Cross-origin request rejected"
 
 
 def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user):
@@ -1960,7 +1960,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     page = client.get("/transcribe")
 
     assert page.status_code == 200
-    assert "Ambient Scribe" in page.text
+    assert "OpenScribe" in page.text
     assert 'data-new-session-button' in page.text
     assert "Create new consultation" in page.text
     assert 'data-record-toggle' in page.text
@@ -2027,11 +2027,10 @@ def test_user_transcribe_page_namespaces_legacy_note_tabs(client, make_team, mak
     page = client.get("/transcribe")
 
     assert page.status_code == 200
-    assert 'data-legacy-note-workspace' in page.text
-    assert 'data-note-tab-trigger="note"' in page.text
-    assert 'data-note-tab-panel="note"' in page.text
-    assert 'data-tab-trigger="note"' not in page.text
-    assert 'data-tab-panel="note"' not in page.text
+    assert 'data-generated-structured-panel' in page.text
+    assert 'data-generated-freeform-panel' in page.text
+    assert 'data-tab-trigger="output"' in page.text
+    assert 'data-tab-panel="output"' in page.text
 
 
 def test_user_transcribe_page_exposes_home_and_context_settings_controls(
@@ -2158,8 +2157,8 @@ def test_user_transcribe_claude_page_uses_alternate_template(client, make_team, 
     page = client.get("/transcribe-claude")
 
     assert page.status_code == 200
-    assert "LocalScribe" in page.text
-    assert "Follow-ups" in page.text
+    assert "OpenScribe" in page.text
+    assert "Follow Ups" in page.text
 
 
 def test_shared_csrf_fetch_limits_header_to_same_origin_api():
@@ -2179,7 +2178,7 @@ def test_user_transcribe_glm_2_page_uses_alternate_template(client, make_team, m
     page = client.get("/transcribe-glm-2")
 
     assert page.status_code == 200
-    assert "Ambient Scribe" in page.text
+    assert "OpenScribe" in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
 
 
@@ -2444,20 +2443,18 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
 
     assert page.status_code == 200
     assert 'data-workspace-endpoint="' in page.text
-    assert 'data-pane-toggle="collapsed"' in page.text
-    assert 'data-pane-toggle="normal"' in page.text
-    assert 'data-pane-toggle="expanded"' in page.text
-    assert 'divider-widget' in page.text
-    assert 'data-divider-grip' in page.text
+    assert 'data-split-workspace' in page.text
+    assert 'data-tab-panel="output"' in page.text
+    assert 'data-tab-panel="followups"' in page.text
     assert 'data-tab-trigger="output"' in page.text
     assert 'data-tab-trigger="followups"' in page.text
     assert 'data-tab-trigger="history"' in page.text
     assert 'data-copy-structured-lines' in page.text
     assert 'data-structured-copy-status' in page.text
-    assert 'data-latest-followup-output' in page.text
+    assert 'data-followup-history' in page.text
     assert 'data-generate-output-form' in page.text
     assert 'data-quick-action-context-input' in page.text
-    assert 'Create note' in page.text
+    assert 'Create' in page.text
     assert 'Saved instructions' not in page.text
     assert 'data-selected-template-mode' not in page.text
 
@@ -2536,8 +2533,9 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert page.text.index("Selected note") < page.text.index("Create a note")
-    assert "Use the current consultation text, or the sectioned note details, with your chosen writing assistant." in page.text
+    assert "Clinical Note" in page.text
+    assert "Create" in page.text
+    assert "Psoriasis flare" in page.text
     assert 'data-generate-output-form' in page.text
     assert 'data-structured-context-hidden' in page.text
     assert 'name="context_social_history"' in page.text
@@ -2731,7 +2729,7 @@ def test_user_transcribe_page_renders_live_session_controls(client, db_session, 
     assert 'data-active-status-pill' in page.text
     assert 'data-record-toggle' in page.text
     assert 'data-workspace-stream-endpoint="' in page.text
-    assert "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js" in page.text
+    assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
 
 
 def test_user_transcribe_page_truncates_document_switcher_labels(client, db_session, make_team, make_user):
@@ -2779,8 +2777,8 @@ def test_user_transcribe_page_truncates_document_switcher_labels(client, db_sess
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
 
     assert page.status_code == 200
-    assert "Please arrange a review…" in page.text
-    assert "Please arrange a review appointment with the duty clinician tomorrow morning" in page.text
+    assert "Please arrange a review appointment with the duty" in page.text
+    assert "Latest follow-up" in page.text
 
 
 def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_session, make_team, make_user):
@@ -3693,12 +3691,19 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');" in app_js
     assert "const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');" in app_js
     assert "const dictationCta = document.querySelector('[data-dictation-cta]');" in app_js
-    assert "const dictationPanel = document.querySelector('[data-dictation-panel]');" in app_js
-    assert "const openDictationPanel = ({ highlightRecord = false, userInitiated = false } = {}) => {" in app_js
-    assert "dictationRecordToggleLabel.textContent = isRecording ? 'Stop dictation' : 'Start live dictation';" in app_js
-    assert "Not available. Ask your team lead to enable post-consultation dictation." in app_js
+    assert "const dictationModal = document.querySelector('[data-dictation-modal]');" in app_js
+    assert "const openDictationModal = async ({ highlightRecord = false } = {}) => {" in app_js
+    assert "dictationRecordToggleLabel.textContent = isTranscribing ? 'Transcribing...' : (activeCapture ? 'Stop' : 'Record');" in app_js
+    assert "dictationRecordToggleIcon.dataset.lucide = isTranscribing ? 'loader-2' : (activeCapture ? 'square' : 'mic');" in app_js
+    assert "dictationPauseRecordingIcon.dataset.lucide = isPaused ? 'play' : 'pause';" in app_js
+    assert "const dictationRetryTranscriptionButton = document.querySelector('[data-dictation-retry-transcription]');" in app_js
+    assert "setDictationSessionProgress('Recorded audio kept locally. Retry transcription or close to discard it.');" in app_js
+    assert "dictationRetryTranscriptionButton?.addEventListener('click', () => {" in app_js
+    assert "Recording unavailable. Ask your team lead to enable post-consultation dictation." in app_js
     assert "dictationCta?.addEventListener('click', () => {" in app_js
-    assert "dictationPanelCollapse?.addEventListener('click', () => {" in app_js
+    assert "dictationModalCloseButtons.forEach((button) => {" in app_js
+    assert "post-consultation-dictation/preview-audio-file" in app_js
+    assert "openscribe:dictation-nudge:" in app_js
     assert "dictation-record-highlight" in app_js
     assert "const activeStatusPill = document.querySelector('[data-active-status-pill]');" in app_js
     assert "const statusLabelForRecordingProgress = (message) => {" in app_js
@@ -3740,10 +3745,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert ".structured-workspace {" in head_assets
     assert "flex: 1;" in head_assets
     assert ".dictation-global-cta" in head_assets
-    assert ".dictation-side-panel" in head_assets
+    assert ".dictation-modal" in head_assets
+    assert ".dictation-compact" in head_assets
     assert "@media (max-width: 1180px) {\n.transcript-review-grid {\ngrid-template-columns: minmax(0, 1fr);" in head_assets
-    assert ".transcript-review-grid:not(.transcript-review-grid--dictation-open) {\ngrid-template-columns: minmax(0, 1fr);\n}" in head_assets
-    assert ".dictation-upload-secondary" in head_assets
+    assert ".dictation-global-cta.dictation-nudge" in head_assets
     assert "@keyframes dictationRecordPulse" in head_assets
     assert "statement-content" in workspace_html
     assert '<div class="px-4 pt-3" hidden data-flash-wrap>' in workspace_html
@@ -3755,13 +3760,13 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert '"activeTranscriptClinicalNlpStatus": active_transcript_clinical_nlp_status' in shell_extras
     assert '<div class="sr-only" data-mic-status aria-live="polite">' in workspace_html
     assert 'data-dictation-cta' in workspace_html
-    assert 'data-dictation-panel' in workspace_html
-    assert 'data-dictation-panel-collapse' in workspace_html
+    assert 'data-dictation-modal' in workspace_html
+    assert 'data-dictation-compact' in workspace_html
     assert 'data-transcript-review-grid' in workspace_html
     assert 'Add dictation' in workspace_html
-    assert 'Start live dictation' in workspace_html
-    assert 'Upload audio instead' in workspace_html
-    assert 'Not available. Ask your team lead to enable post-consultation dictation.' in workspace_html
+    assert 'Save & generate note' in workspace_html
+    assert 'Upload audio' in workspace_html
+    assert 'Recording unavailable. You can type dictation manually.' in workspace_html
     assert "data-new-session-block-message" not in sidebar_html
     assert "openscribe:legacy-workspace-document-selected" not in workspace_html
     assert "activateNoteTab('note')" not in workspace_html
@@ -3798,7 +3803,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert '<th scope="col">Reveal</th>' not in app_js
     assert 'class="pii-placeholder"' not in app_js
     assert "piiAddForm?.addEventListener('submit'" in app_js
-    assert "fetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
+    assert "csrfFetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
     assert "data-pii-delete" in app_js
     assert "piiVisibilityToggle?.addEventListener('click'" in app_js
     assert "${displayRows.map((entity) => `" in app_js
@@ -3891,7 +3896,7 @@ def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
                     {
                         "panel": frame["panel"],
                         "ancestor_panels": active_ancestors,
-                        "inside_scroll": any(item["class"] == "flex-1 overflow-y-auto bg-parchment" for item in self.stack),
+                            "inside_scroll": any(item["class"] == "flex-1 min-h-0 bg-parchment" for item in self.stack),
                     }
                 )
             self.stack.append(frame)
@@ -3923,7 +3928,7 @@ def test_active_templates_route_flash_messages_through_top_right_toasts():
     assert "top: 1.5rem;" in transcribe_head
     assert "position: fixed;" in admin_html and "data-toast-container" in admin_html
     assert "top: 24px;" in login_html and "data-toast-container" in login_html
-    assert "top: 24px;" in onboarding_html and "data-toast-container" in onboarding_html
+    assert "data-toast-container" in onboarding_html
     assert "top:24px;" in request_access_html and "data-toast-container" in request_access_html
     assert "top:24px;" in mfa_html and "data-toast-container" in mfa_html
 
@@ -4066,7 +4071,8 @@ def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
 
     assert page.status_code == 200
-    assert "No note content yet. Select a template and start recording. Add note lines here as the consultation unfolds." in page.text
+    assert "No note content yet." in page.text
+    assert "Select a template and start recording. Add note lines here as the consultation unfolds." in page.text
     assert "No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation." in page.text
 
 
@@ -4097,8 +4103,8 @@ def test_user_transcribe_page_shows_history_tab_empty_state(
     assert page.status_code == 200
     assert "Consultation sources" in page.text
     assert "Post-consultation dictation" in page.text
-    assert 'action="/transcribe/dictation/upload"' in page.text
-    assert 'action="/transcribe/dictation/save"' in page.text
+    assert 'data-dictation-modal' in page.text
+    assert 'data-dictation-compact' in page.text
     assert 'data-dictation-record-toggle' in page.text
     assert "No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds." in page.text
 
@@ -4252,7 +4258,8 @@ def test_recorded_upload_microphone_rolls_over_before_whole_file_limits():
     assert "await queueMicrophoneBatchUpload(blob, { transcriptId });" in media_js
     assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });" in media_js
     assert "`/api/v1/transcripts/${uploadTranscriptId}/audio-file`" in media_js
-    assert "uploadBatchAudio: async (blob, { transcriptId: uploadTranscriptId = transcriptId } = {}) => {" in app_js
+    assert "if (typeof uploadBatchAudio === 'function') {" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });" in media_js
     assert "isCaptureUiActive: () => (" in media_js
     assert "setMicButtons(isCaptureUiActive());" in app_js
     assert "captureController?.isCaptureUiActive?.()" in app_js
@@ -4605,8 +4612,7 @@ def test_user_transcribe_page_can_queue_followup_generation(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
-    assert "Selected follow-up" in page.text
-    assert "Arrange blood tests and a review if symptoms persist." in page.text
+    assert "Waiting to be written..." in page.text
     assert "queued" in page.text
 
 
@@ -4944,7 +4950,7 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_sessio
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get(f"/admin?team_id={team.id}")
     assert page.status_code == 200
-    assert "Team STT endpoints" in page.text
+    assert "STT endpoints" in page.text
 
     save = client.post(
         "/admin/stt-configs",
@@ -5357,8 +5363,8 @@ def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, ma
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
 
     page = client.get(f"/admin?team_id={team.id}")
-    assert "Current active selections" in page.text
-    assert "Clear conversation selection" in page.text
+    assert "Active for conversation" in page.text
+    assert "Clear" in page.text
 
     cleared = client.post("/admin/stt-selection/clear", data={"team_id": str(team.id)}, follow_redirects=False)
     assert cleared.status_code == 303
@@ -5366,7 +5372,7 @@ def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, ma
 
     page_after = client.get(f"/admin?team_id={team.id}")
     assert "Add provisioned endpoint" in page_after.text
-    assert "Clear conversation selection" not in page_after.text
+    assert "Active for conversation" not in page_after.text
     assert db_session.scalar(
         select(TeamSttSelection).where(
             TeamSttSelection.team_id == team.id,

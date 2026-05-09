@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import uuid
 from urllib.parse import urlparse
 
@@ -12,12 +13,18 @@ from app.models import ClinicalEntity, ClinicalEntityRun, DeidentificationAdapte
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.deidentification import active_team_clinical_nlp_provider
 from app.services.redaction import (
+    DeidentificationDetectionResult,
+    Span,
     _detect_with_generic_rest,
+    _resolve_overlaps,
     redaction_run_text,
 )
 
 
 CLINICAL_ENTITY_TYPES = {"DISEASE", "DIAGNOSIS", "CONDITION", "PROBLEM", "SYMPTOM", "SIGN"}
+CLINICAL_NLP_MAX_CHUNK_CHARS = 12_000
+CLINICAL_NLP_MIN_SPLIT_CHARS = 1_000
+SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+")
 
 
 def _provider_base_url_is_local(base_url: str) -> bool:
@@ -63,6 +70,84 @@ def _clinical_entity_value_hash(db: Session, *, owner_user_id: uuid.UUID, value:
         owner_user_id=owner_user_id,
         purpose="clinical_entities.normalized_value_hash",
         value=normalized,
+    )
+
+
+def _clinical_text_chunks(text: str, *, max_chars: int = CLINICAL_NLP_MAX_CHUNK_CHARS) -> list[tuple[int, str]]:
+    chunks: list[tuple[int, str]] = []
+    cursor = 0
+    text_length = len(text)
+    min_split_chars = min(CLINICAL_NLP_MIN_SPLIT_CHARS, max(1, max_chars // 2))
+    while cursor < text_length:
+        raw_end = min(text_length, cursor + max_chars)
+        end = raw_end
+        if raw_end < text_length:
+            sentence_cut = None
+            for match in SENTENCE_BOUNDARY_PATTERN.finditer(text, cursor, raw_end):
+                if match.end() - cursor >= min_split_chars:
+                    sentence_cut = match.end()
+            if sentence_cut is not None:
+                end = sentence_cut
+            else:
+                whitespace_cut = text.rfind(" ", cursor + min_split_chars, raw_end)
+                if whitespace_cut > cursor:
+                    end = whitespace_cut + 1
+        chunk = text[cursor:end]
+        stripped = chunk.strip()
+        if stripped:
+            offset = cursor + chunk.index(stripped)
+            chunks.append((offset, stripped))
+        cursor = end
+    return chunks
+
+
+def _clinical_rest_body_overrides(provider: DeidentificationProvider) -> dict[str, object]:
+    configured_body = dict(provider.extra_body_json or {})
+    if provider.detect_path.rstrip("/") == "/analyze" and "sentence_detection" not in configured_body:
+        return {"sentence_detection": False}
+    return {}
+
+
+def _detect_clinical_entities_with_generic_rest(
+    db: Session,
+    *,
+    provider: DeidentificationProvider,
+    text: str,
+) -> DeidentificationDetectionResult:
+    chunks = _clinical_text_chunks(text)
+    if not chunks:
+        return DeidentificationDetectionResult(spans=[], api_provider=provider.label)
+    all_spans: list[Span] = []
+    api_provider = provider.label
+    api_model_or_version = None
+    body_overrides = _clinical_rest_body_overrides(provider)
+    for offset, chunk_text in chunks:
+        detection = _detect_with_generic_rest(
+            db,
+            provider=provider,
+            text=chunk_text,
+            language="en",
+            score_threshold=0.0,
+            entities=None,
+            extra_body_overrides=body_overrides,
+            failure_code="clinical_detection_failed",
+            failure_message="Clinical entity detection failed",
+        )
+        api_provider = detection.api_provider
+        api_model_or_version = detection.api_model_or_version or api_model_or_version
+        for span in detection.spans:
+            all_spans.append(
+                Span(
+                    start=offset + span.start,
+                    end=offset + span.end,
+                    entity_type=span.entity_type,
+                    score=span.score,
+                )
+            )
+    return DeidentificationDetectionResult(
+        spans=_resolve_overlaps(all_spans),
+        api_provider=api_provider,
+        api_model_or_version=api_model_or_version,
     )
 
 
@@ -129,13 +214,10 @@ def ensure_clinical_entity_run_for_transcript_version(
             run.entity_count = 0
             db.add(run)
             return run
-        detection = _detect_with_generic_rest(
+        detection = _detect_clinical_entities_with_generic_rest(
             db,
             provider=provider,
             text=source_text,
-            language="en",
-            score_threshold=0.0,
-            entities=None,
         )
         run.api_provider = detection.api_provider
         run.api_model_or_version = detection.api_model_or_version

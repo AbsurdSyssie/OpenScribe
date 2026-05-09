@@ -131,15 +131,15 @@ def update_post_consultation_dictation(
     return dictation
 
 
-def append_post_consultation_dictation_audio(
+def transcribe_post_consultation_dictation_audio(
     db: Session,
     owner: User,
     *,
     transcript_id: UUID,
     audio_bytes: bytes,
     filename: str,
-) -> PostConsultationDictation:
-    transcript, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
+) -> str:
+    transcript = _get_owner_transcript(db, owner, transcript_id=transcript_id)
     enforce_whole_file_upload_size(audio_bytes=audio_bytes)
     normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=filename)
     enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
@@ -153,6 +153,25 @@ def append_post_consultation_dictation_audio(
     ).strip()
     if not transcript_text:
         raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
+    return transcript_text
+
+
+def append_post_consultation_dictation_audio(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    audio_bytes: bytes,
+    filename: str,
+) -> PostConsultationDictation:
+    transcript, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
+    transcript_text = transcribe_post_consultation_dictation_audio(
+        db,
+        owner,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=filename,
+    )
     next_sequence_no = (
         db.scalar(
             select(func.coalesce(func.max(PostConsultationDictationSegment.sequence_no), 0)).where(

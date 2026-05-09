@@ -132,10 +132,15 @@ Prompt contract:
 Workspace UX:
 
 - the post-consultation dictation CTA appears beside the main consultation transcription controls so it is reachable from any workspace tab
-- if dictation STT is not configured or unavailable, the CTA is disabled with the message: `Not available. Ask your team lead to enable post-consultation dictation.`
-- clicking the CTA reveals the collapsible right-side dictation panel and focuses/highlights the live dictation record button
+- if dictation STT is not configured or unavailable, the CTA remains available for manual typed dictation, but recording/upload controls are disabled with an unavailable message
+- clicking the CTA opens a modal recording/editing surface and focuses/highlights the dictation record button when recording is available
 - clicking the CTA does not start recording automatically
-- live dictation is the primary path; audio upload remains a secondary fallback for separately recorded dictation audio
+- the modal records locally with record/pause/resume/stop controls, then sends audio to a preview STT endpoint that returns text without creating dictation rows or segments
+- saving is explicit; cancel discards unsaved modal text/audio without DB writes
+- saved dictation remains visible in a compact separate-source block in the transcript/history area
+- dictation-only sessions are still backed by a transcript root; generation may proceed from saved dictation even when the consultation transcript draft is empty
+- live dictation is the primary path; audio upload remains a secondary fallback for separately recorded dictation audio and follows the same preview-before-save modal flow
+- after the first successful consultation recording stop for a transcript with no generated documents and no saved dictation, the browser may show a one-time localStorage-backed nudge toast and CTA flash encouraging a short clinician summary
 
 Shared backend concepts:
 

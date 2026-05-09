@@ -2022,7 +2022,10 @@ def queue_document_generation_from_template(
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
-        allow_empty=latest_version.mode is TemplateMode.structured and bool(serialized_structured_context),
+        allow_empty=(
+            (latest_version.mode is TemplateMode.structured and bool(serialized_structured_context))
+            or bool(_effective_dictation_text(db, transcript=transcript))
+        ),
     )
 
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)

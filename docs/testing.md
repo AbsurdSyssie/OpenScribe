@@ -148,7 +148,10 @@ What it does:
 - system-admin STT config provisioning, fetch, inspection, and delete for a selected team
 - STT save-and-inspect duplicate warning before Vault write/provider inspection, confirmed duplicate override, invalid first-add cleanup, partial discovery status, saved-provider re-inspection via Vault reference, and invalid re-inspection clearing active selections
 - STT OpenAPI inspection inferring provider-specific `model_field_name`/`language_field_name` and runtime sending those saved field names instead of hard-coded `model`/`language`
-- STT response extraction accepting JSONPath-style indexed paths as well as legacy dot paths
+- STT OpenAPI inspection validating/dereferencing provider documents through the shared inspection libraries
+- STT response extraction accepting `jsonpath-ng` expressions as well as legacy dot paths
+- STT runtime paragraphization using configured segment path/text/start/end/speaker mappings, including queued ingestion snapshots
+- saved STT provider tests covering both OpenAI Cloud and generic REST dynamic-field branches
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
 - leader team STT selection and clear flow using admin-provisioned options

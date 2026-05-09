@@ -553,7 +553,6 @@ def admin_upsert_stt_config(
     base_url: str = Form(""),
     transcribe_path: str = Form(""),
     bearer_token: str = Form(""),
-    preserved_bearer_token: str = Form(""),
     provider_model: str = Form(""),
     stt_model_field_name: str = Form("", alias="model_field_name"),
     file_field_name: str = Form(""),
@@ -578,7 +577,6 @@ def admin_upsert_stt_config(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    resolved_bearer_token = bearer_token or preserved_bearer_token or None
     try:
         upsert_stt_config_service(
             db,
@@ -590,7 +588,7 @@ def admin_upsert_stt_config(
                 adapter_kind=SttAdapterKind(adapter_kind),
                 base_url=base_url,
                 transcribe_path=transcribe_path,
-                bearer_token=resolved_bearer_token,
+                bearer_token=bearer_token or None,
                 model_name=provider_model or None,
                 model_field_name=stt_model_field_name or None,
                 file_field_name=file_field_name or "file",
@@ -1049,7 +1047,6 @@ def admin_upsert_llm_config(
     base_url: str = Form(""),
     bedrock_region: str = Form(""),
     bearer_token: str = Form(""),
-    preserved_bearer_token: str = Form(""),
     provider_model: str = Form(""),
     is_active: str | None = Form(default=None),
     return_view: str = Form(""),
@@ -1062,7 +1059,6 @@ def admin_upsert_llm_config(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    resolved_bearer_token = bearer_token or preserved_bearer_token or None
     try:
         upsert_llm_config_service(
             db,
@@ -1074,7 +1070,7 @@ def admin_upsert_llm_config(
                 adapter_kind=LlmAdapterKind(adapter_kind),
                 base_url=base_url,
                 bedrock_region=bedrock_region or None,
-                bearer_token=resolved_bearer_token,
+                bearer_token=bearer_token or None,
                 model_name=provider_model or None,
                 is_active=is_active == "true",
             ),

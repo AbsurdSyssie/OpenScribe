@@ -1188,6 +1188,11 @@ class TranscriptIngestionJob(Base):
     stt_language_field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stt_file_field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stt_response_text_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_segments_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_segment_text_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_segment_start_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_segment_end_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_segment_speaker_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stt_extra_form_fields_json: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[TranscriptIngestionJobStatus] = mapped_column(
         Enum(TranscriptIngestionJobStatus),

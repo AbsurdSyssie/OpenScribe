@@ -7,7 +7,8 @@ from app.services.provider_inspection import dereference_openapi_document, displ
 def test_dereference_openapi_document_resolves_local_refs():
     document = {
         "openapi": "3.1.0",
-        "paths": {"/transcribe": {"post": {"requestBody": {"$ref": "#/components/requestBodies/Audio"}}}},
+        "info": {"title": "Provider Test API", "version": "1.0.0"},
+        "paths": {"/transcribe": {"post": {"requestBody": {"$ref": "#/components/requestBodies/Audio"}, "responses": {"200": {"description": "OK"}}}}},
         "components": {"requestBodies": {"Audio": {"content": {"multipart/form-data": {"schema": {"type": "object"}}}}}},
     }
 
@@ -23,6 +24,13 @@ def test_extract_json_path_supports_dot_paths_and_jsonpath_indexes():
     assert extract_json_path(payload, "$.results[0].alternatives[0].transcript") == "jsonpath text"
 
 
+def test_extract_json_path_uses_jsonpath_ng_features():
+    payload = {"choices": [{"message": {"content": "first"}}, {"message": {"content": "second"}}]}
+
+    assert extract_json_path(payload, "$['choices'][0]['message']['content']") == "first"
+    assert extract_json_path(payload, "$.choices[*].message.content") == ["first", "second"]
+
+
 def test_extract_json_path_fails_without_payload_leak():
     with pytest.raises(AppError) as exc_info:
         extract_json_path({"secret": "do-not-leak"}, "$.missing[0].value")
@@ -36,3 +44,24 @@ def test_display_default_from_schema_property_priority():
     assert display_default_from_schema_property({"example": "b", "enum": ["c"]}) == "b"
     assert display_default_from_schema_property({"enum": ["c"]}) == "c"
     assert display_default_from_schema_property({}) is None
+
+
+def test_dereference_openapi_document_rejects_invalid_specs():
+    with pytest.raises(AppError) as exc_info:
+        dereference_openapi_document({"openapi": "3.1.0", "info": {"title": "Broken", "version": "1"}})
+
+    assert exc_info.value.code == "business_rule_violation"
+
+
+def test_dereference_openapi_document_wraps_validator_detection_errors():
+    with pytest.raises(AppError) as exc_info:
+        dereference_openapi_document(
+            {
+                "openapi": "nope",
+                "info": {"title": "Broken", "version": "1"},
+                "paths": {},
+            }
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "business_rule_violation"

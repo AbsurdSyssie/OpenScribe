@@ -209,7 +209,22 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
     assert {"device_token_hash", "last_mfa_verified_at", "expires_at", "revoke_reason"} <= trusted_device_columns
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns
-    assert {"team_id", "adapter_kind", "base_url", "transcribe_path", "vault_secret_ref", "response_text_path", "available_models_json"} <= stt_columns
+    assert {
+        "team_id",
+        "adapter_kind",
+        "base_url",
+        "transcribe_path",
+        "vault_secret_ref",
+        "response_text_path",
+        "available_models_json",
+        "model_field_name",
+        "language_field_name",
+        "segments_path",
+        "segment_text_field",
+        "segment_start_field",
+        "segment_end_field",
+        "segment_speaker_field",
+    } <= stt_columns
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
@@ -426,7 +441,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "stt_base_url",
         "stt_transcribe_path",
         "stt_model_name",
+        "stt_model_field_name",
         "stt_language",
+        "stt_language_field_name",
         "stt_file_field_name",
         "stt_response_text_path",
         "stt_extra_form_fields_json",

@@ -1290,7 +1290,7 @@
         </div>
         {% endif %}
         {% endif %}
-        <p><small>Only the fields relevant to the selected adapter are required. The bearer token is written to Vault and is never shown again.</small></p>
+        <p><small>Only the fields relevant to the selected adapter are required. Re-enter bearer token to save credentials; inspect tokens are not retained or rendered.</small></p>
         <form method="post" action="/admin/stt-configs" data-stt-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ stt_form.config_id }}">
@@ -1306,6 +1306,8 @@
           {% if stt_form.adapter_kind == "openai_cloud" %}
           <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
           <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
+          <input type="hidden" name="model_field_name" value="{{ stt_form.model_field_name or 'model' }}">
+          <input type="hidden" name="language_field_name" value="{{ stt_form.language_field_name or 'language' }}">
           <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
           {% endif %}
           <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
@@ -1315,6 +1317,8 @@
           {% if stt_form.adapter_kind == "openai_compatible_rest" %}
           <input type="hidden" name="transcribe_path" value="{{ stt_form.transcribe_path }}">
           <input type="hidden" name="file_field_name" value="{{ stt_form.file_field_name }}">
+          <input type="hidden" name="model_field_name" value="{{ stt_form.model_field_name or 'model' }}">
+          <input type="hidden" name="language_field_name" value="{{ stt_form.language_field_name or 'language' }}">
           <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
           {% endif %}
           <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
@@ -1325,11 +1329,7 @@
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
             <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
           </label>
-          {% if stt_form.preserved_bearer_token %}
-          <p><small>The credential from the inspect step will be reused on save unless you enter a replacement above.</small></p>
-          {% else %}
-          <p><small>Leave this blank for self-hosted STT endpoints that do not require bearer auth.</small></p>
-          {% endif %}
+          <p><small>Re-enter bearer token to save credentials. Leave blank only for self-hosted STT endpoints that do not require bearer auth.</small></p>
           <label>
             Model
             {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
@@ -1343,6 +1343,10 @@
             {% endif %}
           </label>
           <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            Model field name
+            <input type="text" name="model_field_name" value="{{ stt_form.model_field_name }}">
+          </label>
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
             File field name
             <input type="text" name="file_field_name" value="{{ stt_form.file_field_name }}">
           </label>
@@ -1351,9 +1355,20 @@
             <input type="text" name="language" value="{{ stt_form.language }}">
           </label>
           <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            Language field name
+            <input type="text" name="language_field_name" value="{{ stt_form.language_field_name }}">
+          </label>
+          <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
             Response text path
             <input type="text" name="response_text_path" value="{{ stt_form.response_text_path }}">
           </label>
+          <div class="grid two" data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
+            <label>Segments path<input type="text" name="segments_path" value="{{ stt_form.segments_path }}"></label>
+            <label>Segment text field<input type="text" name="segment_text_field" value="{{ stt_form.segment_text_field }}"></label>
+            <label>Segment start field<input type="text" name="segment_start_field" value="{{ stt_form.segment_start_field }}"></label>
+            <label>Segment end field<input type="text" name="segment_end_field" value="{{ stt_form.segment_end_field }}"></label>
+            <label>Segment speaker field<input type="text" name="segment_speaker_field" value="{{ stt_form.segment_speaker_field }}"></label>
+          </div>
           <label>
             Extra form fields JSON
             <textarea name="extra_form_fields_json">{{ stt_form.extra_form_fields_json }}</textarea>
@@ -1565,10 +1580,18 @@
             <span data-llm-token-label>API key for inspection</span>
             <input type="password" name="bearer_token">
           </label>
-          <button type="submit">Inspect provider</button>
+          <button type="submit">Discover models</button>
         </form>
         {% if llm_inspection %}
         <p><small>Detected adapter: {{ llm_inspection.adapter_kind.value }}. Base URL: {{ llm_inspection.base_url }}.</small></p>
+        <p><small>Discovery status: <strong>{{ llm_inspection.discovery_status }}</strong>. Default model source: <strong>{{ llm_inspection.default_model_source }}</strong>.</small></p>
+        {% if llm_inspection.warnings %}
+        <ul>
+          {% for warning in llm_inspection.warnings %}
+          <li><small>{{ warning }}</small></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
         {% if llm_inspection.notes %}
         <ul>
           {% for note in llm_inspection.notes %}
@@ -1577,7 +1600,7 @@
         </ul>
         {% endif %}
         {% endif %}
-        <p><small>The API key is written to Vault and is never shown again.</small></p>
+        <p><small>Re-enter API key to save credentials; discovery tokens are not retained or rendered.</small></p>
         <form method="post" action="/admin/llm-configs" data-llm-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ llm_form.config_id }}">
@@ -1606,9 +1629,7 @@
             <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
           </label>
-          {% if llm_form.preserved_bearer_token %}
-          <p><small>The API key from the inspect step will be reused on save unless you enter a replacement above.</small></p>
-          {% endif %}
+          <p><small>Re-enter API key to save credentials. Ollama can be saved without a token.</small></p>
           <label>
             Model
             {% if llm_form.available_model_options %}

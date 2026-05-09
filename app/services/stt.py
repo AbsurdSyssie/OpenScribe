@@ -22,6 +22,14 @@ from app.schemas import (
     SttSelectionUpsert,
 )
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
+from app.services.provider_inspection import (
+    dereference_openapi_document,
+    display_default_from_schema_property,
+    extract_json_path,
+    fetch_openapi_document,
+    operation_request_schema,
+    operation_response_schema,
+)
 
 
 SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
@@ -302,6 +310,19 @@ def _normalized_known_adapter_fields(adapter_kind: SttAdapterKind) -> tuple[str,
     raise ValueError(f"Unsupported known adapter kind: {adapter_kind}")
 
 
+def _candidate_stt_openapi_paths(openapi_path: str | None) -> list[str]:
+    paths: list[str] = []
+    if openapi_path:
+        if openapi_path.endswith(".json"):
+            paths.append(openapi_path)
+        elif openapi_path in {"/docs", "/redoc"}:
+            paths.append("/openapi.json")
+        else:
+            paths.append(openapi_path)
+    paths.extend(["/openapi.json", "/docs", "/redoc"])
+    return list(dict.fromkeys(paths))
+
+
 def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[str]:
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -327,11 +348,10 @@ def _openai_model_options(models: list[str], *, source: str) -> list[SttModelOpt
 
 
 def _extract_response_text(payload: dict[str, Any], path: str) -> str:
-    current: Any = payload
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
-        current = current[part]
+    try:
+        current = extract_json_path(payload, path)
+    except AppError as exc:
+        raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text") from exc
     if current is None:
         raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
     text = str(current).strip()
@@ -528,17 +548,19 @@ def _transcribe_via_http(
     extra_form_fields_json: dict[str, str] | None,
     bearer_token: str | None,
     model_name: str | None,
+    model_field_name: str | None,
     language: str | None,
+    language_field_name: str | None,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
 ) -> str:
     url = f"{base_url.rstrip('/')}{transcribe_path}"
     form_fields = dict(extra_form_fields_json or {})
-    if model_name:
-        form_fields["model"] = model_name
-    if language:
-        form_fields["language"] = language
+    if model_name and model_field_name:
+        form_fields[model_field_name] = model_name
+    if language and language_field_name:
+        form_fields[language_field_name] = language
     try:
         headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         response = httpx.post(
@@ -559,6 +581,8 @@ def _transcribe_via_http(
                     "response_text_path": response_text_path,
                     "audio_byte_count": len(audio_bytes),
                     "form_field_keys": sorted(form_fields.keys()),
+                    "model_field_name": model_field_name,
+                    "language_field_name": language_field_name,
                 }
             },
         )
@@ -648,7 +672,9 @@ def transcribe_with_team_stt(
         extra_form_fields_json=config.extra_form_fields_json,
         bearer_token=bearer_token,
         model_name=resolved_model_name,
+        model_field_name=config.model_field_name or "model",
         language=resolved_language,
+        language_field_name=config.language_field_name or "language",
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -668,6 +694,8 @@ def transcribe_with_stt_snapshot(
     extra_form_fields_json: dict[str, str] | None,
     model_name: str | None,
     language: str | None,
+    model_field_name: str | None = None,
+    language_field_name: str | None = None,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
@@ -709,7 +737,9 @@ def transcribe_with_stt_snapshot(
         extra_form_fields_json=extra_form_fields_json,
         bearer_token=bearer_token,
         model_name=model_name,
+        model_field_name=model_field_name or "model",
         language=language,
+        language_field_name=language_field_name or "language",
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -741,7 +771,9 @@ def run_saved_stt_config_test(
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
                 model_name=config.model_name,
+                model_field_name=config.model_field_name or "model",
                 language=config.language,
+                language_field_name=config.language_field_name or "language",
                 audio_bytes=audio_bytes,
                 filename=sample_path.name,
             )
@@ -829,10 +861,17 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             transcribe_path=payload.transcribe_path,
             auth_mode=payload.auth_mode,
             model_name=payload.model_name.strip() if payload.model_name else None,
+            model_field_name=payload.model_field_name or ("model" if payload.model_name else None),
             available_models_json=available_models_json,
             file_field_name=payload.file_field_name.strip(),
             language=payload.language.strip() if payload.language else None,
+            language_field_name=payload.language_field_name or ("language" if payload.language else None),
             response_text_path=payload.response_text_path.strip(),
+            segments_path=payload.segments_path,
+            segment_text_field=payload.segment_text_field,
+            segment_start_field=payload.segment_start_field,
+            segment_end_field=payload.segment_end_field,
+            segment_speaker_field=payload.segment_speaker_field,
             extra_form_fields_json=payload.extra_form_fields_json,
             vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
             is_active=payload.is_active,
@@ -846,10 +885,17 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.transcribe_path = payload.transcribe_path
         config.auth_mode = payload.auth_mode
         config.model_name = payload.model_name.strip() if payload.model_name else None
+        config.model_field_name = payload.model_field_name or ("model" if payload.model_name else None)
         config.available_models_json = available_models_json or list(config.available_models_json or [])
         config.file_field_name = payload.file_field_name.strip()
         config.language = payload.language.strip() if payload.language else None
+        config.language_field_name = payload.language_field_name or ("language" if payload.language else None)
         config.response_text_path = payload.response_text_path.strip()
+        config.segments_path = payload.segments_path
+        config.segment_text_field = payload.segment_text_field
+        config.segment_start_field = payload.segment_start_field
+        config.segment_end_field = payload.segment_end_field
+        config.segment_speaker_field = payload.segment_speaker_field
         config.extra_form_fields_json = payload.extra_form_fields_json
         config.is_active = payload.is_active
         config.updated_by_user_id = actor.id
@@ -963,6 +1009,14 @@ def _pick_property_value(properties: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
+def _pick_property_name(properties: dict[str, Any], preferred_names: tuple[str, ...]) -> str | None:
+    lowered = {key.lower(): key for key in properties}
+    for preferred in preferred_names:
+        if preferred.lower() in lowered:
+            return lowered[preferred.lower()]
+    return None
+
+
 def _property_description(properties: dict[str, Any], key: str) -> str | None:
     prop = properties.get(key)
     if not isinstance(prop, dict):
@@ -1032,6 +1086,30 @@ def _infer_response_text_path(schema: dict[str, Any] | None) -> str:
     return "text"
 
 
+def _infer_segments_contract(schema: dict[str, Any] | None) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    if not schema:
+        return None, None, None, None, None
+    properties = schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        return None, None, None, None, None
+    segments_path = _pick_property_name(properties, ("segments", "results", "words", "utterances"))
+    if not segments_path:
+        return None, None, None, None, None
+    segment_schema = properties.get(segments_path) or {}
+    if isinstance(segment_schema, dict) and segment_schema.get("type") == "array":
+        segment_schema = segment_schema.get("items") or {}
+    segment_props = segment_schema.get("properties") or {} if isinstance(segment_schema, dict) else {}
+    if not isinstance(segment_props, dict):
+        segment_props = {}
+    return (
+        segments_path,
+        _pick_property_name(segment_props, ("text", "transcript", "word")),
+        _pick_property_name(segment_props, ("start", "start_time", "begin")),
+        _pick_property_name(segment_props, ("end", "end_time", "stop")),
+        _pick_property_name(segment_props, ("speaker", "speaker_id", "channel")),
+    )
+
+
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     if payload.adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
@@ -1041,15 +1119,18 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
         default_model = "whisper-1"
         notes = ["This adapter uses a known fixed request contract; no OpenAPI fetch was required."]
         if payload.adapter_kind is SttAdapterKind.openai_cloud:
-            if not payload.bearer_token:
-                raise AppError(422, "business_rule_violation", "API key is required to load available OpenAI transcription models", {"field": "bearer_token"})
-            try:
-                available_models = _list_openai_transcription_models(api_key=payload.bearer_token, base_url=payload.base_url)
-                available_model_options = _openai_model_options(available_models, source="fetched")
-            except Exception:
+            if payload.bearer_token:
+                try:
+                    available_models = _list_openai_transcription_models(api_key=payload.bearer_token, base_url=payload.base_url)
+                    available_model_options = _openai_model_options(available_models, source="fetched")
+                except Exception:
+                    available_models = _fallback_openai_transcription_models()
+                    available_model_options = _openai_model_options(available_models, source="default")
+                    notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list.")
+            else:
                 available_models = _fallback_openai_transcription_models()
                 available_model_options = _openai_model_options(available_models, source="default")
-                notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list.")
+                notes.append("No API key was provided; using built-in OpenAI transcription model defaults.")
             if available_models:
                 default_model = available_models[0]
             notes.append("This adapter uses the official OpenAI transcription contract and loads available models through the OpenAI Python SDK.")
@@ -1064,9 +1145,16 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             adapter_kind=payload.adapter_kind,
             transcribe_path=transcribe_path,
             model_name=default_model,
+            model_field_name="model",
             file_field_name=file_field_name,
             language=None,
+            language_field_name="language",
             response_text_path=response_text_path,
+            segments_path="segments",
+            segment_text_field="text",
+            segment_start_field="start",
+            segment_end_field="end",
+            segment_speaker_field="speaker",
             extra_form_fields_json={},
             candidate_paths=[transcribe_path],
             operation_summary="Known OpenAI transcription contract",
@@ -1080,24 +1168,12 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             notes=notes,
         )
 
-    openapi_url = f"{payload.base_url}{payload.openapi_path}"
-    headers = {}
-    if payload.bearer_token:
-        headers["Authorization"] = f"Bearer {payload.bearer_token}"
-    try:
-        response = httpx.get(openapi_url, headers=headers, timeout=10.0)
-    except httpx.HTTPError as exc:
-        raise AppError(502, "stt_inspection_failed", "Could not reach the STT OpenAPI document") from exc
-    if response.status_code in {401, 403}:
-        raise AppError(401, "unauthorized", "STT OpenAPI document rejected the provided credentials")
-    if response.status_code >= 400:
-        raise AppError(502, "stt_inspection_failed", "STT OpenAPI document request failed", {"status_code": response.status_code})
-    try:
-        document = response.json()
-    except ValueError as exc:
-        raise AppError(422, "business_rule_violation", "STT OpenAPI document did not return valid JSON") from exc
-    if not isinstance(document, dict) or "paths" not in document:
-        raise AppError(422, "business_rule_violation", "STT OpenAPI document did not look like OpenAPI JSON")
+    document, resolved_openapi_path = fetch_openapi_document(
+        base_url=payload.base_url,
+        candidate_paths=_candidate_stt_openapi_paths(payload.openapi_path),
+        bearer_token=payload.bearer_token,
+    )
+    document = dereference_openapi_document(document)
 
     transcribe_path, operation, candidate_paths = _select_operation(document)
     request_schema = _request_schema_for_operation(document, operation)
@@ -1107,17 +1183,21 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
     required_fields = {str(item) for item in (request_schema.get("required") or []) if isinstance(item, str)}
 
     file_field_name = _infer_file_field_name(properties)
-    model_name = _pick_property_value(properties, "model", "model_name")
-    language = _pick_property_value(properties, "language")
+    model_field_name = _pick_property_name(properties, ("model", "model_id", "model_name", "engine", "deployment", "deployment_id"))
+    language_field_name = _pick_property_name(properties, ("language", "lang", "locale", "language_code", "languageCode"))
+    model_name = _pick_property_value(properties, model_field_name) if model_field_name else None
+    language = _pick_property_value(properties, language_field_name) if language_field_name else None
     extra_fields: dict[str, str] = {}
     for key, prop in properties.items():
-        if key in {file_field_name, "model", "model_name", "language"} or not isinstance(prop, dict):
+        if key in {file_field_name, model_field_name, language_field_name} or not isinstance(prop, dict):
             continue
         value = _pick_property_value({key: prop}, key)
         if value is not None:
             extra_fields[key] = value
 
-    response_text_path = _infer_response_text_path(_response_schema_for_operation(document, operation))
+    response_schema = _response_schema_for_operation(document, operation)
+    response_text_path = _infer_response_text_path(response_schema)
+    segments_path, segment_text_field, segment_start_field, segment_end_field, segment_speaker_field = _infer_segments_contract(response_schema)
     adapter_kind = SttAdapterKind.generic_rest
     if transcribe_path == "/v1/audio/transcriptions" and file_field_name == "file" and ("model" in properties or "model_name" in properties):
         adapter_kind = SttAdapterKind.openai_compatible_rest
@@ -1130,8 +1210,7 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             required=file_field_name in required_fields,
         )
     ]
-    if model_name is not None or "model" in properties or "model_name" in properties:
-        model_field_name = "model" if "model" in properties else "model_name"
+    if model_field_name:
         field_tips.append(
             SttInspectFieldTip(
                 name=model_field_name,
@@ -1141,14 +1220,14 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
                 required=model_field_name in required_fields,
             )
         )
-    if language is not None or "language" in properties:
+    if language_field_name:
         field_tips.append(
             SttInspectFieldTip(
-                name="language",
+                name=language_field_name,
                 role="language",
                 default_value=language,
-                description=_property_description(properties, "language"),
-                required="language" in required_fields,
+                description=_property_description(properties, language_field_name),
+                required=language_field_name in required_fields,
             )
         )
     for key in sorted(extra_fields):
@@ -1173,13 +1252,20 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
 
     return SttInspectResult(
         base_url=payload.base_url,
-        openapi_path=payload.openapi_path,
+        openapi_path=resolved_openapi_path,
         adapter_kind=adapter_kind,
         transcribe_path=transcribe_path,
         model_name=model_name,
+        model_field_name=model_field_name,
         file_field_name=file_field_name,
         language=language,
+        language_field_name=language_field_name,
         response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
         extra_form_fields_json=extra_fields,
         candidate_paths=candidate_paths,
         operation_summary=operation.get("summary"),

@@ -1,5 +1,50 @@
 # Progress
 
+## 2026-05-09 API Inspection Upgrade Completion
+
+### Scope
+
+- Finished API inspection upgrade blockers: STT service imports cleanly, saved STT test calls use correct OpenAI/generic signatures, OpenAPI validation/dereferencing uses inspection libraries, malformed validator-detection failures become controlled `AppError`s, JSONPath extraction uses `jsonpath-ng`, configured STT segment mappings affect runtime and queued ingestion parsing, and browser save flows no longer accept hidden preserved provider tokens.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no architecture blocker; full suite still emits existing dependency/deprecation warnings.
+
+### Files changed
+
+- `app/services/provider_inspection.py`: validate OpenAPI docs, wrap validator detection failures, resolve local refs with Prance, and parse JSONPath via `jsonpath-ng`.
+- `app/services/stt.py`: fix snapshot signature/calls, pass dynamic fields in saved tests/runtime, and apply configured segment mappings.
+- `app/models.py`, `alembic/versions/20260509_003_add_stt_segment_snapshots_to_ingestion_jobs.py`, `app/services/transcripts.py`: persist and replay queued STT segment mapping snapshots.
+- `app/routes/web_admin.py`, `app/templates/admin.html`: remove STT/LLM preserved-token hidden save path.
+- `tests/test_api.py`, `tests/test_provider_inspection.py`: add regression coverage for inspection libraries, saved STT branches, snapshot compatibility, dynamic field names, and segment mapping.
+- `docs/api.md`, `docs/stt-config.md`, `docs/testing.md`, `docs/progress.md`: document upgraded inspection/runtime/token behavior.
+
+### Tests
+
+- `.venv/bin/pytest -q`: passed, 542 tests passed, 1 skipped.
+- `.venv/bin/pytest -q tests/test_provider_inspection.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "expected_schema"`: passed, 1 test.
+
+### Documentation
+
+- Updated API, STT config, testing, and progress docs for library-backed inspection, JSONPath support, segment mapping, and token non-preservation.
+
+### Risks / assumptions
+
+- OpenAPI inspection now rejects invalid OpenAPI documents earlier; tests were updated to use valid fixtures.
+- Prance is limited to internal refs for provider inspection to avoid arbitrary external reference fetches.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: provider inspection does not inspect transcript-derived content and does not return raw secrets.
+- Ownership rules preserved: provider configuration remains system-admin-only; transcript runtime access unchanged.
+- Deletion semantics preserved: no deletion behavior changed.
+- Provider rules preserved: saved secrets stay Vault-backed; standalone inspect tokens are one-request values; saved re-inspection uses Vault server-side.
+- Structured-note contract preserved: no structured note changes.
+
 ## 2026-05-09 Provider Credential Combined Flow Implementation
 
 ### Scope

@@ -126,13 +126,14 @@ Browser navigation behavior:
 - `DELETE /api/v1/stt-selection` now accepts same optional `purpose` query param
 - `POST /api/v1/stt-selection` now accepts `purpose` in JSON body with same values
 - these are metadata and secret-reference routes, not transcript-content routes
-- inspect proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
+- inspect validates/dereferences OpenAPI documents, then proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
+- runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
 - create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
 - create/update with a bearer token stores the secret in Vault, validates/inspects server-side, and records `verified`, `partial`, or rejects invalid credentials with no retained DB row
 - saved-provider re-inspection uses `POST /api/v1/stt-configs/{config_id}/inspect` and the saved Vault reference; credential rejection marks the provider `invalid` and clears active STT selections using it
 - old clients that omit STT model/language field names keep `model` and `language` defaults when values are present
-- bearer tokens supplied to standalone inspect are never returned; save-and-inspect tokens are written to Vault and never returned
+- bearer tokens supplied to standalone inspect are never returned or preserved in hidden browser fields; save-and-inspect tokens are written to Vault and never returned
 
 ### Team LLM configuration
 
@@ -343,7 +344,7 @@ Current STT-configuration behavior:
 - `openai_cloud` inspection also returns labeled model-option metadata so the UI can show whether each choice was `fetched` live or supplied from the built-in `default` list
 - `openai_compatible_rest` inspection returns built-in known-contract defaults without OpenAPI fetch
 - inspection also returns documented field descriptions and required flags when the provider's OpenAPI schema exposes them
-- the admin HTML inspect flow preserves the just-entered token only for the current rendered page so the immediate save can reuse it without retyping
+- the admin HTML inspect flow discards the entered token after the request; saving a newly inspected credential requires token re-entry, while saved-provider re-inspection uses the Vault reference server-side
 - saved STT config now carries an explicit `adapter_kind`
 - currently supported adapter families are `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
 - the API never returns the bearer token
@@ -382,7 +383,7 @@ Current LLM-configuration behavior:
 - `bedrock_chat` does not use a built-in fallback model list because the available models are region- and account-specific; admins may still save a model manually if discovery is unavailable
 - `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses streaming `POST /api/chat`
 - local Ollama may run without an API key; remote Ollama endpoints must still use `https`
-- the admin HTML inspect flow preserves the just-entered API key only for the current rendered page so the immediate save can reuse it without retyping
+- the admin HTML inspect flow discards the entered API key after the request; saving a newly inspected credential requires key re-entry, while saved-provider re-inspection uses the Vault reference server-side
 - remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
 - the API never returns the bearer token
 - the API currently returns metadata plus `has_secret`, not the raw Vault secret reference

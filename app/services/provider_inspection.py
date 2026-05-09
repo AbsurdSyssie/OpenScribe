@@ -1,7 +1,14 @@
+import json
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+from jsonpath_ng import parse as parse_jsonpath
+from openapi_spec_validator.exceptions import OpenAPISpecValidatorError
+from openapi_spec_validator import validate_spec
+from openapi_spec_validator.validation.exceptions import OpenAPIValidationError
+from prance import ResolvingParser
+from prance.util.resolver import RESOLVE_INTERNAL
 
 from app.errors import AppError
 
@@ -28,35 +35,31 @@ def fetch_openapi_document(
         except (httpx.HTTPError, ValueError):
             continue
         if isinstance(payload, dict) and isinstance(payload.get("paths"), dict):
+            _validate_openapi_document(payload)
             return payload, normalized_path
     raise AppError(422, "business_rule_violation", "No valid OpenAPI document was found at the candidate paths")
 
 
-def _resolve_openapi_pointer(document: dict[str, Any], ref: str) -> dict[str, Any]:
-    if not ref.startswith("#/"):
-        raise AppError(422, "business_rule_violation", "Only local OpenAPI references are supported")
-    current: Any = document
-    for part in ref[2:].split("/"):
-        part = part.replace("~1", "/").replace("~0", "~")
-        if not isinstance(current, dict) or part not in current:
-            raise AppError(422, "business_rule_violation", "OpenAPI document contains an invalid local reference")
-        current = current[part]
-    if not isinstance(current, dict):
-        raise AppError(422, "business_rule_violation", "OpenAPI reference did not resolve to an object")
-    return current
+def _validate_openapi_document(document: dict[str, Any]) -> None:
+    try:
+        validate_spec(document)
+    except (OpenAPIValidationError, OpenAPISpecValidatorError) as exc:
+        raise AppError(422, "business_rule_violation", "OpenAPI document failed schema validation") from exc
 
 
 def dereference_openapi_document(document: dict[str, Any]) -> dict[str, Any]:
-    def dereference(value: Any) -> Any:
-        if isinstance(value, dict):
-            if "$ref" in value:
-                return dereference(_resolve_openapi_pointer(document, str(value["$ref"])))
-            return {key: dereference(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [dereference(item) for item in value]
-        return value
-
-    resolved = dereference(document)
+    _validate_openapi_document(document)
+    try:
+        parser = ResolvingParser(
+            spec_string=json.dumps(document),
+            lazy=True,
+            strict=False,
+            resolve_types=RESOLVE_INTERNAL,
+        )
+        parser.parse()
+    except Exception as exc:
+        raise AppError(422, "business_rule_violation", "OpenAPI document references could not be resolved") from exc
+    resolved = parser.specification
     if not isinstance(resolved, dict) or not isinstance(resolved.get("paths"), dict):
         raise AppError(422, "business_rule_violation", "OpenAPI document did not look like OpenAPI JSON")
     return resolved
@@ -89,37 +92,20 @@ def operation_response_schema(document: dict[str, Any], operation: dict[str, Any
 
 
 def extract_json_path(payload: Any, path: str) -> Any:
-    if path.startswith("$."):
-        return _extract_jsonpath(payload, path)
+    if path.startswith("$"):
+        try:
+            matches = parse_jsonpath(path).find(payload)
+        except Exception as exc:
+            raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path") from exc
+        if not matches:
+            raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
+        values = [match.value for match in matches]
+        return values[0] if len(values) == 1 else values
     current = payload
     for part in path.split("."):
         if not isinstance(current, dict) or part not in current:
             raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
         current = current[part]
-    return current
-
-
-def _extract_jsonpath(payload: Any, path: str) -> Any:
-    current = payload
-    expression = path[2:]
-    for raw_part in expression.split("."):
-        part = raw_part
-        while "[" in part:
-            key, rest = part.split("[", 1)
-            if key:
-                if not isinstance(current, dict) or key not in current:
-                    raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
-                current = current[key]
-            index_text, part = rest.split("]", 1)
-            if not isinstance(current, list):
-                raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
-            current = current[int(index_text)]
-            if part.startswith("."):
-                part = part[1:]
-        if part:
-            if not isinstance(current, dict) or part not in current:
-                raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
-            current = current[part]
     return current
 
 

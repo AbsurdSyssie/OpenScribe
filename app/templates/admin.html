@@ -1304,7 +1304,6 @@
           <input type="hidden" name="adapter_kind" value="{{ stt_form.adapter_kind }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
-          <input type="hidden" name="preserved_bearer_token" value="{{ stt_form.preserved_bearer_token or '' }}">
           <label>
             Label
             <input type="text" name="label" required maxlength="255" value="{{ stt_form.label }}">
@@ -1334,7 +1333,7 @@
           </label>
           <label>
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
-            <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config and not stt_form.preserved_bearer_token %}required{% endif %}>
+            <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config %}required{% endif %}>
           </label>
           <p><small>Enter bearer token once for save and inspect. Leave blank only for self-hosted STT endpoints that do not require bearer auth.</small></p>
           <label>
@@ -1637,14 +1636,13 @@
             <input type="url" name="base_url" value="{{ llm_form.base_url }}" data-bedrock-base-url>
           </label>
           <input type="hidden" name="base_url" value="{{ llm_form.base_url }}" data-openai-llm-base-url>
-          <input type="hidden" name="preserved_bearer_token" value="{{ llm_form.preserved_bearer_token or '' }}">
           <label>
             Label
             <input type="text" name="label" required maxlength="255" value="{{ llm_form.label }}">
           </label>
           <label>
             <span data-llm-token-label>API key</span>
-            <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config and not llm_form.preserved_bearer_token %}required{% endif %} data-llm-token-input>
+            <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config %}required{% endif %} data-llm-token-input>
           </label>
           <p><small>Enter a new API key to replace the saved credential. Leave blank to keep the saved key. Ollama can be saved without a token.</small></p>
           <label>
@@ -2973,7 +2971,7 @@
         });
         const tokenInput = form.querySelector('[data-stt-token-input]');
         if (tokenInput) {
-          tokenInput.required = adapter === 'openai_cloud' && !form.querySelector('input[name="config_id"]')?.value && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
+          tokenInput.required = adapter === 'openai_cloud' && !form.querySelector('input[name="config_id"]')?.value;
         }
         form.querySelectorAll('[data-openai-base-url]').forEach((el) => {
           el.disabled = adapter !== 'openai_cloud';
@@ -3090,8 +3088,7 @@
         const tokenInput = form.querySelector('[data-llm-token-input]');
         if (tokenInput) {
           tokenInput.required = (adapter === 'openai_chat' || adapter === 'bedrock_chat')
-            && !form.querySelector('input[name="config_id"]')?.value
-            && !form.querySelector('input[name="preserved_bearer_token"]')?.value;
+            && !form.querySelector('input[name="config_id"]')?.value;
         }
         const note = form.querySelector('[data-llm-adapter-note]');
         if (note) {

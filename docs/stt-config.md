@@ -73,10 +73,12 @@ Current adapter families:
 `generic_rest` is the fallback:
 
 - OpenAPI inspection uses `base_url + openapi_path`
+- OpenAPI documents are schema-validated and local `$ref` entries are dereferenced with OpenAPI tooling before inference
 - manager confirms the inferred request/response fields before save
 - this is for providers whose contract is not already built into OpenScribe
 - inspection can infer provider-specific `model_field_name` and `language_field_name`, such as `model_id` and `lang`
 - runtime does not infer provider shape; it uses only the saved contract fields
+- runtime uses saved segment mapping fields when a provider returns timestamped segment arrays
 
 `openai_cloud` is the official-hosted OpenAI path:
 
@@ -222,6 +224,7 @@ This keeps the first implementation practical for local STT services while still
 - the UI may indicate whether a secret is configured
 - the UI must never reveal the current secret value
 - inspect/discover responses never render the entered bearer token back into HTML or JSON
+- browser save forms do not preserve bearer tokens in hidden fields after standalone inspection; admins must re-enter a key when saving a new credential from an inspected draft
 - save-and-inspect writes the submitted credential to Vault once, validates/inspects server-side, and does not require second key entry
 - duplicate detection uses same team, adapter, base URL, and a server-side non-reversible credential fingerprint; unconfirmed duplicates warn before Vault write or provider inspection
 - saved-provider re-inspection reads the Vault reference and never asks the admin to re-enter the token
@@ -401,7 +404,9 @@ Current routes:
   - model default when exposed
   - language default when exposed
   - simple response text path
+  - optional timestamped segment array path and segment text/start/end/speaker field names
   - extra fixed form fields with simple defaults/examples
+- configured response paths may use legacy dot paths or JSONPath expressions supported by `jsonpath-ng`
 - the app also surfaces field descriptions and required/optional hints when the OpenAPI schema provides them
 - the app classifies recognized OpenAI-style OpenAPI documents as `openai_compatible_rest`
 - the app returns built-in defaults for `openai_cloud` and `openai_compatible_rest`

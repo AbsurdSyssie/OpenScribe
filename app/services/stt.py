@@ -520,9 +520,51 @@ def paragraphize_timestamped_segments(
 
 
 def _format_timestamped_transcript_payload(payload: dict[str, Any], *, response_text_path: str) -> str:
-    segments = payload.get("segments")
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path="segments",
+        segment_text_field="text",
+        segment_start_field="start",
+        segment_end_field="end",
+        segment_speaker_field="speaker",
+    )
+
+
+def _format_timestamped_transcript_payload_with_segments(
+    payload: dict[str, Any],
+    *,
+    response_text_path: str,
+    segments_path: str | None,
+    segment_text_field: str | None,
+    segment_start_field: str | None,
+    segment_end_field: str | None,
+    segment_speaker_field: str | None,
+) -> str:
+    segments = None
+    if segments_path:
+        try:
+            segments = extract_json_path(payload, segments_path)
+        except AppError:
+            segments = None
     if isinstance(segments, list):
-        paragraphs = paragraphize_timestamped_segments(segments)
+        normalized_segments: list[dict[str, Any]] = []
+        text_field = segment_text_field or "text"
+        start_field = segment_start_field or "start"
+        end_field = segment_end_field or "end"
+        speaker_field = segment_speaker_field or "speaker"
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            normalized_segments.append(
+                {
+                    "text": segment.get(text_field),
+                    "start": segment.get(start_field),
+                    "end": segment.get(end_field),
+                    "speaker": segment.get(speaker_field),
+                }
+            )
+        paragraphs = paragraphize_timestamped_segments(normalized_segments)
         if paragraphs:
             return "\n\n".join(paragraph["text"] for paragraph in paragraphs if str(paragraph.get("text") or "").strip())
     return _extract_response_text(payload, response_text_path)
@@ -648,6 +690,11 @@ def _transcribe_via_http(
     audio_bytes: bytes,
     filename: str,
     content_type: str,
+    segments_path: str | None = None,
+    segment_text_field: str | None = None,
+    segment_start_field: str | None = None,
+    segment_end_field: str | None = None,
+    segment_speaker_field: str | None = None,
 ) -> str:
     url = f"{base_url.rstrip('/')}{transcribe_path}"
     form_fields = dict(extra_form_fields_json or {})
@@ -696,7 +743,15 @@ def _transcribe_via_http(
             },
         )
         raise AppError(502, "stt_response_invalid", "STT provider response was not valid JSON") from exc
-    return _format_timestamped_transcript_payload(payload, response_text_path=response_text_path)
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path or "segments",
+        segment_text_field=segment_text_field or "text",
+        segment_start_field=segment_start_field or "start",
+        segment_end_field=segment_end_field or "end",
+        segment_speaker_field=segment_speaker_field or "speaker",
+    )
 
 
 def _transcribe_via_openai_cloud(
@@ -769,6 +824,11 @@ def transcribe_with_team_stt(
         model_field_name=config.model_field_name or "model",
         language=resolved_language,
         language_field_name=config.language_field_name or "language",
+        segments_path=config.segments_path,
+        segment_text_field=config.segment_text_field,
+        segment_start_field=config.segment_start_field,
+        segment_end_field=config.segment_end_field,
+        segment_speaker_field=config.segment_speaker_field,
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -788,11 +848,16 @@ def transcribe_with_stt_snapshot(
     extra_form_fields_json: dict[str, str] | None,
     model_name: str | None,
     language: str | None,
-    model_field_name: str | None = None,
-    language_field_name: str | None = None,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
+    model_field_name: str | None = None,
+    language_field_name: str | None = None,
+    segments_path: str | None = None,
+    segment_text_field: str | None = None,
+    segment_start_field: str | None = None,
+    segment_end_field: str | None = None,
+    segment_speaker_field: str | None = None,
 ) -> str:
     if not stt_config_id or not adapter_kind or not base_url:
         return transcribe_with_team_stt(
@@ -834,6 +899,11 @@ def transcribe_with_stt_snapshot(
         model_field_name=model_field_name or "model",
         language=language,
         language_field_name=language_field_name or "language",
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -865,9 +935,7 @@ def run_saved_stt_config_test(
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
                 model_name=config.model_name,
-                model_field_name=config.model_field_name or "model",
                 language=config.language,
-                language_field_name=config.language_field_name or "language",
                 audio_bytes=audio_bytes,
                 filename=sample_path.name,
             )
@@ -880,7 +948,14 @@ def run_saved_stt_config_test(
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
                 model_name=config.model_name,
+                model_field_name=config.model_field_name or "model",
                 language=config.language,
+                language_field_name=config.language_field_name or "language",
+                segments_path=config.segments_path,
+                segment_text_field=config.segment_text_field,
+                segment_start_field=config.segment_start_field,
+                segment_end_field=config.segment_end_field,
+                segment_speaker_field=config.segment_speaker_field,
                 audio_bytes=audio_bytes,
                 filename=sample_path.name,
                 content_type="audio/wav",

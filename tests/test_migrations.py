@@ -449,6 +449,11 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "stt_language_field_name",
         "stt_file_field_name",
         "stt_response_text_path",
+        "stt_segments_path",
+        "stt_segment_text_field",
+        "stt_segment_start_field",
+        "stt_segment_end_field",
+        "stt_segment_speaker_field",
         "stt_extra_form_fields_json",
     } <= transcript_ingestion_job_columns
     assert {

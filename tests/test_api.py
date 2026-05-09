@@ -79,7 +79,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test
+from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
 from app.services.content_crypto import (
@@ -448,6 +448,7 @@ class FakeHttpxStreamResponse:
 
 STT_OPENAPI_DOCUMENT = {
     "openapi": "3.1.0",
+    "info": {"title": "STT Test API", "version": "1.0.0"},
     "paths": {
         "/health": {
             "get": {
@@ -973,6 +974,7 @@ def test_system_admin_can_inspect_generic_stt_dynamic_field_names(client, make_t
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     document = {
         "openapi": "3.1.0",
+        "info": {"title": "Generic STT Test API", "version": "1.0.0"},
         "paths": {
             "/speech/transcribe": {
                 "post": {
@@ -991,9 +993,10 @@ def test_system_admin_can_inspect_generic_stt_dynamic_field_names(client, make_t
                             }
                         }
                     },
-                    "responses": {
-                        "200": {
-                            "content": {
+                        "responses": {
+                            "200": {
+                                "description": "OK",
+                                "content": {
                                 "application/json": {
                                     "schema": {"type": "object", "properties": {"transcript": {"type": "string"}}}
                                 }
@@ -1059,6 +1062,88 @@ def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
     assert result["language"] == "en"
     assert result["transcript_text"] == "more or less, I suppose"
     assert result["error_code"] is None
+
+
+def test_system_admin_can_test_saved_openai_stt_config_without_generic_fields(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-openai-stt-test@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        adapter_kind=SttAdapterKind.openai_cloud,
+        base_url="https://api.openai.com/v1",
+        transcribe_path="/v1/audio/transcriptions",
+        file_field_name="file",
+        response_text_path="text",
+        model_name="whisper-1",
+        language="en",
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+
+    def fake_openai_transcribe(**kwargs):
+        captured.update(kwargs)
+        return "openai transcript"
+
+    monkeypatch.setattr("app.services.stt._transcribe_via_openai_cloud", fake_openai_transcribe)
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is True
+    assert result["transcript_text"] == "openai transcript"
+    assert captured["bearer_token"] == "secret-token"
+    assert "model_field_name" not in captured
+    assert "language_field_name" not in captured
+
+
+def test_system_admin_can_test_saved_generic_stt_config_with_dynamic_fields(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-generic-stt-test@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:7000",
+        transcribe_path="/speech/transcribe",
+        file_field_name="audio_file",
+        response_text_path="transcript",
+        model_name="clinic-whisper",
+        language="en-GB",
+    )
+    config.model_field_name = "model_id"
+    config.language_field_name = "lang"
+    db_session.add(config)
+    db_session.commit()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+
+    def fake_http_transcribe(**kwargs):
+        captured.update(kwargs)
+        return "generic transcript"
+
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", fake_http_transcribe)
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is True
+    assert result["transcript_text"] == "generic transcript"
+    assert captured["model_field_name"] == "model_id"
+    assert captured["language_field_name"] == "lang"
+    assert captured["file_field_name"] == "audio_file"
 
 
 def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_reveal(
@@ -8995,6 +9080,13 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     admin = make_user(email="admin-live-owner-job@example.com", password="password-2", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin)
+    config.segments_path = "result.utterances"
+    config.segment_text_field = "transcript"
+    config.segment_start_field = "start_time"
+    config.segment_end_field = "end_time"
+    config.segment_speaker_field = "speaker_id"
+    db_session.add(config)
+    db_session.commit()
     make_stt_selection(config=config, actor=owner)
     monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 12.0)
 
@@ -9025,6 +9117,11 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job.source_audio_vault_ref is not None
     assert job.source_audio_size_bytes == len(b"raw-audio")
     assert job.declared_duration_seconds == 12
+    assert job.stt_segments_path == "result.utterances"
+    assert job.stt_segment_text_field == "transcript"
+    assert job.stt_segment_start_field == "start_time"
+    assert job.stt_segment_end_field == "end_time"
+    assert job.stt_segment_speaker_field == "speaker_id"
 
 
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
@@ -9385,6 +9482,11 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         model_field_name,
         language,
         language_field_name,
+        segments_path,
+        segment_text_field,
+        segment_start_field,
+        segment_end_field,
+        segment_speaker_field,
         audio_bytes,
         filename,
         content_type,
@@ -9392,6 +9494,11 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         assert team_id == team.id
         assert stt_config_id == config.id
         assert content_type == "audio/wav"
+        assert segments_path is None
+        assert segment_text_field is None
+        assert segment_start_field is None
+        assert segment_end_field is None
+        assert segment_speaker_field is None
         if filename == "chunk-1.wav":
             return "first chunk"
         if filename == "chunk-2.wav":
@@ -9958,6 +10065,13 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     admin = make_user(email="admin-audio-file@example.com", password="password-2", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin)
+    config.segments_path = "result.utterances"
+    config.segment_text_field = "transcript"
+    config.segment_start_field = "start_time"
+    config.segment_end_field = "end_time"
+    config.segment_speaker_field = "speaker_id"
+    db_session.add(config)
+    db_session.commit()
     make_stt_selection(config=config, actor=owner)
     monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
     login(client, email="owner@example.com", password="password-1")
@@ -9984,6 +10098,11 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     assert job.source_audio_vault_ref is not None
     assert job.source_audio_size_bytes == len(b"raw-file-audio")
     assert job.source_audio_duration_seconds == 42.5
+    assert job.stt_segments_path == "result.utterances"
+    assert job.stt_segment_text_field == "transcript"
+    assert job.stt_segment_start_field == "start_time"
+    assert job.stt_segment_end_field == "end_time"
+    assert job.stt_segment_speaker_field == "speaker_id"
 
 
 def test_retry_audio_file_route_requeues_failed_blob_for_owner(
@@ -10842,6 +10961,11 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         model_field_name,
         language,
         language_field_name,
+        segments_path,
+        segment_text_field,
+        segment_start_field,
+        segment_end_field,
+        segment_speaker_field,
         audio_bytes,
         filename,
         content_type,
@@ -10858,6 +10982,11 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         assert model_field_name == (config.model_field_name or "model")
         assert language == config.language
         assert language_field_name == (config.language_field_name or "language")
+        assert segments_path == config.segments_path
+        assert segment_text_field == config.segment_text_field
+        assert segment_start_field == config.segment_start_field
+        assert segment_end_field == config.segment_end_field
+        assert segment_speaker_field == config.segment_speaker_field
         assert audio_bytes == make_test_wav_bytes(duration_seconds=1.0)
         assert filename == "recording.wav"
         assert content_type == "audio/wav"
@@ -11027,6 +11156,11 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         model_field_name,
         language,
         language_field_name,
+        segments_path,
+        segment_text_field,
+        segment_start_field,
+        segment_end_field,
+        segment_speaker_field,
         audio_bytes,
         filename,
         content_type,
@@ -11037,6 +11171,11 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         assert transcribe_path == config_one.transcribe_path
         assert model_name == "whisper-1"
         assert model_field_name == (config_one.model_field_name or "model")
+        assert segments_path == config_one.segments_path
+        assert segment_text_field == config_one.segment_text_field
+        assert segment_start_field == config_one.segment_start_field
+        assert segment_end_field == config_one.segment_end_field
+        assert segment_speaker_field == config_one.segment_speaker_field
         return "snapshotted provider transcript"
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
@@ -11579,6 +11718,153 @@ def test_transcribe_with_team_stt_paragraphizes_timestamped_segments_when_presen
     )
 
     assert text == "This is my voice.\n\nFor those who want to install the simple audio recorder application in Ubuntu and Ubuntu 24.04, here's the new Ubuntu PPA. Update."
+
+
+def test_transcribe_with_team_stt_uses_configured_segment_fields(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-custom-segments@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Custom STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/speech/transcribe",
+        auth_mode=SttAuthMode.bearer,
+        model_name="clinic-whisper",
+        model_field_name="model_id",
+        file_field_name="audio_file",
+        language="en",
+        language_field_name="lang",
+        response_text_path="transcript",
+        segments_path="result.utterances",
+        segment_text_field="transcript",
+        segment_start_field="start_time",
+        segment_end_field="end_time",
+        segment_speaker_field="speaker_id",
+        extra_form_fields_json={},
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+    monkeypatch.setattr(
+        "app.services.stt.httpx.post",
+        lambda *args, **kwargs: FakeHttpxResponse(
+            {
+                "transcript": "flat transcript that should not win",
+                "result": {
+                    "utterances": [
+                        {"start_time": 0.0, "end_time": 1.0, "transcript": "Mapped field one.", "speaker_id": "A"},
+                        {"start_time": 1.2, "end_time": 2.0, "transcript": "Mapped field two.", "speaker_id": "A"},
+                    ]
+                },
+            }
+        ),
+    )
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"normalized-audio",
+        filename="chunk.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "Mapped field one. Mapped field two."
+
+
+def test_transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-snapshot@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(
+        team=team,
+        actor=owner,
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/v1/audio/transcriptions",
+        file_field_name="file",
+        response_text_path="text",
+        model_name="default-model",
+        language="en",
+    )
+    make_stt_selection(config=config, actor=owner)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
+
+    def fake_http_transcribe(**kwargs):
+        captured.update(kwargs)
+        return "snapshot transcript"
+
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", fake_http_transcribe)
+
+    fallback_text = transcribe_with_stt_snapshot(
+        db_session,
+        team_id=team.id,
+        stt_config_id=None,
+        adapter_kind=None,
+        base_url=None,
+        transcribe_path=None,
+        file_field_name=None,
+        response_text_path=None,
+        extra_form_fields_json=None,
+        model_name=None,
+        language=None,
+        audio_bytes=b"audio",
+        filename="old.wav",
+        content_type="audio/wav",
+    )
+    assert fallback_text == "snapshot transcript"
+    assert captured["model_field_name"] == (config.model_field_name or "model")
+
+    captured.clear()
+    snapshot_text = transcribe_with_stt_snapshot(
+        db_session,
+        team_id=team.id,
+        stt_config_id=config.id,
+        adapter_kind=SttAdapterKind.generic_rest.value,
+        base_url="http://127.0.0.1:7000",
+        transcribe_path="/speech/transcribe",
+        file_field_name="audio_file",
+        response_text_path="transcript",
+        extra_form_fields_json={},
+        model_name="clinic-whisper",
+        language="en-GB",
+        audio_bytes=b"audio",
+        filename="new.wav",
+        content_type="audio/wav",
+        model_field_name="model_id",
+        language_field_name="lang",
+        segments_path="result.utterances",
+        segment_text_field="transcript",
+        segment_start_field="start_time",
+        segment_end_field="end_time",
+        segment_speaker_field="speaker_id",
+    )
+
+    assert snapshot_text == "snapshot transcript"
+    assert captured["model_field_name"] == "model_id"
+    assert captured["language_field_name"] == "lang"
+    assert captured["file_field_name"] == "audio_file"
+    assert captured["segments_path"] == "result.utterances"
+    assert captured["segment_text_field"] == "transcript"
+    assert captured["segment_start_field"] == "start_time"
+    assert captured["segment_end_field"] == "end_time"
+    assert captured["segment_speaker_field"] == "speaker_id"
 
 
 def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(

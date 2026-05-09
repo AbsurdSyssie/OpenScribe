@@ -19,4 +19,8 @@ celery[redis]==5.4.0
 presidio-analyzer==2.2.360
 spacy==3.8.11
 PyYAML==6.0.3
+openapi-spec-validator==0.7.2
+prance==23.6.21.0
+jsonschema==4.23.0
+jsonpath-ng==1.7.0
 setuptools<81

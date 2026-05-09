@@ -75,6 +75,8 @@ Current adapter families:
 - OpenAPI inspection uses `base_url + openapi_path`
 - manager confirms the inferred request/response fields before save
 - this is for providers whose contract is not already built into OpenScribe
+- inspection can infer provider-specific `model_field_name` and `language_field_name`, such as `model_id` and `lang`
+- runtime does not infer provider shape; it uses only the saved contract fields
 
 `openai_cloud` is the official-hosted OpenAI path:
 
@@ -155,9 +157,16 @@ Supported metadata fields:
 - `base_url`
 - `transcribe_path`
 - `model_name`
+- `model_field_name`
 - `file_field_name`
 - `language`
+- `language_field_name`
 - `response_text_path`
+- `segments_path`
+- `segment_text_field`
+- `segment_start_field`
+- `segment_end_field`
+- `segment_speaker_field`
 - `extra_form_fields_json`
 - `is_active`
 
@@ -212,6 +221,8 @@ This keeps the first implementation practical for local STT services while still
   - actor/team linkage
 - the UI may indicate whether a secret is configured
 - the UI must never reveal the current secret value
+- inspect/discover responses never render the entered bearer token back into HTML or JSON
+- after inspection, admins must re-enter the token when saving credentials
 
 First implementation rules:
 

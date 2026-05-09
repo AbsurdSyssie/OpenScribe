@@ -1,5 +1,56 @@
 # Progress
 
+## 2026-05-09 Provider Inspection Upgrade
+
+### Scope
+
+- Added saved STT runtime contract fields for provider-specific model/language form names and optional segment mapping.
+- Upgraded STT OpenAPI inspection to infer `model_id`/`lang`-style fields and runtime transcription to send saved field names only.
+- Added machine-readable LLM discovery states and updated admin UI copy so inspect/discover tokens are not retained after responses.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/20260509_001_add_stt_dynamic_contract_fields.py`: add STT config/job contract columns and backfills.
+- `app/schemas/stt.py`, `app/schemas/llm.py`: expose STT field mappings and LLM discovery status fields.
+- `app/services/provider_inspection.py`, `app/services/stt.py`, `app/services/llm.py`, `app/services/transcripts.py`: add shared inspection helpers, STT inference/runtime wiring, LLM status mapping, and queued-job snapshots.
+- `app/routes/web_admin.py`, `app/web/presentation.py`, `app/templates/admin.html`: render dynamic STT fields, LLM discovery status, and require token re-entry after inspect.
+- `tests/test_api.py`, `tests/test_admin_ui.py`, `tests/test_provider_inspection.py`, `tests/test_migrations.py`: cover inference, runtime field use, UI secret handling, LLM states, and schema columns.
+- `docs/api.md`, `docs/stt-config.md`, `docs/admin_brief.md`, `docs/testing.md`, `requirements.txt`: document provider lifecycle, field mapping, discovery states, security rules, and dependencies.
+
+### Tests
+
+- Added tests for STT OpenAPI dynamic field inference, runtime dynamic form fields, JSONPath response extraction, LLM discovery status/manual-required state, admin UI token non-rendering/re-entry, and migration columns.
+- `.venv/bin/python -m py_compile app/models.py app/schemas/stt.py app/schemas/llm.py app/services/provider_inspection.py app/services/stt.py app/services/llm.py app/services/transcripts.py app/routes/web_admin.py app/web/presentation.py tests/test_api.py tests/test_admin_ui.py tests/test_provider_inspection.py tests/test_migrations.py`: passed.
+- `.venv/bin/pytest -q tests/test_provider_inspection.py`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "system_admin_can_inspect_stt_openapi_and_get_prefilled_fields or system_admin_can_inspect_generic_stt_dynamic_field_names or transcribe_with_team_stt_uses_saved_model_and_language_field_names or system_admin_can_inspect_bedrock_chat_models or system_admin_llm_inspection_exposes_manual_required_state"`: passed, 5 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "inspect_team_stt_config_before_saving or save_stt_config_after_inspect_with_retyped_token or inspect_and_save_llm_provider_with_retyped_api_key or inspect_and_save_bedrock_provider_with_retyped_api_key"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "alembic_head_adds_onboarding_and_session_tables"`: passed, 1 test.
+- `.venv/bin/pytest -q`: passed, 529 tests passed, 1 skipped.
+
+### Documentation
+
+- Updated API, STT config, admin brief, testing guide, and this progress entry.
+
+### Risks / assumptions
+
+- `requirements.txt` now lists OpenAPI/JSONPath dependencies for install parity, but current helper implementation keeps local dereference/JSONPath support minimal for this slice.
+- Runtime still ignores segment mapping beyond persistence/inspection; transcript text extraction behavior remains existing text/segment handling.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: inspect/discover uses provider metadata and synthetic/sample-only tests; no transcript/note content exposed to admins.
+- Ownership rules preserved: STT/LLM provisioning remains system-admin scoped; user/team selection scopes unchanged.
+- Deletion semantics preserved: new columns are metadata on existing cascaded roots/jobs; no cascade weakened.
+- Provider rules preserved: credentials remain Vault-backed on save; inspect tokens are not rendered or persisted; runtime uses saved provider contracts only.
+- Structured-note contract preserved: no generated-document or EMIS JSON contract changed.
+
 ## 2026-05-09 Dictation-Only Redaction Guard
 
 ### Scope

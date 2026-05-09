@@ -125,6 +125,9 @@ Browser navigation behavior:
 - `DELETE /api/v1/stt-selection` now accepts same optional `purpose` query param
 - `POST /api/v1/stt-selection` now accepts `purpose` in JSON body with same values
 - these are metadata and secret-reference routes, not transcript-content routes
+- inspect proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
+- old clients that omit STT model/language field names keep `model` and `language` defaults when values are present
+- bearer tokens supplied to inspect are never returned; admins must re-enter tokens to save credentials
 
 ### Team LLM configuration
 
@@ -143,6 +146,8 @@ Browser navigation behavior:
 - `POST /api/v1/app-preferences`
 - `DELETE /api/v1/app-preferences`
 - these are metadata and secret-reference routes, not transcript-content routes
+- LLM inspect returns `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, fallback, manual-required, and failed discovery states
+- LLM inspect remains scoped to known adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 
 ### Shared NLP endpoint configuration
 

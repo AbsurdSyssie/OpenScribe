@@ -5456,10 +5456,12 @@ def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team,
     assert "Audio file upload." in inspect.text
     assert "API key" in inspect.text
     assert 'data-show-for="generic_rest" hidden' in inspect.text
-    assert 'name="preserved_bearer_token" value="secret-token"' in inspect.text
+    assert 'name="preserved_bearer_token" value="secret-token"' not in inspect.text
+    assert 'name="model_field_name" value="model"' in inspect.text
+    assert 'name="language_field_name" value="language"' in inspect.text
 
 
-def test_admin_page_can_save_stt_config_after_inspect_without_retyping_token(client, db_session, make_team, make_user, monkeypatch):
+def test_admin_page_can_save_stt_config_after_inspect_with_retyped_token(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr(
@@ -5491,10 +5493,12 @@ def test_admin_page_can_save_stt_config_after_inspect_without_retyping_token(cli
             "transcribe_path": "/v1/audio/transcriptions",
             "file_field_name": "file",
             "response_text_path": "text",
-            "preserved_bearer_token": "secret-token",
-            "bearer_token": "",
+            "preserved_bearer_token": "",
+            "bearer_token": "secret-token",
             "provider_model": "gpt-4o-mini-transcribe",
+            "model_field_name": "model",
             "language": "",
+            "language_field_name": "language",
             "extra_form_fields_json": "",
             "is_active": "true",
         },
@@ -5622,7 +5626,7 @@ def test_admin_page_includes_client_side_stt_adapter_toggle(client, make_team, m
     assert "data-openai-base-url" in page.text
 
 
-def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(client, db_session, make_team, make_user, monkeypatch):
+def test_admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr(
@@ -5644,7 +5648,10 @@ def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(c
 
     assert inspect.status_code == 200
     assert 'data-default-provider-tab="llm"' in inspect.text
-    assert 'name="preserved_bearer_token" value="secret-openai-key"' in inspect.text
+    assert 'name="preserved_bearer_token" value="secret-openai-key"' not in inspect.text
+    assert "Discovery status:" in inspect.text
+    assert "fetched" in inspect.text
+    assert "Discover models" in inspect.text
     assert ">gpt-4o-mini (fetched)<" in inspect.text
 
     save = client.post(
@@ -5655,8 +5662,8 @@ def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(c
             "adapter_kind": "openai_chat",
             "label": "OpenAI Team LLM",
             "base_url": "https://api.openai.com/v1",
-            "preserved_bearer_token": "secret-openai-key",
-            "bearer_token": "",
+            "preserved_bearer_token": "",
+            "bearer_token": "secret-openai-key",
             "provider_model": "gpt-4o-mini",
             "is_active": "true",
         },
@@ -5667,7 +5674,7 @@ def test_admin_page_can_inspect_and_save_llm_provider_without_retyping_api_key(c
     assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
 
 
-def test_admin_page_can_inspect_and_save_bedrock_provider_without_retyping_api_key(client, db_session, make_team, make_user, monkeypatch):
+def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Bedrock")
     make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr(
@@ -5689,7 +5696,7 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_without_retyping_api_k
     )
 
     assert inspect.status_code == 200
-    assert 'name="preserved_bearer_token" value="bedrock-api-key"' in inspect.text
+    assert 'name="preserved_bearer_token" value="bedrock-api-key"' not in inspect.text
     assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (fetched)<" in inspect.text
     assert "https://bedrock-mantle.us-east-1.api.aws/v1" in inspect.text
     assert 'name="bedrock_region" value="us-east-1"' in inspect.text
@@ -5703,8 +5710,8 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_without_retyping_api_k
             "label": "Amazon Bedrock",
             "base_url": "",
             "bedrock_region": "us-east-1",
-            "preserved_bearer_token": "bedrock-api-key",
-            "bearer_token": "",
+            "preserved_bearer_token": "",
+            "bearer_token": "bedrock-api-key",
             "provider_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
             "is_active": "true",
         },

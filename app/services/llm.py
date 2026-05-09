@@ -138,54 +138,89 @@ def _ollama_model_options(models: list[str], *, source: str) -> list[LlmModelOpt
 def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     if payload.adapter_kind is LlmAdapterKind.openai_chat:
+        requires_bearer_token = True
+        supports_model_discovery = True
         if payload.bearer_token:
             try:
                 models = _list_openai_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
                 source = "fetched"
+                discovery_status = "fetched"
+                default_model_source = "provider"
+                warnings: list[str] = []
                 notes: list[str] = []
             except AppError:
                 models = _fallback_openai_chat_models()
                 source = "default"
+                discovery_status = "fallback"
+                default_model_source = "builtin"
+                warnings = ["Live OpenAI model discovery failed; verify API key/base URL."]
                 notes = ["Live OpenAI model discovery failed, so OpenScribe used the built-in default chat model list."]
         else:
             models = _fallback_openai_chat_models()
             source = "default"
+            discovery_status = "fallback"
+            default_model_source = "builtin"
+            warnings = ["No API key was provided; using built-in OpenAI chat model defaults."]
             notes = ["No API key provided for inspection, so OpenScribe used the built-in default chat model list."]
         model_options = _openai_model_options(models, source=source)
     elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
+        requires_bearer_token = True
+        supports_model_discovery = True
         if payload.bearer_token:
             try:
                 models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
                 source = "fetched"
+                discovery_status = "fetched"
+                default_model_source = "provider"
+                warnings = []
                 notes = [
                     "OpenScribe loaded the Amazon Bedrock model list through the OpenAI-compatible Models API for the supplied Bedrock Mantle endpoint.",
                 ]
             except AppError:
                 models = []
-                source = "default"
+                source = "manual"
+                discovery_status = "manual_required"
+                default_model_source = "manual"
+                warnings = ["Could not load region-specific Bedrock models. Enter a model ID manually or inspect again with credentials."]
                 notes = [
                     "Live Amazon Bedrock model discovery failed. Verify the Bedrock Mantle base URL, region, and API key, or enter a model name manually.",
                 ]
         else:
             models = []
-            source = "default"
+            source = "manual"
+            discovery_status = "manual_required"
+            default_model_source = "manual"
+            warnings = ["Could not load region-specific Bedrock models. Enter a model ID manually or inspect again with credentials."]
             notes = [
                 "No Bedrock API key provided for inspection, so OpenScribe could not load the region-specific model list. Enter a model name manually or inspect again with a key.",
             ]
         model_options = _bedrock_model_options(models, source=source)
     elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
+        requires_bearer_token = False
+        supports_model_discovery = True
         try:
             models = _list_ollama_chat_models(base_url=payload.base_url, bearer_token=payload.bearer_token)
             source = "fetched"
+            discovery_status = "fetched"
+            default_model_source = "provider"
+            warnings = []
             notes = []
         except AppError:
             models = []
-            source = "default"
+            source = "manual"
+            discovery_status = "manual_required"
+            default_model_source = "manual"
+            warnings = ["Could not reach Ollama /api/tags. Verify the base URL and network access."]
             notes = ["Live Ollama model discovery failed. Verify the base URL and local Ollama host, or enter a model name manually."]
         model_options = _ollama_model_options(models, source=source)
     else:  # pragma: no cover
         models = []
         source = "default"
+        discovery_status = "failed"
+        default_model_source = "none"
+        requires_bearer_token = False
+        supports_model_discovery = False
+        warnings = ["Unsupported LLM adapter kind."]
         notes = []
         model_options = []
     model_name = models[0] if models else None
@@ -195,6 +230,11 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         model_name=model_name,
         available_models=models,
         available_model_options=model_options,
+        discovery_status=discovery_status,
+        default_model_source=default_model_source,
+        requires_bearer_token=requires_bearer_token,
+        supports_model_discovery=supports_model_discovery,
+        warnings=warnings,
         notes=notes,
     )
 

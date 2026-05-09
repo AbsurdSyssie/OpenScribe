@@ -39,9 +39,16 @@ class SttConfigUpsert(BaseModel):
     auth_mode: SttAuthMode = SttAuthMode.bearer
     bearer_token: str | None = Field(default=None, min_length=1)
     model_name: str | None = Field(default=None, max_length=255)
+    model_field_name: str | None = Field(default="model", max_length=255)
     file_field_name: str = Field(default="", max_length=255)
     language: str | None = Field(default=None, max_length=32)
+    language_field_name: str | None = Field(default="language", max_length=255)
     response_text_path: str = Field(default="", max_length=255)
+    segments_path: str | None = Field(default=None, max_length=255)
+    segment_text_field: str | None = Field(default=None, max_length=255)
+    segment_start_field: str | None = Field(default=None, max_length=255)
+    segment_end_field: str | None = Field(default=None, max_length=255)
+    segment_speaker_field: str | None = Field(default=None, max_length=255)
     extra_form_fields_json: dict[str, str] = Field(default_factory=dict)
     is_active: bool = True
 
@@ -60,10 +67,14 @@ class SttConfigUpsert(BaseModel):
             normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
             normalized["transcribe_path"] = "/v1/audio/transcriptions"
             normalized["file_field_name"] = "file"
+            normalized["model_field_name"] = "model"
+            normalized["language_field_name"] = "language"
             normalized["response_text_path"] = "text"
         elif adapter_kind is SttAdapterKind.openai_compatible_rest:
             normalized["transcribe_path"] = "/v1/audio/transcriptions"
             normalized["file_field_name"] = "file"
+            normalized.setdefault("model_field_name", "model")
+            normalized.setdefault("language_field_name", "language")
             normalized["response_text_path"] = "text"
         return normalized
 
@@ -100,6 +111,22 @@ class SttConfigUpsert(BaseModel):
             raise ValueError("Response text path is required")
         return trimmed
 
+    @field_validator(
+        "model_field_name",
+        "language_field_name",
+        "segments_path",
+        "segment_text_field",
+        "segment_start_field",
+        "segment_end_field",
+        "segment_speaker_field",
+    )
+    @classmethod
+    def blank_optional_fields_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
     @field_validator("extra_form_fields_json")
     @classmethod
     def validate_extra_fields(cls, value: dict[str, str]) -> dict[str, str]:
@@ -115,6 +142,10 @@ class SttConfigUpsert(BaseModel):
     def validate_known_adapter_requirements(self):
         if self.adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest} and not self.model_name:
             raise ValueError("Model name is required for OpenAI STT adapters")
+        if self.model_name and not self.model_field_name:
+            self.model_field_name = "model"
+        if self.language and not self.language_field_name:
+            self.language_field_name = "language"
         return self
 
 
@@ -127,10 +158,17 @@ class SttConfigDetail(BaseModel):
     transcribe_path: str
     auth_mode: SttAuthMode
     model_name: str | None
+    model_field_name: str | None
     available_models_json: list[str]
     file_field_name: str
     language: str | None
+    language_field_name: str | None
     response_text_path: str
+    segments_path: str | None
+    segment_text_field: str | None
+    segment_start_field: str | None
+    segment_end_field: str | None
+    segment_speaker_field: str | None
     extra_form_fields_json: dict[str, str]
     is_active: bool
     has_secret: bool
@@ -244,9 +282,16 @@ class SttInspectResult(BaseModel):
     adapter_kind: SttAdapterKind
     transcribe_path: str
     model_name: str | None
+    model_field_name: str | None = Field(default="model", max_length=255)
     file_field_name: str
     language: str | None
+    language_field_name: str | None = Field(default="language", max_length=255)
     response_text_path: str
+    segments_path: str | None = Field(default=None, max_length=255)
+    segment_text_field: str | None = Field(default=None, max_length=255)
+    segment_start_field: str | None = Field(default=None, max_length=255)
+    segment_end_field: str | None = Field(default=None, max_length=255)
+    segment_speaker_field: str | None = Field(default=None, max_length=255)
     extra_form_fields_json: dict[str, str]
     candidate_paths: list[str]
     operation_summary: str | None

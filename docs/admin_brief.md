@@ -96,7 +96,10 @@ Contained information:
   - transcribe path
   - secret-present flag
   - default model
+  - model field name
   - default language
+  - language field name
+  - response text path and optional segment field mapping
   - extra request-field metadata
   - active flag
 - inspection results for candidate endpoint setup
@@ -125,6 +128,7 @@ Access:
 
 Notes:
 - secret material is stored via Vault reference, not shown back in plaintext
+- inspect tokens are not retained after the response; saving credentials requires re-entry
 - this area manages metadata and connectivity, not transcript content
 
 ### LLM provider provisioning
@@ -140,10 +144,11 @@ Contained information:
   - provider model
   - active flag
 - inspection results for candidate provider setup
+  - model discovery status and warning state
 
 System admin can change:
 - create LLM config
-- inspect provider before save
+- discover models before save
 - edit LLM config metadata
 - replace or preserve secret reference
 - activate/deactivate LLM config row
@@ -155,7 +160,7 @@ System admin can change:
 
 How:
 - choose target team
-- inspect provider metadata
+- discover provider models/metadata
 - save/edit provider config
 - set active team LLM policy
 

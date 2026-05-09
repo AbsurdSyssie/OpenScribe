@@ -813,7 +813,7 @@ def test_system_admin_can_inspect_stt_openapi_and_get_prefilled_fields(client, m
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
-    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(STT_OPENAPI_DOCUMENT))
+    monkeypatch.setattr("app.services.provider_inspection.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(STT_OPENAPI_DOCUMENT))
 
     login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
@@ -832,14 +832,71 @@ def test_system_admin_can_inspect_stt_openapi_and_get_prefilled_fields(client, m
     assert body["adapter_kind"] == "openai_compatible_rest"
     assert body["transcribe_path"] == "/v1/audio/transcriptions"
     assert body["model_name"] == "whisper-1"
+    assert body["model_field_name"] == "model"
     assert body["file_field_name"] == "file"
     assert body["language"] == "en"
+    assert body["language_field_name"] == "language"
     assert body["response_text_path"] == "text"
     assert body["extra_form_fields_json"] == {"chunk_mode": "memory"}
     assert any(tip["name"] == "file" and tip["required"] is True for tip in body["field_tips"])
     assert any(tip["name"] == "chunk_mode" and tip["description"] == "Chunk handling mode." for tip in body["field_tips"])
     assert any("OpenAI-compatible REST" in note for note in body["notes"])
     assert "inspect-token" not in inspected.text
+
+
+def test_system_admin_can_inspect_generic_stt_dynamic_field_names(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    document = {
+        "openapi": "3.1.0",
+        "paths": {
+            "/speech/transcribe": {
+                "post": {
+                    "summary": "Speech transcription",
+                    "requestBody": {
+                        "content": {
+                            "multipart/form-data": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "audio_file": {"type": "string", "format": "binary"},
+                                        "model_id": {"type": "string", "default": "clinic-whisper"},
+                                        "lang": {"type": "string", "example": "en"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"type": "object", "properties": {"transcript": {"type": "string"}}}
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+    monkeypatch.setattr("app.services.provider_inspection.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(document))
+
+    login(client, email="admin@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/stt-configs/inspect",
+        json={"team_id": str(team.id), "adapter_kind": "generic_rest", "base_url": "http://127.0.0.1:7000"},
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["transcribe_path"] == "/speech/transcribe"
+    assert body["file_field_name"] == "audio_file"
+    assert body["model_field_name"] == "model_id"
+    assert body["model_name"] == "clinic-whisper"
+    assert body["language_field_name"] == "lang"
+    assert body["language"] == "en"
+    assert body["response_text_path"] == "transcript"
 
 
 def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
@@ -1726,7 +1783,31 @@ def test_system_admin_can_inspect_bedrock_chat_models(client, make_team, make_us
         "anthropic.claude-3-7-sonnet-20250219-v1:0",
         "amazon.nova-micro-v1:0",
     ]
+    assert body["discovery_status"] == "fetched"
+    assert body["default_model_source"] == "provider"
+    assert body["requires_bearer_token"] is True
+    assert body["supports_model_discovery"] is True
+    assert body["warnings"] == []
     assert "Amazon Bedrock model list" in body["notes"][0]
+
+
+def test_system_admin_llm_inspection_exposes_manual_required_state(client, make_team, make_user):
+    team = make_team(name="Clinic Bedrock Manual")
+    make_user(email="admin-bedrock-manual@example.com", password="password-1", is_system_admin=True)
+
+    login(client, email="admin-bedrock-manual@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/llm-configs/inspect",
+        json={"team_id": str(team.id), "adapter_kind": "bedrock_chat", "bedrock_region": "us-east-1"},
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["available_models"] == []
+    assert body["model_name"] is None
+    assert body["discovery_status"] == "manual_required"
+    assert body["default_model_source"] == "manual"
+    assert body["warnings"] == ["Could not load region-specific Bedrock models. Enter a model ID manually or inspect again with credentials."]
 
 
 def test_system_admin_can_provision_bedrock_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
@@ -9145,7 +9226,9 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         response_text_path,
         extra_form_fields_json,
         model_name,
+        model_field_name,
         language,
+        language_field_name,
         audio_bytes,
         filename,
         content_type,
@@ -10600,7 +10683,9 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         response_text_path,
         extra_form_fields_json,
         model_name,
+        model_field_name,
         language,
+        language_field_name,
         audio_bytes,
         filename,
         content_type,
@@ -10614,7 +10699,9 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         assert response_text_path == config.response_text_path
         assert extra_form_fields_json == (config.extra_form_fields_json or {})
         assert model_name == config.model_name
+        assert model_field_name == (config.model_field_name or "model")
         assert language == config.language
+        assert language_field_name == (config.language_field_name or "language")
         assert audio_bytes == make_test_wav_bytes(duration_seconds=1.0)
         assert filename == "recording.wav"
         assert content_type == "audio/wav"
@@ -10781,7 +10868,9 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         response_text_path,
         extra_form_fields_json,
         model_name,
+        model_field_name,
         language,
+        language_field_name,
         audio_bytes,
         filename,
         content_type,
@@ -10791,6 +10880,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         assert base_url == config_one.base_url
         assert transcribe_path == config_one.transcribe_path
         assert model_name == "whisper-1"
+        assert model_field_name == (config_one.model_field_name or "model")
         return "snapshotted provider transcript"
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
@@ -11127,6 +11217,57 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     assert captured["data"]["language"] == "en"
     assert captured["data"]["response_format"] == "verbose_json"
     assert captured["files"]["file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
+
+
+def test_transcribe_with_team_stt_uses_saved_model_and_language_field_names(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-dynamic-stt@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Dynamic STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:9000",
+        transcribe_path="/speech/transcribe",
+        auth_mode=SttAuthMode.bearer,
+        model_name="clinic-whisper",
+        model_field_name="model_id",
+        file_field_name="audio_file",
+        language="en-GB",
+        language_field_name="lang",
+        response_text_path="$.results[0].alternatives[0].transcript",
+        extra_form_fields_json=None,
+        vault_secret_ref="",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+    captured = {}
+
+    def fake_httpx_post(url, *, headers, data, files, timeout):
+        captured["data"] = data
+        captured["files"] = files
+        return FakeHttpxResponse({"results": [{"alternatives": [{"transcript": "recognized text"}]}]})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"normalized-audio",
+        filename="chunk.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "recognized text"
+    assert captured["data"] == {"model_id": "clinic-whisper", "lang": "en-GB"}
+    assert "model" not in captured["data"]
+    assert "language" not in captured["data"]
+    assert captured["files"]["audio_file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
 
 
 def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(

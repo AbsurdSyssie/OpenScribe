@@ -1,5 +1,6 @@
 from datetime import datetime
 import ipaddress
+from typing import Literal
 from uuid import UUID
 from urllib.parse import urlparse
 
@@ -249,6 +250,11 @@ class LlmConfigInspectResult(BaseModel):
     model_name: str | None
     available_models: list[str] = Field(default_factory=list)
     available_model_options: list[LlmModelOption] = Field(default_factory=list)
+    discovery_status: Literal["fetched", "fallback", "manual_required", "failed"]
+    default_model_source: Literal["provider", "builtin", "manual", "none"]
+    requires_bearer_token: bool
+    supports_model_discovery: bool
+    warnings: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
     model_config = {"protected_namespaces": ()}

@@ -147,7 +147,7 @@ What it does:
 - hard-delete user removal with transcript/version cascade
 - system-admin STT config provisioning, fetch, inspection, and delete for a selected team
 - STT save-and-inspect duplicate warning before Vault write/provider inspection, confirmed duplicate override, invalid first-add cleanup, partial discovery status, saved-provider re-inspection via Vault reference, and invalid re-inspection clearing active selections
-- explicit provider `credential_action` behavior for keeping and removing STT/LLM Vault-backed credentials, including STT credential-derived metadata cleanup and LLM post-commit Vault cleanup ordering
+- explicit provider `credential_action` behavior for keeping and removing STT/LLM Vault-backed credentials, including STT credential-derived metadata cleanup, LLM fail-closed Vault delete ordering, and stale LLM Vault refs that remain clearable when the old token cannot be read
 - manual generic STT save-and-inspect testing the saved runtime contract with bundled synthetic audio instead of default OpenAPI discovery
 - generic REST and OpenAI-compatible REST STT bad replacement token rejection preserving the existing config row, team selection, and saved credential without writing the rejected token to Vault
 - STT OpenAPI inspection inferring provider-specific `model_field_name`/`language_field_name` and runtime sending those saved field names instead of hard-coded `model`/`language`

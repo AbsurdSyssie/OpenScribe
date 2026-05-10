@@ -5600,8 +5600,11 @@ def test_admin_templates_sync_optional_provider_credential_actions():
     admin_html = Path("app/templates/admin.html").read_text()
     admin2_html = Path("app/templates/admin2.html").read_text()
 
+    assert 'name="preserved_bearer_token"' not in admin_html
     assert "credentialAction.value = adapter === 'openai_cloud' ? 'replace' : 'keep';" in admin_html
     assert "credentialAction.value = adapter === 'ollama_chat' ? 'keep' : 'replace';" in admin_html
+    assert "Tokens are never retained after inspection responses." in admin_html
+    assert "Tokens are never retained after model discovery responses." in admin_html
     assert 'const optionalToken = adapter === "generic_rest" || adapter === "openai_compatible_rest" || adapter === "ollama_chat";' in admin2_html
     assert '<option value="keep" selected>keep</option><option value="replace">replace</option>' in admin2_html
 

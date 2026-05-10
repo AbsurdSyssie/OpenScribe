@@ -1334,6 +1334,7 @@
           <label>
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
             <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config %}required{% endif %}>
+            <small>Tokens are never retained after inspection responses. Re-enter a token to save or replace credentials. When editing an existing provider, choose keep saved credential to leave the saved token unchanged.</small>
           </label>
           <label>
             Credential action
@@ -1651,6 +1652,7 @@
           <label>
             <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config %}required{% endif %} data-llm-token-input>
+            <small>Tokens are never retained after model discovery responses. Re-enter a token to save or replace credentials. When editing an existing provider, choose keep saved credential to leave the saved token unchanged.</small>
           </label>
           <label>
             Credential action

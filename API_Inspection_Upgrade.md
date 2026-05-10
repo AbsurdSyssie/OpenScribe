@@ -1,181 +1,508 @@
-## Verdict for `67cf9dec048bba11ca34bb8941c1b1f13d938b8a`
+Below are the diffs I would implement on top of `81f9925b5617694f7b37cc19f2711193b3893111`.
 
-**Much improved, but I would still not call it cleanly done yet.**
-
-The prior blocking STT issues appear to have been substantially addressed: the commit includes provider-inspection library usage, STT credential status tracking, segment-aware parsing, re-inspection routes, and tests. However, there are still design/correctness issues around how saved STT credentials are inspected and how provider status is modeled.
-
-## Fixed or substantially improved
-
-### 1. The OpenAPI/JSONPath helper is now using real libraries
-
-`provider_inspection.py` now uses:
-
-```python
-openapi_spec_validator.validate_spec
-prance.ResolvingParser
-jsonpath_ng.parse
-```
-
-That addresses the earlier problem where the dependencies were added but not used. It validates OpenAPI docs, resolves internal refs through Prance, and uses `jsonpath-ng` for JSONPath expressions. 
-
-### 2. STT schemas now expose the right dynamic contract fields
-
-`SttConfigUpsert`, `SttConfigDetail`, and `SttInspectResult` include:
-
-```text
-model_field_name
-language_field_name
-segments_path
-segment_text_field
-segment_start_field
-segment_end_field
-segment_speaker_field
-```
-
-They also include `confirm_duplicate` and expose `credential_status` / `inspection_metadata_json` on config detail. 
-
-### 3. STT runtime now uses dynamic field names and segment fields
-
-The STT service now constructs HTTP form fields from `model_field_name` and `language_field_name`, and `_transcribe_via_http` accepts segment path/field parameters. It also has `_format_timestamped_transcript_payload_with_segments`, which uses the saved segment path and field names rather than assuming only top-level `segments`. 
-
-### 4. STT credential status was added
-
-The commit adds a `ProviderCredentialStatus` enum and stores:
-
-```text
-credential_status
-credential_fingerprint
-inspection_metadata_json
-```
-
-on `team_stt_configs`. The migration adds these fields and creates the enum. 
-
-### 5. STT ingestion job snapshots were extended
-
-There is a follow-up migration for:
-
-```text
-stt_segments_path
-stt_segment_text_field
-stt_segment_start_field
-stt_segment_end_field
-stt_segment_speaker_field
-```
-
-on `transcript_ingestion_jobs`. 
-
-### 6. Tests were added around provider inspection
-
-`tests/test_provider_inspection.py` now tests OpenAPI dereferencing, JSONPath index support, JSONPath wildcard behavior, no payload leakage in JSONPath errors, default extraction, and invalid OpenAPI rejection. 
-
-`tests/test_api.py` also imports the STT service functions directly, which would catch the previous syntax-level import failure if the suite is run. It includes STT config credential status and duplicate-warning tests. 
+I would keep this as a small hardening patch, not a larger redesign. The commit already added `credential_action` to STT/LLM schemas and browser routes, and removed STT/LLM `preserved_bearer_token` defaults.   
 
 ---
 
-## Remaining concerns
+## 1. STT: do not delete an existing config when a replacement credential is bad
 
-### 1. Automatic inspection during STT save may be too aggressive
+The important safety rule: **a failed replacement credential should not destroy the existing provider config**.
 
-`upsert_stt_config` now writes the bearer token and then calls `inspect_stt_contract` automatically when `payload.bearer_token` is supplied. In the diff, that call constructs a new `SttInspectRequest` with:
-
-```python
-team_id=team.id
-adapter_kind=payload.adapter_kind
-base_url=payload.base_url
-bearer_token=payload.bearer_token
+```diff
+diff --git a/app/services/stt.py b/app/services/stt.py
+index b0c3d77..PATCH 100644
+--- a/app/services/stt.py
++++ b/app/services/stt.py
+@@
+ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
+     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+     config = None
+@@
+     creating = config is None
+     replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
+     removing_secret = payload.credential_action == "remove"
++
++    existing_vault_secret_ref = config.vault_secret_ref if config is not None else ""
++    existing_credential_fingerprint = config.credential_fingerprint if config is not None else None
++    existing_credential_status = config.credential_status if config is not None else ProviderCredentialStatus.unknown
++    existing_inspection_metadata = dict(config.inspection_metadata_json or {}) if config is not None else {}
++
+     if removing_secret and payload.bearer_token:
+         raise AppError(422, "business_rule_violation", "Bearer token cannot be supplied when credential_action is remove", {"field": "credential_action"})
+     if replacing_secret and not payload.bearer_token:
+         raise AppError(422, "business_rule_violation", "Bearer token is required when credential_action is replace", {"field": "bearer_token"})
+@@
+-    if payload.bearer_token:
+-        config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+-        config.credential_status = ProviderCredentialStatus.pending_inspection
++    if replacing_secret and payload.bearer_token:
++        config.credential_status = ProviderCredentialStatus.pending_inspection
+     elif removing_secret:
+-        if config.vault_secret_ref:
+-            delete_after_commit = True
++        if config.vault_secret_ref:
++            delete_after_commit = True
+         config.vault_secret_ref = ""
++        config.credential_fingerprint = None
++        config.credential_status = ProviderCredentialStatus.unknown
++        config.inspection_metadata_json = {"status": "unknown", "reason": "credential_removed"}
+     elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest} and creating:
+         config.vault_secret_ref = ""
+         config.credential_fingerprint = None
+         config.credential_status = ProviderCredentialStatus.unknown
+@@
+-    if payload.bearer_token:
++    if replacing_secret and payload.bearer_token:
+         try:
+-            inspection = inspect_stt_contract(
+-                db,
+-                actor,
+-                SttInspectRequest(team_id=team.id, adapter_kind=payload.adapter_kind, base_url=payload.base_url, bearer_token=payload.bearer_token),
+-            )
++            if payload.adapter_kind is SttAdapterKind.generic_rest:
++                _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
++                inspection = None
++            else:
++                inspection = inspect_stt_contract(
++                    db,
++                    actor,
++                    SttInspectRequest(
++                        team_id=team.id,
++                        adapter_kind=payload.adapter_kind,
++                        base_url=payload.base_url,
++                        bearer_token=payload.bearer_token,
++                    ),
++                )
+         except AppError as exc:
+             if _is_credential_rejection(exc):
+-                secret_config_id = config.id
+-                db.delete(config)
+-                db.commit()
+-                try:
+-                    delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
+-                except AppError as cleanup_exc:
+-                    logger.warning(
+-                        "stt_config_invalid_secret_cleanup_failed",
+-                        extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
+-                    )
++                if creating:
++                    db.rollback()
++                else:
++                    config.vault_secret_ref = existing_vault_secret_ref
++                    config.credential_fingerprint = existing_credential_fingerprint
++                    config.credential_status = existing_credential_status
++                    config.inspection_metadata_json = existing_inspection_metadata
++                    db.add(config)
++                    db.rollback()
+                 raise AppError(422, "provider_credential_invalid", "STT provider rejected the supplied credential", {"provider_type": "stt"}) from exc
+             config.credential_status = ProviderCredentialStatus.partial
+             config.inspection_metadata_json = {"status": "partial", "warning": exc.message, "error_code": exc.code}
+         else:
+-            if inspection.available_models:
++            config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
++            config.credential_fingerprint = fingerprint
++            if inspection is not None and inspection.available_models:
+                 config.available_models_json = list(inspection.available_models)
+-            config.credential_status = _inspection_status(inspection, had_secret=True)
+-            config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
++            if inspection is not None:
++                config.credential_status = _inspection_status(inspection, had_secret=True)
++                config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
++            else:
++                config.credential_status = ProviderCredentialStatus.verified
++                config.inspection_metadata_json = {
++                    "status": ProviderCredentialStatus.verified.value,
++                    "adapter_kind": payload.adapter_kind.value,
++                    "verification": "synthetic_stt_sample",
++                }
 ```
 
-but it does **not** pass any OpenAPI path or the manually entered transcribe/path contract fields. 
-
-For `generic_rest`, this means save-time credential verification can fall back to the default `/openapi.json` inspection path. A manually configured STT endpoint could be perfectly valid but still get marked `partial` or degraded if it does not expose OpenAPI at the default path.
-
-Recommended fix:
-
-```text
-Do not make generic REST save-time verification depend only on OpenAPI discovery.
-```
-
-Better behavior:
-
-```text
-If an inspected contract is being saved, use that contract.
-If a manual generic REST config is being saved, test the saved transcribe_path/file/model/language/response config with synthetic audio.
-If no token is supplied, do not infer credential validity.
-```
-
-### 2. Editing an existing generic REST config without a token may retain the old secret
-
-From the upsert diff, when `payload.bearer_token` is absent, the new logic only clears credential state for generic/openai-compatible configs when `creating` is true. The old “delete saved generic/openai-compatible secret when no token is submitted” behavior appears to have been removed. 
-
-That may be intentional to avoid forcing admins to re-enter credentials on every edit. But then the UI and service semantics should be explicit:
-
-```text
-Blank token on edit = keep existing token
-```
-
-If blank token is intended to mean “remove token,” this is now wrong.
-
-Recommended fix: add an explicit form/API field:
-
-```text
-credential_action = keep | replace | remove
-```
-
-Do not overload blank token.
-
-### 3. STT credential status is richer than LLM credential status
-
-STT now has persisted credential state, duplicate detection, fingerprints, re-inspection metadata, and invalid-selection blocking. LLM has saved-provider inspection, but it appears to update model lists rather than storing equivalent persisted credential status. The LLM service adds `inspect_saved_llm_config`, but there is no matching model-level status/fingerprint metadata shown for LLM. 
-
-That may be acceptable if this phase is STT-focused, but it leaves the admin experience asymmetric.
-
-Recommended follow-up:
-
-```text
-Either intentionally document that credential status is STT-only for now,
-or add provider credential status/fingerprint/metadata to LLM configs too.
-```
-
-### 4. `preserved_bearer_token` still exists in form defaults
-
-The presentation layer still includes `preserved_bearer_token`, although it is set to an empty string in STT/LLM form defaults. 
-
-That is better than rendering a secret, but I would still remove the field entirely unless it is needed. Its presence encourages future accidental token preservation.
-
-Recommended fix:
-
-```text
-Remove preserved_bearer_token from STT/LLM forms and routes.
-Use explicit credential_action instead.
-```
-
-### 5. I cannot confirm test execution status
-
-I checked the commit status/workflow visibility through the connector and did not see a test status to verify. So my assessment is based on code inspection, not a confirmed passing CI run.
+Why: the current direction is right, but replacement credentials should be validated before the existing config is made unrecoverable. The STT service already has `_verify_generic_stt_config_with_sample`, which is exactly the right primitive for generic REST validation. 
 
 ---
 
-## Merge-readiness assessment
+## 2. STT: make `remove` clear all credential-derived state
 
-| Area                                         | Status                                                         |
-| -------------------------------------------- | -------------------------------------------------------------- |
-| STT syntax/import issue from previous review | Looks fixed                                                    |
-| Dynamic STT model/language fields            | Looks implemented                                              |
-| Dynamic STT segment parsing                  | Looks implemented                                              |
-| OpenAPI/JSONPath libraries                   | Now properly used                                              |
-| STT credential status                        | Implemented                                                    |
-| STT duplicate credential warning             | Implemented                                                    |
-| LLM discovery status                         | Still good                                                     |
-| Admin token leakage                          | Looks improved, but `preserved_bearer_token` should be removed |
-| Save-time STT inspection semantics           | Needs review/fix                                               |
-| LLM/STT parity for credential status         | Incomplete                                                     |
+This is a smaller explicit cleanup. If the implementation already partially does this lower in the file, I would still make it uniform.
 
-## Bottom line
+```diff
+diff --git a/app/services/stt.py b/app/services/stt.py
+index b0c3d77..PATCH 100644
+--- a/app/services/stt.py
++++ b/app/services/stt.py
+@@
+     elif removing_secret:
+         if config.vault_secret_ref:
+             delete_after_commit = True
+         config.vault_secret_ref = ""
++        config.credential_fingerprint = None
++        config.credential_status = ProviderCredentialStatus.unknown
++        config.inspection_metadata_json = {
++            "status": ProviderCredentialStatus.unknown.value,
++            "reason": "credential_removed",
++        }
+```
 
-This commit is a meaningful step forward and fixes most of the earlier technical blockers. I would still request changes before merging, focused on:
+---
 
-1. Replace implicit “blank token” behavior with explicit `credential_action`.
-2. Avoid using default OpenAPI discovery as the only save-time verification for manually configured generic STT.
-3. Remove `preserved_bearer_token` from STT/LLM admin flows.
-4. Decide whether LLM should get the same persisted credential status model as STT.
-5. Run and report the full test suite.
+## 3. LLM: make secret removal fail closed if Vault cleanup fails
+
+Currently, LLM removal clears the DB ref and then tries Vault cleanup after commit. I would flip that: if Vault cleanup fails, do not commit a DB state that says the secret is gone.
+
+```diff
+diff --git a/app/services/llm.py b/app/services/llm.py
+index 7930f3e..PATCH 100644
+--- a/app/services/llm.py
++++ b/app/services/llm.py
+@@
+-    delete_after_commit = False
+     if replacing_secret and payload.bearer_token:
+         config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+     elif removing_secret:
+         if config.vault_secret_ref:
+-            delete_after_commit = True
++            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+         config.vault_secret_ref = ""
+@@
+     db.commit()
+-    if delete_after_commit:
+-        try:
+-            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+-        except AppError as exc:
+-            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
+     db.refresh(config)
+     return config
+```
+
+Rationale: orphaning a token in Vault while the DB says no token exists is worse than failing the remove operation.
+
+---
+
+## 4. Admin template: explicit credential copy
+
+I would add this near both STT and LLM credential fields.
+
+```diff
+diff --git a/app/templates/admin.html b/app/templates/admin.html
+index 1f31e52..PATCH 100644
+--- a/app/templates/admin.html
++++ b/app/templates/admin.html
+@@
+           <label>
+             Bearer token
+             <input type="password" name="bearer_token" autocomplete="off">
++            <small>
++              Tokens are never retained after inspection responses. Re-enter a token to save or replace credentials.
++              When editing an existing provider, choose “keep existing credential” to leave the saved token unchanged.
++            </small>
+           </label>
+@@
+           <label>
+             Credential action
+             <select name="credential_action">
+               <option value="keep" {% if stt_form.credential_action == "keep" %}selected{% endif %}>Keep existing credential</option>
+               <option value="replace" {% if stt_form.credential_action == "replace" %}selected{% endif %}>Replace credential</option>
+               <option value="remove" {% if stt_form.credential_action == "remove" %}selected{% endif %}>Remove credential</option>
+             </select>
+           </label>
+```
+
+And same idea for the LLM form:
+
+```diff
+diff --git a/app/templates/admin.html b/app/templates/admin.html
+index 1f31e52..PATCH 100644
+--- a/app/templates/admin.html
++++ b/app/templates/admin.html
+@@
+           <label>
+             Bearer token
+             <input type="password" name="bearer_token" autocomplete="off">
++            <small>
++              Tokens are never retained after model discovery responses. Re-enter a token to save or replace credentials.
++              When editing an existing provider, choose “keep existing credential” to leave the saved token unchanged.
++            </small>
+           </label>
+@@
+           <label>
+             Credential action
+             <select name="credential_action">
+               <option value="keep" {% if llm_form.credential_action == "keep" %}selected{% endif %}>Keep existing credential</option>
+               <option value="replace" {% if llm_form.credential_action == "replace" %}selected{% endif %}>Replace credential</option>
+               <option value="remove" {% if llm_form.credential_action == "remove" %}selected{% endif %}>Remove credential</option>
+             </select>
+           </label>
+```
+
+The exact insertion point depends on the current template block layout, but I would add this copy wherever the token and credential-action controls already render.
+
+---
+
+## 5. Tests: credential-action behavior
+
+I would add focused tests. Sketch below assumes existing fixtures/helpers from `tests/test_api.py`.
+
+```diff
+diff --git a/tests/test_api.py b/tests/test_api.py
+index 2c5a8b1..PATCH 100644
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@
+ def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_team, make_user):
+     ...
++
++
++def test_stt_credential_action_keep_preserves_existing_secret(client, db_session, make_team, make_user, monkeypatch):
++    team = make_team(name="Clinic North")
++    make_user(email="admin-stt-keep@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-stt-keep@example.com", password="password-1")
++
++    created = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "team_id": str(team.id),
++            "label": "Clinic STT",
++            "adapter_kind": "openai_compatible_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "bearer_token": "first-secret",
++            "credential_action": "replace",
++            "model_name": "whisper-1",
++        },
++    )
++    assert created.status_code == 200
++    config_id = created.json()["id"]
++    persisted = db_session.get(TeamSttConfig, UUID(config_id))
++    original_ref = persisted.vault_secret_ref
++    original_fingerprint = persisted.credential_fingerprint
++
++    writes = []
++    monkeypatch.setattr(
++        "app.services.stt.write_team_stt_bearer_token",
++        lambda **kwargs: writes.append(kwargs["bearer_token"]) or "secret:unexpected",
++    )
++
++    updated = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "config_id": config_id,
++            "team_id": str(team.id),
++            "label": "Clinic STT renamed",
++            "adapter_kind": "openai_compatible_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "credential_action": "keep",
++            "model_name": "whisper-1",
++        },
++    )
++
++    assert updated.status_code == 200
++    db_session.refresh(persisted)
++    assert persisted.vault_secret_ref == original_ref
++    assert persisted.credential_fingerprint == original_fingerprint
++    assert writes == []
++
++
++def test_stt_credential_action_remove_clears_optional_generic_secret(client, db_session, make_team, make_user, monkeypatch):
++    team = make_team(name="Clinic North")
++    make_user(email="admin-stt-remove@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-stt-remove@example.com", password="password-1")
++
++    created = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "team_id": str(team.id),
++            "label": "Generic STT",
++            "adapter_kind": "generic_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "transcribe_path": "/transcribe",
++            "file_field_name": "audio_file",
++            "response_text_path": "text",
++            "bearer_token": "secret-to-remove",
++            "credential_action": "replace",
++        },
++    )
++    assert created.status_code == 200
++    config_id = created.json()["id"]
++
++    deleted = []
++    monkeypatch.setattr(
++        "app.services.stt.delete_team_stt_bearer_token",
++        lambda **kwargs: deleted.append(kwargs["config_id"]),
++    )
++
++    removed = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "config_id": config_id,
++            "team_id": str(team.id),
++            "label": "Generic STT",
++            "adapter_kind": "generic_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "transcribe_path": "/transcribe",
++            "file_field_name": "audio_file",
++            "response_text_path": "text",
++            "credential_action": "remove",
++        },
++    )
++
++    assert removed.status_code == 200
++    persisted = db_session.get(TeamSttConfig, UUID(config_id))
++    assert persisted.vault_secret_ref == ""
++    assert persisted.credential_fingerprint is None
++    assert persisted.credential_status is ProviderCredentialStatus.unknown
++    assert deleted == [persisted.id]
++
++
++def test_stt_replacing_bad_existing_credential_does_not_delete_config(client, db_session, make_team, make_user, monkeypatch):
++    team = make_team(name="Clinic North")
++    make_user(email="admin-stt-bad-replace@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-stt-bad-replace@example.com", password="password-1")
++
++    created = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "team_id": str(team.id),
++            "label": "Clinic STT",
++            "adapter_kind": "openai_compatible_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "bearer_token": "valid-secret",
++            "credential_action": "replace",
++            "model_name": "whisper-1",
++        },
++    )
++    assert created.status_code == 200
++    config_id = UUID(created.json()["id"])
++
++    def reject_inspection(*args, **kwargs):
++        raise AppError(502, "stt_request_failed", "STT provider request failed", {"status_code": 401})
++
++    monkeypatch.setattr("app.services.stt.inspect_stt_contract", reject_inspection)
++
++    rejected = client.post(
++        "/api/v1/stt-configs",
++        json={
++            "config_id": str(config_id),
++            "team_id": str(team.id),
++            "label": "Clinic STT",
++            "adapter_kind": "openai_compatible_rest",
++            "base_url": "http://127.0.0.1:7000",
++            "bearer_token": "bad-secret",
++            "credential_action": "replace",
++            "model_name": "whisper-1",
++        },
++    )
++
++    assert_error(
++        rejected,
++        status_code=422,
++        code="provider_credential_invalid",
++        message="STT provider rejected the supplied credential",
++    )
++    assert db_session.get(TeamSttConfig, config_id) is not None
++
++
++def test_llm_credential_action_remove_rejected_for_openai(client, make_team, make_user):
++    team = make_team(name="Clinic North")
++    make_user(email="admin-llm-remove@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-llm-remove@example.com", password="password-1")
++
++    response = client.post(
++        "/api/v1/llm-configs",
++        json={
++            "team_id": str(team.id),
++            "label": "OpenAI",
++            "adapter_kind": "openai_chat",
++            "base_url": "https://api.openai.com/v1",
++            "model_name": "gpt-4o-mini",
++            "credential_action": "remove",
++        },
++    )
++
++    assert_error(
++        response,
++        status_code=422,
++        code="business_rule_violation",
++        message="OpenAI and Bedrock LLM configs require a saved bearer token",
++    )
++
++
++def test_llm_credential_action_keep_preserves_existing_secret(client, db_session, make_team, make_user, monkeypatch):
++    team = make_team(name="Clinic North")
++    make_user(email="admin-llm-keep@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-llm-keep@example.com", password="password-1")
++
++    created = client.post(
++        "/api/v1/llm-configs",
++        json={
++            "team_id": str(team.id),
++            "label": "OpenAI",
++            "adapter_kind": "openai_chat",
++            "base_url": "https://api.openai.com/v1",
++            "bearer_token": "first-secret",
++            "credential_action": "replace",
++            "model_name": "gpt-4o-mini",
++        },
++    )
++    assert created.status_code == 200
++    config_id = created.json()["id"]
++    persisted = db_session.get(TeamLlmConfig, UUID(config_id))
++    original_ref = persisted.vault_secret_ref
++
++    writes = []
++    monkeypatch.setattr(
++        "app.services.llm.write_team_llm_bearer_token",
++        lambda **kwargs: writes.append(kwargs["bearer_token"]) or "secret:unexpected",
++    )
++
++    updated = client.post(
++        "/api/v1/llm-configs",
++        json={
++            "config_id": config_id,
++            "team_id": str(team.id),
++            "label": "OpenAI renamed",
++            "adapter_kind": "openai_chat",
++            "base_url": "https://api.openai.com/v1",
++            "credential_action": "keep",
++            "model_name": "gpt-4o-mini",
++        },
++    )
++
++    assert updated.status_code == 200
++    db_session.refresh(persisted)
++    assert persisted.vault_secret_ref == original_ref
++    assert writes == []
+```
+
+The test function names can be adjusted to match the file’s organization.
+
+---
+
+## 6. Optional: template test for no hidden token preservation
+
+I would also add a cheap HTML-level regression test.
+
+```diff
+diff --git a/tests/test_admin_ui.py b/tests/test_admin_ui.py
+index CURRENT..PATCH 100644
+--- a/tests/test_admin_ui.py
++++ b/tests/test_admin_ui.py
+@@
++def test_admin_stt_and_llm_forms_do_not_render_preserved_bearer_token(client, make_user):
++    make_user(email="admin-token-form@example.com", password="password-1", is_system_admin=True)
++    login(client, email="admin-token-form@example.com", password="password-1")
++
++    response = client.get("/admin")
++
++    assert response.status_code == 200
++    assert "preserved_bearer_token" not in response.text
++    assert 'name="credential_action"' in response.text
+```
+
+I would keep de-identification out of this test unless that flow is also being changed, because the current presentation still uses `preserved_bearer_token` for de-identification defaults. 
+
+---
+
+## What I would not put in this patch
+
+I would **not** add full LLM persisted credential status in the same diff. That is a separate migration and lifecycle feature. The current commit already improves LLM `keep | replace | remove`; persisted LLM health can be a follow-up.
+
+My merge-blocking diffs are the STT replacement safety and the credential-action tests.

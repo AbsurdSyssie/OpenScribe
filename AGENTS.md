@@ -136,13 +136,14 @@ Do not skip checklist/checkpoint workflow.
 
 ## Mandatory tests for every change
 
-Every meaningful change needs relevant tests. You don't need to do a full suite, however a focused test suite should be carried out after changes. 
+Every meaningful change needs relevant tests. 
 
 Run pytest from the project virtualenv, not the system Python:
 
 ```bash
 .venv/bin/pytest -q
 ```
+You don't need to run the full suite for every change, however a focused test suite should be carried out after changes. 
 
 For focused checks, keep the same virtualenv entrypoint:
 

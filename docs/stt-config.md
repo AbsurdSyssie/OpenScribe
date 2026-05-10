@@ -117,6 +117,7 @@ Local diagnostic helper:
 - required `model`
 - no OpenAPI path needed
 - meant for local/private-network or vendor endpoints that intentionally mimic the OpenAI transcription request shape
+- save-time token replacement uploads the bundled synthetic audio sample to the configured transcribe path before writing the replacement token to Vault
 
 Both OpenAI adapter families still keep:
 

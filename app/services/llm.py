@@ -435,14 +435,12 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
 
     available_models_json: list[str]
-    discovery_succeeded = False
     discovery_metadata: dict[str, object] = {}
     if adapter_kind is LlmAdapterKind.openai_chat:
         token_for_discovery = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
         if token_for_discovery:
             try:
                 available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=token_for_discovery, base_url=base_url)
-                discovery_succeeded = True
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
@@ -458,7 +456,6 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         if token_for_discovery:
             try:
                 available_models_json = _list_bedrock_chat_models(api_key=token_for_discovery, base_url=base_url)
-                discovery_succeeded = True
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
@@ -473,7 +470,6 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         try:
             token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
             available_models_json = _list_ollama_chat_models(base_url=base_url, bearer_token=token_for_lookup)
-            discovery_succeeded = True
             discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
         except AppError:
             available_models_json = []
@@ -486,7 +482,8 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
     if not model_name:
         raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
-    if discovery_succeeded and available_models_json and model_name not in available_models_json:
+    manual_required_without_models = discovery_metadata.get("discovery_status") == "manual_required" and len(available_models_json) == 0
+    if available_models_json and not manual_required_without_models and model_name not in available_models_json:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
     if not available_models_json and model_name:
         available_models_json = [model_name]

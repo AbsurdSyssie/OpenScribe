@@ -2356,6 +2356,45 @@ def test_llm_save_validates_model_against_successful_live_discovery(client, db_s
     assert defaulted.json()["model_name"] == "model-a"
 
 
+def test_llm_config_edit_validates_model_against_saved_provider_models(client, db_session, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic LLM Saved Model Validation")
+    admin = make_user(email="admin-llm-saved-model-validation@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        provider_preset="openai",
+        base_url="https://api.openai.com/v1",
+        available_models_json=["model-a"],
+        model_name="model-a",
+        has_secret=True,
+    )
+
+    login(client, email="admin-llm-saved-model-validation@example.com", password="password-1")
+    edited = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Edited LLM",
+            "provider_preset": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "credential_action": "keep",
+            "model_name": "model-b",
+            "is_active": True,
+        },
+    )
+
+    assert_error(
+        edited,
+        status_code=422,
+        code="business_rule_violation",
+        message="Selected model is not available for this provider",
+    )
+    db_session.refresh(config)
+    assert config.model_name == "model-a"
+    assert config.available_models_json == ["model-a"]
+
+
 def test_llm_save_rejects_missing_model_when_discovery_fails(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic LLM Missing Manual Model")
     make_user(email="admin-llm-missing-manual@example.com", password="password-1", is_system_admin=True)

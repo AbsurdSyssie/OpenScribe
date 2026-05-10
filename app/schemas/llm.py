@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.llm_provider_defaults import normalize_bedrock_region
-from app.models import LlmAdapterKind, LlmAuthMode, LlmProviderPreset
+from app.models import LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset
 
 
 def _validate_llm_base_url(value: str) -> str:
@@ -100,6 +100,9 @@ class LlmConfigDetail(BaseModel):
     model_name: str | None
     available_models_json: list[str]
     inspection_metadata_json: dict[str, object]
+    setup_status: LlmConfigSetupStatus
+    provider_display_name: str
+    setup_status_label: str | None = None
     is_active: bool
     has_secret: bool
     created_by_user_id: UUID
@@ -108,6 +111,79 @@ class LlmConfigDetail(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True, "protected_namespaces": ()}
+
+
+class LlmConfigDraftCreate(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    provider_preset: LlmProviderPreset = LlmProviderPreset.openai
+    base_url: str = Field(default="", max_length=2048)
+    bearer_token: str | None = Field(default=None, min_length=1)
+    bedrock_region: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_provider_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        from app.services.llm_presets import apply_provider_defaults
+
+        preset, _adapter_kind, base_url, bedrock_region = apply_provider_defaults(
+            provider_preset=normalized.get("provider_preset"),
+            base_url=normalized.get("base_url"),
+            bedrock_region=normalized.get("bedrock_region"),
+        )
+        normalized["provider_preset"] = preset
+        normalized["base_url"] = base_url
+        normalized["bedrock_region"] = bedrock_region
+        return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("LLM base URL is required")
+        return _validate_llm_base_url(value)
+
+    @field_validator("bedrock_region")
+    @classmethod
+    def validate_bedrock_region(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return normalize_bedrock_region(value)
+
+
+class LlmConfigDraftCreateResult(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    config: LlmConfigDetail
+    provider_display_name: str
+    available_models: list[str] = Field(default_factory=list)
+    available_model_options: list[LlmModelOption] = Field(default_factory=list)
+    discovery_status: Literal["fetched", "manual_required", "failed"]
+    default_model_source: Literal["provider", "manual", "none"]
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class LlmConfigFinalize(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    config_id: UUID
+    label: str = Field(min_length=1, max_length=255)
+    model_name: str = Field(min_length=1, max_length=255)
+    is_active: bool = True
+
+
+class LlmConfigDraftReplaceCredential(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    config_id: UUID
+    bearer_token: str = Field(min_length=1)
 
 
 class LlmSelectionUpsert(BaseModel):

@@ -12,6 +12,7 @@ from ..models import (
     DeidentificationAuthMode,
     GeneratedDocument,
     LlmAdapterKind,
+    LlmConfigSetupStatus,
     LlmProviderPreset,
     PromptTemplate,
     QuickAction,
@@ -164,17 +165,24 @@ def stt_selection_response(selection) -> SttSelectionDetail:
 
 
 def llm_config_response(config) -> LlmConfigDetail:
+    provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
+    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    setup_status = config.setup_status or LlmConfigSetupStatus.ready
+    setup_status_label = "Setup incomplete" if setup_status == LlmConfigSetupStatus.pending_model_selection else None
     return LlmConfigDetail(
         id=config.id,
         team_id=config.team_id,
         label=config.label,
-        provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
+        provider_preset=provider_preset,
         adapter_kind=config.adapter_kind,
         base_url=config.base_url,
         auth_mode=config.auth_mode,
         model_name=config.model_name,
         available_models_json=list(config.available_models_json or []),
         inspection_metadata_json=config.inspection_metadata_json or {},
+        setup_status=setup_status,
+        provider_display_name=provider_display_name,
+        setup_status_label=setup_status_label,
         is_active=config.is_active,
         has_secret=bool(config.vault_secret_ref),
         created_by_user_id=config.created_by_user_id,
@@ -571,12 +579,19 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             "available_model_options": [option.model_dump(mode="json") for option in inspection.available_model_options],
             "is_active": True,
             "credential_action": default_credential_action(inspection.adapter_kind),
+            "setup_status": "",
+            "has_secret": False,
+            "is_setup_incomplete": False,
+            "show_credential_step": True,
+            "show_model_step": False,
+            "can_finalize": False,
             "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
             "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
     if config is not None:
         bedrock_region = bedrock_region_from_base_url(config.base_url) if config.adapter_kind is LlmAdapterKind.bedrock_chat else ""
         provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
+        setup_status = config.setup_status or LlmConfigSetupStatus.ready
         return {
             "config_id": str(config.id),
             "label": config.label,
@@ -596,6 +611,12 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             ],
             "is_active": config.is_active,
             "credential_action": "keep",
+            "setup_status": setup_status.value if hasattr(setup_status, "value") else str(setup_status),
+            "has_secret": bool(config.vault_secret_ref),
+            "is_setup_incomplete": setup_status == LlmConfigSetupStatus.pending_model_selection,
+            "show_credential_step": False,
+            "show_model_step": setup_status == LlmConfigSetupStatus.pending_model_selection,
+            "can_finalize": setup_status == LlmConfigSetupStatus.pending_model_selection,
             "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
             "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
@@ -612,6 +633,12 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
         "available_model_options": [],
         "is_active": True,
         "credential_action": default_credential_action(LlmAdapterKind.openai_chat),
+        "setup_status": "",
+        "has_secret": False,
+        "is_setup_incomplete": False,
+        "show_credential_step": True,
+        "show_model_step": False,
+        "can_finalize": False,
         "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
         "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
     }

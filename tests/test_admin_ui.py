@@ -34,6 +34,7 @@ from app.models import (
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
+    LlmConfigSetupStatus,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -1669,6 +1670,86 @@ def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(clien
     assert selection is not None
     assert selection.allowed_models_json == ["gpt-4.1-mini", "gpt-4.1"]
     assert selection.model_name_override == "gpt-4.1"
+
+
+def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
+    client, db_session, make_team, make_user, make_llm_config
+):
+    team = make_team(name="Clinic LLM Draft UI")
+    admin = make_user(email="admin-llm-draft-ui@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="OpenRouter · Clinic LLM Draft UI",
+        provider_preset="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        model_name=None,
+        available_models_json=["openai/gpt-4o-mini"],
+        is_active=False,
+    )
+    config.setup_status = LlmConfigSetupStatus.pending_model_selection
+    db_session.add(config)
+    db_session.commit()
+
+    client.post("/login", data={"email": "admin-llm-draft-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={config.id}")
+
+    assert page.status_code == 200
+    assert "Setup incomplete" in page.text
+    assert "Continue setup" in page.text
+    assert "Delete incomplete setup" in page.text
+    assert "Credential: <strong>saved</strong>" in page.text
+    assert f'action="/admin/llm-configs/{config.id}/finalize"' in page.text
+    assert f'action="/admin/llm-configs/{config.id}/replace-credential"' in page.text
+    assert "Available for team selection" in page.text
+
+
+def test_admin_llm_check_key_creates_draft_and_redirects_to_model_step(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinic LLM Draft Create UI")
+    make_user(email="admin-llm-draft-create-ui@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm._list_openai_compatible_chat_models",
+        lambda *, provider_preset, api_key, base_url: ["openai/gpt-4o-mini"],
+    )
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_bearer_token",
+        lambda *, team_id, config_id, bearer_token: f"secret:openscribe/llm/team/{team_id}/config/{config_id}",
+    )
+
+    client.post("/login", data={"email": "admin-llm-draft-create-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    created = client.post(
+        "/admin/llm-configs/drafts",
+        data={
+            "team_id": str(team.id),
+            "provider_preset": "openrouter",
+            "base_url": "",
+            "bearer_token": "ui-secret",
+            "return_view": "admin",
+            "return_tab": "providers",
+        },
+        follow_redirects=False,
+    )
+
+    assert created.status_code == 303
+    saved = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved is not None
+    assert saved.setup_status == LlmConfigSetupStatus.pending_model_selection
+    assert saved.model_name is None
+    assert f"llm_config_id={saved.id}" in created.headers["location"]
+
+
+def test_admin2_llm_new_provider_uses_draft_button(client, make_team, make_user):
+    team = make_team(name="Clinic LLM Admin2 Draft")
+    make_user(email="admin2-llm-draft@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin2-llm-draft@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin2?team_id={team.id}&tab=llm&llm_config_id=new")
+
+    assert page.status_code == 200
+    assert 'action="/admin/llm-configs/drafts"' in page.text
+    assert "Check API key and find models" in page.text
 
 
 def test_admin_restyled_stt_config_redirect_preserves_preview_route(client, db_session, make_team, make_user):
@@ -5740,35 +5821,32 @@ def test_admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key(clien
     )
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    inspect = client.post(
-        "/admin/llm-configs/inspect",
+    draft = client.post(
+        "/admin/llm-configs/drafts",
         data={
             "team_id": str(team.id),
-            "label": "OpenAI Team LLM",
-            "adapter_kind": "openai_chat",
+            "provider_preset": "openai",
             "base_url": "",
             "bearer_token": "secret-openai-key",
         },
+        follow_redirects=False,
     )
 
-    assert inspect.status_code == 200
-    assert 'data-default-provider-tab="llm"' in inspect.text
-    assert 'name="preserved_bearer_token" value="secret-openai-key"' not in inspect.text
-    assert "Discovery status:" in inspect.text
-    assert "fetched" in inspect.text
-    assert "Discover models" in inspect.text
-    assert ">gpt-4o-mini (fetched)<" in inspect.text
+    assert draft.status_code == 303
+    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved_config is not None
+    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    assert 'data-default-provider-tab="llm"' in page.text
+    assert "secret-openai-key" not in page.text
+    assert "Setup incomplete" in page.text
+    assert "Credential: <strong>saved</strong>" in page.text
+    assert ">gpt-4o-mini (saved)<" in page.text
 
     save = client.post(
-        "/admin/llm-configs",
+        f"/admin/llm-configs/{saved_config.id}/finalize",
         data={
             "team_id": str(team.id),
-            "config_id": "",
-            "adapter_kind": "openai_chat",
             "label": "OpenAI Team LLM",
-            "base_url": "https://api.openai.com/v1",
-            "preserved_bearer_token": "",
-            "bearer_token": "secret-openai-key",
             "provider_model": "gpt-4o-mini",
             "is_active": "true",
         },
@@ -5788,35 +5866,32 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     )
 
     client.post("/login", data={"email": "admin-bedrock@example.com", "password": "password-1"}, follow_redirects=False)
-    inspect = client.post(
-        "/admin/llm-configs/inspect",
+    draft = client.post(
+        "/admin/llm-configs/drafts",
         data={
             "team_id": str(team.id),
-            "label": "Amazon Bedrock",
-            "adapter_kind": "bedrock_chat",
+            "provider_preset": "bedrock_http_gateway",
             "base_url": "",
             "bedrock_region": "us-east-1",
             "bearer_token": "bedrock-api-key",
         },
+        follow_redirects=False,
     )
 
-    assert inspect.status_code == 200
-    assert 'name="preserved_bearer_token" value="bedrock-api-key"' not in inspect.text
-    assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (fetched)<" in inspect.text
-    assert "https://bedrock-mantle.us-east-1.api.aws/v1" in inspect.text
-    assert "us-east-1" in inspect.text
+    assert draft.status_code == 303
+    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved_config is not None
+    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    assert 'name="preserved_bearer_token" value="bedrock-api-key"' not in page.text
+    assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (saved)<" in page.text
+    assert "https://bedrock-mantle.us-east-1.api.aws/v1" in page.text
+    assert "us-east-1" in page.text
 
     save = client.post(
-        "/admin/llm-configs",
+        f"/admin/llm-configs/{saved_config.id}/finalize",
         data={
             "team_id": str(team.id),
-            "config_id": "",
-            "adapter_kind": "bedrock_chat",
             "label": "Amazon Bedrock",
-            "base_url": "",
-            "bedrock_region": "us-east-1",
-            "preserved_bearer_token": "",
-            "bearer_token": "bedrock-api-key",
             "provider_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
             "is_active": "true",
         },
@@ -5824,8 +5899,6 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     )
 
     assert save.status_code == 303
-    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
-    assert saved_config is not None
     assert saved_config.adapter_kind.value == "bedrock_chat"
     assert saved_config.base_url == "https://bedrock-mantle.us-east-1.api.aws/v1"
 
@@ -5839,30 +5912,28 @@ def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(c
     )
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    inspect = client.post(
-        "/admin/llm-configs/inspect",
+    draft = client.post(
+        "/admin/llm-configs/drafts",
         data={
             "team_id": str(team.id),
-            "label": "Local Ollama",
-            "adapter_kind": "ollama_chat",
+            "provider_preset": "ollama",
             "base_url": "http://localhost:11434",
             "bearer_token": "",
         },
+        follow_redirects=False,
     )
 
-    assert inspect.status_code == 200
-    assert ">llama3.2 (fetched)<" in inspect.text
+    assert draft.status_code == 303
+    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved_config is not None
+    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    assert ">llama3.2 (saved)<" in page.text
 
     save = client.post(
-        "/admin/llm-configs",
+        f"/admin/llm-configs/{saved_config.id}/finalize",
         data={
             "team_id": str(team.id),
-            "config_id": "",
-            "adapter_kind": "ollama_chat",
             "label": "Local Ollama",
-            "base_url": "http://localhost:11434",
-            "preserved_bearer_token": "",
-            "bearer_token": "",
             "provider_model": "llama3.2",
             "is_active": "true",
         },
@@ -5870,8 +5941,6 @@ def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(c
     )
 
     assert save.status_code == 303
-    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
-    assert saved_config is not None
     assert saved_config.adapter_kind.value == "ollama_chat"
     assert saved_config.vault_secret_ref == ""
 

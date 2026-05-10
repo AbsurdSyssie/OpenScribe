@@ -478,9 +478,41 @@ def inspect_llm_config(payload: LlmInspectRequest, context: AuthenticatedContext
     return inspect_llm_contract_service(db, context.user, payload)
 
 
+def _llm_draft_result(config, inspection):
+    return LlmConfigDraftCreateResult(
+        config=llm_config_response(config),
+        provider_display_name=inspection.provider_display_name,
+        available_models=list(inspection.available_models),
+        available_model_options=list(inspection.available_model_options),
+        discovery_status=inspection.discovery_status,
+        default_model_source=inspection.default_model_source,
+        warnings=list(inspection.warnings),
+        notes=list(inspection.notes),
+    )
+
+
+@api.post("/llm-configs/drafts", response_model=LlmConfigDraftCreateResult, responses=error_responses)
+def create_llm_config_draft(payload: LlmConfigDraftCreate, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    config, inspection = create_llm_config_draft_service(db, context.user, payload)
+    return _llm_draft_result(config, inspection)
+
+
 @api.post("/llm-configs/{config_id}/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
 def inspect_saved_llm_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return inspect_saved_llm_config_service(db, context.user, config_id=config_id, team_id=team_id)
+
+
+@api.post("/llm-configs/{config_id}/finalize", response_model=LlmConfigDetail, responses=error_responses)
+def finalize_llm_config_draft(config_id: UUID, payload: LlmConfigFinalize, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    payload = payload.model_copy(update={"config_id": config_id})
+    return llm_config_response(finalize_llm_config_draft_service(db, context.user, payload))
+
+
+@api.post("/llm-configs/{config_id}/replace-credential", response_model=LlmConfigDraftCreateResult, responses=error_responses)
+def replace_llm_config_draft_credential(config_id: UUID, payload: LlmConfigDraftReplaceCredential, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    payload = payload.model_copy(update={"config_id": config_id})
+    config, inspection = replace_llm_config_draft_credential_service(db, context.user, payload)
+    return _llm_draft_result(config, inspection)
 
 
 @api.post("/llm-configs", response_model=LlmConfigDetail, responses=error_responses)

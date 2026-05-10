@@ -134,6 +134,11 @@ class LlmProviderPreset(str, enum.Enum):
     custom_openai_compatible = "custom_openai_compatible"
 
 
+class LlmConfigSetupStatus(str, enum.Enum):
+    pending_model_selection = "pending_model_selection"
+    ready = "ready"
+
+
 class DeidentificationAuthMode(str, enum.Enum):
     none = "none"
     bearer = "bearer"
@@ -594,6 +599,11 @@ class TeamLlmConfig(Base):
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     available_models_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     inspection_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    setup_status: Mapped[LlmConfigSetupStatus] = mapped_column(
+        String(64),
+        default=LlmConfigSetupStatus.ready,
+        nullable=False,
+    )
     vault_secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

@@ -40,7 +40,11 @@ from .deidentification import (
     DeidentificationSelectionUpsert,
 )
 from .llm import (
+    LlmConfigDraftCreate,
+    LlmConfigDraftCreateResult,
+    LlmConfigDraftReplaceCredential,
     LlmConfigDetail,
+    LlmConfigFinalize,
     LlmConfigInspectResult,
     LlmInspectRequest,
     LlmConfigUpsert,
@@ -139,7 +143,11 @@ __all__ = [
     "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "LlmConfigDraftCreate",
+    "LlmConfigDraftCreateResult",
+    "LlmConfigDraftReplaceCredential",
     "LlmConfigDetail",
+    "LlmConfigFinalize",
     "LlmConfigInspectResult",
     "LlmInspectRequest",
     "LlmConfigUpsert",

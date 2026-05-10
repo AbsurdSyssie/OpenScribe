@@ -68,6 +68,7 @@ from tests.db_utils import (
 
 from app.db import Base, get_db
 from app.services.auth import SESSION_COOKIE_NAME, TRUSTED_DEVICE_COOKIE_NAME
+from app.services.llm_presets import infer_llm_provider_preset
 
 
 TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
@@ -527,7 +528,7 @@ def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_us
         team: Team | None = None,
         actor: User | None = None,
         label: str = "Provisioned LLM",
-        provider_preset: str = "openai",
+        provider_preset: str | None = None,
         adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat,
         base_url: str = "https://api.openai.com/v1",
         model_name: str | None = "gpt-4o-mini",
@@ -537,10 +538,11 @@ def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_us
     ) -> TeamLlmConfig:
         resolved_team = team or make_team()
         resolved_actor = actor or make_user(email=f"llm-admin-{resolved_team.id}@example.com", password="password-1", is_system_admin=True)
+        resolved_provider_preset = provider_preset or infer_llm_provider_preset(adapter_kind, base_url)
         config = TeamLlmConfig(
             team_id=resolved_team.id,
             label=label,
-            provider_preset=provider_preset,
+            provider_preset=resolved_provider_preset,
             adapter_kind=adapter_kind,
             base_url=base_url,
             auth_mode=LlmAuthMode.bearer if has_secret else LlmAuthMode.none,

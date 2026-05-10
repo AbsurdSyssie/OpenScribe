@@ -1335,7 +1335,15 @@
             <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
             <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config %}required{% endif %}>
           </label>
-          <p><small>Enter bearer token once for save and inspect. Leave blank only for self-hosted STT endpoints that do not require bearer auth.</small></p>
+          <label>
+            Credential action
+            <select name="credential_action">
+              <option value="keep" {% if stt_form.credential_action == "keep" %}selected{% endif %}>Keep saved credential</option>
+              <option value="replace" {% if stt_form.credential_action == "replace" %}selected{% endif %}>Replace with entered token</option>
+              <option value="remove" {% if stt_form.credential_action == "remove" %}selected{% endif %}>Remove saved credential</option>
+            </select>
+          </label>
+          <p><small>Blank token is accepted only when action keeps or removes the saved credential. New token always replaces.</small></p>
           <label>
             Model
             {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
@@ -1644,7 +1652,15 @@
             <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config %}required{% endif %} data-llm-token-input>
           </label>
-          <p><small>Enter a new API key to replace the saved credential. Leave blank to keep the saved key. Ollama can be saved without a token.</small></p>
+          <label>
+            Credential action
+            <select name="credential_action">
+              <option value="keep" {% if llm_form.credential_action == "keep" %}selected{% endif %}>Keep saved credential</option>
+              <option value="replace" {% if llm_form.credential_action == "replace" %}selected{% endif %}>Replace with entered token</option>
+              <option value="remove" {% if llm_form.credential_action == "remove" %}selected{% endif %}>Remove saved credential</option>
+            </select>
+          </label>
+          <p><small>Blank token is accepted only when action keeps or removes the saved credential. OpenAI and Bedrock require a saved key.</small></p>
           <label>
             Model
             {% if llm_form.available_model_options %}
@@ -2973,6 +2989,11 @@
         if (tokenInput) {
           tokenInput.required = adapter === 'openai_cloud' && !form.querySelector('input[name="config_id"]')?.value;
         }
+        const credentialAction = form.querySelector('select[name="credential_action"]');
+        const isNewConfig = !form.querySelector('input[name="config_id"]')?.value;
+        if (credentialAction && isNewConfig && !tokenInput?.value) {
+          credentialAction.value = adapter === 'openai_cloud' ? 'replace' : 'keep';
+        }
         form.querySelectorAll('[data-openai-base-url]').forEach((el) => {
           el.disabled = adapter !== 'openai_cloud';
           if (adapter === 'openai_cloud') {
@@ -3089,6 +3110,11 @@
         if (tokenInput) {
           tokenInput.required = (adapter === 'openai_chat' || adapter === 'bedrock_chat')
             && !form.querySelector('input[name="config_id"]')?.value;
+        }
+        const credentialAction = form.querySelector('select[name="credential_action"]');
+        const isNewConfig = !form.querySelector('input[name="config_id"]')?.value;
+        if (credentialAction && isNewConfig && !tokenInput?.value) {
+          credentialAction.value = adapter === 'ollama_chat' ? 'keep' : 'replace';
         }
         const note = form.querySelector('[data-llm-adapter-note]');
         if (note) {

@@ -216,7 +216,7 @@ This keeps the first implementation practical for local STT services while still
 ## Secret handling
 
 - the bearer token is never stored raw in Postgres
-- the bearer token is written to Vault when the config is created or updated
+- the bearer token is written to Vault when `credential_action` is `replace`
 - Postgres stores:
   - `vault_secret_ref`
   - config metadata
@@ -226,14 +226,16 @@ This keeps the first implementation practical for local STT services while still
 - inspect/discover responses never render the entered bearer token back into HTML or JSON
 - browser save forms do not preserve bearer tokens in hidden fields after standalone inspection; admins must re-enter a key when saving a new credential from an inspected draft
 - save-and-inspect writes the submitted credential to Vault once, validates/inspects server-side, and does not require second key entry
+- manual `generic_rest` save-and-inspect validates the saved runtime contract with the bundled synthetic audio sample; it does not rely on default `/openapi.json` discovery
 - duplicate detection uses same team, adapter, base URL, and a server-side non-reversible credential fingerprint; unconfirmed duplicates warn before Vault write or provider inspection
 - saved-provider re-inspection reads the Vault reference and never asks the admin to re-enter the token
 
 First implementation rules:
 
-- system admins may replace the secret
-- system admins may leave the secret field blank when editing to keep the current secret
-- system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth
+- system admins choose `credential_action` explicitly: `keep`, `replace`, or `remove`
+- blank secret field on edit keeps the current secret only with `credential_action=keep`
+- `credential_action=remove` clears the DB secret reference and deletes the Vault secret after the DB commit
+- system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth; browser forms default those optional-token adapters to `credential_action=keep` so a blank token is saved as no credential instead of a failed replacement
 - `openai_cloud` still requires a saved API key
 - if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
 - leaders should eventually configure team policy without touching raw credential material

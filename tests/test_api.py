@@ -913,6 +913,159 @@ def test_system_admin_edit_preserves_saved_stt_secret_when_token_blank(client, d
     assert deleted == []
 
 
+def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session, make_team, make_user, make_stt_config, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-remove-stt-secret@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
+    deleted: list[str] = []
+
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+
+    login(client, email="admin-remove-stt-secret@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Parakeet no auth",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:8000",
+            "transcribe_path": "/v1/audio/transcriptions",
+            "auth_mode": "bearer",
+            "credential_action": "remove",
+            "model_name": "parakeet",
+            "file_field_name": "file",
+            "response_text_path": "text",
+            "extra_form_fields_json": {},
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == ""
+    assert persisted.credential_fingerprint is None
+    assert deleted == [str(config.id)]
+
+
+def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-generic-stt-save@example.com", password="password-1", is_system_admin=True)
+    calls: dict[str, object] = {}
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("generic save must not inspect default OpenAPI")
+
+    def fake_post(url, *, headers, data, files, timeout):
+        calls["url"] = url
+        calls["headers"] = headers
+        calls["data"] = data
+        calls["file_field"] = next(iter(files.keys()))
+        return FakeHttpxResponse({"result": {"text": "sample transcript"}})
+
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fail_if_called)
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    login(client, email="admin-generic-stt-save@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Manual STT",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:7000",
+            "transcribe_path": "/speech/transcribe",
+            "bearer_token": "secret-token",
+            "credential_action": "replace",
+            "model_name": "clinic-whisper",
+            "model_field_name": "model_id",
+            "file_field_name": "audio_file",
+            "language": "en",
+            "language_field_name": "lang",
+            "response_text_path": "result.text",
+            "extra_form_fields_json": {"format": "json"},
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    assert created.json()["credential_status"] == "verified"
+    assert calls["url"] == "http://127.0.0.1:7000/speech/transcribe"
+    assert calls["headers"] == {"Authorization": "Bearer secret-token"}
+    assert calls["data"] == {"format": "json", "model_id": "clinic-whisper", "lang": "en"}
+    assert calls["file_field"] == "audio_file"
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Manual STT"))
+    assert persisted is not None
+    assert persisted.inspection_metadata_json["sample_test"] == "passed"
+
+
+def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selection(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Generic Replacement")
+    admin = make_user(email="admin-generic-stt-replace@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Existing Generic STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="http://127.0.0.1:7000",
+        transcribe_path="/speech/transcribe",
+        model_name="clinic-whisper",
+        response_text_path="result.text",
+        has_secret=True,
+    )
+    old_secret_ref = config.vault_secret_ref
+    selection = make_stt_selection(config=config, actor=admin)
+    written_tokens: list[str] = []
+    deleted_config_ids: list[str] = []
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda *, team_id, config_id: "old-token")
+    monkeypatch.setattr(
+        "app.services.stt.write_team_stt_bearer_token",
+        lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
+    )
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted_config_ids.append(str(config_id)))
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+
+    login(client, email="admin-generic-stt-replace@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Replacement Generic STT",
+            "adapter_kind": "generic_rest",
+            "base_url": "http://127.0.0.1:7000",
+            "transcribe_path": "/speech/transcribe",
+            "bearer_token": "bad-token",
+            "credential_action": "replace",
+            "model_name": "clinic-whisper",
+            "file_field_name": "file",
+            "response_text_path": "result.text",
+            "extra_form_fields_json": {},
+            "is_active": True,
+        },
+    )
+
+    assert_error(updated, status_code=422, code="provider_credential_invalid", message="STT provider rejected the supplied credential")
+    db_session.expire_all()
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is not None
+    assert persisted.label == "Existing Generic STT"
+    assert persisted.vault_secret_ref == old_secret_ref
+    assert db_session.get(TeamSttSelection, selection.id) is not None
+    assert written_tokens == ["bad-token", "old-token"]
+    assert deleted_config_ids == []
+
+
 def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -1962,6 +2115,80 @@ def test_system_admin_can_provision_local_ollama_without_secret(client, db_sessi
     assert persisted is not None
     assert persisted.auth_mode.value == "none"
     assert persisted.vault_secret_ref == ""
+
+
+def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Ollama Remove")
+    admin = make_user(email="admin-remove-llm-secret@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+    deleted: list[str] = []
+
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+
+    login(client, email="admin-remove-llm-secret@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Local Ollama",
+            "adapter_kind": "ollama_chat",
+            "base_url": "http://localhost:11434",
+            "credential_action": "remove",
+            "model_name": "llama3.2",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted is not None
+    assert persisted.auth_mode.value == "none"
+    assert persisted.vault_secret_ref == ""
+    assert deleted == [str(config.id)]
+
+
+def test_system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_adapter(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic LLM Missing Secret")
+    admin = make_user(email="admin-missing-llm-secret@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        adapter_kind=LlmAdapterKind.ollama_chat,
+        base_url="http://localhost:11434",
+        model_name="llama3.2",
+        available_models_json=["llama3.2"],
+        has_secret=False,
+    )
+
+    monkeypatch.setattr("app.services.llm._list_openai_chat_models", lambda **kwargs: ["gpt-4o-mini"])
+
+    login(client, email="admin-missing-llm-secret@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Clinic OpenAI",
+            "adapter_kind": "openai_chat",
+            "base_url": "https://api.openai.com/v1",
+            "credential_action": "keep",
+            "model_name": "gpt-4o-mini",
+            "is_active": True,
+        },
+    )
+
+    assert_error(
+        updated,
+        status_code=422,
+        code="business_rule_violation",
+        message="OpenAI and Bedrock LLM configs require a saved bearer token",
+    )
+    db_session.refresh(config)
+    assert config.adapter_kind is LlmAdapterKind.ollama_chat
+    assert config.auth_mode.value == "none"
+    assert config.vault_secret_ref == ""
 
 
 def test_system_admin_can_inspect_bedrock_chat_models(client, make_team, make_user, monkeypatch):

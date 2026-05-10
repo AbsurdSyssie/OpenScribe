@@ -39,6 +39,7 @@ from app.models import (
     TeamRole,
     TeamSttConfig,
     SttSelectionPurpose,
+    SttAdapterKind,
     TeamSttSelection,
     TemplateMode,
     TemplateScope,
@@ -55,6 +56,9 @@ from app.models import (
     utcnow,
 )
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
+from app.schemas.llm import LlmConfigInspectResult
+from app.schemas.stt import SttInspectResult
+from app.web.presentation import llm_form_defaults, stt_form_defaults
 
 
 class FakeHttpxResponse:
@@ -5543,6 +5547,63 @@ def test_admin_page_can_save_no_auth_stt_config_without_token(client, db_session
     assert saved_config is not None
     assert saved_config.label == "Parakeet"
     assert saved_config.vault_secret_ref == ""
+
+
+def test_admin_optional_token_form_defaults_do_not_replace_blank_credentials():
+    stt_form = stt_form_defaults(
+        None,
+        SttInspectResult(
+            base_url="http://127.0.0.1:8000",
+            openapi_path=None,
+            adapter_kind=SttAdapterKind.openai_compatible_rest,
+            transcribe_path="/v1/audio/transcriptions",
+            model_name="parakeet",
+            model_field_name="model",
+            file_field_name="file",
+            language="en",
+            language_field_name="language",
+            response_text_path="text",
+            segments_path=None,
+            segment_text_field=None,
+            segment_start_field=None,
+            segment_end_field=None,
+            segment_speaker_field=None,
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            available_models=["parakeet"],
+            available_model_options=[],
+            field_tips=[],
+            notes=[],
+        ),
+    )
+    llm_form = llm_form_defaults(
+        None,
+        LlmConfigInspectResult(
+            base_url="http://localhost:11434",
+            adapter_kind=LlmAdapterKind.ollama_chat,
+            model_name="llama3.2",
+            available_models=["llama3.2"],
+            available_model_options=[],
+            discovery_status="fetched",
+            default_model_source="provider",
+            requires_bearer_token=False,
+            supports_model_discovery=True,
+        ),
+    )
+
+    assert stt_form["credential_action"] == "keep"
+    assert llm_form["credential_action"] == "keep"
+
+
+def test_admin_templates_sync_optional_provider_credential_actions():
+    admin_html = Path("app/templates/admin.html").read_text()
+    admin2_html = Path("app/templates/admin2.html").read_text()
+
+    assert "credentialAction.value = adapter === 'openai_cloud' ? 'replace' : 'keep';" in admin_html
+    assert "credentialAction.value = adapter === 'ollama_chat' ? 'keep' : 'replace';" in admin_html
+    assert 'const optionalToken = adapter === "generic_rest" || adapter === "openai_compatible_rest" || adapter === "ollama_chat";' in admin2_html
+    assert '<option value="keep" selected>keep</option><option value="replace">replace</option>' in admin2_html
 
 
 def test_admin_provider_save_errors_keep_matching_provider_tab(client, make_team, make_user):

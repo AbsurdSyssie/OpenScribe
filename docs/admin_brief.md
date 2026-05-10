@@ -112,7 +112,7 @@ System admin can change:
 - save and inspect a new/updated STT credential in one server-side pass
 - re-inspect existing STT configs using the saved Vault reference
 - edit STT config metadata
-- replace or preserve STT secret reference
+- keep, replace, or remove STT secret references explicitly
 - activate/deactivate STT config row
 - delete STT config
 - test STT config
@@ -134,10 +134,13 @@ Access:
 Notes:
 - secret material is stored via Vault reference, not shown back in plaintext
 - standalone inspect tokens are not retained after the response; save-and-inspect stores the submitted credential once in Vault and never renders it back
+- manual generic STT save-and-inspect tests the saved contract against bundled synthetic audio instead of requiring OpenAPI discovery
 - invalid re-inspection clears active STT selections that point at the rejected config
 - this area manages metadata and connectivity, not transcript content
 
 ### LLM provider provisioning
+
+LLM provider save forms also use explicit `credential_action`. OpenAI and Bedrock providers require a saved bearer token; local optional-token providers such as Ollama default to keeping/no credential when the token field is blank, and can remove a saved token explicitly.
 
 Contained information:
 - all provisioned LLM configs for selected team

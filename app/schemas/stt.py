@@ -1,5 +1,6 @@
 from datetime import datetime
 import ipaddress
+from typing import Literal
 from uuid import UUID
 from urllib.parse import urlparse
 
@@ -38,6 +39,7 @@ class SttConfigUpsert(BaseModel):
     transcribe_path: str = Field(default="", max_length=255)
     auth_mode: SttAuthMode = SttAuthMode.bearer
     bearer_token: str | None = Field(default=None, min_length=1)
+    credential_action: Literal["keep", "replace", "remove"] = "keep"
     model_name: str | None = Field(default=None, max_length=255)
     model_field_name: str | None = Field(default="model", max_length=255)
     file_field_name: str = Field(default="", max_length=255)

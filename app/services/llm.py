@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID, uuid4
 
 import httpx
@@ -17,6 +18,7 @@ OPENAI_CHAT_MODEL_FALLBACKS = (
     "gpt-4o-mini",
     "gpt-4o",
 )
+logger = logging.getLogger("openscribe.llm")
 
 
 def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
@@ -296,10 +298,22 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                 {"config_id": str(config.id)},
             )
     creating = config is None
+    replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
+    removing_secret = payload.credential_action == "remove"
+    if removing_secret and payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "Bearer token cannot be supplied when credential_action is remove", {"field": "credential_action"})
+    if replacing_secret and not payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "Bearer token is required when credential_action is replace", {"field": "bearer_token"})
+    if removing_secret and payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+        raise AppError(422, "business_rule_violation", "OpenAI and Bedrock LLM configs require a saved bearer token", {"field": "credential_action"})
+    requires_saved_secret = payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}
+    has_existing_secret = config is not None and bool(config.vault_secret_ref)
+    if requires_saved_secret and not replacing_secret and not has_existing_secret:
+        raise AppError(422, "business_rule_violation", "OpenAI and Bedrock LLM configs require a saved bearer token", {"field": "bearer_token"})
 
     available_models_json: list[str]
     if payload.adapter_kind is LlmAdapterKind.openai_chat:
-        if payload.bearer_token:
+        if replacing_secret and payload.bearer_token:
             try:
                 available_models_json = _list_openai_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
             except AppError:
@@ -309,7 +323,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         else:
             available_models_json = _fallback_openai_chat_models()
     elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
-        if payload.bearer_token:
+        if replacing_secret and payload.bearer_token:
             try:
                 available_models_json = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
             except AppError:
@@ -320,7 +334,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             available_models_json = []
     elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
         try:
-            token_for_lookup = payload.bearer_token if payload.bearer_token else None
+            token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else None
             available_models_json = _list_ollama_chat_models(base_url=payload.base_url, bearer_token=token_for_lookup)
         except AppError:
             available_models_json = list(config.available_models_json or []) if config is not None else []
@@ -332,7 +346,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     if payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         resolved_auth_mode = LlmAuthMode.bearer
     else:
-        resolved_auth_mode = LlmAuthMode.bearer if payload.bearer_token or (config is not None and config.vault_secret_ref) else LlmAuthMode.none
+        resolved_auth_mode = LlmAuthMode.bearer if replacing_secret or (config is not None and config.vault_secret_ref and not removing_secret) else LlmAuthMode.none
 
     if config is None:
         config = TeamLlmConfig(
@@ -344,7 +358,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             auth_mode=resolved_auth_mode,
             model_name=payload.model_name.strip() if payload.model_name else None,
             available_models_json=available_models_json,
-            vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
+            vault_secret_ref="pending" if replacing_secret or payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
             created_by_user_id=actor.id,
             updated_by_user_id=actor.id,
@@ -362,16 +376,24 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.updated_by_user_id = actor.id
         db.add(config)
 
-    if payload.bearer_token:
+    delete_after_commit = False
+    if replacing_secret and payload.bearer_token:
         config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-    elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
+    elif removing_secret:
         if config.vault_secret_ref:
-            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+            delete_after_commit = True
+        config.vault_secret_ref = ""
+    elif payload.adapter_kind is LlmAdapterKind.ollama_chat and creating:
         config.vault_secret_ref = ""
     elif creating:
         raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
 
     db.commit()
+    if delete_after_commit:
+        try:
+            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+        except AppError as exc:
+            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(config)
     return config
 

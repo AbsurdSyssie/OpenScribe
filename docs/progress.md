@@ -1,5 +1,87 @@
 # Progress
 
+## 2026-05-10 LLM Stale Secret Remove
+
+### Scope
+
+- Fixed explicit LLM `credential_action=remove` so a stale/missing Vault secret no longer blocks clearing the DB `vault_secret_ref` for optional-token adapters.
+- Kept non-`vault_read_failed` read errors and Vault delete failures fail-closed.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: DB commit restoration remains best effort and only possible when the old Vault token was readable before delete.
+
+### Files changed
+
+- `app/services/llm.py`: tolerate `vault_read_failed` during restore-token snapshot before explicit removal, then continue idempotent Vault delete and DB clear.
+- `tests/test_api.py`: add regression for stale LLM Vault refs clearing successfully.
+- `docs/api.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document stale-ref removal behavior.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_secret_remove"`: passed, 4 tests.
+
+### Documentation
+
+- Updated API, security, testing, and progress docs for stale LLM Vault ref removal.
+
+### Risks / assumptions
+
+- Applies only to explicit LLM credential removal for optional-token adapters; OpenAI/Bedrock still cannot remove required saved credentials.
+- If old token is unreadable and DB commit later fails, there is no token available for restoration; DB rollback preserves the existing reference.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no provider secrets are returned or logged; warning logs use IDs/error codes only.
+- Ownership rules preserved: system-admin team-scoped LLM provisioning unchanged.
+- Deletion semantics preserved: stale secret refs can be cleared, delete failure remains fail-closed, and DB commit restoration remains best effort when possible.
+- Provider rules preserved: raw credentials remain Vault-backed and required-token adapters still require a saved or replacement token.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-10 LLM Credential Remove Fail-Closed
+
+### Scope
+
+- Changed explicit LLM `credential_action=remove` for optional-token providers so Vault delete failure aborts before the DB `vault_secret_ref` is cleared.
+- Added best-effort Vault restoration if the DB commit fails after a successful explicit Vault delete.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: Vault restoration after DB commit failure is best effort and logs only sanitized IDs/error codes if restoration fails.
+
+### Files changed
+
+- `app/services/llm.py`: delete saved LLM Vault token before clearing the DB reference for explicit remove, with commit-failure restoration.
+- `tests/test_api.py`: update LLM credential removal ordering tests and add fail-closed Vault delete coverage.
+- `docs/api.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: document fail-closed LLM explicit removal behavior.
+
+### Tests
+
+- Focused LLM credential removal tests verify successful remove ordering, DB commit failure restoration, and Vault delete failure preserving the saved DB reference.
+
+### Documentation
+
+- Updated API, security, testing, and progress docs for LLM explicit credential removal ordering.
+
+### Risks / assumptions
+
+- Applies only to explicit LLM credential removal; full LLM config deletion keeps existing DB-first cleanup behavior.
+- Requires reading the saved Vault token before delete so it can be restored if the DB commit fails.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no provider secrets are returned or logged.
+- Ownership rules preserved: system-admin team-scoped LLM provisioning unchanged.
+- Deletion semantics preserved: explicit credential remove fails closed on Vault delete failure and uses restoration compensation for DB commit failure.
+- Provider rules preserved: OpenAI/Bedrock still require saved bearer credentials; optional-token local LLM providers may remove saved tokens.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 OpenAI-Compatible STT Token Validation
 
 ### Scope

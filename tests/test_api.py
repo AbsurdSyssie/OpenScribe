@@ -2188,11 +2188,12 @@ def test_system_admin_can_provision_local_ollama_without_secret(client, db_sessi
 
 def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Remove")
-    admin = make_user(email="admin-remove-llm-secret@example.com", password="password-1", is_system_admin=True)
+    admin = make_user(email="admin-remove-llm-secret@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     deleted: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret@example.com", password="password-1")
@@ -2218,14 +2219,15 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     assert deleted == [str(config.id)]
 
 
-def test_llm_secret_remove_deletes_vault_secret_after_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Remove Ordering")
-    admin = make_user(email="admin-remove-llm-secret-order@example.com", password="password-1", is_system_admin=True)
+    admin = make_user(email="admin-remove-llm-secret-order@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     events: list[str] = []
     original_commit = db_session.commit
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
     login(client, email="admin-remove-llm-secret-order@example.com", password="password-1")
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
     monkeypatch.setattr(db_session, "commit", lambda: (events.append("commit"), original_commit())[1])
@@ -2244,7 +2246,7 @@ def test_llm_secret_remove_deletes_vault_secret_after_db_commit(client, db_sessi
     )
 
     assert updated.status_code == 200
-    assert events[-2:] == ["commit", "delete"]
+    assert events[-2:] == ["delete", "commit"]
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
@@ -2255,10 +2257,12 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
     admin = make_user(email="admin-remove-llm-secret-commit-fails@example.com", password="password-1", is_system_admin=True)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     original_ref = config.vault_secret_ref
-    deleted: list[str] = []
+    events: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda *, team_id, config_id, bearer_token: events.append(f"restore:{bearer_token}") or original_ref)
     monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
 
     with pytest.raises(RuntimeError, match="commit failed"):
@@ -2277,19 +2281,21 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
             ),
         )
 
-    assert deleted == []
+    assert events == ["delete", "restore:saved-ollama-secret"]
     db_session.rollback()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == original_ref
 
 
-def test_llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Cleanup Failure")
-    admin = make_user(email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1", is_system_admin=True)
+    admin = make_user(email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+    original_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
 
     def fail_delete(*, team_id, config_id):
         raise AppError(502, "vault_unavailable", "Vault unavailable")
@@ -2297,7 +2303,7 @@ def test_llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fa
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fail_delete)
 
     login(client, email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1")
-    updated = client.post(
+    removed = client.post(
         "/api/v1/llm-configs",
         json={
             "config_id": str(config.id),
@@ -2311,8 +2317,50 @@ def test_llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fa
         },
     )
 
-    assert updated.status_code == 200
+    assert_error(
+        removed,
+        status_code=502,
+        code="vault_unavailable",
+        message="Vault unavailable",
+    )
     db_session.expire_all()
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == original_ref
+    assert persisted.auth_mode.value == "bearer"
+
+
+def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Ollama Stale Secret Ref")
+    admin = make_user(email="admin-remove-llm-secret-stale-ref@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
+    config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+    deleted: list[str] = []
+
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+
+    def fail_read(*, team_id, config_id):
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fail_read)
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+
+    login(client, email="admin-remove-llm-secret-stale-ref@example.com", password="password-1")
+    removed = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Local Ollama",
+            "adapter_kind": "ollama_chat",
+            "base_url": "http://localhost:11434",
+            "credential_action": "remove",
+            "model_name": "llama3.2",
+            "is_active": True,
+        },
+    )
+
+    assert removed.status_code == 200
+    assert deleted == [str(config.id)]
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
@@ -2321,7 +2369,7 @@ def test_llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fa
 
 def test_system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_adapter(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic LLM Missing Secret")
-    admin = make_user(email="admin-missing-llm-secret@example.com", password="password-1", is_system_admin=True)
+    admin = make_user(email="admin-missing-llm-secret@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(
         team=team,
         actor=admin,

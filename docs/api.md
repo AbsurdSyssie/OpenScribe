@@ -160,7 +160,7 @@ Browser navigation behavior:
 - LLM inspect remains scoped to known adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 - saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
 - LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
-- LLM `credential_action=remove` commits the cleared DB reference before deleting the Vault secret; commit failure leaves the saved reference and Vault secret intact, while post-commit Vault cleanup failure is logged for follow-up cleanup
+- LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
 - persisted credential status/fingerprint metadata is STT-only in this slice; LLM inspection continues to expose model-discovery status but does not persist an equivalent credential status row
 
 ### Shared NLP endpoint configuration

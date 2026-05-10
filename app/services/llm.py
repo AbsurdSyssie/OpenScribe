@@ -376,24 +376,35 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.updated_by_user_id = actor.id
         db.add(config)
 
-    delete_after_commit = False
+    deleted_secret_before_commit = False
+    bearer_token_for_restore: str | None = None
     if replacing_secret and payload.bearer_token:
         config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
     elif removing_secret:
         if config.vault_secret_ref:
-            delete_after_commit = True
+            try:
+                bearer_token_for_restore = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+            except AppError as exc:
+                if exc.code != "vault_read_failed":
+                    raise
+                logger.warning("llm_config_secret_restore_snapshot_missing", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
+            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+            deleted_secret_before_commit = True
         config.vault_secret_ref = ""
     elif payload.adapter_kind is LlmAdapterKind.ollama_chat and creating:
         config.vault_secret_ref = ""
     elif creating:
         raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
 
-    db.commit()
-    if delete_after_commit:
-        try:
-            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
-        except AppError as exc:
-            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
+    try:
+        db.commit()
+    except Exception:
+        if deleted_secret_before_commit and bearer_token_for_restore:
+            try:
+                write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=bearer_token_for_restore)
+            except AppError as exc:
+                logger.warning("llm_config_secret_restore_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
+        raise
     db.refresh(config)
     return config
 

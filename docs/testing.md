@@ -156,6 +156,7 @@ What it does:
 - STT runtime paragraphization using configured segment path/text/start/end/speaker mappings, including queued ingestion snapshots
 - saved STT provider tests covering both OpenAI Cloud and generic REST dynamic-field branches
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
+- LLM provider presets covering branded provider catalog/inference, live-discovery-only manual fallback, OpenAI-only prefix filtering, base URL override reclassification to custom OpenAI-compatible, saved inspection metadata, and migration backfill
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
 - leader team STT selection and clear flow using admin-provisioned options
 - STT browser model selection using provider-populated dropdowns instead of free-text overrides

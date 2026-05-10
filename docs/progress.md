@@ -1,5 +1,54 @@
 # Progress
 
+## 2026-05-10 Branded LLM Provider Presets
+
+### Scope
+
+- Added system-admin LLM provider presets for OpenAI, OpenRouter, xAI, Groq, Mistral, DeepSeek, Together AI, Ollama, Bedrock HTTP gateway, and Custom OpenAI-compatible.
+- Added `provider_preset` and `inspection_metadata_json` to LLM configs with migration backfill.
+- Switched LLM discovery to live-only behavior with manual model fallback and OpenAI-only prefix filtering.
+- Updated admin provider forms to show branded providers and Bedrock region selection while preserving Vault-backed secrets.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: internal protocol enum remains `openai_chat` for compatibility; preset layer carries OpenAI-compatible brand semantics.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/a0b1c2d3e4f6_add_llm_provider_presets.py`: add preset/metadata storage and backfill.
+- `app/services/llm_presets.py`, `app/services/llm.py`: add preset catalog, inference, filtering, live discovery, manual fallback, reclassification, and metadata persistence.
+- `app/schemas/llm.py`, `app/web/presentation.py`, `app/routes/web_admin.py`: extend API/form contracts.
+- `app/templates/admin.html`, `app/templates/admin2.html`: expose branded presets and Bedrock region controls.
+- `tests/test_api.py`, `tests/test_admin_ui.py`, `tests/test_migrations.py`: cover preset catalog, filtering, reclassification, UI save/inspect, and migration backfill.
+- `docs/llm-providers.md`, `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document provider preset behavior and test coverage.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_provider_preset or llm_model_filtering or provision_and_read_team_llm or provision_local_ollama or provision_bedrock or llm_inspection or missing_llm_secret"`
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "optional_provider_defaults or admin_templates_sync_optional_provider_credential_actions or admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key or admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key or admin_page_can_inspect_and_save_local_ollama_provider_without_api_key"`
+- `.venv/bin/pytest -q tests/test_migrations.py -k "expected_schema or backfills_llm_provider_presets"`
+- `python3 -m py_compile app/models.py app/schemas/llm.py app/services/llm.py app/services/llm_presets.py app/web/presentation.py app/routes/web_admin.py`
+
+### Documentation
+
+- Added `docs/llm-providers.md` and updated testing notes.
+
+### Risks / assumptions
+
+- No Anthropic/Gemini/Azure/native Bedrock adapter was introduced.
+- Provider discovery still depends on provider compatibility with `/models` or Ollama `/api/tags`.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only provider metadata/model lists are exposed; no transcript-derived content access changed.
+- Ownership rules preserved: provisioning remains system-admin-only; team/user selection stays scoped to active provisioned configs.
+- Deletion semantics preserved: no transcript, document, team, or provider delete cascade semantics changed.
+- Provider rules preserved: credentials stay Vault-backed, required-token providers fail closed without a saved/replacement token, Bedrock remains HTTP gateway.
+- Structured-note contract preserved: generation JSON/EMIS validation paths unchanged.
+
 ## 2026-05-10 LLM Stale Secret Remove
 
 ### Scope

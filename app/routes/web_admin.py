@@ -921,6 +921,7 @@ def admin_inspect_llm_config(
     request: Request,
     team_id: str = Form(...),
     label: str = Form(""),
+    provider_preset: str = Form(""),
     adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
     base_url: str = Form(""),
     bedrock_region: str = Form(""),
@@ -941,6 +942,7 @@ def admin_inspect_llm_config(
             context.user,
             LlmInspectRequest(
                 team_id=UUID(team_id),
+                provider_preset=provider_preset,
                 adapter_kind=LlmAdapterKind(adapter_kind),
                 base_url=base_url,
                 bedrock_region=bedrock_region or None,
@@ -972,6 +974,7 @@ def admin_inspect_llm_config(
         llm_form_override={
             **llm_form_defaults(None, inspection),
             "label": label,
+            "provider_preset": inspection.provider_preset,
             "adapter_kind": inspection.adapter_kind.value,
             "bedrock_region": (
                 bedrock_region or bedrock_region_from_base_url(inspection.base_url) or DEFAULT_BEDROCK_CHAT_REGION
@@ -1043,6 +1046,7 @@ def admin_upsert_llm_config(
     team_id: str = Form(...),
     config_id: str = Form(""),
     label: str = Form(...),
+    provider_preset: str = Form(""),
     adapter_kind: str = Form(LlmAdapterKind.openai_chat.value),
     base_url: str = Form(""),
     bedrock_region: str = Form(""),
@@ -1068,6 +1072,7 @@ def admin_upsert_llm_config(
                 config_id=UUID(config_id) if config_id else None,
                 team_id=UUID(team_id),
                 label=label,
+                provider_preset=provider_preset,
                 adapter_kind=LlmAdapterKind(adapter_kind),
                 base_url=base_url,
                 bedrock_region=bedrock_region or None,

@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models import LlmAdapterKind, LlmAuthMode
+from app.models import LlmAdapterKind, LlmAuthMode, LlmProviderPreset
 
 
 OPENAI_CHAT_BASE_URL = "https://api.openai.com/v1"
@@ -73,6 +73,7 @@ class LlmConfigUpsert(BaseModel):
     config_id: UUID | None = None
     team_id: UUID | None = None
     label: str = Field(min_length=1, max_length=255)
+    provider_preset: LlmProviderPreset = LlmProviderPreset.openai
     adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat
     base_url: str = Field(default="", max_length=2048)
     auth_mode: LlmAuthMode = LlmAuthMode.bearer
@@ -80,20 +81,31 @@ class LlmConfigUpsert(BaseModel):
     credential_action: Literal["keep", "replace", "remove"] = "keep"
     bedrock_region: str | None = Field(default=None, max_length=64)
     model_name: str | None = Field(default=None, max_length=255)
+    inspection_metadata_json: dict[str, object] | None = None
     is_active: bool = True
 
     @model_validator(mode="before")
     @classmethod
-    def apply_adapter_defaults(cls, data: object) -> object:
+    def apply_provider_defaults(cls, data: object) -> object:
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
-        if isinstance(adapter_kind, str):
-            adapter_kind = LlmAdapterKind(adapter_kind)
-        if adapter_kind is LlmAdapterKind.openai_chat:
-            normalized["base_url"] = (normalized.get("base_url") or OPENAI_CHAT_BASE_URL).strip()
-        elif adapter_kind is LlmAdapterKind.bedrock_chat:
+        preset = normalized.get("provider_preset")
+        if not preset:
+            adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
+            if isinstance(adapter_kind, str):
+                adapter_kind = LlmAdapterKind(adapter_kind)
+            if adapter_kind is LlmAdapterKind.bedrock_chat:
+                preset = LlmProviderPreset.bedrock_http_gateway.value
+            elif adapter_kind is LlmAdapterKind.ollama_chat:
+                preset = LlmProviderPreset.ollama.value
+            else:
+                preset = LlmProviderPreset.openai.value
+        if isinstance(preset, LlmProviderPreset):
+            preset = preset.value
+        normalized["provider_preset"] = preset
+        if preset == LlmProviderPreset.bedrock_http_gateway.value:
+            normalized["adapter_kind"] = LlmAdapterKind.bedrock_chat
             region = normalized.get("bedrock_region")
             if isinstance(region, str) and region.strip():
                 normalized["bedrock_region"] = _normalize_bedrock_region(region)
@@ -105,8 +117,21 @@ class LlmConfigUpsert(BaseModel):
                 normalized.get("base_url")
                 or bedrock_chat_base_url(str(normalized["bedrock_region"] or DEFAULT_BEDROCK_CHAT_REGION))
             ).strip()
-        elif adapter_kind is LlmAdapterKind.ollama_chat:
+        elif preset == LlmProviderPreset.ollama.value:
+            normalized["adapter_kind"] = LlmAdapterKind.ollama_chat
             normalized["base_url"] = (normalized.get("base_url") or OLLAMA_CHAT_BASE_URL).strip()
+        else:
+            normalized["adapter_kind"] = LlmAdapterKind.openai_chat
+            default_base_urls = {
+                LlmProviderPreset.openai.value: OPENAI_CHAT_BASE_URL,
+                LlmProviderPreset.openrouter.value: "https://openrouter.ai/api/v1",
+                LlmProviderPreset.xai.value: "https://api.x.ai/v1",
+                LlmProviderPreset.groq.value: "https://api.groq.com/openai/v1",
+                LlmProviderPreset.mistral.value: "https://api.mistral.ai/v1",
+                LlmProviderPreset.deepseek.value: "https://api.deepseek.com",
+                LlmProviderPreset.together.value: "https://api.together.xyz/v1",
+            }
+            normalized["base_url"] = (normalized.get("base_url") or default_base_urls.get(str(preset), "")).strip()
         return normalized
 
     @field_validator("base_url")
@@ -134,11 +159,13 @@ class LlmConfigDetail(BaseModel):
     id: UUID
     team_id: UUID
     label: str
+    provider_preset: str
     adapter_kind: LlmAdapterKind
     base_url: str
     auth_mode: LlmAuthMode
     model_name: str | None
     available_models_json: list[str]
+    inspection_metadata_json: dict[str, object]
     is_active: bool
     has_secret: bool
     created_by_user_id: UUID
@@ -198,6 +225,7 @@ class LlmInspectRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     team_id: UUID | None = None
+    provider_preset: LlmProviderPreset = LlmProviderPreset.openai
     adapter_kind: LlmAdapterKind = LlmAdapterKind.openai_chat
     base_url: str = Field(default="", max_length=2048)
     bearer_token: str | None = Field(default=None, min_length=1)
@@ -205,16 +233,26 @@ class LlmInspectRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def apply_adapter_defaults(cls, data: object) -> object:
+    def apply_provider_defaults(cls, data: object) -> object:
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
-        if isinstance(adapter_kind, str):
-            adapter_kind = LlmAdapterKind(adapter_kind)
-        if adapter_kind is LlmAdapterKind.openai_chat:
-            normalized["base_url"] = (normalized.get("base_url") or OPENAI_CHAT_BASE_URL).strip()
-        elif adapter_kind is LlmAdapterKind.bedrock_chat:
+        preset = normalized.get("provider_preset")
+        if not preset:
+            adapter_kind = normalized.get("adapter_kind", LlmAdapterKind.openai_chat)
+            if isinstance(adapter_kind, str):
+                adapter_kind = LlmAdapterKind(adapter_kind)
+            if adapter_kind is LlmAdapterKind.bedrock_chat:
+                preset = LlmProviderPreset.bedrock_http_gateway.value
+            elif adapter_kind is LlmAdapterKind.ollama_chat:
+                preset = LlmProviderPreset.ollama.value
+            else:
+                preset = LlmProviderPreset.openai.value
+        if isinstance(preset, LlmProviderPreset):
+            preset = preset.value
+        normalized["provider_preset"] = preset
+        if preset == LlmProviderPreset.bedrock_http_gateway.value:
+            normalized["adapter_kind"] = LlmAdapterKind.bedrock_chat
             region = normalized.get("bedrock_region")
             if isinstance(region, str) and region.strip():
                 normalized["bedrock_region"] = _normalize_bedrock_region(region)
@@ -226,8 +264,21 @@ class LlmInspectRequest(BaseModel):
                 normalized.get("base_url")
                 or bedrock_chat_base_url(str(normalized["bedrock_region"] or DEFAULT_BEDROCK_CHAT_REGION))
             ).strip()
-        elif adapter_kind is LlmAdapterKind.ollama_chat:
+        elif preset == LlmProviderPreset.ollama.value:
+            normalized["adapter_kind"] = LlmAdapterKind.ollama_chat
             normalized["base_url"] = (normalized.get("base_url") or OLLAMA_CHAT_BASE_URL).strip()
+        else:
+            normalized["adapter_kind"] = LlmAdapterKind.openai_chat
+            default_base_urls = {
+                LlmProviderPreset.openai.value: OPENAI_CHAT_BASE_URL,
+                LlmProviderPreset.openrouter.value: "https://openrouter.ai/api/v1",
+                LlmProviderPreset.xai.value: "https://api.x.ai/v1",
+                LlmProviderPreset.groq.value: "https://api.groq.com/openai/v1",
+                LlmProviderPreset.mistral.value: "https://api.mistral.ai/v1",
+                LlmProviderPreset.deepseek.value: "https://api.deepseek.com",
+                LlmProviderPreset.together.value: "https://api.together.xyz/v1",
+            }
+            normalized["base_url"] = (normalized.get("base_url") or default_base_urls.get(str(preset), "")).strip()
         return normalized
 
     @field_validator("base_url")
@@ -246,13 +297,15 @@ class LlmInspectRequest(BaseModel):
 
 
 class LlmConfigInspectResult(BaseModel):
+    provider_preset: str
+    provider_display_name: str
     base_url: str
     adapter_kind: LlmAdapterKind
     model_name: str | None
     available_models: list[str] = Field(default_factory=list)
     available_model_options: list[LlmModelOption] = Field(default_factory=list)
-    discovery_status: Literal["fetched", "fallback", "manual_required", "failed"]
-    default_model_source: Literal["provider", "builtin", "manual", "none"]
+    discovery_status: Literal["fetched", "manual_required", "failed"]
+    default_model_source: Literal["provider", "manual", "none"]
     requires_bearer_token: bool
     supports_model_discovery: bool
     warnings: list[str] = Field(default_factory=list)

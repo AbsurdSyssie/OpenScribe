@@ -118,6 +118,19 @@ class LlmAdapterKind(str, enum.Enum):
     ollama_chat = "ollama_chat"
 
 
+class LlmProviderPreset(str, enum.Enum):
+    openai = "openai"
+    openrouter = "openrouter"
+    xai = "xai"
+    groq = "groq"
+    mistral = "mistral"
+    deepseek = "deepseek"
+    together = "together"
+    ollama = "ollama"
+    bedrock_http_gateway = "bedrock_http_gateway"
+    custom_openai_compatible = "custom_openai_compatible"
+
+
 class DeidentificationAuthMode(str, enum.Enum):
     none = "none"
     bearer = "bearer"
@@ -571,11 +584,13 @@ class TeamLlmConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_preset: Mapped[str] = mapped_column(String(64), default=LlmProviderPreset.openai.value, nullable=False)
     adapter_kind: Mapped[LlmAdapterKind] = mapped_column(Enum(LlmAdapterKind), default=LlmAdapterKind.openai_chat, nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     auth_mode: Mapped[LlmAuthMode] = mapped_column(Enum(LlmAuthMode), default=LlmAuthMode.bearer, nullable=False)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     available_models_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    inspection_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     vault_secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

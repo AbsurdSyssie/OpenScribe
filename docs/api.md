@@ -156,12 +156,12 @@ Browser navigation behavior:
 - `POST /api/v1/app-preferences`
 - `DELETE /api/v1/app-preferences`
 - these are metadata and secret-reference routes, not transcript-content routes
-- LLM inspect returns `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, fallback, manual-required, and failed discovery states
-- LLM inspect remains scoped to known adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
+- LLM inspect accepts branded `provider_preset` values and returns `provider_preset`, `provider_display_name`, `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, manual-required, and failed discovery states
+- LLM inspect remains scoped to known protocol adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 - saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
 - LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
 - LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
-- persisted credential status/fingerprint metadata is STT-only in this slice; LLM inspection continues to expose model-discovery status but does not persist an equivalent credential status row
+- persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
 
 ### Shared NLP endpoint configuration
 

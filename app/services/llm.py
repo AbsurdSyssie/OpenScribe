@@ -7,17 +7,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference
+from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference
 from app.schemas import LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.services.llm_presets import (
+    apply_provider_defaults,
+    filter_discovered_models,
+    get_llm_provider_preset,
+    infer_llm_provider_preset,
+    reclassify_preset_for_base_url,
+)
 from app.services.vault import delete_team_llm_bearer_token, read_team_llm_bearer_token, write_team_llm_bearer_token
 
 
-OPENAI_CHAT_MODEL_FALLBACKS = (
-    "gpt-4.1-mini",
-    "gpt-4.1",
-    "gpt-4o-mini",
-    "gpt-4o",
-)
 logger = logging.getLogger("openscribe.llm")
 
 
@@ -82,14 +83,17 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     except AppError as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI chat models") from exc
 
-    allowed: set[str] = set()
-    for normalized in models:
-        lower = normalized.lower()
-        if any(token in lower for token in ("embedding", "transcribe", "whisper", "tts", "moderation", "image", "search")):
-            continue
-        if lower.startswith(("gpt-", "o1", "o3", "o4")) or lower.startswith("chatgpt-"):
-            allowed.add(normalized)
-    return sorted(allowed)
+    return filter_discovered_models(LlmProviderPreset.openai.value, models)
+
+
+def _list_openai_compatible_chat_models(*, provider_preset: str, api_key: str, base_url: str) -> list[str]:
+    if provider_preset == LlmProviderPreset.openai.value:
+        return _list_openai_chat_models(api_key=api_key, base_url=base_url)
+    try:
+        models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
+    except AppError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI-compatible chat models") from exc
+    return filter_discovered_models(provider_preset, models)
 
 
 def _list_bedrock_chat_models(*, api_key: str, base_url: str) -> list[str]:
@@ -99,16 +103,19 @@ def _list_bedrock_chat_models(*, api_key: str, base_url: str) -> list[str]:
         raise AppError(502, "llm_inspection_failed", "Could not load available Amazon Bedrock chat models") from exc
 
 
-def _fallback_openai_chat_models() -> list[str]:
-    return list(OPENAI_CHAT_MODEL_FALLBACKS)
-
-
-def _openai_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
+def _llm_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
     return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
 
 
-def _bedrock_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
-    return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
+def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object]:
+    return {
+        "provider_preset": inspection.provider_preset,
+        "provider_display_name": inspection.provider_display_name,
+        "discovery_status": inspection.discovery_status,
+        "default_model_source": inspection.default_model_source,
+        "warnings": list(inspection.warnings),
+        "notes": list(inspection.notes),
+    }
 
 
 def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list[str]:
@@ -133,44 +140,44 @@ def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list
     return sorted(set(models))
 
 
-def _ollama_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
-    return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
-
-
 def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    if payload.adapter_kind is LlmAdapterKind.openai_chat:
-        requires_bearer_token = True
-        supports_model_discovery = True
+    preset_key, adapter_kind, base_url, _region = apply_provider_defaults(
+        provider_preset=getattr(payload, "provider_preset", None),
+        base_url=payload.base_url,
+        bedrock_region=getattr(payload, "bedrock_region", None),
+    )
+    preset_key = reclassify_preset_for_base_url(preset_key, base_url)
+    preset = get_llm_provider_preset(preset_key)
+    adapter_kind = preset.adapter_kind
+    if adapter_kind is LlmAdapterKind.openai_chat:
         if payload.bearer_token:
             try:
-                models = _list_openai_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
+                models = _list_openai_compatible_chat_models(provider_preset=preset_key, api_key=payload.bearer_token, base_url=base_url)
                 source = "fetched"
                 discovery_status = "fetched"
                 default_model_source = "provider"
                 warnings: list[str] = []
                 notes: list[str] = []
             except AppError:
-                models = _fallback_openai_chat_models()
-                source = "default"
-                discovery_status = "fallback"
-                default_model_source = "builtin"
-                warnings = ["Live OpenAI model discovery failed; verify API key/base URL."]
-                notes = ["Live OpenAI model discovery failed, so OpenScribe used the built-in default chat model list."]
+                models = []
+                source = "manual"
+                discovery_status = "manual_required"
+                default_model_source = "manual"
+                warnings = ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."]
+                notes = []
         else:
-            models = _fallback_openai_chat_models()
-            source = "default"
-            discovery_status = "fallback"
-            default_model_source = "builtin"
-            warnings = ["No API key was provided; using built-in OpenAI chat model defaults."]
-            notes = ["No API key provided for inspection, so OpenScribe used the built-in default chat model list."]
-        model_options = _openai_model_options(models, source=source)
-    elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
-        requires_bearer_token = True
-        supports_model_discovery = True
+            models = []
+            source = "manual"
+            discovery_status = "manual_required"
+            default_model_source = "manual"
+            warnings = ["Live model discovery requires an API key. Enter a model name manually or inspect again with a key."]
+            notes = []
+        model_options = _llm_model_options(models, source=source)
+    elif adapter_kind is LlmAdapterKind.bedrock_chat:
         if payload.bearer_token:
             try:
-                models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
+                models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=base_url)
                 source = "fetched"
                 discovery_status = "fetched"
                 default_model_source = "provider"
@@ -196,12 +203,10 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
             notes = [
                 "No Bedrock API key provided for inspection, so OpenScribe could not load the region-specific model list. Enter a model name manually or inspect again with a key.",
             ]
-        model_options = _bedrock_model_options(models, source=source)
-    elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
-        requires_bearer_token = False
-        supports_model_discovery = True
+        model_options = _llm_model_options(models, source=source)
+    elif adapter_kind is LlmAdapterKind.ollama_chat:
         try:
-            models = _list_ollama_chat_models(base_url=payload.base_url, bearer_token=payload.bearer_token)
+            models = _list_ollama_chat_models(base_url=base_url, bearer_token=payload.bearer_token)
             source = "fetched"
             discovery_status = "fetched"
             default_model_source = "provider"
@@ -214,7 +219,7 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
             default_model_source = "manual"
             warnings = ["Could not reach Ollama /api/tags. Verify the base URL and network access."]
             notes = ["Live Ollama model discovery failed. Verify the base URL and local Ollama host, or enter a model name manually."]
-        model_options = _ollama_model_options(models, source=source)
+        model_options = _llm_model_options(models, source=source)
     else:  # pragma: no cover
         models = []
         source = "default"
@@ -227,15 +232,17 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         model_options = []
     model_name = models[0] if models else None
     return LlmConfigInspectResult(
-        base_url=payload.base_url,
-        adapter_kind=payload.adapter_kind,
+        provider_preset=preset.key,
+        provider_display_name=preset.display_name,
+        base_url=base_url,
+        adapter_kind=adapter_kind,
         model_name=model_name,
         available_models=models,
         available_model_options=model_options,
         discovery_status=discovery_status,
         default_model_source=default_model_source,
-        requires_bearer_token=requires_bearer_token,
-        supports_model_discovery=supports_model_discovery,
+        requires_bearer_token=preset.requires_bearer_token,
+        supports_model_discovery=preset.supports_model_discovery,
         warnings=warnings,
         notes=notes,
     )
@@ -247,13 +254,20 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
     inspection = inspect_llm_contract(
         db,
         actor,
-        LlmInspectRequest(team_id=config.team_id, adapter_kind=config.adapter_kind, base_url=config.base_url, bearer_token=bearer_token),
+        LlmInspectRequest(
+            team_id=config.team_id,
+            provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
+            adapter_kind=config.adapter_kind,
+            base_url=config.base_url,
+            bearer_token=bearer_token,
+        ),
     )
     if inspection.available_models:
         config.available_models_json = list(inspection.available_models)
         if config.model_name not in inspection.available_models:
             config.model_name = inspection.model_name
         config.updated_by_user_id = actor.id
+        config.inspection_metadata_json = _inspection_metadata(inspection)
         db.add(config)
         db.commit()
         db.refresh(config)
@@ -285,6 +299,14 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
 
 def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> TeamLlmConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    provider_preset, adapter_kind, base_url, _region = apply_provider_defaults(
+        provider_preset=payload.provider_preset,
+        base_url=payload.base_url,
+        bedrock_region=payload.bedrock_region,
+    )
+    provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
+    preset = get_llm_provider_preset(provider_preset)
+    adapter_kind = preset.adapter_kind
     config = None
     if payload.config_id is not None:
         config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
@@ -304,46 +326,57 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         raise AppError(422, "business_rule_violation", "Bearer token cannot be supplied when credential_action is remove", {"field": "credential_action"})
     if replacing_secret and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "Bearer token is required when credential_action is replace", {"field": "bearer_token"})
-    if removing_secret and payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-        raise AppError(422, "business_rule_violation", "OpenAI and Bedrock LLM configs require a saved bearer token", {"field": "credential_action"})
-    requires_saved_secret = payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}
+    if removing_secret and preset.requires_bearer_token:
+        raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "credential_action"})
+    requires_saved_secret = preset.requires_bearer_token
     has_existing_secret = config is not None and bool(config.vault_secret_ref)
     if requires_saved_secret and not replacing_secret and not has_existing_secret:
-        raise AppError(422, "business_rule_violation", "OpenAI and Bedrock LLM configs require a saved bearer token", {"field": "bearer_token"})
+        raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "bearer_token"})
 
     available_models_json: list[str]
-    if payload.adapter_kind is LlmAdapterKind.openai_chat:
+    discovery_metadata: dict[str, object] = {}
+    if adapter_kind is LlmAdapterKind.openai_chat:
         if replacing_secret and payload.bearer_token:
             try:
-                available_models_json = _list_openai_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
+                available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=payload.bearer_token, base_url=base_url)
+                discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
             except AppError:
-                available_models_json = _fallback_openai_chat_models()
-        elif config is not None:
-            available_models_json = list(config.available_models_json or [])
-        else:
-            available_models_json = _fallback_openai_chat_models()
-    elif payload.adapter_kind is LlmAdapterKind.bedrock_chat:
-        if replacing_secret and payload.bearer_token:
-            try:
-                available_models_json = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=payload.base_url)
-            except AppError:
-                available_models_json = list(config.available_models_json or []) if config is not None else []
+                available_models_json = []
+                discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], "notes": []}
         elif config is not None:
             available_models_json = list(config.available_models_json or [])
         else:
             available_models_json = []
-    elif payload.adapter_kind is LlmAdapterKind.ollama_chat:
+    elif adapter_kind is LlmAdapterKind.bedrock_chat:
+        if replacing_secret and payload.bearer_token:
+            try:
+                available_models_json = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=base_url)
+                discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
+            except AppError:
+                available_models_json = []
+                discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], "notes": []}
+        elif config is not None:
+            available_models_json = list(config.available_models_json or [])
+        else:
+            available_models_json = []
+    elif adapter_kind is LlmAdapterKind.ollama_chat:
         try:
             token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else None
-            available_models_json = _list_ollama_chat_models(base_url=payload.base_url, bearer_token=token_for_lookup)
+            available_models_json = _list_ollama_chat_models(base_url=base_url, bearer_token=token_for_lookup)
+            discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
         except AppError:
-            available_models_json = list(config.available_models_json or []) if config is not None else []
+            available_models_json = []
+            discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the endpoint, or enter a model name manually."], "notes": []}
     elif config is not None:
         available_models_json = list(config.available_models_json or [])
     else:
         available_models_json = []
 
-    if payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+    model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
+    if not model_name:
+        raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
+
+    if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         resolved_auth_mode = LlmAuthMode.bearer
     else:
         resolved_auth_mode = LlmAuthMode.bearer if replacing_secret or (config is not None and config.vault_secret_ref and not removing_secret) else LlmAuthMode.none
@@ -353,12 +386,14 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             id=uuid4(),
             team_id=team.id,
             label=payload.label.strip(),
-            adapter_kind=payload.adapter_kind,
-            base_url=payload.base_url,
+            provider_preset=provider_preset,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
             auth_mode=resolved_auth_mode,
-            model_name=payload.model_name.strip() if payload.model_name else None,
+            model_name=model_name,
             available_models_json=available_models_json,
-            vault_secret_ref="pending" if replacing_secret or payload.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
+            inspection_metadata_json=payload.inspection_metadata_json or discovery_metadata,
+            vault_secret_ref="pending" if replacing_secret or adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
             created_by_user_id=actor.id,
             updated_by_user_id=actor.id,
@@ -367,11 +402,13 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         db.flush()
     else:
         config.label = payload.label.strip()
-        config.adapter_kind = payload.adapter_kind
-        config.base_url = payload.base_url
+        config.provider_preset = provider_preset
+        config.adapter_kind = adapter_kind
+        config.base_url = base_url
         config.auth_mode = resolved_auth_mode
-        config.model_name = payload.model_name.strip() if payload.model_name else None
+        config.model_name = model_name
         config.available_models_json = available_models_json
+        config.inspection_metadata_json = payload.inspection_metadata_json or discovery_metadata or dict(config.inspection_metadata_json or {})
         config.is_active = payload.is_active
         config.updated_by_user_id = actor.id
         db.add(config)
@@ -391,7 +428,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
             deleted_secret_before_commit = True
         config.vault_secret_ref = ""
-    elif payload.adapter_kind is LlmAdapterKind.ollama_chat and creating:
+    elif adapter_kind is LlmAdapterKind.ollama_chat and creating:
         config.vault_secret_ref = ""
     elif creating:
         raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})

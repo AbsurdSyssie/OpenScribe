@@ -94,7 +94,8 @@ def _inspection_status(inspection: SttInspectResult, *, had_secret: bool) -> Pro
 
 
 def _is_credential_rejection(exc: AppError) -> bool:
-    return exc.status_code in {401, 403} or exc.code in {"unauthorized", "provider_credential_invalid", "stt_credential_invalid"}
+    status_code = (exc.details or {}).get("status_code") if exc.details else None
+    return exc.status_code in {401, 403} or status_code in {401, 403} or exc.code in {"unauthorized", "provider_credential_invalid", "stt_credential_invalid"}
 
 
 def _duplicate_stt_config(
@@ -992,6 +993,39 @@ def run_saved_stt_config_test(
         }
 
 
+def _verify_generic_stt_config_with_sample(
+    config: TeamSttConfig,
+    *,
+    bearer_token: str | None,
+    sample_path: Path = DEFAULT_STT_SAMPLE_PATH,
+) -> None:
+    try:
+        audio_bytes = sample_path.read_bytes()
+    except OSError as exc:  # pragma: no cover
+        raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
+
+    _transcribe_via_http(
+        base_url=config.base_url,
+        transcribe_path=config.transcribe_path,
+        file_field_name=config.file_field_name,
+        response_text_path=config.response_text_path,
+        extra_form_fields_json=config.extra_form_fields_json,
+        bearer_token=bearer_token,
+        model_name=config.model_name,
+        model_field_name=config.model_field_name or "model",
+        language=config.language,
+        language_field_name=config.language_field_name or "language",
+        segments_path=config.segments_path,
+        segment_text_field=config.segment_text_field,
+        segment_start_field=config.segment_start_field,
+        segment_end_field=config.segment_end_field,
+        segment_speaker_field=config.segment_speaker_field,
+        audio_bytes=audio_bytes,
+        filename=sample_path.name,
+        content_type="audio/wav",
+    )
+
+
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     config = None
@@ -1007,7 +1041,14 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 {"config_id": str(config.id)},
             )
     creating = config is None
-    fingerprint = _credential_fingerprint(payload.bearer_token)
+    replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
+    removing_secret = payload.credential_action == "remove"
+    if removing_secret and payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "Bearer token cannot be supplied when credential_action is remove", {"field": "credential_action"})
+    if replacing_secret and not payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "Bearer token is required when credential_action is replace", {"field": "bearer_token"})
+
+    fingerprint = _credential_fingerprint(payload.bearer_token if replacing_secret else None)
     duplicate = _duplicate_stt_config(
         db,
         team_id=team.id,
@@ -1023,18 +1064,25 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             "A saved STT provider for this team, adapter, endpoint, and credential already exists. Confirm duplicate to save anyway.",
             {"duplicate_config_id": str(duplicate.id), "team_id": str(team.id), "provider_type": "stt"},
         )
-    if payload.adapter_kind is SttAdapterKind.openai_cloud and not payload.bearer_token and config is None:
+    if payload.adapter_kind is SttAdapterKind.openai_cloud and config is None and not replacing_secret:
         raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
+    if payload.adapter_kind is SttAdapterKind.openai_cloud and removing_secret:
+        raise AppError(422, "business_rule_violation", "OpenAI Cloud STT configs require a saved bearer token", {"field": "credential_action"})
 
     available_models_json: list[str] = []
     if payload.adapter_kind is SttAdapterKind.openai_cloud:
-        if payload.bearer_token:
+        if replacing_secret and payload.bearer_token:
             try:
                 available_models_json = _list_openai_transcription_models(api_key=payload.bearer_token, base_url=payload.base_url)
             except AppError:
                 available_models_json = _fallback_openai_transcription_models()
         elif config is not None:
             available_models_json = list(config.available_models_json or [])
+
+    old_bearer_token: str | None = None
+    old_had_secret = bool(config.vault_secret_ref) if config is not None else False
+    if config is not None and replacing_secret and payload.bearer_token and old_had_secret:
+        old_bearer_token = read_team_stt_bearer_token(team_id=team.id, config_id=config.id)
 
     if config is None:
         config = TeamSttConfig(
@@ -1060,8 +1108,8 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             segment_end_field=payload.segment_end_field,
             segment_speaker_field=payload.segment_speaker_field,
             extra_form_fields_json=payload.extra_form_fields_json,
-            vault_secret_ref="pending" if payload.bearer_token or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
-            credential_status=ProviderCredentialStatus.pending_inspection if payload.bearer_token else ProviderCredentialStatus.unknown,
+            vault_secret_ref="pending" if replacing_secret or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
+            credential_status=ProviderCredentialStatus.pending_inspection if replacing_secret else ProviderCredentialStatus.unknown,
             credential_fingerprint=fingerprint,
             inspection_metadata_json={},
             is_active=payload.is_active,
@@ -1096,9 +1144,16 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
     delete_after_commit = False
     old_config_id = config.id
     old_team_id = team.id
-    if payload.bearer_token:
+    if replacing_secret and payload.bearer_token:
         config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
         config.credential_status = ProviderCredentialStatus.pending_inspection
+    elif removing_secret:
+        if config.vault_secret_ref:
+            delete_after_commit = True
+        config.vault_secret_ref = ""
+        config.credential_fingerprint = None
+        config.credential_status = ProviderCredentialStatus.unknown
+        config.inspection_metadata_json = {}
     elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest} and creating:
         config.vault_secret_ref = ""
         config.credential_fingerprint = None
@@ -1106,33 +1161,61 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
     elif payload.adapter_kind is SttAdapterKind.openai_cloud and not config.vault_secret_ref:
         raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
 
-    if payload.bearer_token:
+    if replacing_secret and payload.bearer_token:
         try:
-            inspection = inspect_stt_contract(
-                db,
-                actor,
-                SttInspectRequest(team_id=team.id, adapter_kind=payload.adapter_kind, base_url=payload.base_url, bearer_token=payload.bearer_token),
-            )
+            if payload.adapter_kind is SttAdapterKind.generic_rest:
+                _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
+                inspection = None
+            else:
+                inspection = inspect_stt_contract(
+                    db,
+                    actor,
+                    SttInspectRequest(team_id=team.id, adapter_kind=payload.adapter_kind, base_url=payload.base_url, bearer_token=payload.bearer_token),
+                )
         except AppError as exc:
             if _is_credential_rejection(exc):
                 secret_config_id = config.id
-                db.delete(config)
-                db.commit()
-                try:
-                    delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
-                except AppError as cleanup_exc:
-                    logger.warning(
-                        "stt_config_invalid_secret_cleanup_failed",
-                        extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
-                    )
+                if creating:
+                    db.delete(config)
+                    db.commit()
+                    try:
+                        delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
+                    except AppError as cleanup_exc:
+                        logger.warning(
+                            "stt_config_invalid_secret_cleanup_failed",
+                            extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
+                        )
+                else:
+                    db.rollback()
+                    try:
+                        if old_bearer_token is not None:
+                            write_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id, bearer_token=old_bearer_token)
+                        elif not old_had_secret:
+                            delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
+                    except AppError as cleanup_exc:
+                        logger.warning(
+                            "stt_config_invalid_secret_restore_failed",
+                            extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
+                        )
                 raise AppError(422, "provider_credential_invalid", "STT provider rejected the supplied credential", {"provider_type": "stt"}) from exc
             config.credential_status = ProviderCredentialStatus.partial
             config.inspection_metadata_json = {"status": "partial", "warning": exc.message, "error_code": exc.code}
         else:
-            if inspection.available_models:
+            if inspection is None:
+                config.credential_status = ProviderCredentialStatus.verified
+                config.inspection_metadata_json = {
+                    "status": ProviderCredentialStatus.verified.value,
+                    "adapter_kind": config.adapter_kind.value,
+                    "candidate_paths": [config.transcribe_path],
+                    "sample_test": "passed",
+                }
+            elif inspection.available_models:
                 config.available_models_json = list(inspection.available_models)
-            config.credential_status = _inspection_status(inspection, had_secret=True)
-            config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
+                config.credential_status = _inspection_status(inspection, had_secret=True)
+                config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
+            else:
+                config.credential_status = _inspection_status(inspection, had_secret=True)
+                config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
 
     db.commit()
     if delete_after_commit:

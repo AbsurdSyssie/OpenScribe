@@ -1,37 +1,26 @@
-## Verdict
+## Verdict for `67cf9dec048bba11ca34bb8941c1b1f13d938b8a`
 
-**No — I would not consider the implementation proper/merge-ready yet.** It has several good pieces, but there are blocking correctness problems, especially in `app/services/stt.py`.
+**Much improved, but I would still not call it cleanly done yet.**
 
-The biggest issue: **the current STT service appears to be syntactically invalid**. The `transcribe_with_stt_snapshot` function signature puts defaulted parameters before required parameters:
+The prior blocking STT issues appear to have been substantially addressed: the commit includes provider-inspection library usage, STT credential status tracking, segment-aware parsing, re-inspection routes, and tests. However, there are still design/correctness issues around how saved STT credentials are inspected and how provider status is modeled.
+
+## Fixed or substantially improved
+
+### 1. The OpenAPI/JSONPath helper is now using real libraries
+
+`provider_inspection.py` now uses:
 
 ```python
-model_field_name: str | None = None,
-language_field_name: str | None = None,
-audio_bytes: bytes,
-filename: str,
-content_type: str,
+openapi_spec_validator.validate_spec
+prance.ResolvingParser
+jsonpath_ng.parse
 ```
 
-That is a Python syntax error: non-default parameters cannot follow default parameters. This would prevent the module from importing. The same file also has call-site/signature mismatches around `_transcribe_via_openai_cloud` and `_transcribe_via_http`. 
+That addresses the earlier problem where the dependencies were added but not used. It validates OpenAPI docs, resolves internal refs through Prance, and uses `jsonpath-ng` for JSONPath expressions. 
 
-## What looks good
+### 2. STT schemas now expose the right dynamic contract fields
 
-### 1. Dependencies were added
-
-The intended inspection libraries were added to `requirements.txt`:
-
-```text
-openapi-spec-validator
-prance
-jsonschema
-jsonpath-ng
-```
-
-
-
-### 2. STT schema/model fields were added
-
-`SttConfigUpsert`, `SttConfigDetail`, and `SttInspectResult` now include the expected dynamic STT fields:
+`SttConfigUpsert`, `SttConfigDetail`, and `SttInspectResult` include:
 
 ```text
 model_field_name
@@ -43,229 +32,150 @@ segment_end_field
 segment_speaker_field
 ```
 
+They also include `confirm_duplicate` and expose `credential_status` / `inspection_metadata_json` on config detail. 
 
+### 3. STT runtime now uses dynamic field names and segment fields
 
-`TeamSttConfig` also has the corresponding model columns. 
+The STT service now constructs HTTP form fields from `model_field_name` and `language_field_name`, and `_transcribe_via_http` accepts segment path/field parameters. It also has `_format_timestamped_transcript_payload_with_segments`, which uses the saved segment path and field names rather than assuming only top-level `segments`. 
 
-### 3. Migration exists
+### 4. STT credential status was added
 
-There is an Alembic migration adding the new STT config fields and ingestion-job snapshot fields, with sensible backfills for existing `model` and `language` behavior. 
-
-### 4. LLM inspection state is improved
-
-`LlmConfigInspectResult` now includes machine-readable fields:
+The commit adds a `ProviderCredentialStatus` enum and stores:
 
 ```text
-discovery_status
-default_model_source
-requires_bearer_token
-supports_model_discovery
-warnings
+credential_status
+credential_fingerprint
+inspection_metadata_json
 ```
 
+on `team_stt_configs`. The migration adds these fields and creates the enum. 
 
+### 5. STT ingestion job snapshots were extended
 
-The LLM service correctly distinguishes OpenAI fallback, Bedrock manual-required, and Ollama manual-required/fetched states. 
+There is a follow-up migration for:
 
-### 5. Admin flow was partially updated
+```text
+stt_segments_path
+stt_segment_text_field
+stt_segment_start_field
+stt_segment_end_field
+stt_segment_speaker_field
+```
 
-The admin route now accepts the dynamic STT fields and has an STT inspection route that returns an inspection review state. 
+on `transcript_ingestion_jobs`. 
+
+### 6. Tests were added around provider inspection
+
+`tests/test_provider_inspection.py` now tests OpenAPI dereferencing, JSONPath index support, JSONPath wildcard behavior, no payload leakage in JSONPath errors, default extraction, and invalid OpenAPI rejection. 
+
+`tests/test_api.py` also imports the STT service functions directly, which would catch the previous syntax-level import failure if the suite is run. It includes STT config credential status and duplicate-warning tests. 
 
 ---
 
-## Blocking issues
+## Remaining concerns
 
-### 1. `app/services/stt.py` likely will not import
+### 1. Automatic inspection during STT save may be too aggressive
 
-This is the main blocker.
-
-`transcribe_with_stt_snapshot` has defaulted parameters before required parameters. That is a syntax error and would break application startup/tests. 
-
-Fix by moving new optional params after required params, or making all following params keyword-only/defaulted. Preferred:
+`upsert_stt_config` now writes the bearer token and then calls `inspect_stt_contract` automatically when `payload.bearer_token` is supplied. In the diff, that call constructs a new `SttInspectRequest` with:
 
 ```python
-def transcribe_with_stt_snapshot(
-    db: Session,
-    *,
-    team_id: UUID,
-    stt_config_id: UUID | None,
-    adapter_kind: str | None,
-    base_url: str | None,
-    transcribe_path: str | None,
-    file_field_name: str | None,
-    response_text_path: str | None,
-    extra_form_fields_json: dict[str, str] | None,
-    model_name: str | None,
-    language: str | None,
-    audio_bytes: bytes,
-    filename: str,
-    content_type: str,
-    model_field_name: str | None = None,
-    language_field_name: str | None = None,
-) -> str:
+team_id=team.id
+adapter_kind=payload.adapter_kind
+base_url=payload.base_url
+bearer_token=payload.bearer_token
 ```
 
-### 2. `run_saved_stt_config_test` has bad function calls
+but it does **not** pass any OpenAPI path or the manually entered transcribe/path contract fields. 
 
-In the visible STT service code, the OpenAI branch calls `_transcribe_via_openai_cloud` with `model_field_name` and `language_field_name`, but that function does not accept those parameters. The non-OpenAI branch calls `_transcribe_via_http` without the newly required `model_field_name` and `language_field_name`. 
+For `generic_rest`, this means save-time credential verification can fall back to the default `/openapi.json` inspection path. A manually configured STT endpoint could be perfectly valid but still get marked `partial` or degraded if it does not expose OpenAPI at the default path.
 
-This will fail even after the syntax error is fixed.
-
-Expected shape:
-
-```python
-if config.adapter_kind is SttAdapterKind.openai_cloud:
-    transcript_text = _transcribe_via_openai_cloud(
-        base_url=config.base_url,
-        extra_form_fields_json=config.extra_form_fields_json,
-        bearer_token=bearer_token,
-        model_name=config.model_name,
-        language=config.language,
-        audio_bytes=audio_bytes,
-        filename=sample_path.name,
-    )
-else:
-    transcript_text = _transcribe_via_http(
-        base_url=config.base_url,
-        transcribe_path=config.transcribe_path,
-        file_field_name=config.file_field_name,
-        response_text_path=config.response_text_path,
-        extra_form_fields_json=config.extra_form_fields_json,
-        bearer_token=bearer_token,
-        model_name=config.model_name,
-        model_field_name=config.model_field_name or "model",
-        language=config.language,
-        language_field_name=config.language_field_name or "language",
-        audio_bytes=audio_bytes,
-        filename=sample_path.name,
-        content_type="audio/wav",
-    )
-```
-
-### 3. The new libraries are mostly not used
-
-`provider_inspection.py` imports only `httpx` and manually implements:
-
-* local `$ref` resolution
-* schema traversal
-* dot-path extraction
-* a partial JSONPath parser
-
-
-
-That means the implementation added `openapi-spec-validator`, `prance`, `jsonschema`, and `jsonpath-ng`, but still hand-rolls most of the behavior we wanted libraries for. This defeats a core part of the plan.
-
-Minimum fix:
-
-* use `openapi_spec_validator.validate_spec`
-* use `prance.ResolvingParser` or a real dereferencing flow
-* use `jsonpath_ng.parse` instead of `_extract_jsonpath`
-
-### 4. The STT segment fields are saved but not meaningfully used
-
-The model/schema now support:
+Recommended fix:
 
 ```text
-segments_path
-segment_text_field
-segment_start_field
-segment_end_field
-segment_speaker_field
+Do not make generic REST save-time verification depend only on OpenAPI discovery.
 ```
 
-But runtime formatting still only checks hard-coded top-level `segments` and assumes fields named `text`, `start`, `end`, and `speaker`. 
+Better behavior:
 
-So the dynamic segment contract is currently cosmetic unless the provider happens to match the old hard-coded shape.
-
-Either wire these fields into `_format_timestamped_transcript_payload`, or remove them from this slice until implemented.
-
-### 5. Admin still has a `preserved_bearer_token` path
-
-The admin STT save route accepts both `bearer_token` and `preserved_bearer_token`, then uses:
-
-```python
-resolved_bearer_token = bearer_token or preserved_bearer_token or None
+```text
+If an inspected contract is being saved, use that contract.
+If a manual generic REST config is being saved, test the saved transcribe_path/file/model/language/response config with synthetic audio.
+If no token is supplied, do not infer credential validity.
 ```
 
+### 2. Editing an existing generic REST config without a token may retain the old secret
 
+From the upsert diff, when `payload.bearer_token` is absent, the new logic only clears credential state for generic/openai-compatible configs when `creating` is true. The old “delete saved generic/openai-compatible secret when no token is submitted” behavior appears to have been removed. 
 
-The current inspection route appears to set `preserved_bearer_token` to an empty string, which is good, and presentation defaults also set it empty. 
+That may be intentional to avoid forcing admins to re-enter credentials on every edit. But then the UI and service semantics should be explicit:
 
-But the presence of this pathway is contrary to the stated rule: **do not carry tokens through hidden/preserved fields**. I would remove `preserved_bearer_token` entirely for STT/LLM unless there is a very specific server-side-only flow. The de-identification test already asserts this principle.
+```text
+Blank token on edit = keep existing token
+```
 
-### 6. Tests do not appear to cover the new behavior adequately
+If blank token is intended to mean “remove token,” this is now wrong.
 
-Search results show references in docs and production code, but not clear service-level tests for:
+Recommended fix: add an explicit form/API field:
 
-* STT dynamic field-name runtime behavior
-* STT OpenAPI inference
-* LLM discovery status branches
-* JSONPath extraction via `jsonpath-ng`
-* syntax/import coverage for the changed STT service
+```text
+credential_action = keep | replace | remove
+```
 
-The absence of direct test hits for `discovery_status` outside docs/service/schema/template is a red flag. 
+Do not overload blank token.
 
-Given the syntax/signature issues, a basic import or pytest run should have caught this.
+### 3. STT credential status is richer than LLM credential status
+
+STT now has persisted credential state, duplicate detection, fingerprints, re-inspection metadata, and invalid-selection blocking. LLM has saved-provider inspection, but it appears to update model lists rather than storing equivalent persisted credential status. The LLM service adds `inspect_saved_llm_config`, but there is no matching model-level status/fingerprint metadata shown for LLM. 
+
+That may be acceptable if this phase is STT-focused, but it leaves the admin experience asymmetric.
+
+Recommended follow-up:
+
+```text
+Either intentionally document that credential status is STT-only for now,
+or add provider credential status/fingerprint/metadata to LLM configs too.
+```
+
+### 4. `preserved_bearer_token` still exists in form defaults
+
+The presentation layer still includes `preserved_bearer_token`, although it is set to an empty string in STT/LLM form defaults. 
+
+That is better than rendering a secret, but I would still remove the field entirely unless it is needed. Its presence encourages future accidental token preservation.
+
+Recommended fix:
+
+```text
+Remove preserved_bearer_token from STT/LLM forms and routes.
+Use explicit credential_action instead.
+```
+
+### 5. I cannot confirm test execution status
+
+I checked the commit status/workflow visibility through the connector and did not see a test status to verify. So my assessment is based on code inspection, not a confirmed passing CI run.
 
 ---
 
-## Non-blocking but important design issues
+## Merge-readiness assessment
 
-### Provider inspection helper is too permissive / underpowered
+| Area                                         | Status                                                         |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| STT syntax/import issue from previous review | Looks fixed                                                    |
+| Dynamic STT model/language fields            | Looks implemented                                              |
+| Dynamic STT segment parsing                  | Looks implemented                                              |
+| OpenAPI/JSONPath libraries                   | Now properly used                                              |
+| STT credential status                        | Implemented                                                    |
+| STT duplicate credential warning             | Implemented                                                    |
+| LLM discovery status                         | Still good                                                     |
+| Admin token leakage                          | Looks improved, but `preserved_bearer_token` should be removed |
+| Save-time STT inspection semantics           | Needs review/fix                                               |
+| LLM/STT parity for credential status         | Incomplete                                                     |
 
-`fetch_openapi_document` accepts any JSON object with a `paths` dict. It does not validate the spec despite adding `openapi-spec-validator`. 
+## Bottom line
 
-That means malformed specs can pass and then fail later in confusing ways.
+This commit is a meaningful step forward and fixes most of the earlier technical blockers. I would still request changes before merging, focused on:
 
-### JSONPath support is incomplete
-
-The hand-rolled `_extract_jsonpath` only supports a narrow subset like:
-
-```text
-$.a.b[0].c
-```
-
-It does not support real JSONPath features:
-
-```text
-$['choices'][0]['message']['content']
-$.entities[*]
-$..text
-filters
-```
-
-Since `jsonpath-ng` was added, use it.
-
-### OpenAPI dereferencing still only supports local refs
-
-`_resolve_openapi_pointer` rejects non-local refs. That may be acceptable for security, but it should be explicit. If the project wants to support arbitrary provider OpenAPI docs, external refs will appear in the wild. 
-
----
-
-## What I would ask the agents to fix next
-
-### Immediate fix list
-
-1. Fix the `transcribe_with_stt_snapshot` function signature.
-2. Fix all `_transcribe_via_http` and `_transcribe_via_openai_cloud` call sites.
-3. Remove `preserved_bearer_token` from STT/LLM admin save flows.
-4. Use the actual libraries that were added:
-
-   * `openapi-spec-validator`
-   * `prance`
-   * `jsonpath-ng`
-5. Wire `segments_path` and `segment_*` fields into runtime response parsing, or remove them for now.
-6. Add focused tests before further UI work.
-
-### Minimum tests to add before considering this done
-
-```text
-1. Import app.services.stt succeeds.
-2. Generic STT config sends model_id/lang rather than model/language.
-3. run_saved_stt_config_test works for OpenAI and generic REST branches.
-4. transcribe_with_stt_snapshot works with old snapshots and new snapshots.
-5. LLM inspect returns fetched/fallback/manual_required states.
-6. STT inspect does not render or preserve bearer tokens.
-7. Admin UI does not include bearer token in hidden fields after inspect.
-8. Migration applies and downgrades.
-```
+1. Replace implicit “blank token” behavior with explicit `credential_action`.
+2. Avoid using default OpenAPI discovery as the only save-time verification for manually configured generic STT.
+3. Remove `preserved_bearer_token` from STT/LLM admin flows.
+4. Decide whether LLM should get the same persisted credential status model as STT.
+5. Run and report the full test suite.

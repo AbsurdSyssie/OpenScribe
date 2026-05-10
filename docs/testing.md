@@ -147,6 +147,9 @@ What it does:
 - hard-delete user removal with transcript/version cascade
 - system-admin STT config provisioning, fetch, inspection, and delete for a selected team
 - STT save-and-inspect duplicate warning before Vault write/provider inspection, confirmed duplicate override, invalid first-add cleanup, partial discovery status, saved-provider re-inspection via Vault reference, and invalid re-inspection clearing active selections
+- explicit provider `credential_action` behavior for keeping and removing STT/LLM Vault-backed credentials
+- manual generic STT save-and-inspect testing the saved runtime contract with bundled synthetic audio instead of default OpenAPI discovery
+- generic REST STT bad replacement token rejection preserving the existing config row, team selection, and saved credential
 - STT OpenAPI inspection inferring provider-specific `model_field_name`/`language_field_name` and runtime sending those saved field names instead of hard-coded `model`/`language`
 - STT OpenAPI inspection validating/dereferencing provider documents through the shared inspection libraries
 - STT response extraction accepting `jsonpath-ng` expressions as well as legacy dot paths
@@ -191,6 +194,7 @@ What it does:
 - selected STT configs with missing saved credentials failing immediately with `stt_config_secret_missing` instead of queueing a doomed job
 - already-running STT jobs surfacing the same `stt_config_secret_missing` message if the saved credential disappears before execution
 - self-hosted `generic_rest` and `openai_compatible_rest` STT configs working without a bearer token when the endpoint does not require auth
+- admin browser defaults keeping optional-token STT and Ollama credential actions away from blank replacement submissions
 - generic REST STT transport failures surfacing distinct connect/timeout/upstream-status error codes instead of flattening them all to `stt_unavailable`
 - timestamped-segment paragraph grouping heuristics for Parakeet-style STT responses
 - whole-file STT responses preferring paragraphized `segments` over flat `text` when timestamped segment data is present

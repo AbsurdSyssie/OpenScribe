@@ -462,6 +462,9 @@ def generated_document_redaction_debug_response(db: Session, document: Generated
 
 
 def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, object]:
+    def default_credential_action(adapter_kind: SttAdapterKind) -> str:
+        return "replace" if adapter_kind is SttAdapterKind.openai_cloud else "keep"
+
     if inspection is not None:
         return {
             "config_id": "",
@@ -485,7 +488,7 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "segment_speaker_field": inspection.segment_speaker_field or "",
             "extra_form_fields_json": json.dumps(inspection.extra_form_fields_json) if inspection.extra_form_fields_json else "",
             "is_active": True,
-            "preserved_bearer_token": "",
+            "credential_action": default_credential_action(inspection.adapter_kind),
         }
     if config is not None:
         return {
@@ -513,7 +516,7 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "segment_speaker_field": config.segment_speaker_field or "",
             "extra_form_fields_json": json.dumps(config.extra_form_fields_json) if config.extra_form_fields_json else "",
             "is_active": config.is_active,
-            "preserved_bearer_token": "",
+            "credential_action": "keep",
         }
     return {
         "config_id": "",
@@ -537,11 +540,14 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         "segment_speaker_field": "",
         "extra_form_fields_json": "",
         "is_active": True,
-        "preserved_bearer_token": "",
+        "credential_action": default_credential_action(SttAdapterKind.generic_rest),
     }
 
 
 def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict[str, object]:
+    def default_credential_action(adapter_kind: LlmAdapterKind) -> str:
+        return "keep" if adapter_kind is LlmAdapterKind.ollama_chat else "replace"
+
     if inspection is not None:
         bedrock_region = bedrock_region_from_base_url(inspection.base_url) if inspection.adapter_kind is LlmAdapterKind.bedrock_chat else ""
         return {
@@ -554,7 +560,7 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             "available_models": inspection.available_models,
             "available_model_options": [option.model_dump(mode="json") for option in inspection.available_model_options],
             "is_active": True,
-            "preserved_bearer_token": "",
+            "credential_action": default_credential_action(inspection.adapter_kind),
         }
     if config is not None:
         bedrock_region = bedrock_region_from_base_url(config.base_url) if config.adapter_kind is LlmAdapterKind.bedrock_chat else ""
@@ -571,7 +577,7 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
                 for model in (config.available_models_json or [])
             ],
             "is_active": config.is_active,
-            "preserved_bearer_token": "",
+            "credential_action": "keep",
         }
     return {
         "config_id": "",
@@ -583,7 +589,7 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
         "available_models": [],
         "available_model_options": [],
         "is_active": True,
-        "preserved_bearer_token": "",
+        "credential_action": default_credential_action(LlmAdapterKind.openai_chat),
     }
 
 

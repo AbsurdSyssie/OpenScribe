@@ -129,8 +129,11 @@ Browser navigation behavior:
 - inspect validates/dereferences OpenAPI documents, then proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
 - runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
+- STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
+- blank `bearer_token` on edit keeps the saved credential only when `credential_action` is `keep`; `remove` clears the DB secret reference and deletes the Vault secret after commit
 - create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
 - create/update with a bearer token stores the secret in Vault, validates/inspects server-side, and records `verified`, `partial`, or rejects invalid credentials with no retained DB row
+- manual `generic_rest` save-time validation uses the saved transcribe path, field names, response path, and bundled synthetic audio sample instead of depending on default OpenAPI discovery
 - saved-provider re-inspection uses `POST /api/v1/stt-configs/{config_id}/inspect` and the saved Vault reference; credential rejection marks the provider `invalid` and clears active STT selections using it
 - old clients that omit STT model/language field names keep `model` and `language` defaults when values are present
 - bearer tokens supplied to standalone inspect are never returned or preserved in hidden browser fields; save-and-inspect tokens are written to Vault and never returned
@@ -156,6 +159,8 @@ Browser navigation behavior:
 - LLM inspect returns `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, fallback, manual-required, and failed discovery states
 - LLM inspect remains scoped to known adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 - saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
+- LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
+- persisted credential status/fingerprint metadata is STT-only in this slice; LLM inspection continues to expose model-discovery status but does not persist an equivalent credential status row
 
 ### Shared NLP endpoint configuration
 

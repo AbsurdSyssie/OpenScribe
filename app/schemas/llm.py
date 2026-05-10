@@ -77,6 +77,7 @@ class LlmConfigUpsert(BaseModel):
     base_url: str = Field(default="", max_length=2048)
     auth_mode: LlmAuthMode = LlmAuthMode.bearer
     bearer_token: str | None = Field(default=None, min_length=1)
+    credential_action: Literal["keep", "replace", "remove"] = "keep"
     bedrock_region: str | None = Field(default=None, max_length=64)
     model_name: str | None = Field(default=None, max_length=255)
     is_active: bool = True

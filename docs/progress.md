@@ -1,5 +1,83 @@
 # Progress
 
+## 2026-05-10 LLM Required Secret Keep Guard
+
+### Scope
+
+- Fixed LLM config edits so `credential_action=keep` cannot switch a no-secret optional adapter into OpenAI/Bedrock without a saved Vault credential.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no architecture blocker; focused tests still show existing dependency/deprecation warnings if emitted.
+
+### Files changed
+
+- `app/services/llm.py`: add early saved-secret guard for OpenAI/Bedrock create/update paths.
+- `tests/test_api.py`: add regression for no-secret Ollama to OpenAI keep edit rejection preserving existing config state.
+- `docs/api.md`, `docs/progress.md`: document required-token `keep` semantics and checkpoint.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "missing_secret_when_switching_llm_to_required_adapter or system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal or system_admin_can_provision_local_ollama_without_secret or system_admin_can_explicitly_remove_saved_ollama_secret"`: passed, 4 tests.
+
+### Documentation
+
+- Updated API behavior docs for `credential_action=keep` on secret-required LLM adapters.
+
+### Risks / assumptions
+
+- Existing saved secret may be kept while switching adapter families; this preserves current behavior and only blocks missing-secret states.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: raw provider secrets are not returned or logged.
+- Ownership rules preserved: system-admin team-scoped LLM provisioning unchanged.
+- Deletion semantics preserved: no deletion path changed.
+- Provider rules preserved: OpenAI/Bedrock configs must retain Vault-backed credential references.
+- Structured-note contract preserved: no structured note changes.
+
+## 2026-05-10 STT Replacement Token Review Fix
+
+### Scope
+
+- Fixed failed `generic_rest` STT replacement-token verification so existing saved configs, active team selections, and prior Vault-backed credentials survive a 401/403 from the candidate token check.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no architecture blocker; focused tests still show existing dependency/deprecation warnings.
+
+### Files changed
+
+- `app/services/stt.py`: rollback existing-config mutations on credential rejection and restore the prior STT bearer token when replacement verification fails.
+- `tests/test_api.py`: add regression coverage for bad generic REST replacement tokens preserving existing config state and selection.
+- `docs/testing.md`, `docs/progress.md`: document the regression coverage and checkpoint.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "generic_stt_bad_replacement_token_preserves_existing_config_and_selection or stt_config_invalid_first_add_removes_db_row_before_vault_cleanup or generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery"`: passed, 3 tests.
+
+### Documentation
+
+- Updated testing and progress docs for STT replacement-token credential lifecycle behavior.
+
+### Risks / assumptions
+
+- Existing STT replacement still writes the candidate token to the current Vault path before provider verification; the fix reads the old token first and restores it on provider credential rejection.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no raw provider secrets are returned or logged.
+- Ownership rules preserved: system-admin team-scoped STT config access unchanged.
+- Deletion semantics preserved: invalid first-add cleanup still deletes the new row only; failed replacement no longer deletes existing configs or dependent selections.
+- Provider rules preserved: credentials remain Vault-backed and old credentials stay usable after a bad replacement token.
+- Structured-note contract preserved: no structured note changes.
+
 ## 2026-05-09 API Inspection Upgrade Completion
 
 ### Scope
@@ -3917,6 +3995,95 @@
 - Ownership rules preserved: activation eligibility check unchanged.
 - Deletion semantics preserved: no delete/cascade behavior changed.
 - Provider rules preserved: no provider selection or fallback behavior changed.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-10 API Inspection Upgrade
+
+### Scope
+
+- Added explicit provider credential actions for STT/LLM save flows.
+- Changed manual generic STT save verification to test the saved runtime contract with bundled synthetic audio instead of default OpenAPI discovery.
+- Removed STT/LLM preserved-token form state and documented STT-only persisted credential status scope.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: full pytest stopped after user said focused suite is sufficient
+
+### Files changed
+
+- `app/schemas/stt.py`, `app/schemas/llm.py`: add request-level `credential_action`.
+- `app/services/stt.py`: explicit keep/replace/remove handling and generic REST sample validation.
+- `app/services/llm.py`: explicit keep/replace/remove handling for LLM secrets.
+- `app/routes/web_admin.py`, `app/web/presentation.py`, `app/templates/admin.html`, `app/templates/admin2.html`: wire browser credential action and remove STT/LLM preserved-token state.
+- `tests/test_api.py`: cover explicit secret removal and generic REST saved-contract validation.
+- `docs/api.md`, `docs/stt-config.md`, `docs/admin_brief.md`, `docs/security.md`, `docs/testing.md`, `docs/progress.md`: update behavior docs.
+
+### Tests
+
+- Added API coverage for STT secret removal, LLM optional-token secret removal, and generic STT saved-contract validation.
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_config or llm_config or generic_stt_save or credential"`: passed, 16 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "stt_config_before_saving or save_stt_config_after_inspect or save_no_auth_stt_config or inspect_and_save_llm_provider or inspect_and_save_bedrock or inspect_and_save_local_ollama or provider_save_errors"`: passed, 7 tests.
+- `.venv/bin/pytest -q`: stopped after user interruption around 52%; no failures seen before stop.
+
+### Documentation
+
+- Documented credential actions, Vault cleanup order, generic STT validation, and LLM/STT status asymmetry.
+
+### Risks / assumptions
+
+- LLM persisted credential status remains intentionally out of scope for this slice; LLM still exposes inspection discovery status only.
+- Generic STT save validation sends only bundled synthetic audio, not patient/transcript content.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no admin route reads transcript-derived content; provider validation uses metadata and bundled synthetic sample only.
+- Ownership rules preserved: provider routes remain system-admin/team-scoped metadata routes.
+- Deletion semantics preserved: credential removal clears DB reference before post-commit Vault cleanup.
+- Provider rules preserved: STT runtime contract fields stay explicit; OpenAI/Bedrock LLM still require saved bearer credentials.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
+## 2026-05-10 Optional Provider Credential Defaults
+
+### Scope
+
+- Fixed admin provider forms so optional-token STT adapters and Ollama LLM default blank saves to `credential_action=keep` instead of `replace`.
+- Kept OpenAI Cloud STT, OpenAI Chat, and Bedrock defaults on token replacement for new required-token providers.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/web/presentation.py`, `app/routes/web_admin.py`: derive inspected form credential action from adapter requirements.
+- `app/templates/admin.html`, `app/templates/admin2.html`: sync credential action when admins choose optional-token adapters.
+- `tests/test_admin_ui.py`: cover optional-token form defaults and template sync.
+- `docs/admin_brief.md`, `docs/stt-config.md`, `docs/testing.md`, `docs/progress.md`: document UI default behavior.
+
+### Tests
+
+- Added focused admin UI regressions for optional-token STT and Ollama forms using `keep` on blank token saves.
+
+### Documentation
+
+- Updated provider credential docs and testing notes.
+
+### Risks / assumptions
+
+- Assumes `credential_action=keep` on a new optional-token provider means no saved credential, matching existing service behavior.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only provider metadata form behavior changed; no transcript-derived content access.
+- Ownership rules preserved: system-admin provider provisioning scope unchanged.
+- Deletion semantics preserved: no deletion or cascade paths changed.
+- Provider rules preserved: required-token providers still require credentials; optional local/self-hosted providers may save without credentials.
 - Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
 
 ## 2026-05-01 Transcribe Copy Review Marker Fix

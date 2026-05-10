@@ -4501,3 +4501,11 @@
 - Deletion semantics preserved: no deletion or cascade path changed.
 - Provider rules preserved: no STT/LLM/de-identification resolution changed.
 - Structured-note contract preserved: EMIS keys and generated-document JSON/content contracts unchanged.
+
+# 2026-05-10 LLM Provider Saved Model Validation
+
+- Implemented saved LLM config edit validation so non-empty saved provider model lists still constrain `model_name` when no fresh discovery runs.
+- Added API regression coverage for unchanged endpoint + kept credential rejecting an unavailable model.
+- Expanded `/admin2?tab=llm` parity assertions for branded provider options, Bedrock region selector, manual fallback copy, and override/reclassification copy.
+- Docs updated in `docs/llm-providers.md`.
+- Architecture checkpoint: no schema change; system-admin LLM provisioning boundary unchanged; no transcript content access; no deletion or encryption/key semantics changed; provider fallback preserved for manual-required/no-model-list state; structured-note contract unaffected.

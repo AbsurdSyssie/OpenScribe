@@ -1577,9 +1577,16 @@ def test_admin2_exposes_admin_lifecycle_and_provider_controls(
     assert 'name="allowed_model_names" value="gpt-4.1-mini"' in llm.text
     assert 'name="provider_preset" data-llm-provider-select' in llm.text
     assert 'value="openrouter" data-default-base-url="https://openrouter.ai/api/v1"' in llm.text
+    assert 'value="xai" data-default-base-url="https://api.x.ai/v1"' in llm.text
+    assert 'value="groq" data-default-base-url="https://api.groq.com/openai/v1"' in llm.text
+    assert 'value="mistral" data-default-base-url="https://api.mistral.ai/v1"' in llm.text
+    assert 'value="deepseek" data-default-base-url="https://api.deepseek.com"' in llm.text
+    assert 'value="together" data-default-base-url="https://api.together.xyz/v1"' in llm.text
     assert 'value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1"' in llm.text
     assert 'name="bedrock_region" data-bedrock-region-input' in llm.text
     assert 'value="custom_openai_compatible" data-default-base-url=""' in llm.text
+    assert "Custom OpenAI-compatible · advanced" in llm.text
+    assert "If discovery cannot load models, enter the exact model ID manually." in llm.text
     assert "may save it as Custom OpenAI-compatible" in llm.text
     assert "Use the region selector for standard Bedrock HTTP gateway endpoints" in llm.text
     assert "non-Mantle endpoint will save this provider as Custom OpenAI-compatible" in llm.text

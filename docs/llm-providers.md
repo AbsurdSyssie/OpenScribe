@@ -43,6 +43,7 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 - `inspection_metadata_json` is service-owned operational metadata. Public save requests cannot set or forge discovery status, warnings, notes, or provider display data.
 - Discovery metadata includes `inspected_at` so stale provider inspection state is visible without exposing secrets or content.
 - Saved-provider re-inspection persists the latest discovery metadata even when discovery fails, without overwriting the previous selectable model list unless new models are returned.
+- Editing a saved provider without replacing its credential still validates the submitted default model against any non-empty saved provider model list. Manual entry remains allowed only when live discovery requires manual fallback and no provider models are available.
 
 ## Secrets
 

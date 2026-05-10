@@ -81,6 +81,7 @@ from app.models import (
 )
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
+from app.schemas import LlmConfigUpsert
 from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -94,6 +95,7 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
+from app.services.llm import upsert_llm_config as upsert_llm_config_service
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
@@ -946,6 +948,8 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
     assert persisted.credential_fingerprint is None
+    assert persisted.credential_status is ProviderCredentialStatus.unknown
+    assert persisted.inspection_metadata_json == {"status": "unknown", "reason": "credential_removed"}
     assert deleted == [str(config.id)]
 
 
@@ -1062,7 +1066,72 @@ def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selecti
     assert persisted.label == "Existing Generic STT"
     assert persisted.vault_secret_ref == old_secret_ref
     assert db_session.get(TeamSttSelection, selection.id) is not None
-    assert written_tokens == ["bad-token", "old-token"]
+    assert written_tokens == []
+    assert deleted_config_ids == []
+
+
+def test_openai_compatible_stt_bad_replacement_token_preserves_existing_config_and_selection(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic OpenAI Compatible Replacement")
+    admin = make_user(email="admin-openai-compatible-stt-replace@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Existing OpenAI Compatible STT",
+        adapter_kind=SttAdapterKind.openai_compatible_rest,
+        base_url="http://127.0.0.1:7000",
+        transcribe_path="/v1/audio/transcriptions",
+        model_name="whisper-1",
+        response_text_path="text",
+        has_secret=True,
+    )
+    old_secret_ref = config.vault_secret_ref
+    selection = make_stt_selection(config=config, actor=admin)
+    written_tokens: list[str] = []
+    deleted_config_ids: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.stt.write_team_stt_bearer_token",
+        lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
+    )
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted_config_ids.append(str(config_id)))
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+
+    login(client, email="admin-openai-compatible-stt-replace@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Replacement OpenAI Compatible STT",
+            "adapter_kind": "openai_compatible_rest",
+            "base_url": "http://127.0.0.1:7000",
+            "transcribe_path": "/v1/audio/transcriptions",
+            "bearer_token": "bad-token",
+            "credential_action": "replace",
+            "model_name": "whisper-1",
+            "file_field_name": "file",
+            "response_text_path": "text",
+            "extra_form_fields_json": {},
+            "is_active": True,
+        },
+    )
+
+    assert_error(updated, status_code=422, code="provider_credential_invalid", message="STT provider rejected the supplied credential")
+    db_session.expire_all()
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is not None
+    assert persisted.label == "Existing OpenAI Compatible STT"
+    assert persisted.vault_secret_ref == old_secret_ref
+    assert db_session.get(TeamSttSelection, selection.id) is not None
+    assert written_tokens == []
     assert deleted_config_ids == []
 
 
@@ -2147,6 +2216,107 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     assert persisted.auth_mode.value == "none"
     assert persisted.vault_secret_ref == ""
     assert deleted == [str(config.id)]
+
+
+def test_llm_secret_remove_deletes_vault_secret_after_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Ollama Remove Ordering")
+    admin = make_user(email="admin-remove-llm-secret-order@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+    events: list[str] = []
+    original_commit = db_session.commit
+
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    login(client, email="admin-remove-llm-secret-order@example.com", password="password-1")
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
+    monkeypatch.setattr(db_session, "commit", lambda: (events.append("commit"), original_commit())[1])
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Local Ollama",
+            "adapter_kind": "ollama_chat",
+            "base_url": "http://localhost:11434",
+            "credential_action": "remove",
+            "model_name": "llama3.2",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert events[-2:] == ["commit", "delete"]
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == ""
+
+
+def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Ollama Commit Failure")
+    admin = make_user(email="admin-remove-llm-secret-commit-fails@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+    original_ref = config.vault_secret_ref
+    deleted: list[str] = []
+
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        upsert_llm_config_service(
+            db_session,
+            admin,
+            LlmConfigUpsert(
+                config_id=config.id,
+                team_id=team.id,
+                label="Local Ollama",
+                adapter_kind=LlmAdapterKind.ollama_chat,
+                base_url="http://localhost:11434",
+                credential_action="remove",
+                model_name="llama3.2",
+                is_active=True,
+            ),
+        )
+
+    assert deleted == []
+    db_session.rollback()
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == original_ref
+
+
+def test_llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Ollama Cleanup Failure")
+    admin = make_user(email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
+
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
+
+    def fail_delete(*, team_id, config_id):
+        raise AppError(502, "vault_unavailable", "Vault unavailable")
+
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fail_delete)
+
+    login(client, email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Local Ollama",
+            "adapter_kind": "ollama_chat",
+            "base_url": "http://localhost:11434",
+            "credential_action": "remove",
+            "model_name": "llama3.2",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    db_session.expire_all()
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == ""
+    assert persisted.auth_mode.value == "none"
 
 
 def test_system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_adapter(client, db_session, make_team, make_user, make_llm_config, monkeypatch):

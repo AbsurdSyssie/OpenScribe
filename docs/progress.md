@@ -1,5 +1,87 @@
 # Progress
 
+## 2026-05-10 OpenAI-Compatible STT Token Validation
+
+### Scope
+
+- Fixed `openai_compatible_rest` STT replacement tokens so save-time validation performs a live bundled-sample transcription before writing the candidate token to Vault.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: focused tests still may show existing dependency/deprecation warnings if emitted.
+
+### Files changed
+
+- `app/services/stt.py`: route `openai_compatible_rest` replacement-token validation through the same saved-contract sample test used by `generic_rest`.
+- `tests/test_api.py`: add regression for rejected OpenAI-compatible replacement token preserving existing config, team selection, and saved secret reference.
+- `docs/api.md`, `docs/stt-config.md`, `docs/testing.md`, `docs/progress.md`: document live sample validation and regression coverage.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "openai_compatible_stt_bad_replacement_token_preserves_existing_config_and_selection or generic_stt_bad_replacement_token_preserves_existing_config_and_selection or generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery"`: passed, 3 tests.
+
+### Documentation
+
+- Updated API, STT config, testing, and progress docs for OpenAI-compatible replacement-token live validation.
+
+### Risks / assumptions
+
+- `openai_compatible_rest` endpoints are expected to accept the known OpenAI-compatible multipart contract at save time; no schema/provider-resolution change.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no raw provider secrets are returned or logged.
+- Ownership rules preserved: system-admin team-scoped STT provisioning unchanged.
+- Deletion semantics preserved: invalid replacement rolls back DB changes and does not write candidate Vault secret.
+- Provider rules preserved: Vault-backed credentials are only replaced after provider live sample acceptance.
+- Structured-note contract preserved: no structured note changes.
+
+## 2026-05-10 API Inspection Credential Hardening
+
+### Scope
+
+- Implemented remaining `API_Inspection_Upgrade.md` hardening: STT replacement credentials validate before Vault replacement, STT remove clears credential-derived state with explicit metadata, LLM remove clears DB references before Vault cleanup, and admin forms explain token non-retention.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: post-commit Vault outage can leave an orphaned LLM secret that is no longer referenced by DB state; cleanup failure is logged for follow-up. Focused tests still show existing dependency/deprecation warnings.
+
+### Files changed
+
+- `app/services/stt.py`: delay STT Vault writes until replacement credential validation succeeds and record credential removal metadata.
+- `app/services/llm.py`: clear LLM DB secret references before deleting Vault secrets, including config deletion.
+- `app/templates/admin.html`: add explicit STT/LLM credential handling copy.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: add/adjust credential lifecycle regressions and admin-template assertions.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document credential lifecycle behavior.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "system_admin_can_explicitly_remove_saved_stt_secret or generic_stt_bad_replacement_token_preserves_existing_config_and_selection or system_admin_can_explicitly_remove_saved_ollama_secret or llm_secret_remove_deletes_vault_secret_after_db_commit or llm_secret_remove_keeps_vault_secret_when_db_commit_fails or llm_secret_remove_still_clears_db_ref_when_post_commit_vault_cleanup_fails or system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_adapter"`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_templates_sync_optional_provider_credential_actions or admin_page_can_inspect_openai_stt_and_render_defaults"`: passed, 1 matching test.
+
+### Documentation
+
+- Updated API and testing docs for LLM post-commit Vault cleanup ordering, STT replacement validation ordering, STT credential removal metadata, and admin token non-retention copy.
+
+### Risks / assumptions
+
+- STT non-credential inspection failures still persist the replacement token and mark `partial`, matching prior partial-save behavior.
+- Post-commit LLM Vault cleanup failures no longer break saved DB references; they can leave unreferenced Vault material until operational cleanup handles the logged event.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: raw provider secrets are not returned or logged.
+- Ownership rules preserved: system-admin team-scoped provider provisioning unchanged.
+- Deletion semantics preserved: explicit credential removal clears DB secret references only after commit succeeds, then deletes Vault secrets with cleanup failure logged.
+- Provider rules preserved: STT/LLM provider credential lifecycle remains Vault-backed and duplicate checks still run before Vault writes.
+- Structured-note contract preserved: no structured note changes.
+
 ## 2026-05-10 LLM Required Secret Keep Guard
 
 ### Scope

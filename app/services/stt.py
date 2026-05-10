@@ -1079,11 +1079,6 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         elif config is not None:
             available_models_json = list(config.available_models_json or [])
 
-    old_bearer_token: str | None = None
-    old_had_secret = bool(config.vault_secret_ref) if config is not None else False
-    if config is not None and replacing_secret and payload.bearer_token and old_had_secret:
-        old_bearer_token = read_team_stt_bearer_token(team_id=team.id, config_id=config.id)
-
     if config is None:
         config = TeamSttConfig(
             id=uuid4(),
@@ -1142,10 +1137,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         db.add(config)
 
     delete_after_commit = False
-    old_config_id = config.id
-    old_team_id = team.id
     if replacing_secret and payload.bearer_token:
-        config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
         config.credential_status = ProviderCredentialStatus.pending_inspection
     elif removing_secret:
         if config.vault_secret_ref:
@@ -1153,7 +1145,10 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.vault_secret_ref = ""
         config.credential_fingerprint = None
         config.credential_status = ProviderCredentialStatus.unknown
-        config.inspection_metadata_json = {}
+        config.inspection_metadata_json = {
+            "status": ProviderCredentialStatus.unknown.value,
+            "reason": "credential_removed",
+        }
     elif payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest} and creating:
         config.vault_secret_ref = ""
         config.credential_fingerprint = None
@@ -1163,7 +1158,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
 
     if replacing_secret and payload.bearer_token:
         try:
-            if payload.adapter_kind is SttAdapterKind.generic_rest:
+            if payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
                 _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
                 inspection = None
             else:
@@ -1174,29 +1169,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 )
         except AppError as exc:
             if _is_credential_rejection(exc):
-                secret_config_id = config.id
-                if creating:
-                    db.delete(config)
-                    db.commit()
-                    try:
-                        delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
-                    except AppError as cleanup_exc:
-                        logger.warning(
-                            "stt_config_invalid_secret_cleanup_failed",
-                            extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
-                        )
-                else:
-                    db.rollback()
-                    try:
-                        if old_bearer_token is not None:
-                            write_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id, bearer_token=old_bearer_token)
-                        elif not old_had_secret:
-                            delete_team_stt_bearer_token(team_id=team.id, config_id=secret_config_id)
-                    except AppError as cleanup_exc:
-                        logger.warning(
-                            "stt_config_invalid_secret_restore_failed",
-                            extra={"config_id": str(secret_config_id), "team_id": str(team.id), "error_code": cleanup_exc.code},
-                        )
+                db.rollback()
                 raise AppError(422, "provider_credential_invalid", "STT provider rejected the supplied credential", {"provider_type": "stt"}) from exc
             config.credential_status = ProviderCredentialStatus.partial
             config.inspection_metadata_json = {"status": "partial", "warning": exc.message, "error_code": exc.code}
@@ -1216,13 +1189,15 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             else:
                 config.credential_status = _inspection_status(inspection, had_secret=True)
                 config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
+        config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+        config.credential_fingerprint = fingerprint
 
     db.commit()
     if delete_after_commit:
         try:
-            delete_team_stt_bearer_token(team_id=old_team_id, config_id=old_config_id)
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
         except AppError as exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(old_config_id), "team_id": str(old_team_id), "error_code": exc.code})
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(config)
     return config
 

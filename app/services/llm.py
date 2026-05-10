@@ -411,10 +411,16 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
     if selection is not None:
         db.delete(selection)
         db.flush()
-    if config.vault_secret_ref:
-        delete_team_llm_bearer_token(team_id=config.team_id, config_id=config.id)
+    delete_after_commit = bool(config.vault_secret_ref)
+    team_id = config.team_id
+    deleted_config_id = config.id
     db.delete(config)
     db.commit()
+    if delete_after_commit:
+        try:
+            delete_team_llm_bearer_token(team_id=team_id, config_id=deleted_config_id)
+        except AppError as exc:
+            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(deleted_config_id), "team_id": str(team_id), "error_code": exc.code})
 
 
 def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:

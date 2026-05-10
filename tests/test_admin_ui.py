@@ -5611,6 +5611,30 @@ def test_admin_templates_sync_optional_provider_credential_actions():
     assert '<option value="keep" selected>keep</option><option value="replace">replace</option>' in admin2_html
 
 
+def test_admin_llm_provider_dropdown_syncs_base_url_and_note():
+    admin_html = Path("app/templates/admin.html").read_text()
+
+    assert "knownDefaultBaseUrls" in admin_html
+    assert "baseUrlInput.dataset.lastDefaultBaseUrl" in admin_html
+    assert "baseUrlInput.value = selected.dataset.defaultBaseUrl;" in admin_html
+    assert "selectedProviderName" in admin_html
+    assert "selected.dataset.defaultBaseUrl" in admin_html
+    assert "Changing this endpoint will save as Custom OpenAI-compatible." in admin_html
+    assert "The official OpenAI chat adapter uses https://api.openai.com/v1." not in admin_html
+
+
+def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, make_user):
+    team = make_team(name="Clinic LLM Brand Defaults")
+    make_user(email="admin-llm-brand-defaults@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-llm-brand-defaults@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&tab=providers")
+
+    assert page.status_code == 200
+    assert '<option value="mistral" data-default-base-url="https://api.mistral.ai/v1"' in page.text
+    assert '<option value="groq" data-default-base-url="https://api.groq.com/openai/v1"' in page.text
+
+
 def test_admin_provider_save_errors_keep_matching_provider_tab(client, make_team, make_user):
     team = make_team(name="Clinic Provider Error Tabs")
     make_user(email="admin-provider-error-tabs@example.com", password="password-1", is_system_admin=True)

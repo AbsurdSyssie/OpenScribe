@@ -1,5 +1,70 @@
 # Progress
 
+## 2026-05-10 LLM Provider Dropdown Base URL Sync
+
+### Scope
+
+- Fixed admin LLM provider dropdown behavior so switching from OpenAI to another branded preset replaces the known default base URL.
+- Updated client note text to describe the selected provider instead of always saying OpenAI for OpenAI-compatible adapters.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/templates/admin.html`: sync known provider default URLs and provider-specific helper note on selection changes.
+- `tests/test_admin_ui.py`: add static/client rendering regressions for preset URL metadata and note sync.
+- `docs/progress.md`: records diagnosis and fix.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "branded_llm_provider_defaults or llm_provider_dropdown_syncs_base_url_and_note or admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key or admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key or admin_page_can_inspect_and_save_local_ollama_provider_without_api_key"`
+- `python3 -m py_compile app/web/presentation.py`
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: UI metadata only.
+- Ownership rules preserved: system-admin-only provider setup unchanged.
+- Deletion semantics preserved: no deletion paths changed.
+- Provider rules preserved: branded presets still map to existing adapters; custom edited endpoints still save as Custom OpenAI-compatible.
+- Structured-note contract preserved: no generated-document behavior changed.
+
+## 2026-05-10 STT Inspect Form Regression Fix
+
+### Scope
+
+- Fixed admin STT inspection rendering after LLM preset work accidentally added LLM-only form fields to `stt_form_defaults`.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: existing focused admin STT inspection regression now passes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/web/presentation.py`: removed LLM provider preset fields from STT form defaults and kept them in LLM form defaults.
+- `docs/progress.md`: records diagnosis and fix.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "inspect_team_stt_config_before_saving or optional_provider_defaults"`
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key or admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key or admin_page_can_inspect_and_save_local_ollama_provider_without_api_key or admin_templates_sync_optional_provider_credential_actions"`
+- `python3 -m py_compile app/web/presentation.py`
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: form metadata only; no transcript-derived content access changed.
+- Ownership rules preserved: system-admin STT inspection remains guarded.
+- Deletion semantics preserved: no deletion paths changed.
+- Provider rules preserved: STT and LLM form defaults remain separate.
+- Structured-note contract preserved: no generated-document behavior changed.
+
 ## 2026-05-10 Branded LLM Provider Presets
 
 ### Scope

@@ -1,5 +1,50 @@
 # Progress
 
+## 2026-05-10 LLM Provider Upgrade Review Patch
+
+### Scope
+
+- Applied verified follow-ups from `LLM_Provider_Upgrade.md`: zero-model live discovery now requires manual model entry, and team LLM selection responses expose selected provider preset/display name.
+- Confirmed `/admin2` provider parity already had explicit regression assertions; no template change needed.
+- Removed stale docs reference to deleted `API_Inspection_Upgrade.md`.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/llm.py`: normalize empty successful discovery to `manual_required` metadata across inspect/save paths.
+- `app/schemas/llm.py`, `app/web/presentation.py`: add selected provider preset/display fields to `LlmSelectionDetail`.
+- `tests/test_api.py`: add zero-model discovery regression and selection response provider-brand assertions.
+- `docs/llm-providers.md`, `docs/provider-credential-combined-flow-plan.md`, `docs/progress.md`: document behavior and remove stale planning-doc reference.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_zero_model_discovery_requires_manual_model or leader_can_choose_and_clear_team_llm_selection or system_admin_can_inspect_bedrock_chat_models or llm_save_validates_model_against_successful_live_discovery"`: passed, 4 tests.
+- `python3 -m py_compile app/services/llm.py app/schemas/llm.py app/web/presentation.py`: passed.
+
+### Documentation
+
+- `docs/llm-providers.md`: documents zero-model discovery fallback and selection provider-brand fields.
+- `docs/provider-credential-combined-flow-plan.md`: replaces obsolete `API_Inspection_Upgrade.md` reference with current provider docs.
+
+### Risks / assumptions
+
+- Empty provider discovery is treated as manual fallback even if endpoint was reachable; this matches review expectation and avoids misleading provider-sourced metadata.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only provider model IDs/metadata touched; no transcript-derived content exposed.
+- Ownership rules preserved: system-admin provisioning and team-scoped selection unchanged.
+- Deletion semantics preserved: no transcript/provider deletion behavior changed.
+- Provider rules preserved: Vault-backed secret handling unchanged; manual fallback is explicit admin-supplied model.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 LLM Provider Preset Hardening
 
 ### Scope

@@ -34,6 +34,7 @@ For Bedrock HTTP gateway, use the region selector for standard `bedrock-mantle.<
 Model lists come from live discovery. OpenScribe no longer supplies built-in LLM model fallback lists for failed discovery.
 
 - Successful discovery stores provider-returned models in `available_models_json`.
+- Successful discovery that returns zero compatible chat models is treated as `manual_required`, not `fetched`, so admins must enter an explicit model name before save.
 - When successful discovery returns models, the saved `model_name` must be one of those discovered models. If no model is submitted, OpenScribe uses the first discovered model.
 - Failed discovery returns `manual_required` and allows a system admin to enter a model name manually. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
 - Save without a model name remains invalid.
@@ -42,6 +43,7 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 - Mistral and Together AI discovery uses provider metadata before accepting models. Mistral keeps non-archived records with `capabilities.completion_chat=true`; Together keeps `chat`, `language`, and `code` model types.
 - `inspection_metadata_json` is service-owned operational metadata. Public save requests cannot set or forge discovery status, warnings, notes, or provider display data.
 - Discovery metadata includes `inspected_at` so stale provider inspection state is visible without exposing secrets or content.
+- Team LLM selection responses include the selected provider preset and display name so leader/user UI can show the provider brand without exposing credentials.
 - Saved-provider re-inspection persists the latest discovery metadata even when discovery fails, without overwriting the previous selectable model list unless new models are returned.
 - Editing a saved provider without replacing its credential still validates the submitted default model against any non-empty saved provider model list. Manual entry remains allowed only when live discovery requires manual fallback and no provider models are available.
 

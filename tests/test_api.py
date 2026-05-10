@@ -2423,6 +2423,48 @@ def test_llm_save_rejects_missing_model_when_discovery_fails(client, make_team, 
     )
 
 
+def test_llm_zero_model_discovery_requires_manual_model(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Empty Discovery")
+    make_user(email="admin-llm-empty-discovery@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", lambda **kwargs: [])
+
+    login(client, email="admin-llm-empty-discovery@example.com", password="password-1")
+    inspected = client.post(
+        "/api/v1/llm-configs/inspect",
+        json={"team_id": str(team.id), "provider_preset": "openrouter", "bearer_token": "router-key"},
+    )
+
+    assert inspected.status_code == 200
+    body = inspected.json()
+    assert body["available_models"] == []
+    assert body["available_model_options"] == []
+    assert body["discovery_status"] == "manual_required"
+    assert body["default_model_source"] == "manual"
+    assert body["warnings"] == ["No compatible chat models were returned. Enter a model name manually."]
+
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Empty Router",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "model_name": "manual/router-model",
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    created_body = created.json()
+    assert created_body["available_models_json"] == ["manual/router-model"]
+    assert created_body["inspection_metadata_json"]["discovery_status"] == "manual_required"
+    assert created_body["inspection_metadata_json"]["default_model_source"] == "manual"
+    assert created_body["inspection_metadata_json"]["manual_model_name"] == "manual/router-model"
+    config = db_session.get(TeamLlmConfig, UUID(created_body["id"]))
+    assert config is not None
+    assert config.inspection_metadata_json["warnings"] == ["No compatible chat models were returned. Enter a model name manually."]
+
+
 def test_system_admin_can_provision_local_ollama_without_secret(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -3026,6 +3068,8 @@ def test_leader_can_choose_and_clear_team_llm_selection(client, db_session, make
     assert selected.status_code == 200
     body = selected.json()
     assert body["llm_config_id"] == str(config.id)
+    assert body["selected_config_provider_preset"] == "openai"
+    assert body["selected_config_provider_display_name"] == "OpenAI"
     assert body["resolved_model_name"] == "gpt-4.1-mini"
     assert body["allowed_models_json"] == ["gpt-4o-mini", "gpt-4.1-mini"]
 

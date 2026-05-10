@@ -1723,6 +1723,7 @@ def test_admin_llm_check_key_creates_draft_and_redirects_to_model_step(
         "/admin/llm-configs/drafts",
         data={
             "team_id": str(team.id),
+            "label": "Admin Router",
             "provider_preset": "openrouter",
             "base_url": "",
             "bearer_token": "ui-secret",
@@ -1737,7 +1738,48 @@ def test_admin_llm_check_key_creates_draft_and_redirects_to_model_step(
     assert saved is not None
     assert saved.setup_status == LlmConfigSetupStatus.pending_model_selection
     assert saved.model_name is None
+    assert saved.label == "Admin Router"
     assert f"llm_config_id={saved.id}" in created.headers["location"]
+
+
+def test_admin_llm_bad_key_stays_on_credential_step_without_ready_state(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Bad Key UI")
+    make_user(email="admin-llm-bad-key-ui@example.com", password="password-1", is_system_admin=True)
+
+    def reject_key(**kwargs):
+        raise AppError(401, "llm_invalid_credential", "The API key was rejected by the provider.")
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", reject_key)
+    client.post("/login", data={"email": "admin-llm-bad-key-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.post(
+        "/admin/llm-configs/drafts",
+        data={"team_id": str(team.id), "label": "Bad Router", "provider_preset": "openrouter", "base_url": "", "bearer_token": "bad-key"},
+    )
+
+    assert response.status_code == 401
+    assert "The API key was rejected by the provider. Check the key and try again." in response.text
+    assert "Check API key and find models" in response.text
+    assert "Ready · unavailable" not in response.text
+    assert "Setup incomplete" not in response.text
+    assert db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)) is None
+
+
+def test_admin_llm_manual_model_step_shows_discovery_warning(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Manual Warning UI")
+    make_user(email="admin-llm-manual-warning-ui@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda *, base_url, bearer_token: [])
+
+    client.post("/login", data={"email": "admin-llm-manual-warning-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    draft = client.post(
+        "/admin/llm-configs/drafts",
+        data={"team_id": str(team.id), "provider_preset": "ollama", "base_url": "http://localhost:11434"},
+        follow_redirects=False,
+    )
+    assert draft.status_code == 303
+    saved = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved.id}")
+
+    assert "Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong." in page.text
 
 
 def test_admin2_llm_new_provider_uses_draft_button(client, make_team, make_user):

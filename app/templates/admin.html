@@ -1680,6 +1680,9 @@
           {% endif %}
           <label>
             Model
+            {% if is_llm_pending_form and not llm_form.available_model_options %}
+            <p><small>Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong.</small></p>
+            {% endif %}
             {% if llm_form.available_model_options %}
             <select name="provider_model">
               {% for model in llm_form.available_model_options %}

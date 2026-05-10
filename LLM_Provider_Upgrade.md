@@ -1,740 +1,340 @@
-Current repo state
+Backend fix
 
-The branch already added:
+Add a clearer inspection error classification.
 
-LlmProviderPreset with the agreed provider set.
-provider_preset and inspection_metadata_json on TeamLlmConfig.
-Branded provider defaults and Bedrock HTTP region helpers.
-Model discovery and manual fallback.
-System-admin-only provisioning.
-Vault-backed credential storage.
+Right now the low-level OpenAI-compatible model discovery wraps every exception as:
 
-The current LlmConfigUpsert still expects a label/model-oriented save payload, and LlmConfigDetail has no setup status yet.
+raise AppError(502, "llm_inspection_failed", "Could not load available models")
 
-The current service upsert still requires a model_name before a config can be persisted, which conflicts with the desired wizard state where the API key is saved before model selection.
+Change it to preserve auth failures:
 
-The current selectable config query only filters by is_active=True, so it must be tightened to exclude setup drafts.
+from openai import APIStatusError, AuthenticationError, PermissionDeniedError
 
-Goal
+def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        models_page = client.models.list()
+    except (AuthenticationError, PermissionDeniedError) as exc:
+        raise AppError(
+            401,
+            "llm_invalid_credential",
+            "The API key was rejected by the provider.",
+            {"provider_status": getattr(exc, "status_code", None)},
+        ) from exc
+    except APIStatusError as exc:
+        if exc.status_code in {401, 403}:
+            raise AppError(
+                401,
+                "llm_invalid_credential",
+                "The API key was rejected by the provider.",
+                {"provider_status": exc.status_code},
+            ) from exc
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available models from the provider.",
+            {"provider_status": exc.status_code},
+        ) from exc
+    except Exception as exc:
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available models from the provider.",
+        ) from exc
 
-Change admin provider setup from a single dense form into a stateful wizard:
+    ...
 
-Choose provider
-→ Enter key / endpoint details
-→ Check API key and find models
-→ Create draft config and save key to Vault
-→ Select default model
-→ Edit provider label
-→ Toggle “Available for team selection”
-→ Save provider
+Then in inspect_llm_contract() / create_llm_config_draft():
 
-The API key must not be returned to the browser or carried in hidden inputs after inspection.
+try:
+    inspection = inspect_llm_contract(...)
+except AppError as exc:
+    if exc.code == "llm_invalid_credential":
+        raise
+    ...
 
-Locked UX behavior
-First step
+Do not convert llm_invalid_credential into manual_required.
 
-Show only the relevant fields:
+UI fix
 
-Team
+If key is invalid, show:
+
+The API key was rejected by the provider. Check the key and try again.
+
+Keep the admin on the first step:
+
 Provider
 API key
 [Check API key and find models]
 
-Provider-specific additions:
+Do not show model selection. Do not create a draft.
 
-Ollama:
-Team
-Provider
-Base URL
-[Check API key and find models]
+Issue 2: failed discovery saved as “Ready · unavailable”
 
-Bedrock HTTP gateway:
-Team
-Provider
-Region
-API key
-[Check API key and find models]
+This should not happen automatically after a bad key.
 
-Custom OpenAI-compatible:
-Team
-Provider
-Base URL
-API key
-[Check API key and find models]
-After successful discovery
+Correct states
+State	Meaning
+pending_model_selection	Credential/setup incomplete; not selectable
+ready + is_active=true	Ready · available
+ready + is_active=false	Ready · unavailable
 
-Hide the API key field. Show:
+If the key is bad, the config should not reach ready.
 
-Provider: OpenRouter
-Credential: saved
-Provider name: [OpenRouter · Clinic North]
-Default model: [model dropdown]
-Available for team selection: [x]
-[Save provider]
-[Replace API key]
-[Delete incomplete setup]
-If discovery fails or returns zero models
+Fix
 
-Show:
+For auth failure:
 
-Could not find models.
-[Try again]
-[Enter model manually]
+No config created
+No Vault secret written
+No Ready state
 
-If admin chooses manual entry:
+For non-auth discovery failure where manual entry is allowed:
 
-Model name
-Provider name
-Available for team selection
-[Save provider]
-Provider list states
+Draft created only after explicit manual path
+setup_status = pending_model_selection
+is_active = false
 
-Show provider configs in these states:
+Only final save should set:
 
-Setup incomplete
-Ready · available
-Ready · unavailable
+setup_status = LlmConfigSetupStatus.ready
 
-Pending providers must be visible to system admins but unavailable to team leaders/users.
+If manual model save is allowed after a non-auth discovery failure, the UI must show a warning above the final save:
 
-Data model changes
-Add setup status enum
+Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong.
+Issue 3: user-entered label overwritten by default label
+Current problem
 
-Add to app/models.py:
+create_llm_config_draft() auto-generates the label:
 
-class LlmConfigSetupStatus(str, enum.Enum):
-    pending_model_selection = "pending_model_selection"
-    ready = "ready"
+label=default_llm_config_label(...)
 
-Add to TeamLlmConfig:
+That is fine only if the user has not supplied a label. But your intended UX now includes an admin-entered label during adding time, so the backend must preserve it.
 
-setup_status: Mapped[LlmConfigSetupStatus] = mapped_column(
-    Enum(LlmConfigSetupStatus),
-    default=LlmConfigSetupStatus.ready,
-    server_default=LlmConfigSetupStatus.ready.value,
-    nullable=False,
-)
-Migration
+Schema fix
 
-Create a new Alembic migration after the provider preset migration.
-
-Migration behavior:
-
-ALTER TABLE team_llm_configs
-ADD COLUMN setup_status VARCHAR/ENUM NOT NULL DEFAULT 'ready';
-
-Backfill rule:
-
-model_name IS NULL -> pending_model_selection
-model_name exists  -> ready
-
-If using SQLAlchemy enum, align with existing enum migration style. If avoiding a DB enum, use a string column and Python enum validation.
-
-Recommended if the project tolerates string status fields:
-
-op.add_column(
-    "team_llm_configs",
-    sa.Column(
-        "setup_status",
-        sa.String(length=64),
-        nullable=False,
-        server_default="ready",
-    ),
-)
-op.execute(
-    """
-    UPDATE team_llm_configs
-    SET setup_status = CASE
-        WHEN model_name IS NULL THEN 'pending_model_selection'
-        ELSE 'ready'
-    END
-    """
-)
-op.create_index(
-    "ix_team_llm_configs_setup_status",
-    "team_llm_configs",
-    ["setup_status"],
-)
-op.alter_column("team_llm_configs", "setup_status", server_default=None)
-Schema changes
-Extend LlmConfigDetail
-
-Add:
-
-setup_status: LlmConfigSetupStatus
-
-Also consider adding display-only fields:
-
-provider_display_name: str
-setup_status_label: str | None = None
-
-The display fields are optional, but useful for admin templates.
-
-Add draft request/response schemas
-
-Add:
+Add optional label to draft creation:
 
 class LlmConfigDraftCreate(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
     team_id: UUID
     provider_preset: LlmProviderPreset = LlmProviderPreset.openai
+    label: str | None = Field(default=None, min_length=1, max_length=255)
     base_url: str = Field(default="", max_length=2048)
     bearer_token: str | None = Field(default=None, min_length=1)
     bedrock_region: str | None = Field(default=None, max_length=64)
+Service fix
 
-Response can reuse LlmConfigDetail plus inspection result, or define a specific result:
+Use admin label if supplied:
 
-class LlmConfigDraftCreateResult(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
-    config: LlmConfigDetail
-    provider_display_name: str
-    available_models: list[str]
-    available_model_options: list[LlmModelOption]
-    discovery_status: Literal["fetched", "manual_required", "failed"]
-    default_model_source: Literal["provider", "manual", "none"]
-    warnings: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-Add finalize request schema
-class LlmConfigFinalize(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
-    team_id: UUID
-    config_id: UUID
-    label: str = Field(min_length=1, max_length=255)
-    model_name: str = Field(min_length=1, max_length=255)
-    is_active: bool = True
-Add key replacement request schema
-class LlmConfigDraftReplaceCredential(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
-    team_id: UUID
-    config_id: UUID
-    bearer_token: str = Field(min_length=1)
-
-This should re-run discovery and keep the config in pending_model_selection.
-
-Service changes
-Add helper: auto-label provider
-
-Add in llm_presets.py or llm.py:
-
-def default_llm_config_label(*, provider_display_name: str, team_name: str) -> str:
-    return f"{provider_display_name} · {team_name}"
-Add helper: build draft config
-
-Create a service function:
-
-def create_llm_config_draft(
-    db: Session,
-    actor: User,
-    payload: LlmConfigDraftCreate,
-) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
-    ...
-
-Behavior:
-
-Require system admin.
-Resolve team.
-Apply provider defaults.
-Reclassify branded base URL overrides to custom_openai_compatible.
-Resolve preset/adapter/base URL.
-Validate credential requirements.
-Run model discovery.
-Create TeamLlmConfig with:
-auto label
-setup_status=pending_model_selection
-is_active=False
-model_name=None
-available_models_json=discovered models
-inspection_metadata_json=inspection metadata
-vault_secret_ref=pending initially if needed
-Flush to get config ID.
-Write credential to Vault if supplied.
-Commit.
-Return config + inspection result.
-Never return raw secret.
-
-Pseudo-code:
-
-def create_llm_config_draft(db, actor, payload):
-    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-
-    provider_preset, adapter_kind, base_url, region = apply_provider_defaults(
-        provider_preset=payload.provider_preset,
-        base_url=payload.base_url,
-        bedrock_region=payload.bedrock_region,
-    )
-    provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
-    preset = get_llm_provider_preset(provider_preset)
-    adapter_kind = preset.adapter_kind
-
-    if preset.requires_bearer_token and not payload.bearer_token:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "This LLM provider requires an API key",
-            {"field": "bearer_token"},
-        )
-
-    inspection = inspect_llm_contract(db, actor, LlmInspectRequest(
-        team_id=team.id,
-        provider_preset=provider_preset,
-        adapter_kind=adapter_kind,
-        base_url=base_url,
-        bearer_token=payload.bearer_token,
-        bedrock_region=region,
-    ))
-
-    config = TeamLlmConfig(
-        id=uuid4(),
-        team_id=team.id,
-        label=default_llm_config_label(
-            provider_display_name=preset.display_name,
-            team_name=team.name,
-        ),
-        provider_preset=provider_preset,
-        adapter_kind=adapter_kind,
-        base_url=base_url,
-        auth_mode=LlmAuthMode.bearer if preset.requires_bearer_token else LlmAuthMode.none,
-        model_name=None,
-        available_models_json=list(inspection.available_models),
-        inspection_metadata_json=_inspection_metadata(inspection),
-        vault_secret_ref="pending" if payload.bearer_token else "",
-        setup_status=LlmConfigSetupStatus.pending_model_selection,
-        is_active=False,
-        created_by_user_id=actor.id,
-        updated_by_user_id=actor.id,
-    )
-    db.add(config)
-    db.flush()
-
-    if payload.bearer_token:
-        config.vault_secret_ref = write_team_llm_bearer_token(
-            team_id=team.id,
-            config_id=config.id,
-            bearer_token=payload.bearer_token,
-        )
-
-    db.commit()
-    db.refresh(config)
-    return config, inspection
-Add helper: finalize draft
-def finalize_llm_config_draft(
-    db: Session,
-    actor: User,
-    payload: LlmConfigFinalize,
-) -> TeamLlmConfig:
-    ...
-
-Behavior:
-
-Require system admin.
-Load config by team/config.
-Allow only if setup_status=pending_model_selection, or optionally allow re-finalizing ready configs.
-Require model name.
-If available_models_json is non-empty, selected model must be in it.
-If available_models_json is empty and model supplied manually, store [model_name].
-Set:
-label
-model_name
-setup_status=ready
-is_active=payload.is_active
-inspection_metadata_json.manual_model_name if manual
-Commit.
-
-Pseudo-code:
-
-def finalize_llm_config_draft(db, actor, payload):
-    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    config = _get_admin_llm_config_for_team(db, team.id, payload.config_id)
-
-    if _llm_config_has_in_flight_jobs(db, config_id=config.id):
-        raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing")
-
-    model_name = payload.model_name.strip()
-    available = list(config.available_models_json or [])
-
-    if available and model_name not in available:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "Selected model is not available for this provider",
-            {"field": "model_name"},
-        )
-
-    if not available:
-        available = [model_name]
-        metadata = dict(config.inspection_metadata_json or {})
-        metadata["manual_model_name"] = model_name
-        metadata["discovery_status"] = "manual_required"
-        metadata["default_model_source"] = "manual"
-        config.inspection_metadata_json = metadata
-
-    config.label = payload.label.strip()
-    config.model_name = model_name
-    config.available_models_json = available
-    config.setup_status = LlmConfigSetupStatus.ready
-    config.is_active = payload.is_active
-    config.updated_by_user_id = actor.id
-
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
-Add helper: replace draft credential
-def replace_llm_config_draft_credential(
-    db: Session,
-    actor: User,
-    payload: LlmConfigDraftReplaceCredential,
-) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
-    ...
-
-Behavior:
-
-Require system admin.
-Load config.
-Re-run inspection using saved provider/base URL and new key.
-Write new key to Vault.
-Store new discovered models.
-Clear model_name if it is no longer in returned models.
-Set setup_status=pending_model_selection.
-Set is_active=False.
-Commit.
-Return config + inspection.
-Modify existing upsert_llm_config
-
-Keep it for existing edit/full-form behavior, but make it setup-aware:
-
-If creating through old upsert with model_name, create as ready.
-If editing ready configs, preserve current behavior.
-Do not use old upsert for the new first wizard step.
-Reject setting setup_status=ready without model.
-Do not allow is_active=True unless setup_status=ready.
-Modify selectable config query
-
-Current selectable query only filters active configs. Tighten it:
-
-stmt = (
-    select(TeamLlmConfig)
-    .where(
-        TeamLlmConfig.team_id == team.id,
-        TeamLlmConfig.is_active.is_(True),
-        TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-        TeamLlmConfig.model_name.is_not(None),
-    )
-    .order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
+raw_label = (payload.label or "").strip()
+label = raw_label or default_llm_config_label(
+    provider_display_name=inspection.provider_display_name,
+    team_name=team.name,
 )
 
-Also apply the same guard in set_team_llm_selection, so a caller cannot select a pending config by ID.
+Then save:
 
-Modify delete behavior
+label=label
 
-Existing delete already deletes the config and then cleans up the Vault secret. Reuse it for:
+On finalize, keep allowing label edit:
 
-Delete incomplete setup
-Cancel setup
+config.label = payload.label.strip()
 
-Keep the in-flight job guard for ready configs. Pending drafts should not have in-flight jobs, but the existing guard is safe.
+The draft and finalize routes should both validate uniqueness.
 
-API route changes
+Issue 4: label names are not unique
 
-Add these JSON API routes:
+You do not want duplicate LLM config labels per team. Add a DB-level uniqueness rule and service-level friendly error.
 
-POST /api/v1/llm-configs/drafts
-POST /api/v1/llm-configs/{config_id}/finalize
-POST /api/v1/llm-configs/{config_id}/replace-credential
-DELETE /api/v1/llm-configs/{config_id}
+Data rule
 
-The delete route already exists; reuse it for deleting incomplete setup.
+Recommended uniqueness:
 
-Draft create route
-@api.post("/llm-configs/drafts", response_model=LlmConfigDraftCreateResult)
-def create_llm_config_draft_route(...):
-    config, inspection = create_llm_config_draft_service(db, context.user, payload)
-    return LlmConfigDraftCreateResult(
-        config=llm_config_response(config),
-        provider_display_name=inspection.provider_display_name,
-        available_models=inspection.available_models,
-        available_model_options=inspection.available_model_options,
-        discovery_status=inspection.discovery_status,
-        default_model_source=inspection.default_model_source,
-        warnings=inspection.warnings,
-        notes=inspection.notes,
+A team cannot have two LLM configs with the same label, case-insensitively, ignoring surrounding whitespace.
+
+Examples that should conflict:
+
+OpenRouter
+openrouter
+ OpenRouter 
+Migration
+
+Add a normalized unique index:
+
+op.create_index(
+    "uq_team_llm_configs_team_label_lower",
+    "team_llm_configs",
+    ["team_id"],
+    unique=True,
+    postgresql_where=None,
+    postgresql_ops={},
+)
+
+For expression index, use:
+
+op.create_index(
+    "uq_team_llm_configs_team_label_lower",
+    "team_llm_configs",
+    ["team_id", sa.text("lower(trim(label))")],
+    unique=True,
+)
+
+Depending on the project’s Alembic conventions, this may need raw SQL:
+
+op.execute(
+    """
+    CREATE UNIQUE INDEX uq_team_llm_configs_team_label_lower
+    ON team_llm_configs (team_id, lower(trim(label)))
+    """
+)
+
+Downgrade:
+
+op.execute("DROP INDEX IF EXISTS uq_team_llm_configs_team_label_lower")
+Existing duplicate backfill
+
+Before creating the index, dedupe existing rows.
+
+Use a deterministic rename like:
+
+OpenRouter
+OpenRouter copy 2
+OpenRouter copy 3
+
+Pseudo-SQL approach:
+
+WITH ranked AS (
+    SELECT
+        id,
+        label,
+        ROW_NUMBER() OVER (
+            PARTITION BY team_id, lower(trim(label))
+            ORDER BY created_at, id
+        ) AS rn
+    FROM team_llm_configs
+)
+UPDATE team_llm_configs c
+SET label = c.label || ' copy ' || ranked.rn
+FROM ranked
+WHERE c.id = ranked.id
+AND ranked.rn > 1;
+
+Better Python migration may be safer if you want to avoid second-order collisions like an existing OpenRouter copy 2.
+
+Service validation
+
+Add helper:
+
+def _ensure_unique_llm_config_label(
+    db: Session,
+    *,
+    team_id: UUID,
+    label: str,
+    current_config_id: UUID | None = None,
+) -> None:
+    normalized = label.strip().lower()
+    stmt = select(TeamLlmConfig.id).where(
+        TeamLlmConfig.team_id == team_id,
+        func.lower(func.trim(TeamLlmConfig.label)) == normalized,
     )
-Finalize route
-@api.post("/llm-configs/{config_id}/finalize", response_model=LlmConfigDetail)
-def finalize_llm_config_draft_route(config_id: UUID, payload: LlmConfigFinalize, ...):
-    payload = payload.model_copy(update={"config_id": config_id})
-    config = finalize_llm_config_draft_service(db, context.user, payload)
-    return llm_config_response(config)
-Replace key route
-@api.post("/llm-configs/{config_id}/replace-credential", response_model=LlmConfigDraftCreateResult)
-def replace_llm_config_draft_credential_route(...):
-    ...
-Browser/admin route changes
+    if current_config_id is not None:
+        stmt = stmt.where(TeamLlmConfig.id != current_config_id)
 
-Add equivalent form routes if admin UI is server-rendered:
+    if db.scalar(stmt.limit(1)) is not None:
+        raise AppError(
+            409,
+            "conflict",
+            "An LLM provider with this name already exists for this team.",
+            {"field": "label"},
+        )
 
-POST /admin/llm-configs/drafts
-POST /admin/llm-configs/{config_id}/finalize
-POST /admin/llm-configs/{config_id}/replace-credential
-POST /admin/llm-configs/{config_id}/delete
-Draft route behavior
+Call it from:
 
-On submit:
+create_llm_config_draft
+finalize_llm_config_draft
+upsert_llm_config
 
-Create draft.
-Redirect to admin LLM tab with llm_config_id=<draft_id>.
-Render model selection state.
-Do not repopulate API key.
-Finalize route behavior
+Also catch DB IntegrityError as a final guard.
 
-On submit:
 
-Finalize draft.
-Redirect to provider list.
-Show “Provider saved.”
-Replace credential behavior
+1. Invalid API key handling
+Distinguish invalid credentials from generic discovery failure.
+For OpenAI-compatible providers, map provider 401/403/auth exceptions to:
+code = llm_invalid_credential
+status = 401
+message = The API key was rejected by the provider.
+Do not convert llm_invalid_credential to manual_required.
+Do not create a draft config for invalid credentials.
+Do not write invalid credentials to Vault.
+Admin UI should show the key error and stay on the credential step.
+2. Manual model warning
 
-On click:
+For non-auth discovery failures or zero-model discovery:
 
-Show key-entry step for the existing draft/config.
-After submit, rediscover models and return to model-selection step.
-Presentation changes
-Extend llm_config_response
+Show clear warning text before manual model entry.
+Make manual entry an explicit user action.
+Keep draft as pending_model_selection until final save.
+Only final save may set setup_status=ready.
 
-Add:
+Suggested copy:
 
-setup_status=config.setup_status
-
-Optionally:
-
-provider_display_name=get_llm_provider_preset(config.provider_preset).display_name
-Extend llm_form_defaults
-
-Current llm_form_defaults() already passes provider presets and Bedrock regions into templates. Extend it with:
-
-"setup_status": config.setup_status.value if config else "",
-"has_secret": bool(config.vault_secret_ref) if config else False,
-"is_setup_incomplete": config.setup_status is LlmConfigSetupStatus.pending_model_selection if config else False,
-"show_credential_step": config is None or replace_credential_mode,
-"show_model_step": config is not None and config.setup_status is LlmConfigSetupStatus.pending_model_selection,
-"can_finalize": config is not None and config.setup_status is LlmConfigSetupStatus.pending_model_selection,
-Provider list rendering
-
-For each LLM config:
-
-if setup_status == pending_model_selection:
-    badge = "Setup incomplete"
-    actions = Continue setup, Delete incomplete setup
-elif is_active:
-    badge = "Ready · available"
-else:
-    badge = "Ready · unavailable"
-Admin template changes
-
-Apply to both admin.html and admin2.html.
-
-New state structure
-
-The LLM setup panel should render one of three states.
-
-State A: no selected config / new provider
-
-Fields:
-
-Team
-Provider
-Provider-specific endpoint fields
-API key if needed
-[Check API key and find models]
-
-Hide:
-
-Label
-Model selection
-Available for team selection
-Save provider
-State B: pending draft / model selection
-
-Fields:
-
-Provider summary
-Credential: saved
-Provider name
-Model dropdown if available models exist
-Manual model button/field if manual_required
-Available for team selection
-[Save provider]
-[Replace API key]
-[Delete incomplete setup]
-
-Hide:
-
-API key field
-Check API key and find models button
-State C: ready config edit
-
-Fields:
-
-Provider summary
-Provider name
-Default model
-Available for team selection
-[Save changes]
-[Replace API key]
-[Delete]
-
-Do not require re-entering API key.
-
-Button copy
-
-Use exactly:
-
-Check API key and find models
-Save provider
-Continue setup
-Delete incomplete setup
-Replace API key
-Available for team selection
-Setup incomplete
-Ready · available
-Ready · unavailable
-Manual model UI
-
-If discovery_status=manual_required and no available_models:
-
-Initial display:
-
-No compatible models were returned.
-[Try again]
-[Enter model manually]
-
-After “Enter model manually”:
-
-Model name
-Provider name
-Available for team selection
-[Save provider]
-
-No built-in model suggestions.
-
-Validation rules
-Draft creation
-System admin only.
-Team required.
-Credential required unless provider does not require one.
-Base URL required after preset defaults.
-Remote base URLs must use HTTPS, except local/private/localish endpoints as currently allowed by schema validation.
-For Bedrock HTTP, region must normalize through existing helper.
-Store key in Vault.
-Never return key.
-Finalization
-System admin only.
-Config must belong to team.
-Model required.
-If available_models_json exists, model must be in that list.
-If no models exist because discovery failed/zeroed, manual model is accepted and stored as [model_name].
-Finalized config becomes setup_status=ready.
-is_active comes from “Available for team selection.”
-Finalization does not set team active LLM selection.
-Selection
-Team leaders/users cannot select pending providers.
-Both list and set endpoints must enforce:
-setup_status == ready
-is_active == true
-model_name is not null
-Tests to add
+OpenScribe could not discover models from this provider. You can enter a model name manually, but generation may fail if the endpoint, key, or model name is wrong.
+3. Preserve admin-entered label
+Add optional label to LlmConfigDraftCreate.
+Include label in the admin draft form.
+In create_llm_config_draft, use the submitted label if present.
+Fall back to the default generated label only when no label is supplied.
+Continue allowing label edit on final save.
+4. Enforce unique labels per team
+Add case-insensitive, trim-normalized uniqueness for LLM config labels per team.
+Dedupe existing rows in the migration before adding the index.
+Add service-level validation in draft create, finalize, and legacy upsert.
+Return friendly error:
+An LLM provider with this name already exists for this team.
+5. Tests to add
+API/service tests
+- invalid provider API key returns llm_invalid_credential
+- invalid key does not create TeamLlmConfig
+- invalid key does not write Vault secret
+- failed non-auth discovery still allows explicit manual model flow
+- draft create preserves supplied label
+- draft create falls back to generated label when label omitted
+- duplicate label in same team is rejected on draft create
+- duplicate label in same team is rejected on finalize rename
+- same label in different teams is allowed
+- label uniqueness is case-insensitive and trim-normalized
 Migration tests
-- setup_status column exists on team_llm_configs
-- existing configs with model_name are backfilled as ready
-- existing configs without model_name are backfilled as pending_model_selection
-- setup_status index exists if added
-Service/API tests
-- system admin can create LLM draft after successful discovery
-- draft writes credential to Vault
-- draft response has has_secret=true but does not expose key
-- draft has setup_status=pending_model_selection
-- draft has model_name=None
-- draft is_active=false
-- draft stores all discovered models
-- draft is not returned from selectable LLM configs
-- team leader cannot select draft config by ID
-- finalize draft with discovered model sets setup_status=ready
-- finalized active config appears in selectable list
-- finalized inactive config does not appear in selectable list
-- zero-model discovery creates draft with manual_required metadata
-- failed discovery allows manual model finalize
-- manual model finalize stores available_models_json=[manual_model]
-- deleting incomplete setup deletes Vault secret
-- replace credential re-runs discovery and keeps setup_status=pending_model_selection
-- continue setup can render/use saved credential without re-entering key
+- duplicate existing LLM config labels are deduped before unique index creation
+- unique normalized team/label index exists
 Admin UI tests
-- new provider setup shows provider/API key step only
-- model selection hidden before draft exists
-- Check API key and find models creates draft and redirects to model step
-- API key field hidden after draft exists
-- pending config card shows Setup incomplete
-- pending config card has Continue setup and Delete incomplete setup
-- Continue setup skips API key step
-- Replace API key action is visible
-- final save shows Save provider and creates Ready state
-- ready active provider shows Ready · available
-- ready inactive provider shows Ready · unavailable
-- /admin and /admin2 have parity for the LLM flow
-Suggested implementation sequence
-Step 1 — schema and migration
-Add LlmConfigSetupStatus.
-Add setup_status to TeamLlmConfig.
-Add migration.
-Update migration tests.
-Step 2 — response/request schemas
-Add setup status to LlmConfigDetail.
-Add draft create/finalize/replace credential schemas.
-Update presentation response helpers.
-Step 3 — service layer
-Add create_llm_config_draft.
-Add finalize_llm_config_draft.
-Add replace_llm_config_draft_credential.
-Tighten selectable query and selection setter.
-Keep existing upsert_llm_config for full edit/backward-compatible paths.
-Step 4 — API routes
-Add draft/finalize/replace credential routes.
-Reuse delete route for incomplete setup deletion.
-Add API tests.
-Step 5 — admin form routes
-Add browser POST handlers for draft/finalize/replace.
-Ensure redirects preserve team/tab/config selection.
-Add form error handling.
-Step 6 — templates
-Update admin.html.
-Update admin2.html.
-Render LLM setup as a stateful wizard.
-Remove hidden API-key carryover.
-Show incomplete setup cards.
-Step 7 — test and harden
+- bad API key shows API-key error, not manual model step
+- bad API key does not show Ready · unavailable
+- manual model step shows warning when discovery fails for non-auth reason
+- label entered during add flow remains visible after draft creation
+- duplicate label shows friendly validation error
+Expected final behavior
 
-Run:
+Bad API key:
 
-pytest tests/test_api.py -q
-pytest tests/test_admin_ui.py -q
-pytest tests/test_migrations.py -q
+Provider + API key step
+→ Check API key and find models
+→ “The API key was rejected by the provider.”
+→ no draft
+→ no Ready state
 
-Then:
+Valid key:
 
-pytest
-Non-goals
+Provider + API key + optional label
+→ Check API key and find models
+→ draft created
+→ key saved to Vault
+→ label preserved
+→ model selection
+→ Save provider
+→ Ready · available/unavailable
 
-Do not add in this PR:
+Duplicate label:
 
-Anthropic/Gemini/Azure/native Bedrock.
-OpenAI Responses API migration.
-Scheduled cleanup of incomplete drafts.
-Personal user API keys.
-Team-leader credential provisioning.
-Curated built-in model fallback lists.
-Final agent instruction
-
-Implement a draft/finalize wizard for admin LLM provider setup. The first step should store credentials safely in Vault by creating a pending_model_selection config after “Check API key and find models.” The second step should let admins choose/edit the label, pick a default model, toggle availability, and save the provider as ready. Pending configs must be visible to system admins as “Setup incomplete,” but excluded from all team/user selectable provider flows. Never return or persist API keys in browser state after inspection.
+Save/draft attempt
+→ “An LLM provider with this name already exists for this team.”
+→ no duplicate provider saved

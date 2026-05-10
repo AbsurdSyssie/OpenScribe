@@ -588,6 +588,7 @@ class TeamSttSelection(Base):
 
 class TeamLlmConfig(Base):
     __tablename__ = "team_llm_configs"
+    __table_args__ = (Index("uq_team_llm_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)

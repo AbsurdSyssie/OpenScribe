@@ -2,8 +2,9 @@ import logging
 from uuid import UUID, uuid4
 
 import httpx
-from openai import OpenAI
-from sqlalchemy import select
+from openai import APIStatusError, AuthenticationError, OpenAI, PermissionDeniedError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
@@ -27,8 +28,29 @@ def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         models_page = client.models.list()
+    except (AuthenticationError, PermissionDeniedError) as exc:  # pragma: no cover
+        raise AppError(
+            401,
+            "llm_invalid_credential",
+            "The API key was rejected by the provider.",
+            {"provider_status": getattr(exc, "status_code", None)},
+        ) from exc
+    except APIStatusError as exc:  # pragma: no cover
+        if exc.status_code in {401, 403}:
+            raise AppError(
+                401,
+                "llm_invalid_credential",
+                "The API key was rejected by the provider.",
+                {"provider_status": exc.status_code},
+            ) from exc
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available models from the provider.",
+            {"provider_status": exc.status_code},
+        ) from exc
     except Exception as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", "Could not load available models") from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available models from the provider.") from exc
 
     models: set[str] = set()
     for model in getattr(models_page, "data", []):
@@ -82,6 +104,8 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     try:
         models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
     except AppError as exc:  # pragma: no cover
+        if exc.code == "llm_invalid_credential":
+            raise
         raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI chat models") from exc
 
     return filter_discovered_models(LlmProviderPreset.openai.value, models)
@@ -96,6 +120,15 @@ def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
         )
         response.raise_for_status()
         payload = response.json()
+    except httpx.HTTPStatusError as exc:  # pragma: no cover
+        if exc.response.status_code in {401, 403}:
+            raise AppError(
+                401,
+                "llm_invalid_credential",
+                "The API key was rejected by the provider.",
+                {"provider_status": exc.response.status_code},
+            ) from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available Mistral chat models", {"provider_status": exc.response.status_code}) from exc
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available Mistral chat models") from exc
 
@@ -126,6 +159,15 @@ def _list_together_chat_models(*, api_key: str, base_url: str) -> list[str]:
         )
         response.raise_for_status()
         payload = response.json()
+    except httpx.HTTPStatusError as exc:  # pragma: no cover
+        if exc.response.status_code in {401, 403}:
+            raise AppError(
+                401,
+                "llm_invalid_credential",
+                "The API key was rejected by the provider.",
+                {"provider_status": exc.response.status_code},
+            ) from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available Together AI chat models", {"provider_status": exc.response.status_code}) from exc
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available Together AI chat models") from exc
 
@@ -156,6 +198,8 @@ def _list_openai_compatible_chat_models(*, provider_preset: str, api_key: str, b
     try:
         models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
     except AppError as exc:  # pragma: no cover
+        if exc.code == "llm_invalid_credential":
+            raise
         raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI-compatible chat models") from exc
     return filter_discovered_models(provider_preset, models)
 
@@ -164,7 +208,26 @@ def _list_bedrock_chat_models(*, api_key: str, base_url: str) -> list[str]:
     try:
         return _list_openai_compatible_models(api_key=api_key, base_url=base_url)
     except AppError as exc:  # pragma: no cover
+        if exc.code == "llm_invalid_credential":
+            raise
         raise AppError(502, "llm_inspection_failed", "Could not load available Amazon Bedrock chat models") from exc
+
+
+def _ensure_unique_llm_config_label(db: Session, *, team_id: UUID, label: str, current_config_id: UUID | None = None) -> None:
+    normalized = label.strip().lower()
+    stmt = select(TeamLlmConfig.id).where(
+        TeamLlmConfig.team_id == team_id,
+        func.lower(func.btrim(TeamLlmConfig.label)) == normalized,
+    )
+    if current_config_id is not None:
+        stmt = stmt.where(TeamLlmConfig.id != current_config_id)
+    if db.scalar(stmt.limit(1)) is not None:
+        raise AppError(409, "conflict", "An LLM provider with this name already exists for this team.", {"field": "label"})
+
+
+def _raise_llm_label_conflict_if_needed(exc: IntegrityError) -> None:
+    if "uq_team_llm_configs_team_label_lower" in str(exc.orig):
+        raise AppError(409, "conflict", "An LLM provider with this name already exists for this team.", {"field": "label"}) from exc
 
 
 def _llm_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
@@ -266,7 +329,9 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
                 default_model_source = str(metadata["default_model_source"])
                 warnings = list(metadata["warnings"])
                 notes: list[str] = []
-            except AppError:
+            except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 models = []
                 source = "manual"
                 discovery_status = "manual_required"
@@ -297,7 +362,9 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
                 default_model_source = str(metadata["default_model_source"])
                 warnings = list(metadata["warnings"])
                 notes = list(metadata["notes"])
-            except AppError:
+            except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 models = []
                 source = "manual"
                 discovery_status = "manual_required"
@@ -426,6 +493,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     adapter_kind = preset.adapter_kind
     if preset.requires_bearer_token and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires an API key", {"field": "bearer_token"})
+    raw_label = (payload.label or "").strip()
     inspection = inspect_llm_contract(
         db,
         actor,
@@ -438,10 +506,12 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
             bedrock_region=region,
         ),
     )
+    label = raw_label or default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name)
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=label)
     config = TeamLlmConfig(
         id=uuid4(),
         team_id=team.id,
-        label=default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name),
+        label=label,
         provider_preset=inspection.provider_preset,
         adapter_kind=inspection.adapter_kind,
         base_url=inspection.base_url,
@@ -456,10 +526,15 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
-    db.flush()
-    if payload.bearer_token:
-        config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-    db.commit()
+    try:
+        db.flush()
+        if payload.bearer_token:
+            config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _raise_llm_label_conflict_if_needed(exc)
+        raise
     db.refresh(config)
     return config, inspection
 
@@ -475,13 +550,15 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     available = list(config.available_models_json or [])
     if available and model_name not in available:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
+    label = payload.label.strip()
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id)
     metadata = dict(config.inspection_metadata_json or {})
     if not available:
         available = [model_name]
         metadata["manual_model_name"] = model_name
         metadata["discovery_status"] = "manual_required"
         metadata["default_model_source"] = "manual"
-    config.label = payload.label.strip()
+    config.label = label
     config.model_name = model_name
     config.available_models_json = available
     config.inspection_metadata_json = metadata
@@ -489,7 +566,12 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     config.is_active = payload.is_active
     config.updated_by_user_id = actor.id
     db.add(config)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _raise_llm_label_conflict_if_needed(exc)
+        raise
     db.refresh(config)
     return config
 
@@ -528,6 +610,7 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
 
 def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> TeamLlmConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    label = payload.label.strip()
     provider_preset, adapter_kind, base_url, _region = apply_provider_defaults(
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
@@ -549,6 +632,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                 {"config_id": str(config.id)},
             )
     creating = config is None
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id if config is not None else None)
     replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
     removing_secret = payload.credential_action == "remove"
     if removing_secret and payload.bearer_token:
@@ -587,7 +671,9 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                     models=available_models_json,
                     empty_warning="No compatible chat models were returned. Enter a model name manually.",
                 )
-            except AppError:
+            except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 available_models_json = []
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
         elif config is not None and not provider_endpoint_changed:
@@ -606,7 +692,9 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                     models=available_models_json,
                     empty_warning="No compatible chat models were returned. Enter a model name manually.",
                 )
-            except AppError:
+            except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 available_models_json = []
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
         elif config is not None and not provider_endpoint_changed:
@@ -652,7 +740,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config = TeamLlmConfig(
             id=uuid4(),
             team_id=team.id,
-            label=payload.label.strip(),
+            label=label,
             provider_preset=provider_preset,
             adapter_kind=adapter_kind,
             base_url=base_url,
@@ -667,9 +755,14 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             updated_by_user_id=actor.id,
         )
         db.add(config)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError as exc:
+            db.rollback()
+            _raise_llm_label_conflict_if_needed(exc)
+            raise
     else:
-        config.label = payload.label.strip()
+        config.label = label
         config.provider_preset = provider_preset
         config.adapter_kind = adapter_kind
         config.base_url = base_url
@@ -704,6 +797,15 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
 
     try:
         db.commit()
+    except IntegrityError as exc:
+        if deleted_secret_before_commit and bearer_token_for_restore:
+            try:
+                write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=bearer_token_for_restore)
+            except AppError as restore_exc:
+                logger.warning("llm_config_secret_restore_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": restore_exc.code})
+        db.rollback()
+        _raise_llm_label_conflict_if_needed(exc)
+        raise
     except Exception:
         if deleted_secret_before_commit and bearer_token_for_restore:
             try:

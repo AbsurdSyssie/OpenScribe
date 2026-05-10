@@ -81,7 +81,6 @@ class LlmConfigUpsert(BaseModel):
     credential_action: Literal["keep", "replace", "remove"] = "keep"
     bedrock_region: str | None = Field(default=None, max_length=64)
     model_name: str | None = Field(default=None, max_length=255)
-    inspection_metadata_json: dict[str, object] | None = None
     is_active: bool = True
 
     @model_validator(mode="before")

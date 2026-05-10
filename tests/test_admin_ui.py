@@ -1575,6 +1575,12 @@ def test_admin2_exposes_admin_lifecycle_and_provider_controls(
     assert f'action="/admin/llm-configs/{llm_config.id}/delete"' in llm.text
     assert 'formaction="/admin/llm-configs/inspect"' in llm.text
     assert 'name="allowed_model_names" value="gpt-4.1-mini"' in llm.text
+    assert 'name="provider_preset" data-llm-provider-select' in llm.text
+    assert 'value="openrouter" data-default-base-url="https://openrouter.ai/api/v1"' in llm.text
+    assert 'value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1"' in llm.text
+    assert 'name="bedrock_region" data-bedrock-region-input' in llm.text
+    assert 'value="custom_openai_compatible" data-default-base-url=""' in llm.text
+    assert "may save it as Custom OpenAI-compatible" in llm.text
 
     deid = client.get(f"/admin2?team_id={team.id}&tab=deidentification&deidentification_provider_id={deid_provider.id}")
     assert deid.status_code == 200

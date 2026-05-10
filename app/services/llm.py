@@ -118,6 +118,29 @@ def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object
     }
 
 
+def _discovery_metadata(
+    *,
+    provider_preset: str,
+    discovery_status: str,
+    default_model_source: str,
+    warnings: list[str],
+    notes: list[str],
+    manual_model_name: str | None = None,
+) -> dict[str, object]:
+    preset = get_llm_provider_preset(provider_preset)
+    metadata: dict[str, object] = {
+        "provider_preset": preset.key,
+        "provider_display_name": preset.display_name,
+        "discovery_status": discovery_status,
+        "default_model_source": default_model_source,
+        "warnings": list(warnings),
+        "notes": list(notes),
+    }
+    if manual_model_name:
+        metadata["manual_model_name"] = manual_model_name
+    return metadata
+
+
 def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list[str]:
     try:
         response = httpx.get(
@@ -262,15 +285,15 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
             bearer_token=bearer_token,
         ),
     )
+    config.inspection_metadata_json = _inspection_metadata(inspection)
     if inspection.available_models:
         config.available_models_json = list(inspection.available_models)
         if config.model_name not in inspection.available_models:
             config.model_name = inspection.model_name
-        config.updated_by_user_id = actor.id
-        config.inspection_metadata_json = _inspection_metadata(inspection)
-        db.add(config)
-        db.commit()
-        db.refresh(config)
+    config.updated_by_user_id = actor.id
+    db.add(config)
+    db.commit()
+    db.refresh(config)
     return inspection
 
 
@@ -333,41 +356,60 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     if requires_saved_secret and not replacing_secret and not has_existing_secret:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "bearer_token"})
 
+    provider_endpoint_changed = (
+        config is not None
+        and (
+            (config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)) != provider_preset
+            or config.adapter_kind is not adapter_kind
+            or config.base_url.rstrip("/") != base_url.rstrip("/")
+        )
+    )
+
+    existing_token_for_discovery: str | None = None
+    if provider_endpoint_changed and not replacing_secret and has_existing_secret:
+        existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+
     available_models_json: list[str]
     discovery_metadata: dict[str, object] = {}
     if adapter_kind is LlmAdapterKind.openai_chat:
-        if replacing_secret and payload.bearer_token:
+        token_for_discovery = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
+        if token_for_discovery:
             try:
-                available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=payload.bearer_token, base_url=base_url)
-                discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
+                available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=token_for_discovery, base_url=base_url)
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
-                discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], "notes": []}
-        elif config is not None:
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
+        elif config is not None and not provider_endpoint_changed:
             available_models_json = list(config.available_models_json or [])
         else:
             available_models_json = []
+            if provider_endpoint_changed:
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Provider endpoint changed without a usable credential for live model discovery. Enter a model name manually or replace the credential."], notes=[])
     elif adapter_kind is LlmAdapterKind.bedrock_chat:
-        if replacing_secret and payload.bearer_token:
+        token_for_discovery = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
+        if token_for_discovery:
             try:
-                available_models_json = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=base_url)
-                discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
+                available_models_json = _list_bedrock_chat_models(api_key=token_for_discovery, base_url=base_url)
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
-                discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], "notes": []}
-        elif config is not None:
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
+        elif config is not None and not provider_endpoint_changed:
             available_models_json = list(config.available_models_json or [])
         else:
             available_models_json = []
+            if provider_endpoint_changed:
+                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Provider endpoint changed without a usable credential for live model discovery. Enter a model name manually or replace the credential."], notes=[])
     elif adapter_kind is LlmAdapterKind.ollama_chat:
         try:
-            token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else None
+            token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
             available_models_json = _list_ollama_chat_models(base_url=base_url, bearer_token=token_for_lookup)
-            discovery_metadata = {"discovery_status": "fetched", "default_model_source": "provider", "warnings": [], "notes": []}
+            discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
         except AppError:
             available_models_json = []
-            discovery_metadata = {"discovery_status": "manual_required", "default_model_source": "manual", "warnings": ["Live model discovery failed. Verify the endpoint, or enter a model name manually."], "notes": []}
-    elif config is not None:
+            discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the endpoint, or enter a model name manually."], notes=[])
+    elif config is not None and not provider_endpoint_changed:
         available_models_json = list(config.available_models_json or [])
     else:
         available_models_json = []
@@ -375,6 +417,10 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
     if not model_name:
         raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
+    if not available_models_json and model_name:
+        available_models_json = [model_name]
+        discovery_metadata = discovery_metadata or _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=[], notes=[])
+        discovery_metadata["manual_model_name"] = model_name
 
     if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         resolved_auth_mode = LlmAuthMode.bearer
@@ -392,7 +438,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             auth_mode=resolved_auth_mode,
             model_name=model_name,
             available_models_json=available_models_json,
-            inspection_metadata_json=payload.inspection_metadata_json or discovery_metadata,
+            inspection_metadata_json=discovery_metadata,
             vault_secret_ref="pending" if replacing_secret or adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -408,7 +454,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.auth_mode = resolved_auth_mode
         config.model_name = model_name
         config.available_models_json = available_models_json
-        config.inspection_metadata_json = payload.inspection_metadata_json or discovery_metadata or dict(config.inspection_metadata_json or {})
+        config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
         config.is_active = payload.is_active
         config.updated_by_user_id = actor.id
         db.add(config)

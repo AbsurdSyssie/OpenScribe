@@ -23,6 +23,8 @@ The admin UI exposes branded presets:
 - Ollama uses `ollama_chat`
 - Bedrock HTTP gateway uses `bedrock_chat`
 
+`openai_chat` currently means the OpenAI-compatible chat protocol adapter, not only first-party OpenAI. A future migration may rename the enum, but this slice keeps the existing value for compatibility.
+
 If a branded OpenAI-compatible preset is saved with a changed base URL, OpenScribe stores it as `custom_openai_compatible`. Bedrock remains the existing HTTP gateway path; native AWS Bedrock Converse/IAM is not part of this slice.
 
 ## Model Discovery
@@ -30,9 +32,12 @@ If a branded OpenAI-compatible preset is saved with a changed base URL, OpenScri
 Model lists come from live discovery. OpenScribe no longer supplies built-in LLM model fallback lists for failed discovery.
 
 - Successful discovery stores provider-returned models in `available_models_json`.
-- Failed discovery returns `manual_required` and allows a system admin to enter a model name manually.
+- Failed discovery returns `manual_required` and allows a system admin to enter a model name manually. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
 - Save without a model name remains invalid.
+- Editing a saved provider's preset, adapter, or base URL while keeping the existing Vault-backed secret triggers fresh model discovery with that saved secret. If rediscovery fails, OpenScribe clears stale provider models and stores only the submitted manual model.
 - OpenAI-specific model prefix filtering applies only to the OpenAI preset. Other OpenAI-compatible providers keep valid non-OpenAI model IDs after removing non-chat categories such as embeddings, transcription, TTS, moderation, and image models.
+- `inspection_metadata_json` is service-owned operational metadata. Public save requests cannot set or forge discovery status, warnings, notes, or provider display data.
+- Saved-provider re-inspection persists the latest discovery metadata even when discovery fails, without overwriting the previous selectable model list unless new models are returned.
 
 ## Secrets
 

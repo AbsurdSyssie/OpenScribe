@@ -127,6 +127,8 @@ class LlmSelectionDetail(BaseModel):
     llm_config_id: UUID
     selected_by_user_id: UUID
     selected_config_label: str
+    selected_config_provider_preset: str
+    selected_config_provider_display_name: str
     selected_config_adapter_kind: LlmAdapterKind
     selected_config_base_url: str
     provider_available_models_json: list[str]

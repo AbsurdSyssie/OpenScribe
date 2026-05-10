@@ -206,6 +206,19 @@ def _discovery_metadata(
     return metadata
 
 
+def _successful_discovery_metadata(*, provider_preset: str, models: list[str], empty_warning: str, fetched_note: str | None = None) -> dict[str, object]:
+    if models:
+        notes = [fetched_note] if fetched_note else []
+        return _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=notes)
+    return _discovery_metadata(
+        provider_preset=provider_preset,
+        discovery_status="manual_required",
+        default_model_source="manual",
+        warnings=[empty_warning],
+        notes=[],
+    )
+
+
 def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list[str]:
     try:
         response = httpx.get(
@@ -242,10 +255,15 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         if payload.bearer_token:
             try:
                 models = _list_openai_compatible_chat_models(provider_preset=preset_key, api_key=payload.bearer_token, base_url=base_url)
-                source = "fetched"
-                discovery_status = "fetched"
-                default_model_source = "provider"
-                warnings: list[str] = []
+                source = "fetched" if models else "manual"
+                metadata = _successful_discovery_metadata(
+                    provider_preset=preset_key,
+                    models=models,
+                    empty_warning="No compatible chat models were returned. Enter a model name manually.",
+                )
+                discovery_status = str(metadata["discovery_status"])
+                default_model_source = str(metadata["default_model_source"])
+                warnings = list(metadata["warnings"])
                 notes: list[str] = []
             except AppError:
                 models = []
@@ -266,13 +284,18 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         if payload.bearer_token:
             try:
                 models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=base_url)
-                source = "fetched"
-                discovery_status = "fetched"
-                default_model_source = "provider"
-                warnings = []
-                notes = [
-                    "OpenScribe loaded the Amazon Bedrock model list through the OpenAI-compatible Models API for the supplied Bedrock Mantle endpoint.",
-                ]
+                fetched_note = "OpenScribe loaded the Amazon Bedrock model list through the OpenAI-compatible Models API for the supplied Bedrock Mantle endpoint."
+                source = "fetched" if models else "manual"
+                metadata = _successful_discovery_metadata(
+                    provider_preset=preset_key,
+                    models=models,
+                    empty_warning="No compatible chat models were returned. Enter a model name manually.",
+                    fetched_note=fetched_note,
+                )
+                discovery_status = str(metadata["discovery_status"])
+                default_model_source = str(metadata["default_model_source"])
+                warnings = list(metadata["warnings"])
+                notes = list(metadata["notes"])
             except AppError:
                 models = []
                 source = "manual"
@@ -295,11 +318,16 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
     elif adapter_kind is LlmAdapterKind.ollama_chat:
         try:
             models = _list_ollama_chat_models(base_url=base_url, bearer_token=payload.bearer_token)
-            source = "fetched"
-            discovery_status = "fetched"
-            default_model_source = "provider"
-            warnings = []
-            notes = []
+            source = "fetched" if models else "manual"
+            metadata = _successful_discovery_metadata(
+                provider_preset=preset_key,
+                models=models,
+                empty_warning="No compatible chat models were returned. Enter a model name manually.",
+            )
+            discovery_status = str(metadata["discovery_status"])
+            default_model_source = str(metadata["default_model_source"])
+            warnings = list(metadata["warnings"])
+            notes = list(metadata["notes"])
         except AppError:
             models = []
             source = "manual"
@@ -441,7 +469,11 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         if token_for_discovery:
             try:
                 available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=token_for_discovery, base_url=base_url)
-                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
+                discovery_metadata = _successful_discovery_metadata(
+                    provider_preset=provider_preset,
+                    models=available_models_json,
+                    empty_warning="No compatible chat models were returned. Enter a model name manually.",
+                )
             except AppError:
                 available_models_json = []
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
@@ -456,7 +488,11 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         if token_for_discovery:
             try:
                 available_models_json = _list_bedrock_chat_models(api_key=token_for_discovery, base_url=base_url)
-                discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
+                discovery_metadata = _successful_discovery_metadata(
+                    provider_preset=provider_preset,
+                    models=available_models_json,
+                    empty_warning="No compatible chat models were returned. Enter a model name manually.",
+                )
             except AppError:
                 available_models_json = []
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."], notes=[])
@@ -470,7 +506,11 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         try:
             token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
             available_models_json = _list_ollama_chat_models(base_url=base_url, bearer_token=token_for_lookup)
-            discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
+            discovery_metadata = _successful_discovery_metadata(
+                provider_preset=provider_preset,
+                models=available_models_json,
+                empty_warning="No compatible chat models were returned. Enter a model name manually.",
+            )
         except AppError:
             available_models_json = []
             discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the endpoint, or enter a model name manually."], notes=[])

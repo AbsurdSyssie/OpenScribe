@@ -170,7 +170,7 @@ Audit payloads should contain IDs, provider type, team ID, status, sanitized err
 - Affected schema/modules/endpoints: provider credential models, admin provider routes, Vault secret service, provider inspection services, team selection rows.
 - Affected tests: admin auth, Vault cleanup, duplicate warning, provider status, active-selection clearing, no-secret responses/logs.
 - Architecture risks: Vault/DB transaction boundary, active-provider fallback behavior, duplicate fingerprint storage, raw provider error leakage.
-- Docs referenced: `AGENTS.md`, `docs/admin_brief.md`, `docs/stt-config.md`, `API_Inspection_Upgrade.md`, `docs/security.md`.
+- Docs referenced: `AGENTS.md`, `docs/admin_brief.md`, `docs/stt-config.md`, `docs/llm-providers.md`, `docs/security.md`.
 
 ## Coding Checkpoints
 

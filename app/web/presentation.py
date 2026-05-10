@@ -27,7 +27,7 @@ from ..models import (
     User,
     UserStatus,
 )
-from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, infer_llm_provider_preset
+from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, get_llm_provider_preset, infer_llm_provider_preset
 from ..schemas import (
     ClinicalNlpSelectionDetail,
     DeidentificationInspectResult,
@@ -190,12 +190,16 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
     allowed_models_json = list(selection.allowed_models_json or config.available_models_json or [])
     if resolved_model_name and allowed_models_json and resolved_model_name not in allowed_models_json:
         resolved_model_name = allowed_models_json[0]
+    provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
+    provider_display_name = get_llm_provider_preset(provider_preset).display_name
     return LlmSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,
         llm_config_id=selection.llm_config_id,
         selected_by_user_id=selection.selected_by_user_id,
         selected_config_label=config.label,
+        selected_config_provider_preset=provider_preset,
+        selected_config_provider_display_name=provider_display_name,
         selected_config_adapter_kind=config.adapter_kind,
         selected_config_base_url=config.base_url,
         provider_available_models_json=list(config.available_models_json or []),

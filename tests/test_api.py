@@ -3,6 +3,7 @@ import time
 import io
 import hashlib
 import subprocess
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID, uuid4
 import wave
@@ -81,7 +82,7 @@ from app.models import (
 )
 from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.schemas import LlmConfigUpsert
+from app.schemas import LlmConfigUpsert, LlmInspectRequest
 from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -95,8 +96,8 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
-from app.services.llm import upsert_llm_config as upsert_llm_config_service
-from app.services.llm_presets import LLM_PROVIDER_PRESETS, filter_discovered_models, infer_llm_provider_preset
+from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, upsert_llm_config as upsert_llm_config_service
+from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
@@ -2184,6 +2185,8 @@ def test_llm_provider_preset_catalog_and_inference():
     assert infer_llm_provider_preset(LlmAdapterKind.bedrock_chat, "https://bedrock-mantle.eu-west-2.api.aws/v1") == "bedrock_http_gateway"
     assert infer_llm_provider_preset(LlmAdapterKind.ollama_chat, "http://localhost:11434") == "ollama"
     assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://llm.example.com/v1") == "custom_openai_compatible"
+    assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="", bedrock_region="us-east-1")[2] == "https://bedrock-mantle.us-east-1.api.aws/v1"
+    assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="https://bedrock-mantle.eu-west-2.api.aws/v1", bedrock_region=None)[3] == "eu-west-2"
 
 
 def test_llm_model_filtering_only_applies_openai_prefix_rules_to_openai():
@@ -2192,6 +2195,62 @@ def test_llm_model_filtering_only_applies_openai_prefix_rules_to_openai():
     assert filter_discovered_models("openai", models) == ["gpt-4.1-mini"]
     assert filter_discovered_models("openrouter", models) == ["gpt-4.1-mini", "grok-4", "llama-3.3-70b", "mistralai/mistral-large"]
     assert filter_discovered_models("xai", models) == ["gpt-4.1-mini", "grok-4", "llama-3.3-70b", "mistralai/mistral-large"]
+
+
+def test_llm_schema_provider_defaults_use_shared_preset_catalog(monkeypatch):
+    original = LLM_PROVIDER_PRESETS["openrouter"]
+    monkeypatch.setitem(LLM_PROVIDER_PRESETS, "openrouter", replace(original, default_base_url="https://router.test/v1"))
+
+    inspected = LlmInspectRequest(team_id=uuid4(), provider_preset="openrouter")
+    upserted = LlmConfigUpsert(team_id=uuid4(), label="Router", provider_preset="openrouter", bearer_token="key", model_name="model-a")
+
+    assert inspected.base_url == "https://router.test/v1"
+    assert upserted.base_url == "https://router.test/v1"
+
+
+def test_mistral_model_discovery_uses_chat_capability_metadata(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"id": "mistral-large-latest", "capabilities": {"completion_chat": True}},
+                    {"id": "mistral-embed", "capabilities": {"completion_chat": False}},
+                    {"id": "mistral-old", "archived": True, "capabilities": {"completion_chat": True}},
+                    {"id": "mistral-no-capability", "capabilities": {}},
+                ]
+            }
+
+    monkeypatch.setattr("app.services.llm.httpx.get", lambda *args, **kwargs: Response())
+
+    assert _list_mistral_chat_models(api_key="mistral-key", base_url="https://api.mistral.ai/v1") == ["mistral-large-latest"]
+
+
+def test_together_model_discovery_uses_type_metadata(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {"id": "meta-llama/Llama-3.3-70B-Instruct", "type": "chat"},
+                {"name": "Qwen/Qwen2.5-Coder", "type": "code"},
+                {"id": "mistralai/Mixtral", "type": "language"},
+                {"id": "black-forest-labs/FLUX.1", "type": "image"},
+                {"id": "BAAI/bge-base", "type": "embedding"},
+                {"id": "rerank-model", "type": "rerank"},
+                {"id": "moderation-model", "type": "moderation"},
+            ]
+
+    monkeypatch.setattr("app.services.llm.httpx.get", lambda *args, **kwargs: Response())
+
+    assert _list_together_chat_models(api_key="together-key", base_url="https://api.together.xyz/v1") == [
+        "Qwen/Qwen2.5-Coder",
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "mistralai/Mixtral",
+    ]
 
 
 def test_llm_provider_preset_saves_and_reclassifies_base_url_override(client, db_session, make_team, make_user, monkeypatch):
@@ -2223,7 +2282,7 @@ def test_llm_provider_preset_saves_and_reclassifies_base_url_override(client, db
     assert config is not None
     assert config.inspection_metadata_json["discovery_status"] == "fetched"
 
-    monkeypatch.setattr("app.services.llm._list_openai_chat_models", lambda **kwargs: ["gpt-4o-mini"])
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", lambda **kwargs: ["gpt-4o-mini"])
     updated = client.post(
         "/api/v1/llm-configs",
         json={
@@ -2241,6 +2300,88 @@ def test_llm_provider_preset_saves_and_reclassifies_base_url_override(client, db
 
     assert updated.status_code == 200
     assert updated.json()["provider_preset"] == "custom_openai_compatible"
+
+
+def test_llm_save_validates_model_against_successful_live_discovery(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Model Validation")
+    make_user(email="admin-llm-model-validation@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", lambda **kwargs: ["model-a", "model-b"])
+
+    login(client, email="admin-llm-model-validation@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Router",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "model_name": "model-a",
+            "is_active": True,
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["model_name"] == "model-a"
+    assert body["inspection_metadata_json"]["inspected_at"]
+
+    missing = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Router Missing",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "model_name": "missing-model",
+            "is_active": True,
+        },
+    )
+    assert_error(
+        missing,
+        status_code=422,
+        code="business_rule_violation",
+        message="Selected model is not available for this provider",
+    )
+
+    defaulted = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Router Default",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "is_active": True,
+        },
+    )
+    assert defaulted.status_code == 200
+    assert defaulted.json()["model_name"] == "model-a"
+
+
+def test_llm_save_rejects_missing_model_when_discovery_fails(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Missing Manual Model")
+    make_user(email="admin-llm-missing-manual@example.com", password="password-1", is_system_admin=True)
+
+    def fail_discovery(**kwargs):
+        raise AppError(502, "llm_inspection_failed", "Could not load available models")
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
+    login(client, email="admin-llm-missing-manual@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Router",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "is_active": True,
+        },
+    )
+
+    assert_error(
+        created,
+        status_code=422,
+        code="business_rule_violation",
+        message="Model name is required. Inspect models successfully or enter a model name manually.",
+    )
 
 
 def test_system_admin_can_provision_local_ollama_without_secret(client, db_session, make_team, make_user, monkeypatch):
@@ -2580,6 +2721,7 @@ def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(cli
     db_session.refresh(config)
     assert config.available_models_json == ["gpt-4.1", "gpt-4.1-mini"]
     assert config.model_name == "gpt-4.1"
+    assert config.inspection_metadata_json["inspected_at"]
 
 
 def test_llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_service_owned(client, db_session, make_team, make_user, monkeypatch):
@@ -2610,6 +2752,7 @@ def test_llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_s
     assert body["available_models_json"] == ["manual/router-model"]
     assert body["inspection_metadata_json"]["discovery_status"] == "manual_required"
     assert body["inspection_metadata_json"]["manual_model_name"] == "manual/router-model"
+    assert body["inspection_metadata_json"]["inspected_at"]
     assert "forged" not in created.text
 
     client.post("/api/v1/auth/logout")

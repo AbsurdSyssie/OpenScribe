@@ -1,8 +1,14 @@
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from app.llm_provider_defaults import (
+    DEFAULT_BEDROCK_CHAT_REGION,
+    OLLAMA_CHAT_BASE_URL,
+    OPENAI_CHAT_BASE_URL,
+    bedrock_chat_base_url,
+    bedrock_region_from_base_url,
+)
 from app.models import LlmAdapterKind, LlmProviderPreset
-from app.schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_chat_base_url, bedrock_region_from_base_url
 
 
 BEDROCK_HTTP_GATEWAY_REGIONS = [
@@ -35,7 +41,7 @@ LLM_PROVIDER_PRESETS: dict[str, LlmProviderPresetDefinition] = {
         key=LlmProviderPreset.openai.value,
         display_name="OpenAI",
         adapter_kind=LlmAdapterKind.openai_chat,
-        default_base_url="https://api.openai.com/v1",
+        default_base_url=OPENAI_CHAT_BASE_URL,
         requires_bearer_token=True,
         supports_model_discovery=True,
         allow_manual_model=True,
@@ -98,7 +104,7 @@ LLM_PROVIDER_PRESETS: dict[str, LlmProviderPresetDefinition] = {
         key=LlmProviderPreset.ollama.value,
         display_name="Ollama",
         adapter_kind=LlmAdapterKind.ollama_chat,
-        default_base_url="http://localhost:11434",
+        default_base_url=OLLAMA_CHAT_BASE_URL,
         requires_bearer_token=False,
         supports_model_discovery=True,
         allow_manual_model=True,
@@ -169,12 +175,29 @@ def infer_llm_provider_preset(adapter_kind: str | LlmAdapterKind, base_url: str 
     return LlmProviderPreset.custom_openai_compatible.value
 
 
-def apply_provider_defaults(*, provider_preset: str | LlmProviderPreset | None, base_url: str | None, bedrock_region: str | None) -> tuple[str, LlmAdapterKind, str, str | None]:
-    preset = get_llm_provider_preset(provider_preset)
+def _preset_from_legacy_adapter(adapter_kind: str | LlmAdapterKind | None) -> str:
+    adapter_value = adapter_kind.value if isinstance(adapter_kind, LlmAdapterKind) else str(adapter_kind or "")
+    if adapter_value == LlmAdapterKind.bedrock_chat.value:
+        return LlmProviderPreset.bedrock_http_gateway.value
+    if adapter_value == LlmAdapterKind.ollama_chat.value:
+        return LlmProviderPreset.ollama.value
+    return LlmProviderPreset.openai.value
+
+
+def apply_provider_defaults(
+    *,
+    provider_preset: str | LlmProviderPreset | None,
+    base_url: str | None,
+    bedrock_region: str | None,
+    adapter_kind: str | LlmAdapterKind | None = None,
+) -> tuple[str, LlmAdapterKind, str, str | None]:
+    preset = get_llm_provider_preset(provider_preset or _preset_from_legacy_adapter(adapter_kind))
     resolved_base_url = (base_url or "").strip()
     resolved_region = bedrock_region
     if preset.key == LlmProviderPreset.bedrock_http_gateway.value:
-        resolved_region = (bedrock_region or preset.default_bedrock_region or DEFAULT_BEDROCK_CHAT_REGION).strip()
+        if resolved_base_url and not bedrock_region:
+            resolved_region = bedrock_region_from_base_url(resolved_base_url)
+        resolved_region = (resolved_region or preset.default_bedrock_region or DEFAULT_BEDROCK_CHAT_REGION).strip()
         if not resolved_base_url:
             resolved_base_url = bedrock_chat_base_url(resolved_region)
     elif preset.default_base_url and not resolved_base_url:

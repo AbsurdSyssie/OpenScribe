@@ -1581,6 +1581,8 @@ def test_admin2_exposes_admin_lifecycle_and_provider_controls(
     assert 'name="bedrock_region" data-bedrock-region-input' in llm.text
     assert 'value="custom_openai_compatible" data-default-base-url=""' in llm.text
     assert "may save it as Custom OpenAI-compatible" in llm.text
+    assert "Use the region selector for standard Bedrock HTTP gateway endpoints" in llm.text
+    assert "non-Mantle endpoint will save this provider as Custom OpenAI-compatible" in llm.text
 
     deid = client.get(f"/admin2?team_id={team.id}&tab=deidentification&deidentification_provider_id={deid_provider.id}")
     assert deid.status_code == 200

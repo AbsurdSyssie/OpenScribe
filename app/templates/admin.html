@@ -1600,7 +1600,7 @@
               {% endfor %}
             </select>
           </label>
-          <p><small data-llm-adapter-note>{% if llm_form.adapter_kind == "bedrock_chat" %}Bedrock stays HTTP gateway style. Region derives `https://bedrock-mantle.<region>.api.aws/v1` unless custom base URL is entered.{% elif llm_form.adapter_kind == "ollama_chat" %}Ollama uses `/api/tags` for model discovery and `/api/chat` for generation. Local Ollama usually runs at `http://localhost:11434`.{% else %}Changing a branded provider endpoint will save as Custom OpenAI-compatible.{% endif %}</small></p>
+          <p><small data-llm-adapter-note>{% if llm_form.adapter_kind == "bedrock_chat" %}Use the region selector for standard Bedrock HTTP gateway endpoints. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.{% elif llm_form.adapter_kind == "ollama_chat" %}Ollama uses `/api/tags` for model discovery and `/api/chat` for generation. Local Ollama usually runs at `http://localhost:11434`.{% else %}Changing a branded provider endpoint will save as Custom OpenAI-compatible.{% endif %}</small></p>
           <label>
             <span data-llm-token-label>API key for inspection</span>
             <input type="password" name="bearer_token">
@@ -1646,6 +1646,7 @@
               {% endfor %}
             </select>
           </label>
+          <p><small>Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</small></p>
           <label>
             Label
             <input type="text" name="label" required maxlength="255" value="{{ llm_form.label }}">

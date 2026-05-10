@@ -1,296 +1,674 @@
-## Major issues to fix before merge
+# Agent Plan: Finish LLM Provider Preset Branch
 
-### 1. Manual model configs are saved, but team selection can break for them
+Target branch/head:
 
-The service now allows saving a config when discovery fails and the admin manually enters `model_name`. That matches the decision. However, if discovery fails, `available_models_json` is saved as an empty list. Later, `set_team_llm_selection()` rejects explicit allowed models or model overrides when `provider_available_models_json` is empty. The code path still treats an empty provider model list as “this provider does not expose selectable models.” 
+```text id="kk3oa4"
+LLM_Provider_Upgrade
+4e7e92dab32f6fda49dbf2db06239e574b388f9e
+```
 
-That means a manually saved model may be difficult or impossible to select cleanly through the team selection UI if the form submits the model as an override or allowed model.
+CI/status note: no commit statuses were returned for the head SHA, so run the full test suite locally/CI before merge.
 
-**Fix**
+## Objective
 
-When discovery fails but `model_name` is manually supplied, store it as the only selectable model:
+Finish the branded LLM provider preset implementation and make it safe to merge.
 
-```python
+The branch is broadly correct. It already adds:
+
+* `LlmProviderPreset`
+* `provider_preset` on LLM configs
+* `inspection_metadata_json` on LLM configs
+* provider preset catalog
+* Bedrock HTTP gateway region list
+* model filtering split by provider
+* manual model fallback
+* Vault-backed secret behavior preserved
+* provider/base URL reclassification to Custom OpenAI-compatible
+
+The remaining work is mostly tightening correctness.
+
+---
+
+# 1. Blocker: Validate `model_name` against discovered models
+
+## Problem
+
+`upsert_llm_config()` currently accepts a manually submitted `model_name` even when live discovery succeeded and returned a provider model list.
+
+Bad state possible:
+
+```text id="eis5cw"
+available_models_json = ["gpt-4.1", "gpt-4.1-mini"]
+model_name = "not-a-real-model"
+```
+
+Manual model names should be allowed only when discovery failed/manual discovery is required.
+
+## Required behavior
+
+| Discovery result                               | Submitted model behavior                          |
+| ---------------------------------------------- | ------------------------------------------------- |
+| Discovery succeeded and returned models        | `model_name` must be one of the discovered models |
+| Discovery failed / manual required             | manually submitted `model_name` is allowed        |
+| No model submitted and discovered models exist | use first discovered model                        |
+| No model submitted and no discovered models    | reject save                                       |
+
+## Implementation guidance
+
+In `upsert_llm_config()`, track whether models came from successful live discovery.
+
+Suggested shape:
+
+```python id="2gp35m"
+discovery_succeeded = False
+available_models_json: list[str] = []
+
+# When provider model discovery succeeds:
+available_models_json = discovered_models
+discovery_succeeded = True
+
+# When provider discovery fails/manual mode:
+available_models_json = []
+discovery_succeeded = False
+```
+
+Then enforce:
+
+```python id="f8pe1s"
+model_name = payload.model_name.strip() if payload.model_name else (
+    available_models_json[0] if available_models_json else None
+)
+
+if not model_name:
+    raise AppError(
+        422,
+        "business_rule_violation",
+        "Model name is required. Inspect models successfully or enter a model name manually.",
+        {"field": "model_name"},
+    )
+
+if discovery_succeeded and available_models_json and model_name not in available_models_json:
+    raise AppError(
+        422,
+        "business_rule_violation",
+        "Selected model is not available for this provider",
+        {"field": "model_name"},
+    )
+
 if not available_models_json and model_name:
     available_models_json = [model_name]
+    discovery_metadata = discovery_metadata or _discovery_metadata(
+        provider_preset=provider_preset,
+        discovery_status="manual_required",
+        default_model_source="manual",
+        warnings=[],
+        notes=[],
+    )
     discovery_metadata["manual_model_name"] = model_name
 ```
 
-Or update team-selection logic to treat `config.model_name` as selectable when `available_models_json` is empty.
+## Tests to add
 
-Preferred fix: **store manual model as `available_models_json=[model_name]`**. It keeps existing selection/preference validation working.
+```text id="xfgz3v"
+- Live discovery returns ["model-a", "model-b"]; saving "model-a" succeeds.
+- Live discovery returns ["model-a", "model-b"]; saving "missing-model" fails.
+- Discovery fails; saving manual "manual-model" succeeds.
+- Discovery fails; saving with no model fails.
+```
 
 ---
 
-### 2. Editing provider/base URL without replacing the secret can leave stale model lists
+# 2. Blocker: Improve provider model filtering for Mistral and Together
 
-In `upsert_llm_config`, if an existing config is edited and the credential is kept, the service reuses the old `available_models_json`. 
+## Problem
 
-This is risky:
+The branch uses generic OpenAI SDK model listing and then filters by ID substrings. That is not enough for providers whose model-list APIs expose capabilities/type metadata.
 
-```text
-Existing config: OpenAI, models = ["gpt-4.1"]
-Admin changes provider/base URL to OpenRouter, keeps credential
-Config may still carry stale OpenAI model list
+Examples:
+
+* Mistral model records can expose capabilities like `completion_chat`.
+* Together model records can expose `type` values like `chat`, `language`, `image`, `embedding`, `rerank`, etc.
+
+If metadata is discarded, non-chat models can become selectable if their IDs do not contain blocked words.
+
+## Required behavior
+
+Use provider-specific metadata where available.
+
+For this branch, implement provider-specific model listing/filtering for at least:
+
+```text id="l5zn2w"
+mistral
+together
 ```
 
-This violates the provider preset behavior we wanted: model availability should come from live discovery or manual entry, not stale models from a different provider.
+Alternatively, mark those providers manual-model-only until metadata-aware filtering is implemented. Preferred: implement metadata-aware filtering.
 
-**Fix**
+## Implementation guidance
 
-Detect provider/base URL/adapter changes on existing configs.
+Keep current generic discovery as a fallback, but add provider-specific direct `httpx` model-list functions.
 
-If changed and credential is kept:
+### Mistral
 
-* either read the existing Vault secret and rediscover models against the new endpoint, or
-* clear `available_models_json` and mark discovery as `manual_required`.
+Suggested function:
 
-Suggested behavior:
+```python id="n1kqpc"
+def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available Mistral chat models",
+        ) from exc
 
-```python
-provider_endpoint_changed = (
-    config is not None
-    and (
-        config.provider_preset != provider_preset
-        or config.adapter_kind is not adapter_kind
-        or config.base_url.rstrip("/") != base_url.rstrip("/")
+    models: set[str] = set()
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+
+        model_id = item.get("id")
+        capabilities = item.get("capabilities") or {}
+
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+
+        if item.get("archived") is True:
+            continue
+
+        if capabilities.get("completion_chat") is True:
+            models.add(model_id.strip())
+
+    return sorted(models)
+```
+
+### Together
+
+Suggested function:
+
+```python id="ijv4il"
+def _list_together_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available Together AI chat models",
+        ) from exc
+
+    # Together may return either a raw list or {"data": [...]}; support both.
+    records = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(records, list):
+        records = []
+
+    models: set[str] = set()
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+
+        model_id = item.get("id") or item.get("name")
+        model_type = item.get("type")
+
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+
+        if model_type in {"chat", "language", "code"}:
+            models.add(model_id.strip())
+
+    return sorted(models)
+```
+
+### Route through provider-specific discovery
+
+In `_list_openai_compatible_chat_models()`:
+
+```python id="7gbe5l"
+def _list_openai_compatible_chat_models(
+    *,
+    provider_preset: str,
+    api_key: str,
+    base_url: str,
+) -> list[str]:
+    if provider_preset == LlmProviderPreset.openai.value:
+        return _list_openai_chat_models(api_key=api_key, base_url=base_url)
+
+    if provider_preset == LlmProviderPreset.mistral.value:
+        return _list_mistral_chat_models(api_key=api_key, base_url=base_url)
+
+    if provider_preset == LlmProviderPreset.together.value:
+        return _list_together_chat_models(api_key=api_key, base_url=base_url)
+
+    try:
+        models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
+    except AppError as exc:
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "Could not load available OpenAI-compatible chat models",
+        ) from exc
+
+    return filter_discovered_models(provider_preset, models)
+```
+
+## Tests to add
+
+```text id="ogzlia"
+- Mistral discovery keeps models with capabilities.completion_chat = true.
+- Mistral discovery drops archived models.
+- Mistral discovery drops models without chat capability.
+- Together discovery keeps type=chat/language/code.
+- Together discovery drops type=image/embedding/rerank/moderation.
+- Generic OpenAI-compatible discovery still works for OpenRouter/xAI/Groq/DeepSeek/custom.
+```
+
+---
+
+# 3. Blocker: Remove duplicated provider defaults from schemas
+
+## Problem
+
+Provider default URLs are defined in both:
+
+```text id="c5hbj0"
+app/services/llm_presets.py
+app/schemas/llm.py
+```
+
+This creates drift risk. The preset catalog should be the single source of truth.
+
+## Required behavior
+
+Schemas should validate payload shape. Provider defaults should be applied in service/preset code.
+
+## Implementation guidance
+
+### Preferred approach
+
+In `LlmConfigUpsert` and `LlmInspectRequest`:
+
+* Keep `provider_preset`
+* Keep `adapter_kind` only for backwards compatibility if needed
+* Do not duplicate the default base URL map
+* Do not independently derive provider defaults in schema validators
+
+Move all of this logic into:
+
+```text id="gmli79"
+apply_provider_defaults()
+reclassify_preset_for_base_url()
+get_llm_provider_preset()
+```
+
+### Minimal safe fix
+
+If removing the schema validators is too invasive, at least make them call the shared helper:
+
+```python id="04gztn"
+from app.services.llm_presets import apply_provider_defaults
+
+@model_validator(mode="before")
+@classmethod
+def apply_provider_defaults(cls, data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+
+    normalized = dict(data)
+    provider_preset, adapter_kind, base_url, bedrock_region = apply_provider_defaults(
+        provider_preset=normalized.get("provider_preset"),
+        base_url=normalized.get("base_url"),
+        bedrock_region=normalized.get("bedrock_region"),
     )
-)
 
-if provider_endpoint_changed and not replacing_secret:
-    if config.vault_secret_ref:
-        token = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
-        try rediscovery with token
-    else:
-        available_models_json = []
-        discovery_metadata = manual_required
+    normalized["provider_preset"] = provider_preset
+    normalized["adapter_kind"] = adapter_kind
+    normalized["base_url"] = base_url
+    normalized["bedrock_region"] = bedrock_region
+
+    return normalized
 ```
 
-If rediscovery is not implemented in this slice, clear stale models and require/manual-use the submitted `model_name`.
+Risk: this creates an import from schemas to services. If that introduces a layering/circular import problem, extract the preset catalog into a neutral module such as:
 
----
-
-### 3. `inspection_metadata_json` is client-writable
-
-`LlmConfigUpsert` accepts `inspection_metadata_json`, and `upsert_llm_config()` saves `payload.inspection_metadata_json or discovery_metadata`.  
-
-This lets the browser/API client forge inspection metadata such as discovery status, warnings, notes, or provider display metadata. It is not a raw secret leak, but it makes operational metadata untrustworthy.
-
-**Fix**
-
-Remove `inspection_metadata_json` from the public upsert schema, or ignore it in the service.
-
-Use only service-generated metadata:
-
-```python
-config.inspection_metadata_json = discovery_metadata
+```text id="ghjfl1"
+app/llm_presets.py
+app/domain/llm_presets.py
+app/services/llm_presets.py  # only if no cycle
 ```
 
-For updates where no discovery was attempted, preserve existing metadata:
+The important point is: **one default map only**.
 
-```python
-config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
+## Tests to add
+
+```text id="7vogmm"
+- Changing preset catalog default affects inspect/upsert default behavior.
+- There is no separate default URL map in llm schemas.
 ```
 
 ---
 
-### 4. Failed saved-config inspection does not update inspection metadata
+# 4. Medium: Add inspection timestamp
 
-`inspect_saved_llm_config()` only updates the config if `inspection.available_models` is non-empty. If inspection fails or becomes `manual_required`, the failure metadata is not persisted. 
+## Problem
 
-We agreed `inspection_metadata_json` should store last discovery status, warnings, and manual-required state.
+`inspection_metadata_json` captures status/warnings/notes but no timestamp.
 
-**Fix**
+## Required behavior
 
-Always update `inspection_metadata_json` after saved inspection.
+Include `inspected_at` or `discovered_at` in service-generated metadata.
 
-Only update `available_models_json` and maybe `model_name` when models are returned.
+## Implementation guidance
 
-```python
-config.inspection_metadata_json = _inspection_metadata(inspection)
+Use the existing `utcnow()` helper from models if appropriate.
 
-if inspection.available_models:
-    config.available_models_json = list(inspection.available_models)
-    if config.model_name not in inspection.available_models:
-        config.model_name = inspection.model_name
+```python id="vafwsm"
+from app.models import utcnow
+
+def _discovery_metadata(...):
+    return {
+        "provider_preset": preset.key,
+        "provider_display_name": preset.display_name,
+        "discovery_status": discovery_status,
+        "default_model_source": default_model_source,
+        "warnings": list(warnings),
+        "notes": list(notes),
+        "inspected_at": utcnow().isoformat(),
+    }
+```
+
+Also update `_inspection_metadata()`:
+
+```python id="pvucr5"
+def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object]:
+    return {
+        "provider_preset": inspection.provider_preset,
+        "provider_display_name": inspection.provider_display_name,
+        "discovery_status": inspection.discovery_status,
+        "default_model_source": inspection.default_model_source,
+        "warnings": list(inspection.warnings),
+        "notes": list(inspection.notes),
+        "inspected_at": utcnow().isoformat(),
+    }
+```
+
+## Tests to add
+
+```text id="5ww43t"
+- Saved config inspection stores inspected_at.
+- Upsert with discovery success stores inspected_at.
+- Upsert with manual-required discovery stores inspected_at.
 ```
 
 ---
 
-### 5. The adapter rename was not implemented
+# 5. Medium: Document `openai_chat` compatibility meaning
 
-The branch keeps `LlmAdapterKind.openai_chat` as the adapter for OpenAI, OpenRouter, xAI, Groq, Mistral, DeepSeek, Together, and Custom OpenAI-compatible. The preset catalog maps these providers to `LlmAdapterKind.openai_chat`. 
+## Problem
 
-This is not necessarily a functional bug, but it diverges from the implementation brief, which said to evolve toward `openai_compatible_chat`.
+The implementation keeps `LlmAdapterKind.openai_chat` as the shared adapter for OpenAI, OpenRouter, xAI, Groq, Mistral, DeepSeek, Together, and Custom OpenAI-compatible.
 
-**Decision needed**
+That is acceptable for this slice, but the name is now misleading.
+
+## Required behavior
+
+Do not rename the enum in this branch unless you want a larger migration. Instead document that `openai_chat` currently means “OpenAI-compatible chat adapter.”
+
+## Implementation guidance
+
+Add a comment near `LlmAdapterKind`:
+
+```python id="gtyay0"
+class LlmAdapterKind(str, enum.Enum):
+    # Historical name. In the provider-preset layer this is used as the
+    # OpenAI-compatible chat adapter for OpenAI, OpenRouter, xAI, Groq,
+    # Mistral, DeepSeek, Together AI, and custom OpenAI-compatible endpoints.
+    openai_chat = "openai_chat"
+    bedrock_chat = "bedrock_chat"
+    ollama_chat = "ollama_chat"
+```
+
+Add the same explanation in `docs/llm-providers.md`.
+
+---
+
+# 6. Medium: Confirm Bedrock custom URL UI copy
+
+## Problem
+
+Current behavior reclassifies Bedrock HTTP gateway to Custom OpenAI-compatible if the base URL does not match:
+
+```text id="tg41yt"
+bedrock-mantle.<region>.api.aws
+```
+
+That is acceptable if the product decision is:
+
+```text id="jhqrsl"
+A full custom Bedrock URL becomes Custom OpenAI-compatible.
+```
+
+## Required behavior
+
+Make the UI explicit.
+
+## Implementation guidance
+
+In admin LLM provider form, show copy like:
+
+```text id="7sgzec"
+Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.
+```
+
+For Bedrock:
+
+```text id="8hhf8v"
+Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.
+```
+
+## Tests to add
+
+```text id="ri0m32"
+- Bedrock region eu-west-2 derives expected URL.
+- Bedrock standard generated URL preserves bedrock_http_gateway.
+- Bedrock non-Mantle URL reclassifies to custom_openai_compatible.
+```
+
+---
+
+# 7. Medium: Verify both admin templates/routes expose the same LLM features
+
+## Problem
+
+The branch changes both `admin.html` and `admin2.html`, but not equally. `/admin2` is an active route. Verify the provider-preset UX works in both.
+
+## Required behavior
+
+Both admin views that expose LLM config must support:
+
+```text id="ny57xo"
+- branded provider dropdown
+- provider default base URL
+- Bedrock region selector
+- Custom OpenAI-compatible visible last
+- manual model fallback
+- base URL override warning/reclassification copy
+```
+
+## Implementation guidance
+
+If duplicated template logic is drifting, prefer extracting a shared LLM provider form partial.
+
+Possible structure:
+
+```text id="6gxp1l"
+app/templates/partials/llm_provider_form.html
+```
+
+Then include it from both admin templates.
+
+## Tests to add
+
+```text id="nle9wv"
+- /admin renders OpenRouter, xAI, Groq, Mistral, DeepSeek, Together AI, Bedrock HTTP gateway, and Custom OpenAI-compatible.
+- /admin2 renders the same provider options.
+- /admin2 renders Bedrock region selector.
+```
+
+---
+
+# 8. Optional: Keep or restore removed docs intentionally
+
+## Problem
+
+The branch removes:
+
+```text id="mcgso4"
+API_Inspection_Upgrade.md
+main_refactor_plan.md
+```
+
+and adds:
+
+```text id="qcc9ow"
+LLM_Provider_Upgrade.md
+docs/llm-providers.md
+```
+
+This may be intentional, but confirm before merge.
+
+## Required behavior
+
+Do not accidentally delete active planning docs.
+
+## Implementation guidance
 
 Either:
 
-* accept this as a deliberate compatibility choice for this slice, and document that `openai_chat` now means “OpenAI-compatible chat,” or
-* add the enum rename/migration now.
-
-My recommendation: **do not block merge on the rename** if the code works, but add a comment/doc note to avoid confusion:
-
-```text
-openai_chat is currently used as the OpenAI-compatible chat adapter.
-```
-
-Longer term, rename it.
-
----
-
-## Medium issues / feature gaps
-
-### 6. Branded presets appear to be wired more fully in `admin.html` than `admin2.html`
-
-The branch changes `admin.html` substantially for provider/base URL sync, while `admin2.html` changed only minimally. The commit diff explicitly shows the JavaScript sync fix in `admin.html`; `admin2.html` has only a small change set.  
-
-Because `/admin2` is an active admin route, this may mean the restyled admin page has incomplete provider-preset UX.
-
-**Fix**
-
-Verify `/admin2?tab=llm` manually and add tests for:
-
-* provider preset dropdown
-* provider default base URLs
-* Bedrock region selector
-* Custom OpenAI-compatible visible last
-* provider/base URL reclassification note
-
-If `admin2` intentionally uses the same form partials, fine. If not, this is a missing UI feature.
-
----
-
-### 7. Bedrock custom base URL behavior may be stricter than agreed
-
-`reclassify_preset_for_base_url()` reclassifies Bedrock to `custom_openai_compatible` if the base URL does not match the `bedrock-mantle.<region>.api.aws` pattern. 
-
-This matches one version of the implementation brief, but it means “custom Bedrock HTTP gateway URL” is not preserved as Bedrock unless it follows the exact Mantle URL pattern.
-
-**Confirm intended behavior**
-
-If “custom region/base URL override” means “still Bedrock HTTP gateway,” then this is too strict.
-
-If “custom full URL means Custom OpenAI-compatible,” then current behavior is correct.
-
-Given our last brief said custom full URL can reclassify, this is acceptable, but the UI should make it explicit.
-
----
-
-### 8. Provider preset defaults are duplicated
-
-Defaults exist in `app/services/llm_presets.py`, but schema validators in `app/schemas/llm.py` also duplicate default base URLs and preset mapping.  
-
-This creates drift risk.
-
-**Fix**
-
-Move provider default application out of Pydantic schemas as much as possible, or have schema validators call a single shared preset function. The service module should be the source of truth.
-
-This is not a release blocker, but it will become a maintenance problem.
-
----
-
-### 9. No CI status visible for the branch
-
-I did not see commit statuses/checks for `51fc2102a9c41c2d3b0080aa2b458cb6ebeb0827`. The docs list focused pytest commands, but I cannot verify a full test run from the available status output.
-
-**Before merge**
-
-Run at least:
-
-```bash
-pytest -q tests/test_migrations.py
-pytest -q tests/test_api.py -k llm
-pytest -q tests/test_admin_ui.py -k llm
-pytest -q
+```text id="5vudkj"
+- restore removed docs, or
+- move their still-relevant content into docs/, or
+- leave deletion but mention it in the PR summary
 ```
 
 ---
 
-## Things implemented correctly
+# Required final test pass
 
-### Provider catalog and inference
+Run at minimum:
 
-The provider preset catalog includes the requested branded presets and maps them to existing adapters. It also includes Bedrock HTTP gateway regions and model filtering logic. 
+```bash id="jr06pt"
+pytest tests/test_api.py -q
+pytest tests/test_admin_ui.py -q
+pytest tests/test_migrations.py -q
+```
 
-Good:
+Prefer full suite:
 
-* OpenAI
-* OpenRouter
-* xAI
-* Groq
-* Mistral
-* DeepSeek
-* Together
-* Ollama
-* Bedrock HTTP gateway
-* Custom OpenAI-compatible
+```bash id="8sx3de"
+pytest
+```
 
-### Migration/backfill
-
-The migration adds `provider_preset`, adds `inspection_metadata_json`, backfills existing configs by adapter/base URL, makes `provider_preset` non-null, and indexes it. 
-
-This matches the agreed approach.
-
-One caution: verify the multi-head `down_revision` is correct for the current Alembic graph. The migration declares two down revisions, so it appears to be a merge migration. 
-
-### No built-in fallback models
-
-The old OpenAI fallback constants are gone from the service, and failed discovery now returns `manual_required` with no suggested built-in model list. 
-
-This matches your decision: **auto-discover only**, no curated provider defaults.
-
-### OpenAI-only filtering no longer affects every provider
-
-`filter_discovered_models()` blocks obvious non-chat model categories generally, then applies OpenAI prefix filtering only when `provider_preset == openai`. 
-
-This fixes the original risk where OpenRouter/xAI/Groq/etc. model IDs would be hidden.
-
-### Secret handling mostly preserved
-
-The branch continues to use Vault for LLM bearer tokens via existing service functions and does not expose raw secrets in config response shape. 
-
-The delete path was also improved to delete the DB record before cleaning up the Vault secret, reducing the risk of DB/Vault inconsistency on DB commit failure. 
+Also run lint/type checks if configured.
 
 ---
 
-## Missing features from the brief
+# Acceptance checklist
 
-These are either missing or only partially implemented:
+## Must pass before merge
 
-1. **Manual model should become selectable**
-   Currently manual save is allowed, but the saved model may not populate `available_models_json`, which breaks selection/preference ergonomics.
+```text id="gvbv6y"
+[ ] Saving a discovered provider model validates model_name against discovered models.
+[ ] Manual model save works only when discovery is manual_required/no provider list exists.
+[ ] Mistral model discovery filters using chat capability metadata.
+[ ] Together model discovery filters using model type metadata.
+[ ] Provider defaults have one source of truth.
+[ ] No raw credentials are exposed in API responses.
+[ ] System-admin-only provisioning still holds.
+[ ] Bedrock region selector still derives standard gateway URLs.
+[ ] Branded base URL override still reclassifies to custom_openai_compatible.
+[ ] Existing migrations pass from empty DB to head.
+```
 
-2. **Provider/base URL changes should not carry stale model lists**
-   Existing configs need rediscovery or clearing when endpoint/provider changes.
+## Should pass before merge
 
-3. **Inspection metadata should be service-owned**
-   It should not be accepted from the public upsert payload.
-
-4. **Saved inspection failures should persist metadata**
-   `manual_required` should be recorded, not ignored.
-
-5. **`admin2.html` parity needs verification**
-   It may not fully expose the branded preset UX.
-
-6. **Internal adapter name remains `openai_chat`**
-   Decide whether to accept as compatibility debt or rename to `openai_compatible_chat`.
+```text id="c4z45j"
+[ ] inspection_metadata_json includes inspected_at.
+[ ] openai_chat compatibility meaning is documented.
+[ ] /admin and /admin2 both expose equivalent LLM provider preset UX.
+[ ] PR summary explains any removed docs.
+```
 
 ---
 
-## Recommended patch list before merge
+# Suggested implementation order
 
-1. Remove or ignore `inspection_metadata_json` from `LlmConfigUpsert`.
-2. Persist inspection metadata on every saved inspect attempt, including failures.
-3. When manual `model_name` is supplied and discovery returns no models, save `available_models_json=[model_name]`.
-4. Detect provider/base URL changes on existing configs and either rediscover with existing Vault token or clear stale model lists.
-5. Add tests for manual model selection after failed discovery.
-6. Add tests for editing an existing config from one provider/base URL to another without stale model leakage.
-7. Add tests for `admin2` provider preset parity or explicitly remove/retire the old path.
-8. Decide/document whether `openai_chat` is now the “OpenAI-compatible chat” adapter.
+## Step 1 — Fix model validation
 
-## Merge recommendation
+Implement `discovery_succeeded` tracking and reject invalid `model_name` when discovery succeeds.
 
-Do **not** merge yet. The branch is close, but the stale model-list issue and manual-model selection issue are likely to create confusing admin/team behavior. Fix those before merge.
+This is the highest-risk data consistency bug.
+
+## Step 2 — Add metadata-aware Mistral/Together discovery
+
+Implement provider-specific direct model listing for Mistral and Together.
+
+Keep generic OpenAI-compatible discovery for:
+
+```text id="yv71fh"
+OpenAI
+OpenRouter
+xAI
+Groq
+DeepSeek
+Custom OpenAI-compatible
+Bedrock HTTP gateway
+```
+
+## Step 3 — Deduplicate provider defaults
+
+Make `llm_presets.py` the single source of truth.
+
+## Step 4 — Add inspection timestamps
+
+Add `inspected_at` to metadata helpers.
+
+## Step 5 — UI/admin parity pass
+
+Verify both `/admin` and `/admin2`.
+
+## Step 6 — Docs and test cleanup
+
+Document `openai_chat` as currently OpenAI-compatible. Confirm deleted docs are intentional.
+
+---
+
+# Agent prompt
+
+Finish the LLM_Provider_Upgrade branch. The implementation is close but needs correctness fixes before merge.
+
+First, update upsert_llm_config so that if live model discovery succeeds and returns a provider model list, the submitted model_name must be in that list. Manual model_name should only be accepted when discovery failed/manual_required or no provider model list is available. When manual model_name is accepted, store it as available_models_json=[model_name] so team selection and user preferences still work.
+
+Second, improve model discovery filtering for Mistral and Together AI. Do not rely only on model ID substring filtering for these providers. Add provider-specific model-list functions that preserve response metadata and only return chat/text-generation-capable models. For Mistral, prefer capabilities.completion_chat == true and exclude archived models. For Together, prefer type in {"chat", "language", "code"} and exclude image/embedding/rerank/moderation models. Keep generic OpenAI-compatible discovery for OpenAI, OpenRouter, xAI, Groq, DeepSeek, Custom OpenAI-compatible, and Bedrock HTTP gateway.
+
+Third, remove duplicated provider default URL maps from schemas. Make the provider preset catalog/default helper the single source of truth for provider defaults. Schemas should validate payload shape, not independently define provider defaults.
+
+Fourth, add inspected_at timestamps to inspection_metadata_json for saved inspection and upsert discovery metadata.
+
+Fifth, document that LlmAdapterKind.openai_chat is currently used as the OpenAI-compatible chat adapter in this slice. Do not rename the enum unless you intentionally add a migration.
+
+Sixth, verify both /admin and /admin2 expose the same LLM provider preset UX: branded provider dropdown, Custom OpenAI-compatible last and advanced, Bedrock region selector, manual model fallback, and base URL override warning.
+
+Finally, add/adjust tests for all of the above and run the targeted test suite.

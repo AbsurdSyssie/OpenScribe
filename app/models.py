@@ -113,6 +113,9 @@ class LlmAuthMode(str, enum.Enum):
 
 
 class LlmAdapterKind(str, enum.Enum):
+    # Historical name: used for OpenAI-compatible chat protocol adapters,
+    # including OpenAI, OpenRouter, xAI, Groq, Mistral, DeepSeek, Together AI,
+    # and custom OpenAI-compatible endpoints.
     openai_chat = "openai_chat"
     bedrock_chat = "bedrock_chat"
     ollama_chat = "ollama_chat"

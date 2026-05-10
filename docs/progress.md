@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-05-10 LLM Provider Preset Hardening
+
+### Scope
+
+- Tightened LLM provider save behavior so live-discovered model lists are authoritative.
+- Added metadata-aware Mistral and Together AI model discovery.
+- Moved schema defaulting onto shared preset catalog helpers and added inspection timestamps.
+- Clarified Bedrock HTTP gateway custom URL behavior in admin UI/docs.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/llm.py`: provider-specific model discovery, save-time model validation, inspection metadata timestamps.
+- `app/services/llm_presets.py`, `app/llm_provider_defaults.py`, `app/schemas/llm.py`: single provider default source with schema shape validation only.
+- `app/models.py`: documents `openai_chat` compatibility meaning.
+- `app/templates/admin.html`, `app/templates/admin2.html`: explicit Bedrock/custom URL guidance.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: regressions for discovery, validation, metadata, schema default sharing, and UI copy.
+- `docs/llm-providers.md`, `docs/progress.md`: provider behavior and change note.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_provider_preset_catalog_and_inference or llm_schema_provider_defaults_use_shared_preset_catalog or llm_model_filtering_only_applies_openai_prefix_rules_to_openai or mistral_model_discovery_uses_chat_capability_metadata or together_model_discovery_uses_type_metadata or llm_provider_preset_saves_and_reclassifies_base_url_override or llm_save_validates_model_against_successful_live_discovery or llm_save_rejects_missing_model_when_discovery_fails or system_admin_saved_llm_inspection_uses_vault_key_and_updates_models or llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_service_owned or llm_endpoint_change_with_kept_secret_rediscover_models or llm_endpoint_change_with_failed_rediscovery_clears_stale_models or saved_llm_inspection_failure_persists_metadata_without_overwriting_models"`: passed, 13 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 1 test.
+- `python3 -m py_compile app/main.py app/web/presentation.py app/llm_provider_defaults.py app/schemas/llm.py app/services/llm_presets.py app/services/llm.py app/models.py`: passed.
+
+### Documentation
+
+- Updated LLM provider docs with `openai_chat` compatibility meaning, Bedrock URL reclassification, model validation, provider-specific filtering, and `inspected_at`.
+
+### Risks / assumptions
+
+- Assumes Together AI `chat`, `language`, and `code` records are acceptable for chat-completion selection.
+- Assumes non-Mantle Bedrock gateway URLs should remain classified as Custom OpenAI-compatible for this branch.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only provider metadata and model IDs handled; no transcript-derived content exposed.
+- Ownership rules preserved: LLM provisioning remains system-admin-only and team-scoped.
+- Deletion semantics preserved: no transcript/provider deletion cascade changed.
+- Provider rules preserved: Vault-backed bearer-token behavior unchanged; failed discovery requires manual model entry.
+- Structured-note contract preserved: generated document and EMIS JSON behavior unchanged.
+
 ## 2026-05-10 LLM Provider Upgrade Fixes
 
 ### Scope

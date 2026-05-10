@@ -136,7 +136,7 @@ from .schemas import (
     GeneratedDocumentRedactionDebugDetail,
     TranscribeWorkspaceDetail,
 )
-from .schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
+from .llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from .services.templates import (
     attach_generated_document_task_id as attach_generated_document_task_id_service,
     delete_generated_document as delete_generated_document_service,

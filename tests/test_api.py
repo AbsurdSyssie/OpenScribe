@@ -35,6 +35,7 @@ from app.models import (
     GeneratedDocumentStatus,
     LlmAdapterKind,
     LlmAuthMode,
+    LlmConfigSetupStatus,
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     ProviderUsageEvent,
@@ -2157,6 +2158,159 @@ def test_system_admin_can_provision_and_read_team_llm_configs_without_secret_rev
     listed = client.get(f"/api/v1/llm-configs?team_id={team.id}")
     assert listed.status_code == 200
     assert [item["label"] for item in listed.json()] == ["Clinic OpenAI"]
+
+
+def test_system_admin_can_create_and_finalize_llm_draft_without_secret_reveal(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-llm-draft@example.com", password="password-1", is_system_admin=True)
+    writes = []
+    monkeypatch.setattr(
+        "app.services.llm._list_openai_compatible_chat_models",
+        lambda *, provider_preset, api_key, base_url: ["model-a", "model-b"],
+    )
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_bearer_token",
+        lambda *, team_id, config_id, bearer_token: writes.append((team_id, config_id, bearer_token))
+        or f"secret:openscribe/llm/team/{team_id}/config/{config_id}",
+    )
+
+    login(client, email="admin-llm-draft@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "openrouter",
+            "bearer_token": "draft-secret",
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    config_body = body["config"]
+    config_id = UUID(config_body["id"])
+    assert config_body["setup_status"] == "pending_model_selection"
+    assert config_body["model_name"] is None
+    assert config_body["is_active"] is False
+    assert config_body["has_secret"] is True
+    assert "draft-secret" not in str(body)
+    assert body["available_models"] == ["model-a", "model-b"]
+    assert writes and writes[0][2] == "draft-secret"
+
+    persisted = db_session.get(TeamLlmConfig, config_id)
+    assert persisted.setup_status == LlmConfigSetupStatus.pending_model_selection
+    assert persisted.model_name is None
+    assert persisted.available_models_json == ["model-a", "model-b"]
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/llm/team/")
+
+    options = client.get(f"/api/v1/llm-selection/options?team_id={team.id}")
+    assert options.status_code == 200
+    assert options.json() == []
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{config_id}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": str(config_id),
+            "label": "OpenRouter North",
+            "model_name": "model-b",
+            "is_active": True,
+        },
+    )
+    assert finalized.status_code == 200
+    final_body = finalized.json()
+    assert final_body["setup_status"] == "ready"
+    assert final_body["model_name"] == "model-b"
+    assert final_body["is_active"] is True
+
+    options = client.get(f"/api/v1/llm-selection/options?team_id={team.id}")
+    assert [item["id"] for item in options.json()] == [str(config_id)]
+
+
+def test_llm_draft_manual_finalize_and_pending_selection_rejected(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinic Draft Manual")
+    make_user(email="admin-llm-manual@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader-llm-manual@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda *, base_url, bearer_token: [])
+
+    login(client, email="admin-llm-manual@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "ollama", "base_url": "http://localhost:11434"},
+    )
+    assert created.status_code == 200
+    config_id = UUID(created.json()["config"]["id"])
+    assert created.json()["discovery_status"] == "manual_required"
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="leader-llm-manual@example.com", password="password-2")
+    rejected = client.post("/api/v1/llm-selection", json={"llm_config_id": str(config_id)})
+    assert_error(rejected, status_code=404, code="not_found", message="Selectable LLM config not found")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="admin-llm-manual@example.com", password="password-1")
+    finalized = client.post(
+        f"/api/v1/llm-configs/{config_id}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": str(config_id),
+            "label": "Ollama Manual",
+            "model_name": "llama3.2",
+            "is_active": False,
+        },
+    )
+    assert finalized.status_code == 200
+    persisted = db_session.get(TeamLlmConfig, config_id)
+    assert persisted.setup_status == LlmConfigSetupStatus.ready
+    assert persisted.available_models_json == ["llama3.2"]
+    assert persisted.inspection_metadata_json["manual_model_name"] == "llama3.2"
+    assert client.get(f"/api/v1/llm-selection/options?team_id={team.id}").json() == []
+
+
+def test_llm_draft_replace_credential_reruns_discovery_and_resets_pending(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic Replace")
+    admin = make_user(email="admin-llm-replace@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Ready LLM",
+        model_name="old-model",
+        available_models_json=["old-model"],
+        is_active=True,
+    )
+    writes = []
+    monkeypatch.setattr(
+        "app.services.llm._list_openai_compatible_chat_models",
+        lambda *, provider_preset, api_key, base_url: ["new-model"],
+    )
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_bearer_token",
+        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/new",
+    )
+
+    login(client, email="admin-llm-replace@example.com", password="password-1")
+    replaced = client.post(
+        f"/api/v1/llm-configs/{config.id}/replace-credential",
+        json={"team_id": str(team.id), "config_id": str(config.id), "bearer_token": "new-secret"},
+    )
+
+    assert replaced.status_code == 200
+    body = replaced.json()
+    assert "new-secret" not in str(body)
+    assert body["config"]["setup_status"] == "pending_model_selection"
+    assert body["config"]["is_active"] is False
+    assert body["available_models"] == ["new-model"]
+    assert writes == ["new-secret"]
+    persisted = db_session.get(TeamLlmConfig, config.id)
+    assert persisted.setup_status == LlmConfigSetupStatus.pending_model_selection
+    assert persisted.model_name is None
+    assert persisted.available_models_json == ["new-model"]
 
 
 def test_llm_provider_preset_catalog_and_inference():

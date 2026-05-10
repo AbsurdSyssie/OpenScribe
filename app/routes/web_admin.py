@@ -1040,6 +1040,160 @@ def admin_inspect_saved_llm_config(
     )
 
 
+@app.post("/admin/llm-configs/drafts", response_class=HTMLResponse)
+def admin_create_llm_config_draft(
+    request: Request,
+    team_id: str = Form(...),
+    provider_preset: str = Form(""),
+    base_url: str = Form(""),
+    bedrock_region: str = Form(""),
+    bearer_token: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        config, _inspection = create_llm_config_draft_service(
+            db,
+            context.user,
+            LlmConfigDraftCreate(
+                team_id=UUID(team_id),
+                provider_preset=provider_preset,
+                base_url=base_url,
+                bedrock_region=bedrock_region or None,
+                bearer_token=bearer_token or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM draft request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="llm",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    redirect_url = _admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id)
+    separator = "&" if "?" in redirect_url else "?"
+    return RedirectResponse(
+        url=f"{redirect_url}{separator}llm_config_id={config.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/llm-configs/{config_id}/finalize", response_class=HTMLResponse)
+def admin_finalize_llm_config_draft(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    label: str = Form(...),
+    provider_model: str = Form(...),
+    is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        finalize_llm_config_draft_service(
+            db,
+            context.user,
+            LlmConfigFinalize(
+                team_id=UUID(team_id),
+                config_id=config_id,
+                label=label,
+                model_name=provider_model,
+                is_active=is_active == "true",
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM finalization request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_llm_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="llm",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/llm-configs/{config_id}/replace-credential", response_class=HTMLResponse)
+def admin_replace_llm_config_draft_credential(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    bearer_token: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        replace_llm_config_draft_credential_service(
+            db,
+            context.user,
+            LlmConfigDraftReplaceCredential(team_id=UUID(team_id), config_id=config_id, bearer_token=bearer_token),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM credential replacement request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_llm_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="llm",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    redirect_url = _admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id)
+    separator = "&" if "?" in redirect_url else "?"
+    return RedirectResponse(
+        url=f"{redirect_url}{separator}llm_config_id={config_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @app.post("/admin/llm-configs", response_class=HTMLResponse)
 def admin_upsert_llm_config(
     request: Request,

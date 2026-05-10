@@ -2,6 +2,15 @@
 
 OpenScribe LLM provisioning is system-admin-only. Team leaders and users can select only from active, system-admin-provisioned configs and never receive raw credentials.
 
+## Setup Status
+
+LLM provider setup is stateful:
+
+- `pending_model_selection` means the system admin has checked the provider key/endpoint, and any supplied key is saved in Vault, but no default model has been chosen yet.
+- `ready` means the provider has a label, default model, setup-complete status, and may be made available for team selection.
+
+Pending providers are visible only to system admins as `Setup incomplete`. Team leaders and users never receive pending providers from selection-option routes and cannot select a pending provider by ID. Selectable providers must be `ready`, `is_active=true`, and have a non-empty `model_name`.
+
 ## Preset Layer
 
 The admin UI exposes branded presets:
@@ -34,6 +43,7 @@ For Bedrock HTTP gateway, use the region selector for standard `bedrock-mantle.<
 Model lists come from live discovery. OpenScribe no longer supplies built-in LLM model fallback lists for failed discovery.
 
 - Successful discovery stores provider-returned models in `available_models_json`.
+- The admin wizard first creates a pending draft after `Check API key and find models`; the API key is not returned to the browser or carried in hidden inputs after this step.
 - Successful discovery that returns zero compatible chat models is treated as `manual_required`, not `fetched`, so admins must enter an explicit model name before save.
 - When successful discovery returns models, the saved `model_name` must be one of those discovered models. If no model is submitted, OpenScribe uses the first discovered model.
 - Failed discovery returns `manual_required` and allows a system admin to enter a model name manually. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
@@ -52,3 +62,5 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 Bearer tokens remain Vault-backed. API responses expose `has_secret` only and never return `vault_secret_ref` or raw secret material.
 
 Required-token presets must have an existing or replacement Vault-backed token. Ollama can be saved without a token for local deployments.
+
+Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.

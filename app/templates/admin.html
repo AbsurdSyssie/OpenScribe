@@ -1529,8 +1529,9 @@
         <div class="provider-grid">
             {% for config in llm_configs %}
             <article class="provider-card{% if llm_selection and llm_selection.llm_config_id == config.id %} is-active{% endif %}">
+              {% set is_llm_pending = config.setup_status.value == 'pending_model_selection' if config.setup_status is defined and config.setup_status.value is defined else config.setup_status == 'pending_model_selection' %}
               <div class="provider-card__main">
-                <div class="provider-card__header"><span class="provider-card__name">{{ config.label }}</span>{% if llm_selection and llm_selection.llm_config_id == config.id %}<span class="pill">active</span>{% endif %}</div>
+                <div class="provider-card__header"><span class="provider-card__name">{{ config.label }}</span><span class="pill">{% if is_llm_pending %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}</span>{% if llm_selection and llm_selection.llm_config_id == config.id %}<span class="pill">active</span>{% endif %}</div>
                 <div class="provider-card__url">{{ config.adapter_kind.value }} · {{ config.base_url }}</div>
                 <div class="provider-card__meta">
                   <span class="provider-card__meta-item"><strong>Default model:</strong> {{ config.model_name or "not set" }}</span>
@@ -1542,19 +1543,21 @@
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="llm_config_id" value="{{ config.id }}">
                   <input type="hidden" name="tab" value="providers">
-                  <button type="submit" class="quick-action">Edit</button>
+                  <button type="submit" class="quick-action">{{ "Continue setup" if is_llm_pending else "Edit" }}</button>
                 </form>
+                {% if not is_llm_pending %}
                 <form method="post" action="/admin/llm-configs/{{ config.id }}/inspect">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
                   <button type="submit" class="quick-action">Re-inspect models</button>
                 </form>
+                {% endif %}
                 <form method="post" action="/admin/llm-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned LLM provider and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="providers">
-                  <button type="submit" class="quick-action quick-action--danger">Delete</button>
+                  <button type="submit" class="quick-action quick-action--danger">{{ "Delete incomplete setup" if is_llm_pending else "Delete" }}</button>
                 </form>
               </div>
             </article>
@@ -1571,7 +1574,8 @@
             <p>Discover with a supplied key for setup, or re-inspect existing providers with the saved Vault credential.</p>
           </div>
         </div>
-        <form method="post" action="/admin/llm-configs/inspect" data-llm-inspect-form>
+        {% if not llm_config %}
+        <form method="post" action="/admin/llm-configs/drafts" data-llm-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
@@ -1602,11 +1606,12 @@
           </label>
           <p><small data-llm-adapter-note>{% if llm_form.adapter_kind == "bedrock_chat" %}Use the region selector for standard Bedrock HTTP gateway endpoints. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.{% elif llm_form.adapter_kind == "ollama_chat" %}Ollama uses `/api/tags` for model discovery and `/api/chat` for generation. Local Ollama usually runs at `http://localhost:11434`.{% else %}Changing a branded provider endpoint will save as Custom OpenAI-compatible.{% endif %}</small></p>
           <label>
-            <span data-llm-token-label>API key for inspection</span>
+            <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token">
           </label>
-          <button type="submit">Discover models</button>
+          <button type="submit">Check API key and find models</button>
         </form>
+        {% endif %}
         {% if llm_inspection %}
         <p><small>Detected adapter: {{ llm_inspection.adapter_kind.value }}. Base URL: {{ llm_inspection.base_url }}.</small></p>
         <p><small>Provider: <strong>{{ llm_inspection.provider_display_name }}</strong>.</small></p>
@@ -1627,13 +1632,16 @@
         {% endif %}
         {% endif %}
         <p><small>Standalone discovery tokens are not retained or rendered. Existing providers can be re-inspected with the saved Vault credential.</small></p>
-        <form method="post" action="/admin/llm-configs" data-llm-save-form>
+        {% if llm_config %}
+        {% set is_llm_pending_form = llm_form.is_setup_incomplete %}
+        <form method="post" action="{{ '/admin/llm-configs/' ~ llm_form.config_id ~ '/finalize' if is_llm_pending_form else '/admin/llm-configs' }}" data-llm-save-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="config_id" value="{{ llm_form.config_id }}">
           <input type="hidden" name="provider_preset" value="{{ llm_form.provider_preset }}">
           <input type="hidden" name="adapter_kind" value="{{ llm_form.adapter_kind }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
+          {% if not is_llm_pending_form %}
           <label>
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url }}" data-llm-base-url>
@@ -1647,10 +1655,14 @@
             </select>
           </label>
           <p><small>Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</small></p>
+          {% else %}
+          <p><small>Provider: <strong>{{ llm_form.provider_display_name }}</strong>. Credential: <strong>saved</strong>.</small></p>
+          {% endif %}
           <label>
             Label
             <input type="text" name="label" required maxlength="255" value="{{ llm_form.label }}">
           </label>
+          {% if not is_llm_pending_form %}
           <label>
             <span data-llm-token-label>API key</span>
             <input type="password" name="bearer_token" {% if llm_form.adapter_kind in ["openai_chat", "bedrock_chat"] and not llm_config %}required{% endif %} data-llm-token-input>
@@ -1665,6 +1677,7 @@
             </select>
           </label>
           <p><small>Blank token is accepted only when action keeps or removes the saved credential. OpenAI and Bedrock require a saved key.</small></p>
+          {% endif %}
           <label>
             Model
             {% if llm_form.available_model_options %}
@@ -1679,15 +1692,21 @@
           </label>
           <label>
             <input type="checkbox" name="is_active" value="true" {% if llm_form.is_active %}checked{% endif %}>
-            Active
+            Available for team selection
           </label>
-          <div class="stack">
-            <button type="submit">{% if llm_form.config_id %}Save provider{% else %}Add provider{% endif %}</button>
-            {% if llm_form.config_id %}
-            <button type="submit" formaction="/admin/llm-configs/{{ llm_form.config_id }}/inspect" formmethod="post">Re-inspect saved credential</button>
-            {% endif %}
-          </div>
+          <button type="submit">Save provider</button>
         </form>
+        <form method="post" action="/admin/llm-configs/{{ llm_form.config_id }}/replace-credential">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>
+            Replacement API key
+            <input type="password" name="bearer_token">
+          </label>
+          <button type="submit">Replace API key</button>
+        </form>
+        {% endif %}
         </div>
 
       </div>

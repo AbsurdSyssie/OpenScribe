@@ -150,6 +150,10 @@ def get_llm_provider_preset(key: str | LlmProviderPreset | None) -> LlmProviderP
         raise ValueError("Unsupported LLM provider preset") from exc
 
 
+def default_llm_config_label(*, provider_display_name: str, team_name: str) -> str:
+    return f"{provider_display_name} · {team_name}"
+
+
 def infer_llm_provider_preset(adapter_kind: str | LlmAdapterKind, base_url: str | None) -> str:
     adapter_value = adapter_kind.value if isinstance(adapter_kind, LlmAdapterKind) else str(adapter_kind or "")
     host = (urlparse(base_url or "").hostname or "").lower()

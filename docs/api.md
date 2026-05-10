@@ -143,6 +143,9 @@ Browser navigation behavior:
 - `GET /api/v1/llm-configs`
 - `POST /api/v1/llm-configs/inspect`
 - `POST /api/v1/llm-configs/{config_id}/inspect`
+- `POST /api/v1/llm-configs/drafts`
+- `POST /api/v1/llm-configs/{config_id}/finalize`
+- `POST /api/v1/llm-configs/{config_id}/replace-credential`
 - `POST /api/v1/llm-configs`
 - `DELETE /api/v1/llm-configs/{config_id}`
 - `GET /api/v1/llm-selection`
@@ -158,10 +161,14 @@ Browser navigation behavior:
 - these are metadata and secret-reference routes, not transcript-content routes
 - LLM inspect accepts branded `provider_preset` values and returns `provider_preset`, `provider_display_name`, `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, manual-required, and failed discovery states
 - LLM inspect remains scoped to known protocol adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
+- LLM draft creation is system-admin-only; it saves the submitted credential to Vault, stores discovered model metadata, returns `has_secret=true`, and never returns raw keys or Vault refs
+- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's active LLM selection
+- LLM credential replacement reruns discovery, clears availability, and returns the config to `pending_model_selection`
 - saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
 - LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
 - LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
 - persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
+- LLM selection options and selection writes require `setup_status=ready`, `is_active=true`, and a non-empty default `model_name`; pending provider drafts are hidden from leaders/users and rejected by ID
 
 ### Shared NLP endpoint configuration
 

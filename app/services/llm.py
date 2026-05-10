@@ -7,10 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
-from app.schemas import LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
+from app.schemas import LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
+    default_llm_config_label,
     filter_discovered_models,
     get_llm_provider_preset,
     infer_llm_provider_preset,
@@ -413,6 +414,118 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
     ) is not None
 
 
+def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCreate) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    provider_preset, adapter_kind, base_url, region = apply_provider_defaults(
+        provider_preset=payload.provider_preset,
+        base_url=payload.base_url,
+        bedrock_region=payload.bedrock_region,
+    )
+    provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
+    preset = get_llm_provider_preset(provider_preset)
+    adapter_kind = preset.adapter_kind
+    if preset.requires_bearer_token and not payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "This LLM provider requires an API key", {"field": "bearer_token"})
+    inspection = inspect_llm_contract(
+        db,
+        actor,
+        LlmInspectRequest(
+            team_id=team.id,
+            provider_preset=provider_preset,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            bearer_token=payload.bearer_token,
+            bedrock_region=region,
+        ),
+    )
+    config = TeamLlmConfig(
+        id=uuid4(),
+        team_id=team.id,
+        label=default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name),
+        provider_preset=inspection.provider_preset,
+        adapter_kind=inspection.adapter_kind,
+        base_url=inspection.base_url,
+        auth_mode=LlmAuthMode.bearer if preset.requires_bearer_token or payload.bearer_token else LlmAuthMode.none,
+        model_name=None,
+        available_models_json=list(inspection.available_models),
+        inspection_metadata_json=_inspection_metadata(inspection),
+        setup_status=LlmConfigSetupStatus.pending_model_selection,
+        vault_secret_ref="pending" if payload.bearer_token else "",
+        is_active=False,
+        created_by_user_id=actor.id,
+        updated_by_user_id=actor.id,
+    )
+    db.add(config)
+    db.flush()
+    if payload.bearer_token:
+        config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+    db.commit()
+    db.refresh(config)
+    return config, inspection
+
+
+def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinalize) -> TeamLlmConfig:
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
+    if config is None:
+        raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
+    if _llm_config_has_in_flight_jobs(db, config_id=config.id):
+        raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
+    model_name = payload.model_name.strip()
+    available = list(config.available_models_json or [])
+    if available and model_name not in available:
+        raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
+    metadata = dict(config.inspection_metadata_json or {})
+    if not available:
+        available = [model_name]
+        metadata["manual_model_name"] = model_name
+        metadata["discovery_status"] = "manual_required"
+        metadata["default_model_source"] = "manual"
+    config.label = payload.label.strip()
+    config.model_name = model_name
+    config.available_models_json = available
+    config.inspection_metadata_json = metadata
+    config.setup_status = LlmConfigSetupStatus.ready
+    config.is_active = payload.is_active
+    config.updated_by_user_id = actor.id
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmConfigDraftReplaceCredential) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
+    if config is None:
+        raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
+    if _llm_config_has_in_flight_jobs(db, config_id=config.id):
+        raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
+    inspection = inspect_llm_contract(
+        db,
+        actor,
+        LlmInspectRequest(
+            team_id=team.id,
+            provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
+            adapter_kind=config.adapter_kind,
+            base_url=config.base_url,
+            bearer_token=payload.bearer_token,
+        ),
+    )
+    config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+    config.available_models_json = list(inspection.available_models)
+    if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
+        config.model_name = None
+    config.inspection_metadata_json = _inspection_metadata(inspection)
+    config.setup_status = LlmConfigSetupStatus.pending_model_selection
+    config.is_active = False
+    config.updated_by_user_id = actor.id
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config, inspection
+
+
 def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> TeamLlmConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset, adapter_kind, base_url, _region = apply_provider_defaults(
@@ -453,7 +566,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config is not None
         and (
             (config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)) != provider_preset
-            or config.adapter_kind is not adapter_kind
+            or config.adapter_kind != adapter_kind
             or config.base_url.rstrip("/") != base_url.rstrip("/")
         )
     )
@@ -547,6 +660,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             model_name=model_name,
             available_models_json=available_models_json,
             inspection_metadata_json=discovery_metadata,
+            setup_status=LlmConfigSetupStatus.ready,
             vault_secret_ref="pending" if replacing_secret or adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
             created_by_user_id=actor.id,
@@ -563,6 +677,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.model_name = model_name
         config.available_models_json = available_models_json
         config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
+        config.setup_status = LlmConfigSetupStatus.ready
         config.is_active = payload.is_active
         config.updated_by_user_id = actor.id
         db.add(config)
@@ -627,7 +742,16 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
 
 def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:
     team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
-    stmt = select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id, TeamLlmConfig.is_active.is_(True)).order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
+    stmt = (
+        select(TeamLlmConfig)
+        .where(
+            TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.is_active.is_(True),
+            TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
+            TeamLlmConfig.model_name.is_not(None),
+        )
+        .order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
+    )
     return list(db.scalars(stmt))
 
 
@@ -638,7 +762,15 @@ def get_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None = N
 
 def set_team_llm_selection(db: Session, actor: User, payload: LlmSelectionUpsert) -> TeamLlmSelection:
     team = _resolve_selection_scoped_team(db, actor, team_id=payload.team_id)
-    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.llm_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.is_active.is_(True)))
+    config = db.scalar(
+        select(TeamLlmConfig).where(
+            TeamLlmConfig.id == payload.llm_config_id,
+            TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.is_active.is_(True),
+            TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
+            TeamLlmConfig.model_name.is_not(None),
+        )
+    )
     if config is None:
         raise AppError(404, "not_found", "Selectable LLM config not found", {"resource": "llm_config", "config_id": str(payload.llm_config_id)})
     provider_models = list(config.available_models_json or [])
@@ -706,7 +838,13 @@ def clear_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None =
 
 def active_team_llm_selection(db: Session, *, team_id: UUID) -> TeamLlmSelection:
     selection = db.scalar(select(TeamLlmSelection).options(joinedload(TeamLlmSelection.config)).where(TeamLlmSelection.team_id == team_id))
-    if selection is None or selection.config is None or not selection.config.is_active:
+    if (
+        selection is None
+        or selection.config is None
+        or not selection.config.is_active
+        or selection.config.setup_status != LlmConfigSetupStatus.ready
+        or not selection.config.model_name
+    ):
         raise AppError(422, "business_rule_violation", "No active LLM selection for team", {"team_id": str(team_id)})
     return selection
 

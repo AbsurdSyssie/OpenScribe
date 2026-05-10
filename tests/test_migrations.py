@@ -232,6 +232,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     llm_indexes = inspector.get_indexes("team_llm_configs")
     assert {"team_id", "provider_preset", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json", "inspection_metadata_json", "setup_status"} <= llm_columns
     assert any(item["name"] == "ix_team_llm_configs_setup_status" for item in llm_indexes)
+    assert any(item["name"] == "uq_team_llm_configs_team_label_lower" for item in llm_indexes)
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {
         "label",
@@ -835,6 +836,70 @@ def test_alembic_upgrade_dedupes_existing_asset_names_without_copy_name_collisio
         ).scalars().all()
 
     assert template_names == ["Clinic Letter", "Clinic Letter copy 2", "clinic letter copy 3"]
+
+
+@pytest.mark.migration
+def test_llm_config_label_migration_dedupes_before_unique_index():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "b1c2d3e4f5a6")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000501', 'Clinic LLM Labels', 'clinic llm labels', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000502', 'LLM Admin', 'llm-label-admin@example.com', 'hash', NULL, NULL,
+                    true, 'active', false, 'complete', true, true, NOW(), NOW(), NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_llm_configs (
+                    id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
+                    available_models_json, inspection_metadata_json, setup_status, vault_secret_ref, is_active,
+                    created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                ('00000000-0000-0000-0000-000000000511', '00000000-0000-0000-0000-000000000501', 'OpenRouter', 'openrouter', 'openai_chat', 'https://openrouter.ai/api/v1', 'bearer', 'model-a', '[]'::json, '{}'::json, 'ready', 'secret:a', true, '00000000-0000-0000-0000-000000000502', '00000000-0000-0000-0000-000000000502', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '2 minutes'),
+                ('00000000-0000-0000-0000-000000000512', '00000000-0000-0000-0000-000000000501', ' openrouter ', 'openrouter', 'openai_chat', 'https://openrouter.ai/api/v1', 'bearer', 'model-b', '[]'::json, '{}'::json, 'ready', 'secret:b', true, '00000000-0000-0000-0000-000000000502', '00000000-0000-0000-0000-000000000502', NOW() - INTERVAL '1 minute', NOW() - INTERVAL '1 minute'),
+                ('00000000-0000-0000-0000-000000000513', '00000000-0000-0000-0000-000000000501', 'OpenRouter copy 2', 'openrouter', 'openai_chat', 'https://openrouter.ai/api/v1', 'bearer', 'model-c', '[]'::json, '{}'::json, 'ready', 'secret:c', true, '00000000-0000-0000-0000-000000000502', '00000000-0000-0000-0000-000000000502', NOW(), NOW())
+                """
+            )
+        )
+
+    command.upgrade(alembic_config(), "head")
+
+    with isolated_engine.begin() as connection:
+        names = connection.execute(
+            text(
+                """
+                SELECT label
+                FROM team_llm_configs
+                WHERE team_id = '00000000-0000-0000-0000-000000000501'
+                ORDER BY label
+                """
+            )
+        ).scalars().all()
+        indexes = inspect(connection).get_indexes("team_llm_configs")
+
+    assert names == ["OpenRouter", "OpenRouter copy 2", "openrouter copy 3"]
+    assert any(item["name"] == "uq_team_llm_configs_team_label_lower" for item in indexes)
 
 
 @pytest.mark.migration

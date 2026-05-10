@@ -44,9 +44,10 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 
 - Successful discovery stores provider-returned models in `available_models_json`.
 - The admin wizard first creates a pending draft after `Check API key and find models`; the API key is not returned to the browser or carried in hidden inputs after this step.
+- Provider credential rejection (`401`/`403` or SDK authentication errors) returns `llm_invalid_credential`, does not create a draft config, and does not write a Vault secret. Browser setup stays on the Provider/API key step with the API-key rejection message.
 - Successful discovery that returns zero compatible chat models is treated as `manual_required`, not `fetched`, so admins must enter an explicit model name before save.
 - When successful discovery returns models, the saved `model_name` must be one of those discovered models. If no model is submitted, OpenScribe uses the first discovered model.
-- Failed discovery returns `manual_required` and allows a system admin to enter a model name manually. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
+- Failed non-auth discovery returns `manual_required` and allows a system admin to enter a model name manually. The browser warns that generation may fail if the endpoint, key, or model name is wrong. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
 - Save without a model name remains invalid.
 - Editing a saved provider's preset, adapter, or base URL while keeping the existing Vault-backed secret triggers fresh model discovery with that saved secret. If rediscovery fails, OpenScribe clears stale provider models and stores only the submitted manual model.
 - OpenAI-specific model prefix filtering applies only to the OpenAI preset. Other OpenAI-compatible providers keep valid non-OpenAI model IDs after removing non-chat categories such as embeddings, transcription, TTS, moderation, and image models.
@@ -64,3 +65,9 @@ Bearer tokens remain Vault-backed. API responses expose `has_secret` only and ne
 Required-token presets must have an existing or replacement Vault-backed token. Ollama can be saved without a token for local deployments.
 
 Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.
+
+## Labels
+
+LLM config labels are unique per team after trimming surrounding whitespace and comparing case-insensitively. Draft creation, finalization, and legacy save paths all return `409 conflict` with `An LLM provider with this name already exists for this team.` before saving duplicates.
+
+When a system admin supplies a label during draft creation, OpenScribe preserves it. If no label is supplied, the backend generates the default provider/team label.

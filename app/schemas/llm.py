@@ -118,6 +118,7 @@ class LlmConfigDraftCreate(BaseModel):
 
     team_id: UUID
     provider_preset: LlmProviderPreset = LlmProviderPreset.openai
+    label: str | None = Field(default=None, min_length=1, max_length=255)
     base_url: str = Field(default="", max_length=2048)
     bearer_token: str | None = Field(default=None, min_length=1)
     bedrock_region: str | None = Field(default=None, max_length=64)

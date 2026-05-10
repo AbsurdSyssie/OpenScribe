@@ -2228,6 +2228,81 @@ def test_system_admin_can_create_and_finalize_llm_draft_without_secret_reveal(
     assert [item["id"] for item in options.json()] == [str(config_id)]
 
 
+def test_llm_draft_invalid_key_creates_no_config_or_vault_secret(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bad LLM Key")
+    make_user(email="admin-bad-llm-key@example.com", password="password-1", is_system_admin=True)
+    writes: list[str] = []
+
+    def reject_key(**kwargs):
+        raise AppError(401, "llm_invalid_credential", "The API key was rejected by the provider.")
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", reject_key)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: writes.append(kwargs["bearer_token"]) or "secret:unexpected")
+
+    login(client, email="admin-bad-llm-key@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openrouter", "label": "Bad Router", "bearer_token": "bad-key"},
+    )
+
+    assert_error(created, status_code=401, code="llm_invalid_credential", message="The API key was rejected by the provider.")
+    assert writes == []
+    assert db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)) is None
+
+
+def test_llm_draft_preserves_supplied_label_and_falls_back_when_omitted(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Draft Labels")
+    make_user(email="admin-llm-draft-labels@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda *, provider_preset, api_key, base_url: ["model-a"])
+
+    login(client, email="admin-llm-draft-labels@example.com", password="password-1")
+    supplied = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openrouter", "label": "Router Custom", "bearer_token": "router-key"},
+    )
+    fallback = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "openai-key"},
+    )
+
+    assert supplied.status_code == 200
+    assert supplied.json()["config"]["label"] == "Router Custom"
+    assert fallback.status_code == 200
+    assert fallback.json()["config"]["label"] == "OpenAI · Clinic Draft Labels"
+
+
+def test_llm_config_labels_are_unique_per_team_case_and_trim_normalized(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Unique LLM")
+    other_team = make_team(name="Clinic Unique Other")
+    admin = make_user(email="admin-llm-unique@example.com", password="password-1", is_system_admin=True)
+    existing = make_llm_config(team=team, actor=admin, label="OpenRouter", model_name="model-a", available_models_json=["model-a"])
+    other = make_llm_config(team=other_team, actor=admin, label="openrouter", model_name="model-a", available_models_json=["model-a"])
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda *, provider_preset, api_key, base_url: ["model-a"])
+
+    login(client, email="admin-llm-unique@example.com", password="password-1")
+    duplicate_draft = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openrouter", "label": " openrouter ", "bearer_token": "router-key"},
+    )
+
+    assert_error(duplicate_draft, status_code=409, code="conflict", message="An LLM provider with this name already exists for this team.")
+    assert other.label == "openrouter"
+
+    draft = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "label": "Draft Unique", "bearer_token": "openai-key"},
+    )
+    assert draft.status_code == 200
+    draft_id = draft.json()["config"]["id"]
+    duplicate_finalize = client.post(
+        f"/api/v1/llm-configs/{draft_id}/finalize",
+        json={"team_id": str(team.id), "config_id": draft_id, "label": " openrouter ", "model_name": "model-a", "is_active": True},
+    )
+    assert_error(duplicate_finalize, status_code=409, code="conflict", message="An LLM provider with this name already exists for this team.")
+    db_session.refresh(existing)
+    assert existing.label == "OpenRouter"
+
+
 def test_llm_draft_manual_finalize_and_pending_selection_rejected(
     client, db_session, make_team, make_user, monkeypatch
 ):

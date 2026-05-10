@@ -694,7 +694,7 @@
                         <div class="field"><label>Credential action</label><select class="select" name="credential_action"><option value="keep" selected>keep</option><option value="replace">replace</option><option value="remove">remove</option></select></div>
                         <div class="field"><label>Bedrock region</label><select class="select" name="bedrock_region" data-bedrock-region-input><option value="eu-west-2">eu-west-2</option><option value="us-east-1">us-east-1</option><option value="us-west-2">us-west-2</option><option value="eu-central-1">eu-central-1</option><option value="ap-southeast-2">ap-southeast-2</option></select><p class="desc">Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</p></div>
                         {% endif %}
-                        <div class="field"><label>Model name</label><input class="input" name="provider_model" value="{{ config.model_name or '' }}"><p class="desc">If discovery cannot load models, enter the exact model ID manually.</p></div>
+                        <div class="field"><label>Model name</label>{% if is_llm_pending and not config.available_models_json %}<p class="desc">Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong.</p>{% endif %}<input class="input" name="provider_model" value="{{ config.model_name or '' }}"><p class="desc">If discovery cannot load models, enter the exact model ID manually.</p></div>
                         <label><input type="checkbox" name="is_active" value="true" {% if config.is_active %}checked{% endif %}> Available for team selection</label>
                       </section>
                     </div>

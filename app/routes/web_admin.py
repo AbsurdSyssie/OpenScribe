@@ -1044,6 +1044,7 @@ def admin_inspect_saved_llm_config(
 def admin_create_llm_config_draft(
     request: Request,
     team_id: str = Form(...),
+    label: str = Form(""),
     provider_preset: str = Form(""),
     base_url: str = Form(""),
     bedrock_region: str = Form(""),
@@ -1065,19 +1066,31 @@ def admin_create_llm_config_draft(
             LlmConfigDraftCreate(
                 team_id=UUID(team_id),
                 provider_preset=provider_preset,
+                label=label or None,
                 base_url=base_url,
                 bedrock_region=bedrock_region or None,
                 bearer_token=bearer_token or None,
             ),
         )
     except (ValueError, AppError) as exc:
-        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM draft request"
+        detail = "The API key was rejected by the provider. Check the key and try again." if isinstance(exc, AppError) and exc.code == "llm_invalid_credential" else (exc.message if isinstance(exc, AppError) else "Invalid LLM draft request")
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        llm_form = llm_form_defaults(None, None)
+        llm_form.update(
+            {
+                "label": label,
+                "provider_preset": provider_preset or llm_form["provider_preset"],
+                "base_url": base_url or llm_form["base_url"],
+                "bedrock_region": bedrock_region or llm_form["bedrock_region"],
+            }
+        )
         return render_admin(
             request,
             db,
             current_user=context.user,
             selected_team_id=team_id,
+            selected_llm_config_id="new" if _admin_return_view_value(return_view) == "admin2" else None,
+            llm_form_override=llm_form,
             message=detail,
             message_kind="error",
             status_code=status_code,

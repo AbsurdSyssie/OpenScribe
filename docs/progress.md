@@ -1,5 +1,47 @@
 # Progress
 
+## 2026-05-10 LLM Provider Invalid Key and Label Uniqueness
+
+### Scope
+
+- Implemented remaining `LLM_Provider_Upgrade.md` items: invalid-key classification, no draft/secret on auth failure, draft label preservation, normalized per-team label uniqueness, and manual-model warning copy.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/llm.py`: preserves `llm_invalid_credential`, guards label uniqueness, preserves draft labels, catches DB uniqueness races.
+- `app/schemas/llm.py`, `app/models.py`: adds draft label input and normalized unique label index metadata.
+- `app/routes/web_admin.py`, `app/templates/admin.html`, `app/templates/admin2.html`: keeps bad keys on credential step and shows manual-save warning.
+- `alembic/versions/c2d3e4f5a6b8_add_unique_llm_config_labels.py`: dedupes existing LLM config labels and adds unique index.
+- `tests/test_api.py`, `tests/test_admin_ui.py`, `tests/test_migrations.py`: add regressions for bad keys, labels, warnings, and migration/index behavior.
+- `docs/llm-providers.md`, `docs/progress.md`: document behavior.
+
+### Tests
+
+- Pending focused pytest in current session.
+
+### Documentation
+
+- `docs/llm-providers.md`: documents invalid-key handling, manual warning, and label uniqueness/preservation.
+
+### Risks / assumptions
+
+- Existing duplicate LLM labels are renamed deterministically with `copy N`, avoiding collisions with existing copy labels.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only provider metadata/labels touched; no transcript-derived content exposed.
+- Ownership rules preserved: LLM provisioning remains system-admin-only and team-scoped.
+- Deletion semantics preserved: no transcript/provider delete paths changed; invalid credentials avoid secret creation.
+- Provider rules preserved: raw credentials remain Vault-backed and rejected keys are never persisted.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 LLM Provider Upgrade Review Patch
 
 ### Scope

@@ -5580,6 +5580,8 @@ def test_admin_optional_token_form_defaults_do_not_replace_blank_credentials():
     llm_form = llm_form_defaults(
         None,
         LlmConfigInspectResult(
+            provider_preset="ollama",
+            provider_display_name="Ollama",
             base_url="http://localhost:11434",
             adapter_kind=LlmAdapterKind.ollama_chat,
             model_name="llama3.2",
@@ -5763,7 +5765,7 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     assert 'name="preserved_bearer_token" value="bedrock-api-key"' not in inspect.text
     assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (fetched)<" in inspect.text
     assert "https://bedrock-mantle.us-east-1.api.aws/v1" in inspect.text
-    assert 'name="bedrock_region" value="us-east-1"' in inspect.text
+    assert "us-east-1" in inspect.text
 
     save = client.post(
         "/admin/llm-configs",

@@ -12,6 +12,7 @@ from ..models import (
     DeidentificationAuthMode,
     GeneratedDocument,
     LlmAdapterKind,
+    LlmProviderPreset,
     PromptTemplate,
     QuickAction,
     SmartPhrase,
@@ -26,6 +27,7 @@ from ..models import (
     User,
     UserStatus,
 )
+from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, infer_llm_provider_preset
 from ..schemas import (
     ClinicalNlpSelectionDetail,
     DeidentificationInspectResult,
@@ -166,11 +168,13 @@ def llm_config_response(config) -> LlmConfigDetail:
         id=config.id,
         team_id=config.team_id,
         label=config.label,
+        provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
         adapter_kind=config.adapter_kind,
         base_url=config.base_url,
         auth_mode=config.auth_mode,
         model_name=config.model_name,
         available_models_json=list(config.available_models_json or []),
+        inspection_metadata_json=config.inspection_metadata_json or {},
         is_active=config.is_active,
         has_secret=bool(config.vault_secret_ref),
         created_by_user_id=config.created_by_user_id,
@@ -469,6 +473,8 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         return {
             "config_id": "",
             "label": "",
+            "provider_preset": inspection.provider_preset,
+            "provider_display_name": inspection.provider_display_name,
             "adapter_kind": inspection.adapter_kind.value,
             "base_url": inspection.base_url,
             "openapi_path": inspection.openapi_path or "/openapi.json",
@@ -489,11 +495,15 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "extra_form_fields_json": json.dumps(inspection.extra_form_fields_json) if inspection.extra_form_fields_json else "",
             "is_active": True,
             "credential_action": default_credential_action(inspection.adapter_kind),
+            "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+            "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
     if config is not None:
         return {
             "config_id": str(config.id),
             "label": config.label,
+            "provider_preset": config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
+            "provider_display_name": LLM_PROVIDER_PRESETS.get(config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url), LLM_PROVIDER_PRESETS[LlmProviderPreset.custom_openai_compatible.value]).display_name,
             "adapter_kind": config.adapter_kind.value,
             "base_url": config.base_url,
             "openapi_path": "/openapi.json" if config.adapter_kind is SttAdapterKind.generic_rest else "",
@@ -517,6 +527,8 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "extra_form_fields_json": json.dumps(config.extra_form_fields_json) if config.extra_form_fields_json else "",
             "is_active": config.is_active,
             "credential_action": "keep",
+            "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+            "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
     return {
         "config_id": "",
@@ -582,6 +594,8 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
     return {
         "config_id": "",
         "label": "",
+        "provider_preset": LlmProviderPreset.openai.value,
+        "provider_display_name": LLM_PROVIDER_PRESETS[LlmProviderPreset.openai.value].display_name,
         "adapter_kind": LlmAdapterKind.openai_chat.value,
         "base_url": "https://api.openai.com/v1",
         "bedrock_region": "",
@@ -590,6 +604,8 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
         "available_model_options": [],
         "is_active": True,
         "credential_action": default_credential_action(LlmAdapterKind.openai_chat),
+        "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+        "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
     }
 
 

@@ -96,6 +96,7 @@ from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
 from app.services.llm import upsert_llm_config as upsert_llm_config_service
+from app.services.llm_presets import LLM_PROVIDER_PRESETS, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
@@ -2157,6 +2158,91 @@ def test_system_admin_can_provision_and_read_team_llm_configs_without_secret_rev
     assert [item["label"] for item in listed.json()] == ["Clinic OpenAI"]
 
 
+def test_llm_provider_preset_catalog_and_inference():
+    assert list(LLM_PROVIDER_PRESETS) == [
+        "openai",
+        "openrouter",
+        "xai",
+        "groq",
+        "mistral",
+        "deepseek",
+        "together",
+        "ollama",
+        "bedrock_http_gateway",
+        "custom_openai_compatible",
+    ]
+    assert LLM_PROVIDER_PRESETS["openrouter"].default_base_url == "https://openrouter.ai/api/v1"
+    assert LLM_PROVIDER_PRESETS["custom_openai_compatible"].default_base_url is None
+    assert LLM_PROVIDER_PRESETS["bedrock_http_gateway"].default_bedrock_region == "eu-west-2"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.openai.com/v1") == "openai"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://openrouter.ai/api/v1") == "openrouter"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.x.ai/v1") == "xai"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.groq.com/openai/v1") == "groq"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.deepseek.com") == "deepseek"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.mistral.ai/v1") == "mistral"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.together.xyz/v1") == "together"
+    assert infer_llm_provider_preset(LlmAdapterKind.bedrock_chat, "https://bedrock-mantle.eu-west-2.api.aws/v1") == "bedrock_http_gateway"
+    assert infer_llm_provider_preset(LlmAdapterKind.ollama_chat, "http://localhost:11434") == "ollama"
+    assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://llm.example.com/v1") == "custom_openai_compatible"
+
+
+def test_llm_model_filtering_only_applies_openai_prefix_rules_to_openai():
+    models = ["gpt-4.1-mini", "openai/text-embedding-3-small", "mistralai/mistral-large", "grok-4", "llama-3.3-70b"]
+
+    assert filter_discovered_models("openai", models) == ["gpt-4.1-mini"]
+    assert filter_discovered_models("openrouter", models) == ["gpt-4.1-mini", "grok-4", "llama-3.3-70b", "mistralai/mistral-large"]
+    assert filter_discovered_models("xai", models) == ["gpt-4.1-mini", "grok-4", "llama-3.3-70b", "mistralai/mistral-large"]
+
+
+def test_llm_provider_preset_saves_and_reclassifies_base_url_override(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Presets")
+    make_user(email="admin-llm-presets@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", lambda **kwargs: ["anthropic/claude-sonnet-4", "text-embedding-3-small"])
+
+    login(client, email="admin-llm-presets@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Router",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "model_name": "anthropic/claude-sonnet-4",
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["provider_preset"] == "openrouter"
+    assert body["base_url"] == "https://openrouter.ai/api/v1"
+    assert body["available_models_json"] == ["anthropic/claude-sonnet-4"]
+    assert "vault_secret_ref" not in body
+
+    config = db_session.get(TeamLlmConfig, UUID(body["id"]))
+    assert config is not None
+    assert config.inspection_metadata_json["discovery_status"] == "fetched"
+
+    monkeypatch.setattr("app.services.llm._list_openai_chat_models", lambda **kwargs: ["gpt-4o-mini"])
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "OpenAI-ish",
+            "provider_preset": "openai",
+            "base_url": "https://gateway.example.com/v1",
+            "bearer_token": "new-key",
+            "credential_action": "replace",
+            "model_name": "gpt-4o-mini",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["provider_preset"] == "custom_openai_compatible"
+
+
 def test_system_admin_can_provision_local_ollama_without_secret(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -2401,7 +2487,7 @@ def test_system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_
         updated,
         status_code=422,
         code="business_rule_violation",
-        message="OpenAI and Bedrock LLM configs require a saved bearer token",
+        message="This LLM provider requires a saved bearer token",
     )
     db_session.refresh(config)
     assert config.adapter_kind is LlmAdapterKind.ollama_chat

@@ -229,7 +229,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "inspection_metadata_json",
     } <= stt_columns
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
-    assert {"team_id", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json"} <= llm_columns
+    assert {"team_id", "provider_preset", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json", "inspection_metadata_json"} <= llm_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {
         "label",
@@ -1263,6 +1263,107 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
 
     assert adapter_kind == "bedrock_chat"
     assert auth_mode == "bearer"
+
+
+@pytest.mark.migration
+def test_alembic_backfills_llm_provider_presets():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "z6b7c8d9e0f1")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000140',
+                    'Admin User',
+                    'llm-preset-admin@example.com',
+                    'hash',
+                    NULL,
+                    NULL,
+                    true,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000141',
+                    'Clinic Presets',
+                    'clinic presets',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        for config_id, label, adapter, base_url, model in [
+            ("00000000-0000-0000-0000-000000000142", "OpenAI", "openai_chat", "https://api.openai.com/v1", "gpt-4o-mini"),
+            ("00000000-0000-0000-0000-000000000143", "OpenRouter", "openai_chat", "https://openrouter.ai/api/v1", "openai/gpt-4o"),
+            ("00000000-0000-0000-0000-000000000144", "Bedrock", "bedrock_chat", "https://bedrock-mantle.eu-west-2.api.aws/v1", "anthropic.claude"),
+            ("00000000-0000-0000-0000-000000000145", "Ollama", "ollama_chat", "http://localhost:11434", "llama3.2"),
+            ("00000000-0000-0000-0000-000000000146", "Custom", "openai_chat", "https://llm.example.com/v1", "custom-model"),
+        ]:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO team_llm_configs (
+                        id, team_id, label, adapter_kind, base_url, auth_mode, model_name, available_models_json,
+                        vault_secret_ref, is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                    )
+                    VALUES (
+                        :id,
+                        '00000000-0000-0000-0000-000000000141',
+                        :label,
+                        :adapter_kind,
+                        :base_url,
+                        'bearer',
+                        :model_name,
+                        '[]'::json,
+                        'secret:openscribe/llm/team/1/config/2',
+                        true,
+                        '00000000-0000-0000-0000-000000000140',
+                        '00000000-0000-0000-0000-000000000140',
+                        NOW(),
+                        NOW()
+                    )
+                    """
+                ),
+                {"id": config_id, "label": label, "adapter_kind": adapter, "base_url": base_url, "model_name": model},
+            )
+
+    command.upgrade(alembic_config(), "head")
+
+    with isolated_engine.connect() as connection:
+        rows = dict(connection.execute(text("SELECT label, provider_preset FROM team_llm_configs")).all())
+        metadata = connection.execute(text("SELECT inspection_metadata_json::text FROM team_llm_configs LIMIT 1")).scalar_one()
+
+    assert rows == {
+        "OpenAI": "openai",
+        "OpenRouter": "openrouter",
+        "Bedrock": "bedrock_http_gateway",
+        "Ollama": "ollama",
+        "Custom": "custom_openai_compatible",
+    }
+    assert metadata == "{}"
 
 
 @pytest.mark.migration

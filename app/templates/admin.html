@@ -3057,8 +3057,18 @@
           const selected = providerSelect.options[providerSelect.selectedIndex];
           adapterHidden.value = selected?.dataset.adapterKind || 'openai_chat';
           const baseUrlInput = form.querySelector('[data-llm-base-url]');
-          if (baseUrlInput && selected?.dataset.defaultBaseUrl && !baseUrlInput.value) {
-            baseUrlInput.value = selected.dataset.defaultBaseUrl;
+          if (baseUrlInput && selected?.dataset.defaultBaseUrl) {
+            const knownDefaultBaseUrls = Array.from(providerSelect.options)
+              .map((option) => option.dataset.defaultBaseUrl || '')
+              .filter(Boolean);
+            const currentBaseUrl = (baseUrlInput.value || '').replace(/\/+$/, '');
+            const previousDefault = baseUrlInput.dataset.lastDefaultBaseUrl || '';
+            const isKnownDefault = knownDefaultBaseUrls.some((url) => url.replace(/\/+$/, '') === currentBaseUrl);
+            const isBedrockDefault = /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value || '');
+            if (!baseUrlInput.value || currentBaseUrl === previousDefault.replace(/\/+$/, '') || isKnownDefault || isBedrockDefault) {
+              baseUrlInput.value = selected.dataset.defaultBaseUrl;
+            }
+            baseUrlInput.dataset.lastDefaultBaseUrl = selected.dataset.defaultBaseUrl;
           }
         }
         const adapterField = adapterHidden || form.querySelector('[data-llm-adapter-select], input[name="adapter_kind"]');
@@ -3124,6 +3134,9 @@
         }
         const note = form.querySelector('[data-llm-adapter-note]');
         if (note) {
+          const selectedProvider = providerSelect?.options[providerSelect.selectedIndex] || null;
+          const selectedProviderName = selectedProvider?.textContent?.trim() || 'Selected provider';
+          const selectedDefaultBaseUrl = selectedProvider?.dataset.defaultBaseUrl || '';
           if (adapter === 'ollama_chat') {
             note.textContent = 'Ollama uses /api/tags for model discovery and /api/chat for generation. Local Ollama usually runs at http://localhost:11434.';
             return;
@@ -3132,7 +3145,9 @@
             note.textContent = 'Amazon Bedrock uses the OpenAI-compatible Bedrock Mantle endpoint format https://bedrock-mantle.<region>.api.aws/v1. Choose the region you need, and OpenScribe will derive the standard base URL for inspection and generation.';
             return;
           }
-          note.textContent = 'The official OpenAI chat adapter uses https://api.openai.com/v1.';
+          note.textContent = selectedDefaultBaseUrl
+            ? `${selectedProviderName} uses ${selectedDefaultBaseUrl}. Changing this endpoint will save as Custom OpenAI-compatible.`
+            : 'Custom OpenAI-compatible providers require an admin-supplied base URL.';
         }
       }
 

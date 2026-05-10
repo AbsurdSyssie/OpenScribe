@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-10 LLM Provider Upgrade Fixes
+
+### Scope
+
+- Implemented the LLM provider upgrade blockers: manual failed-discovery models are selectable, provider endpoint edits no longer retain stale model lists, inspection metadata is service-owned, and saved inspection failures now persist metadata.
+- Added Admin2 provider form parity for preset metadata, Bedrock region selection, and custom endpoint reclassification guidance.
+- Documented `openai_chat` as the current OpenAI-compatible chat adapter semantics in `docs/llm-providers.md`.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: enum rename from `openai_chat` to `openai_compatible_chat` remains deliberate compatibility debt.
+
+### Files changed
+
+- `app/services/llm.py`: service-owned metadata, manual model persistence, endpoint-change rediscovery/stale clear, saved-inspection metadata persistence.
+- `app/schemas/llm.py`: removed client-writable `inspection_metadata_json` from public upsert input.
+- `app/templates/admin2.html`: added provider preset default metadata, Bedrock region selector, and custom endpoint note.
+- `tests/test_api.py`: added regressions for manual model selection, metadata forgery rejection, endpoint rediscovery/stale clearing, and failed saved-inspection metadata.
+- `tests/test_admin_ui.py`: added Admin2 provider preset parity assertions.
+- `docs/llm-providers.md`, `docs/testing.md`, `docs/progress.md`: updated behavior and verification notes.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_service_owned or llm_endpoint_change_with_kept_secret_rediscover_models or llm_endpoint_change_with_failed_rediscovery_clears_stale_models or saved_llm_inspection_failure_persists_metadata_without_overwriting_models or system_admin_saved_llm_inspection_uses_vault_key_and_updates_models or llm_provider_preset_saves_and_reclassifies_base_url_override or leader_can_choose_and_clear_team_llm_selection"`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin2_exposes_admin_lifecycle_and_provider_controls or admin2_preview_route_renders_for_system_admin"`: passed, 2 tests.
+
+### Documentation
+
+- `docs/llm-providers.md`: documents manual model selectability, stale model clearing/rediscovery, service-owned metadata, failed saved-inspection persistence, and adapter naming debt.
+- `docs/testing.md`: expands LLM provider preset coverage summary.
+
+### Risks / assumptions
+
+- Existing Vault secret read during endpoint-change rediscovery fails closed if Vault read fails.
+- Admin2 now has static preset metadata parity; full client-side provider/base URL sync remains lighter than `admin.html`.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content touched; inspection remains provider metadata/model discovery only.
+- Ownership rules preserved: LLM provisioning remains system-admin-only; team/user selection validation remains team scoped.
+- Deletion semantics preserved: no transcript/document/team/provider deletion paths changed; Vault cleanup order unchanged.
+- Provider rules preserved: raw credentials remain Vault-backed, saved secret read is same-team/config scoped, manual models are explicit admin input, stale provider models are not carried across endpoint changes.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 LLM Provider Dropdown Base URL Sync
 
 ### Scope

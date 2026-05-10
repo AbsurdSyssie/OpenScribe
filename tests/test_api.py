@@ -2582,6 +2582,143 @@ def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(cli
     assert config.model_name == "gpt-4.1"
 
 
+def test_llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_service_owned(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Manual")
+    make_user(email="admin-llm-manual@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader-llm-manual@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+
+    def fail_discovery(**kwargs):
+        raise AppError(502, "llm_inspection_failed", "Could not load available models")
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
+    login(client, email="admin-llm-manual@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Manual Router",
+            "provider_preset": "openrouter",
+            "bearer_token": "router-key",
+            "model_name": "manual/router-model",
+            "inspection_metadata_json": {"discovery_status": "forged", "warnings": ["client controlled"]},
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["available_models_json"] == ["manual/router-model"]
+    assert body["inspection_metadata_json"]["discovery_status"] == "manual_required"
+    assert body["inspection_metadata_json"]["manual_model_name"] == "manual/router-model"
+    assert "forged" not in created.text
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="leader-llm-manual@example.com", password="password-2")
+    selected = client.post(
+        "/api/v1/llm-selection",
+        json={
+            "llm_config_id": body["id"],
+            "allowed_models_json": ["manual/router-model"],
+            "model_name_override": "manual/router-model",
+        },
+    )
+
+    assert selected.status_code == 200
+    assert selected.json()["resolved_model_name"] == "manual/router-model"
+
+
+def test_llm_endpoint_change_with_kept_secret_rediscover_models(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic LLM Rediscover")
+    admin = make_user(email="admin-llm-rediscover@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, available_models_json=["gpt-4.1"], model_name="gpt-4.1", has_secret=True)
+    reads: list[str] = []
+
+    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+        reads.append(str(config_id))
+        return "saved-router-key"
+
+    def fake_list_openai_compatible_models(*, api_key, base_url):
+        assert api_key == "saved-router-key"
+        assert base_url == "https://openrouter.ai/api/v1"
+        return ["anthropic/claude-sonnet-4"]
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fake_list_openai_compatible_models)
+    login(client, email="admin-llm-rediscover@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Router",
+            "provider_preset": "openrouter",
+            "credential_action": "keep",
+            "model_name": "anthropic/claude-sonnet-4",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert reads == [str(config.id)]
+    db_session.refresh(config)
+    assert config.provider_preset == "openrouter"
+    assert config.available_models_json == ["anthropic/claude-sonnet-4"]
+    assert "gpt-4.1" not in config.available_models_json
+    assert config.inspection_metadata_json["discovery_status"] == "fetched"
+
+
+def test_llm_endpoint_change_with_failed_rediscovery_clears_stale_models(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic LLM Clear Stale")
+    admin = make_user(email="admin-llm-clear-stale@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, available_models_json=["gpt-4.1"], model_name="gpt-4.1", has_secret=True)
+
+    def fail_discovery(**kwargs):
+        raise AppError(502, "llm_inspection_failed", "Could not load available models")
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-router-key")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
+    login(client, email="admin-llm-clear-stale@example.com", password="password-1")
+    updated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Router Manual",
+            "provider_preset": "openrouter",
+            "credential_action": "keep",
+            "model_name": "manual/router-model",
+            "is_active": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    db_session.refresh(config)
+    assert config.available_models_json == ["manual/router-model"]
+    assert config.inspection_metadata_json["discovery_status"] == "manual_required"
+    assert config.inspection_metadata_json["manual_model_name"] == "manual/router-model"
+
+
+def test_saved_llm_inspection_failure_persists_metadata_without_overwriting_models(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic LLM Saved Inspect Failure")
+    admin = make_user(email="admin-saved-llm-inspect-fail@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, available_models_json=["old-model"], model_name="old-model", has_secret=True)
+
+    def fail_discovery(**kwargs):
+        raise AppError(502, "llm_inspection_failed", "Could not load available models")
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-llm-key")
+    monkeypatch.setattr("app.services.llm._list_openai_chat_models", fail_discovery)
+    login(client, email="admin-saved-llm-inspect-fail@example.com", password="password-1")
+    inspected = client.post(f"/api/v1/llm-configs/{config.id}/inspect?team_id={team.id}")
+
+    assert inspected.status_code == 200
+    assert inspected.json()["discovery_status"] == "manual_required"
+    db_session.refresh(config)
+    assert config.available_models_json == ["old-model"]
+    assert config.model_name == "old-model"
+    assert config.inspection_metadata_json["discovery_status"] == "manual_required"
+
+
 def test_system_admin_can_provision_bedrock_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Bedrock")
     make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)

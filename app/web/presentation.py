@@ -52,7 +52,7 @@ from ..schemas import (
     UserAppPreferencesDetail,
     UserLlmPreferenceDetail,
 )
-from ..schemas.llm import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
+from ..llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from ..services.admin import (
     admin_usage_overview as admin_usage_overview_service,
     list_manageable_account_requests as list_manageable_account_requests_service,

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference
+from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
 from app.schemas import LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
@@ -86,9 +86,72 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     return filter_discovered_models(LlmProviderPreset.openai.value, models)
 
 
+def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Mistral chat models") from exc
+
+    records = payload.get("data") if isinstance(payload, dict) else []
+    if not isinstance(records, list):
+        records = []
+    models: set[str] = set()
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        capabilities = item.get("capabilities") or {}
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        if item.get("archived") is True:
+            continue
+        if isinstance(capabilities, dict) and capabilities.get("completion_chat") is True:
+            models.add(model_id.strip())
+    return sorted(models)
+
+
+def _list_together_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Together AI chat models") from exc
+
+    records = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(records, list):
+        records = []
+
+    models: set[str] = set()
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id") or item.get("name")
+        model_type = item.get("type")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        if model_type in {"chat", "language", "code"}:
+            models.add(model_id.strip())
+    return sorted(models)
+
+
 def _list_openai_compatible_chat_models(*, provider_preset: str, api_key: str, base_url: str) -> list[str]:
     if provider_preset == LlmProviderPreset.openai.value:
         return _list_openai_chat_models(api_key=api_key, base_url=base_url)
+    if provider_preset == LlmProviderPreset.mistral.value:
+        return _list_mistral_chat_models(api_key=api_key, base_url=base_url)
+    if provider_preset == LlmProviderPreset.together.value:
+        return _list_together_chat_models(api_key=api_key, base_url=base_url)
     try:
         models = _list_openai_compatible_models(api_key=api_key, base_url=base_url)
     except AppError as exc:  # pragma: no cover
@@ -115,6 +178,7 @@ def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object
         "default_model_source": inspection.default_model_source,
         "warnings": list(inspection.warnings),
         "notes": list(inspection.notes),
+        "inspected_at": utcnow().isoformat(),
     }
 
 
@@ -135,6 +199,7 @@ def _discovery_metadata(
         "default_model_source": default_model_source,
         "warnings": list(warnings),
         "notes": list(notes),
+        "inspected_at": utcnow().isoformat(),
     }
     if manual_model_name:
         metadata["manual_model_name"] = manual_model_name
@@ -370,12 +435,14 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
 
     available_models_json: list[str]
+    discovery_succeeded = False
     discovery_metadata: dict[str, object] = {}
     if adapter_kind is LlmAdapterKind.openai_chat:
         token_for_discovery = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
         if token_for_discovery:
             try:
                 available_models_json = _list_openai_compatible_chat_models(provider_preset=provider_preset, api_key=token_for_discovery, base_url=base_url)
+                discovery_succeeded = True
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
@@ -391,6 +458,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         if token_for_discovery:
             try:
                 available_models_json = _list_bedrock_chat_models(api_key=token_for_discovery, base_url=base_url)
+                discovery_succeeded = True
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
             except AppError:
                 available_models_json = []
@@ -405,6 +473,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         try:
             token_for_lookup = payload.bearer_token if replacing_secret and payload.bearer_token else existing_token_for_discovery
             available_models_json = _list_ollama_chat_models(base_url=base_url, bearer_token=token_for_lookup)
+            discovery_succeeded = True
             discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=[])
         except AppError:
             available_models_json = []
@@ -417,6 +486,8 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
     if not model_name:
         raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
+    if discovery_succeeded and available_models_json and model_name not in available_models_json:
+        raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
     if not available_models_json and model_name:
         available_models_json = [model_name]
         discovery_metadata = discovery_metadata or _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=[], notes=[])

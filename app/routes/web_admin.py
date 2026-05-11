@@ -8,6 +8,7 @@ from ..main import (
     _admin_return_view_value,
     _page_context_or_redirect,
 )
+from ..stt_normalization import normalize_stt_language
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -594,7 +595,7 @@ def admin_upsert_stt_config(
                 model_name=provider_model or None,
                 model_field_name=stt_model_field_name or None,
                 file_field_name=file_field_name or "file",
-                language=language or None,
+                language=normalize_stt_language(language),
                 language_field_name=language_field_name or None,
                 response_text_path=response_text_path or "text",
                 segments_path=segments_path or None,
@@ -907,7 +908,7 @@ def admin_finalize_stt_config_draft(
         finalize_stt_config_draft_service(
             db,
             context.user,
-            SttConfigFinalize(team_id=UUID(team_id), config_id=config_id, label=label, model_name=provider_model or None, language=language or None, is_active=is_active == "true"),
+            SttConfigFinalize(team_id=UUID(team_id), config_id=config_id, label=label, model_name=provider_model or None, language=normalize_stt_language(language), is_active=is_active == "true"),
         )
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT finalization request"
@@ -996,7 +997,7 @@ def admin_set_stt_selection(
                 purpose=SttSelectionPurpose(purpose),
                 stt_config_id=UUID(stt_config_id),
                 model_name_override=provider_model or None,
-                language_override=language or None,
+                language_override=normalize_stt_language(language),
             ),
         )
     except (ValueError, AppError) as exc:

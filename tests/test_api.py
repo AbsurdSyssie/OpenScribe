@@ -83,7 +83,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import _list_deepgram_stt_models, _safe_http_error_details, _transcribe_via_http, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import _list_deepgram_stt_models, _list_elevenlabs_stt_models, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.schemas import LlmConfigUpsert, LlmInspectRequest
 from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
@@ -796,9 +796,17 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     assert [item["id"] for item in options_after.json()] == [str(config_id)]
 
 
-def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, make_user):
+def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin-stt-pending@example.com", password="password-1", is_system_admin=True)
+
+    def fake_get(url, *, headers=None, timeout=None):
+        assert url == "https://api.elevenlabs.io/v1/models"
+        assert headers == {"xi-api-key": "el-secret"}
+        assert timeout == 10.0
+        return FakeHttpxResponse({"models": [{"model_id": "scribe_v2", "name": "Scribe v2 speech-to-text"}]})
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
 
     login(client, email="admin-stt-pending@example.com", password="password-1")
     draft = client.post(
@@ -814,6 +822,183 @@ def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, mak
     )
 
     assert_error(selected, status_code=404, code="not_found", message="Selectable STT config not found")
+
+
+def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic ElevenLabs")
+    make_user(email="admin-stt-el@example.com", password="password-1", is_system_admin=True)
+
+    def fake_get(url, *, headers=None, timeout=None):
+        assert url == "https://api.elevenlabs.io/v1/models"
+        assert headers == {"xi-api-key": "el-secret"}
+        return FakeHttpxResponse(
+            {
+                "models": [
+                    {"model_id": "scribe_v2", "name": "Scribe v2 speech-to-text"},
+                    {"model_id": "scribe_v1", "name": "Scribe v1 speech-to-text"},
+                    {"model_id": "scribe_v2_realtime", "name": "Scribe v2 Realtime"},
+                    {"model_id": "tts_only", "name": "Text to speech"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    login(client, email="admin-stt-el@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "elevenlabs", "bearer_token": "el-secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["config"]["provider_preset"] == SttProviderPreset.elevenlabs.value
+    assert body["available_models"] == ["scribe_v2", "scribe_v1"]
+    assert body["config"]["model_name"] is None
+    assert body["config"]["language_field_name"] == "language_code"
+    assert body["config"]["segments_path"] == "words"
+    assert body["credential_status"] == ProviderCredentialStatus.verified.value
+    assert "el-secret" not in response.text
+
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+    assert persisted is not None
+    assert persisted.available_models_json == ["scribe_v2", "scribe_v1"]
+    assert persisted.model_name is None
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
+    assert persisted.credential_fingerprint
+
+
+def test_system_admin_elevenlabs_draft_rejects_invalid_credential(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bad ElevenLabs")
+    make_user(email="admin-stt-bad-el@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
+
+    login(client, email="admin-stt-bad-el@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "elevenlabs", "bearer_token": "bad-key"},
+    )
+
+    assert_error(response, status_code=401, code="stt_credential_invalid", message="The API key was rejected by ElevenLabs.")
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
+
+
+def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return FakeHttpxResponse(
+            [
+                {"model_id": "scribe_v2", "name": "Scribe v2"},
+                {"model_id": "scribe_v1", "name": "Scribe v1"},
+                {"model_id": "scribe_v2_realtime", "name": "Scribe v2 Realtime"},
+                {"model_id": "eleven_multilingual_v2", "name": "Multilingual v2"},
+            ]
+        )
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    models = _list_elevenlabs_stt_models(api_key="el-secret", base_url="https://api.elevenlabs.io")
+
+    assert models == ["scribe_v2", "scribe_v1"]
+    assert captured["url"] == "https://api.elevenlabs.io/v1/models"
+    assert captured["headers"] == {"xi-api-key": "el-secret"}
+    assert "Authorization" not in captured["headers"]
+    assert captured["timeout"] == 10.0
+
+
+def test_elevenlabs_model_discovery_rejects_invalid_key(monkeypatch):
+    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
+
+    with pytest.raises(AppError) as exc_info:
+        _list_elevenlabs_stt_models(api_key="bad-key", base_url="https://api.elevenlabs.io")
+
+    assert exc_info.value.code == "stt_credential_invalid"
+    assert exc_info.value.status_code == 401
+
+
+def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
+    captured = {}
+
+    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "data": data, "files": files, "timeout": timeout})
+        return FakeHttpxResponse({"text": "hello from elevenlabs"})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    result = _transcribe_via_elevenlabs(
+        url="https://api.elevenlabs.io/v1/speech-to-text",
+        api_key="el-secret",
+        audio_bytes=b"audio",
+        filename="audio.wav",
+        content_type="audio/wav",
+        model_name="scribe_v2",
+        language=None,
+        response_text_path="text",
+    )
+
+    assert result == "hello from elevenlabs"
+    assert captured["url"] == "https://api.elevenlabs.io/v1/speech-to-text"
+    assert captured["headers"] == {"xi-api-key": "el-secret"}
+    assert "Authorization" not in captured["headers"]
+    assert captured["data"] == {"model_id": "scribe_v2"}
+    assert captured["files"]["file"][0] == "audio.wav"
+    assert captured["timeout"] == 60.0
+
+
+@pytest.mark.parametrize("language", ["", "None", "none", "null", "undefined", "auto", "default", "provider_default"])
+def test_elevenlabs_transcription_does_not_send_default_language(monkeypatch, language):
+    captured = {}
+
+    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+        captured["data"] = data or {}
+        return FakeHttpxResponse({"text": "ok"})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    _transcribe_via_elevenlabs(
+        url="https://api.elevenlabs.io/v1/speech-to-text",
+        api_key="el-secret",
+        audio_bytes=b"audio",
+        filename="audio.wav",
+        content_type="audio/wav",
+        model_name="scribe_v2",
+        language=language,
+        response_text_path="text",
+    )
+
+    assert "language_code" not in captured["data"]
+
+
+@pytest.mark.parametrize("language", ["None", "none", "auto", "default", ""])
+def test_generic_stt_transport_does_not_send_default_language(monkeypatch, language):
+    captured = {}
+
+    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+        captured["data"] = data or {}
+        return FakeHttpxResponse({"text": "ok"})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    _transcribe_via_http(
+        provider_preset=SttProviderPreset.custom_openai_compatible.value,
+        base_url="https://example.com",
+        transcribe_path="/v1/audio/transcriptions",
+        file_field_name="file",
+        response_text_path="text",
+        extra_form_fields_json={},
+        bearer_token="secret",
+        model_name="whisper-1",
+        model_field_name="model",
+        language=language,
+        language_field_name="language",
+        audio_bytes=b"audio",
+        filename="audio.wav",
+        content_type="audio/wav",
+    )
+
+    assert "language" not in captured["data"]
 
 
 def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_session, make_team, make_user, monkeypatch):
@@ -1467,6 +1652,56 @@ def test_system_admin_can_test_saved_generic_stt_config_with_dynamic_fields(
     assert captured["model_field_name"] == "model_id"
     assert captured["language_field_name"] == "lang"
     assert captured["file_field_name"] == "audio_file"
+
+
+def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Clinic ElevenLabs Test")
+    admin = make_user(email="admin-elevenlabs-stt-test@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="https://api.elevenlabs.io",
+        transcribe_path="/v1/speech-to-text",
+        model_name="scribe_v2",
+        language="None",
+    )
+    config.provider_preset = SttProviderPreset.elevenlabs.value
+    config.model_field_name = "model_id"
+    config.language_field_name = "language_code"
+    db_session.add(config)
+    db_session.commit()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "el-secret")
+
+    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "data": data, "files": files, "timeout": timeout})
+        return FakeHttpxResponse({"text": "elevenlabs transcript"})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is True
+    assert result["transcript_text"] == "elevenlabs transcript"
+    assert captured["url"] == "https://api.elevenlabs.io/v1/speech-to-text"
+    assert captured["headers"] == {"xi-api-key": "el-secret"}
+    assert "Authorization" not in captured["headers"]
+    assert captured["data"] == {"model_id": "scribe_v2"}
+    assert captured["files"]["file"][0] == "MoreOrLess.wav"
+
+    config.language = "en"
+    db_session.add(config)
+    db_session.commit()
+    run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    assert captured["data"] == {"model_id": "scribe_v2", "language_code": "en"}
 
 
 def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_reveal(

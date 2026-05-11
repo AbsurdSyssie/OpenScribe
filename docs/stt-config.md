@@ -134,6 +134,17 @@ Both OpenAI adapter families still keep:
 - metadata in Postgres
 - optional bearer token in Vault for self-hosted endpoints that do not require auth
 
+`deepgram` is a provider-specific known contract on top of `generic_rest`:
+
+- inspection requires an API key and calls `GET https://api.deepgram.com/v1/models`
+- discovery uses `Authorization: Token <api key>` and stores only `stt` models where `batch` is not `false`
+- invalid Deepgram credentials fail draft creation and do not create a config row
+- successful discovery saves returned model ids in `available_models_json`; finalization must choose from that list when non-empty
+- runtime transcription calls `POST /v1/listen` with raw audio bytes, not multipart form data
+- Deepgram query options use the existing `extra_form_fields_json` metadata field; for this provider those values are sent as query params, including `smart_format=true`
+- runtime sends `model` and optional `language` as query params and extracts transcript text from `results.channels.0.alternatives.0.transcript`
+- raw API keys remain Vault-backed and are never returned by API/admin responses
+
 ## Admin diagnostics
 
 System admins can now run a saved-config STT diagnostic directly from `/admin` for the selected team.

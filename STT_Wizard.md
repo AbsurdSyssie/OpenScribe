@@ -1,1065 +1,827 @@
-# Implementation Plan: STT Branded Presets + Wizard Flow
+# Implementation Plan: Fix Deepgram STT Discovery + Transcription
 
-## Current `master` state
+Apply this on top of commit:
 
-STT is currently more “adapter/config form” than “provider wizard.”
+```text
+b075a6573c637eefc9aba3b18d2ec2a92e226d8a
+```
 
-The main branch has:
+## Problem
 
-* `SttAdapterKind` values:
+The STT wizard architecture is mostly correct, but Deepgram currently does not work because it is treated too much like the generic multipart/OpenAI-compatible STT path.
 
-  * `generic_rest`
-  * `openai_cloud`
-  * `openai_compatible_rest`
-* `TeamSttConfig` fields for endpoint shape, model/language fields, response paths, extra form fields, credential status, fingerprint, inspection metadata, active state, and Vault secret ref. 
-* `SttConfigUpsert` applies defaults from `adapter_kind`, not from a branded provider preset. 
-* `SttInspectRequest` also applies defaults from `adapter_kind`, with OpenAI cloud using `https://api.openai.com/v1` and generic REST using `/openapi.json`. 
-* `stt_form_defaults()` still exposes a dense adapter-first form with many endpoint/path/field inputs. 
-* The STT service already has useful mature pieces that LLM did not initially have: `credential_status`, `credential_fingerprint`, duplicate-credential checks, inspection metadata, and invalid credential handling. 
+Current Deepgram preset:
 
-So the right approach is **not** to rewrite STT. It is to add the LLM-style provider preset + draft/finalize wizard on top of the existing STT inspection/credential infrastructure.
+```python
+adapter_kind=SttAdapterKind.generic_rest
+default_base_url="https://api.deepgram.com"
+transcribe_path="/v1/listen"
+auth_header_style="token"
+supports_model_discovery=False
+default_model_name="nova-3"
+default_response_text_path="results.channels.0.alternatives.0.transcript"
+default_extra_form_fields={"smart_format": "true"}
+```
+
+
+
+The endpoint/auth/response path are directionally right. The request/discovery behavior is incomplete.
+
+## Desired Deepgram behavior
+
+### Model discovery
+
+Deepgram supports model discovery via:
+
+```http
+GET https://api.deepgram.com/v1/models
+Authorization: Token <DEEPGRAM_API_KEY>
+```
+
+Use the `stt` list from the response and filter to models usable for prerecorded/direct-upload transcription.
+
+### Transcription
+
+Deepgram prerecorded transcription should use:
+
+```http
+POST https://api.deepgram.com/v1/listen?model=<model>&smart_format=true&language=<language>
+Authorization: Token <DEEPGRAM_API_KEY>
+Content-Type: <audio MIME type>
+
+<raw audio bytes>
+```
+
+Do **not** send it as OpenAI-style multipart form data.
 
 ---
 
-# Product Goal
+# Phase 1 — Update Deepgram preset semantics
 
-Make admin STT setup feel like the new LLM setup flow:
+## Change `app/services/stt_presets.py`
 
-```text
-Choose provider
-→ enter only API key / endpoint details
-→ check API key and find transcription options
-→ create pending draft and save credential
-→ choose model/language/default settings
-→ save provider
+Current Deepgram preset has:
+
+```python
+supports_model_discovery=False
+default_model_name="nova-3"
+default_extra_form_fields={"smart_format": "true"}
 ```
 
-Admins should not need to understand:
+Change to:
 
-```text
-adapter_kind
-transcribe_path
-file_field_name
-response_text_path
-segments_path
-OpenAPI path
-model_field_name
-language_field_name
+```python
+supports_model_discovery=True
+default_model_name=None
+default_extra_form_fields={"smart_format": "true"}
 ```
 
-unless they choose an advanced/custom provider.
+Recommended Deepgram preset:
+
+```python
+SttProviderPreset.deepgram.value: SttProviderPresetDefinition(
+    key=SttProviderPreset.deepgram.value,
+    display_name="Deepgram",
+    adapter_kind=SttAdapterKind.generic_rest,
+    default_base_url="https://api.deepgram.com",
+    transcribe_path="/v1/listen",
+    auth_header_style="token",
+    requires_api_key=True,
+    supports_model_discovery=True,
+    supports_language_selection=True,
+    supports_diarization=True,
+    default_model_name=None,
+    default_model_field_name="model",
+    default_language_field_name="language",
+    default_response_text_path="results.channels.0.alternatives.0.transcript",
+    default_extra_form_fields={"smart_format": "true"},
+)
+```
+
+## Rationale
+
+Deepgram should not save `["nova-3"]` as the only available model. It should discover available STT models from `/v1/models`, then let the admin choose one.
+
+`nova-3` can still be preferred in the UI if present in discovery results, but it should not be the only saved model.
 
 ---
 
-# Recommended MVP Scope
+# Phase 2 — Add Deepgram model discovery
 
-## Include in first STT preset slice
-
-### 1. OpenAI
-
-Keep the current `openai_cloud` adapter.
-
-Current code already knows OpenAI transcription models:
-
-```text
-gpt-4o-mini-transcribe
-gpt-4o-transcribe
-gpt-4o-transcribe-diarize
-whisper-1
-```
-
-The service already has `SUPPORTED_OPENAI_TRANSCRIPTION_MODELS` and a model listing path for OpenAI transcription models. 
-
-### 2. Custom OpenAI-compatible STT
-
-Keep current `openai_compatible_rest`.
-
-This covers self-hosted or compatible APIs that implement OpenAI-style:
-
-```text
-POST /v1/audio/transcriptions
-multipart file field = file
-model field = model
-response text path = text
-```
-
-### 3. Generic REST / OpenAPI-discovered STT
-
-Keep current `generic_rest`.
-
-This remains the advanced escape hatch for services with OpenAPI docs or custom field mappings.
-
-### 4. Deepgram
-
-Deepgram is a major STT provider. Its prerecorded audio API uses `POST /v1/listen`, supports a model query such as `model=nova-3`, and authenticates with an API key. Its docs show `https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true`. ([Deepgram Docs][1])
-
-Deepgram does **not** map perfectly to the current generic multipart shape, so implement it as a branded native-ish HTTP preset/adapter rather than forcing it through OpenAI-compatible.
-
-### 5. ElevenLabs
-
-ElevenLabs now has a first-class Speech to Text API with Scribe models, timestamps, speaker diarization, entity detection, and support for long files. Its docs describe Scribe v2 and a speech-to-text API response containing `text`, `words`, language information, and speaker IDs. ([ElevenLabs][2])
-
-This should be a branded preset. Whether it uses a dedicated adapter or generic multipart depends on its exact endpoint request shape, but the UI should not expose that complexity.
-
----
-
-## Defer from first slice
-
-### Azure AI Speech
-
-Azure Speech to Text REST API has fast transcription and batch transcription, and the latest generally available REST version is `2025-10-15`. Its fast transcription endpoint is `/speechtotext/transcriptions:transcribe`. ([Microsoft Learn][3])
-
-Defer unless you want a dedicated Azure STT adapter now. Azure brings region/resource endpoint semantics and API-versioning complexity similar to Azure OpenAI.
-
-### Google Cloud Speech-to-Text
-
-Google Cloud Speech-to-Text v2 has recognizers and `recognize` / `batchRecognize` endpoints under `speech.googleapis.com`. ([Google Cloud][4])
-
-Defer because it requires Google Cloud project/location/recognizer semantics and typically OAuth/service-account auth rather than simple bearer-key setup.
-
-### AWS Transcribe
-
-AWS Transcribe’s `StartTranscriptionJob` expects media in S3 and creates an async transcription job with region, job name, media URI, and language parameters. ([AWS Documentation][5])
-
-Defer because the current OpenScribe STT path is synchronous/direct-audio upload, while AWS Transcribe is usually S3 + async job orchestration.
-
-### AssemblyAI / Speechmatics
-
-These are good later candidates, but both are more naturally async job-style providers. Do them after the synchronous HTTP preset architecture is stable.
-
----
-
-# Proposed Provider Presets
+## Add helper in `app/services/stt.py`
 
 Add:
 
 ```python
-class SttProviderPreset(str, enum.Enum):
-    openai = "openai"
-    deepgram = "deepgram"
-    elevenlabs = "elevenlabs"
-    custom_openai_compatible = "custom_openai_compatible"
-    custom_rest_openapi = "custom_rest_openapi"
+def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/models",
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403}:
+            raise AppError(
+                401,
+                "stt_credential_invalid",
+                "The API key was rejected by Deepgram.",
+                {"provider_status": status_code},
+            ) from exc
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Could not load available Deepgram STT models",
+            {"provider_status": status_code},
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Could not reach Deepgram model discovery",
+            {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
+        ) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Deepgram model discovery returned invalid JSON",
+        ) from exc
+
+    stt_models = payload.get("stt")
+    if not isinstance(stt_models, list):
+        return []
+
+    discovered: list[str] = []
+    for item in stt_models:
+        if not isinstance(item, dict):
+            continue
+
+        # OpenScribe currently uses prerecorded/direct-upload STT,
+        # so prefer Deepgram models that support batch/prerecorded use.
+        if item.get("batch") is False:
+            continue
+
+        model_id = item.get("canonical_name") or item.get("name")
+        if isinstance(model_id, str) and model_id.strip():
+            discovered.append(model_id.strip())
+
+    return sorted(set(discovered))
 ```
 
-Optional later:
+## Add model option helper if useful
 
 ```python
-azure_speech = "azure_speech"
-google_speech = "google_speech"
-aws_transcribe = "aws_transcribe"
-assemblyai = "assemblyai"
-speechmatics = "speechmatics"
+def _deepgram_model_options(models: list[str], *, source: str = "provider") -> list[SttModelOption]:
+    return [
+        SttModelOption(id=model, source=source, label=f"{model} ({source})")
+        for model in models
+    ]
 ```
-
-## Preset mapping
-
-| UI preset                | Adapter/protocol                                               | MVP status |
-| ------------------------ | -------------------------------------------------------------- | ---------- |
-| OpenAI                   | `openai_cloud`                                                 | Include    |
-| Deepgram                 | new `deepgram_prerecorded` or generic native HTTP adapter      | Include    |
-| ElevenLabs               | new `elevenlabs_speech_to_text` or generic native HTTP adapter | Include    |
-| Custom OpenAI-compatible | `openai_compatible_rest`                                       | Include    |
-| Custom REST/OpenAPI      | `generic_rest`                                                 | Include    |
-| Azure Speech             | future `azure_speech_fast_transcription`                       | Defer      |
-| Google Speech-to-Text    | future `google_speech_v2`                                      | Defer      |
-| AWS Transcribe           | future async job adapter                                       | Defer      |
 
 ---
 
-# Data Model Changes
+# Phase 3 — Wire Deepgram discovery into inspection
 
-## Add provider preset to STT config
+Find the STT inspection path, likely inside `inspect_stt_contract()` / `inspect_stt_contract_service()`.
 
-Add to `TeamSttConfig`:
+Current OpenAI path already uses `_list_openai_transcription_models()` and fallback transcription model logic. Deepgram needs its own branch.
 
-```python
-provider_preset: Mapped[str] = mapped_column(
-    String(64),
-    default=SttProviderPreset.custom_rest_openapi.value,
-    nullable=False,
-)
+## Desired behavior
+
+When inspecting a Deepgram preset:
+
+```text
+1. Require bearer token.
+2. Call GET /v1/models with Authorization: Token <key>.
+3. Extract STT models where batch != false.
+4. Return available_models and available_model_options.
+5. Do not fall back to ["nova-3"] as the only model.
+6. If auth fails, raise invalid credential and do not create draft.
+7. If non-auth discovery fails, allow manual model entry only if that is consistent with existing STT wizard behavior.
 ```
 
-## Add setup status to STT config
-
-Mirror LLM:
+## Pseudocode
 
 ```python
-class SttConfigSetupStatus(str, enum.Enum):
-    pending_model_selection = "pending_model_selection"
-    ready = "ready"
+def _inspect_deepgram_preset(
+    *,
+    team_id: UUID,
+    base_url: str,
+    bearer_token: str | None,
+    preset: SttProviderPresetDefinition,
+) -> SttInspectResult:
+    if not bearer_token:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "Deepgram requires an API key",
+            {"field": "bearer_token"},
+        )
+
+    models = _list_deepgram_stt_models(api_key=bearer_token, base_url=base_url)
+
+    return SttInspectResult(
+        team_id=team_id,
+        provider_preset=SttProviderPreset.deepgram.value,
+        provider_display_name="Deepgram",
+        adapter_kind=preset.adapter_kind,
+        base_url=base_url,
+        openapi_path=None,
+        transcribe_path=preset.transcribe_path,
+        model_name=_preferred_deepgram_model(models),
+        model_field_name="model" if models else None,
+        available_models=models,
+        available_model_options=_stt_model_options(models, source="provider"),
+        file_field_name=preset.default_file_field_name,
+        language=None,
+        language_field_name=preset.default_language_field_name,
+        response_text_path=preset.default_response_text_path,
+        segments_path=None,
+        segment_text_field=None,
+        segment_start_field=None,
+        segment_end_field=None,
+        segment_speaker_field=None,
+        extra_form_fields_json=dict(preset.default_extra_form_fields or {}),
+        candidate_paths=[preset.transcribe_path],
+        field_tips=[],
+        notes=[
+            "Discovered Deepgram STT models from /v1/models.",
+        ],
+    )
 ```
 
-Add:
+Preferred model helper:
 
 ```python
-setup_status: Mapped[SttConfigSetupStatus] = mapped_column(
-    Enum(SttConfigSetupStatus),
-    default=SttConfigSetupStatus.ready,
-    server_default=SttConfigSetupStatus.ready.value,
-    nullable=False,
-)
+def _preferred_deepgram_model(models: list[str]) -> str | None:
+    preferred = [
+        "nova-3",
+        "nova-2",
+    ]
+    for model in preferred:
+        if model in models:
+            return model
+    return models[0] if models else None
 ```
 
-Reason: `is_active=False` should mean “not available for selection,” not “setup incomplete.” LLM now has an explicit `setup_status`; STT should match.
-
-## Add unique label index
-
-LLM now enforces unique labels per team. Do the same for STT:
-
-```python
-Index(
-    "uq_team_stt_configs_team_label_lower",
-    "team_id",
-    text("lower(btrim(label))"),
-    unique=True,
-)
-```
-
-Backfill duplicate labels with `copy N` using the same pattern as the LLM label migration.
+If the product decision is “no default selection unless admin chooses,” set `model_name=None` even when models exist. But the current STT wizard seems to preselect defaults, so choosing `nova-3` if available is reasonable.
 
 ---
 
-# Migration Plan
+# Phase 4 — Fix Deepgram transcription transport
 
-Create a new Alembic migration after the current `master` head.
+## Current issue
 
-## Migration fields
+`_transcribe_via_http()` constructs `form_fields` and likely sends `data=form_fields` and `files={...}`. That works for OpenAI-compatible multipart APIs, but not Deepgram.
 
-Add:
+Deepgram should use:
 
-```text
-team_stt_configs.provider_preset
-team_stt_configs.setup_status
+```python
+httpx.post(
+    url,
+    headers={
+        "Authorization": f"Token {bearer_token}",
+        "Content-Type": content_type,
+    },
+    params={
+        "model": model_name,
+        "smart_format": "true",
+        "language": language,
+    },
+    content=audio_bytes,
+)
 ```
 
-Backfill:
+## Add branch in `_transcribe_via_http()`
 
-| Existing STT config      | New preset                 |
-| ------------------------ | -------------------------- |
-| `openai_cloud`           | `openai`                   |
-| `openai_compatible_rest` | `custom_openai_compatible` |
-| `generic_rest`           | `custom_rest_openapi`      |
+At the top of `_transcribe_via_http()`, after constructing `url`, before generic `form_fields` multipart handling:
 
-Backfill setup status:
-
-```text
-model_name exists OR adapter is generic_rest and response path exists → ready
-otherwise → pending_model_selection
+```python
+if provider_preset == SttProviderPreset.deepgram.value:
+    return _transcribe_via_deepgram(
+        url=url,
+        bearer_token=bearer_token,
+        audio_bytes=audio_bytes,
+        content_type=content_type,
+        model_name=model_name,
+        language=language,
+        extra_query_params=extra_form_fields_json or {},
+        response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
+    )
 ```
 
-Given current validation requires strong config shape, most existing rows should become `ready`.
+## Add helper
 
-Add unique label index after deduplication.
+```python
+def _transcribe_via_deepgram(
+    *,
+    url: str,
+    bearer_token: str | None,
+    audio_bytes: bytes,
+    content_type: str,
+    model_name: str | None,
+    language: str | None,
+    extra_query_params: dict[str, str],
+    response_text_path: str,
+    segments_path: str | None = None,
+    segment_text_field: str | None = None,
+    segment_start_field: str | None = None,
+    segment_end_field: str | None = None,
+    segment_speaker_field: str | None = None,
+) -> str:
+    if not bearer_token:
+        raise AppError(
+            409,
+            "stt_config_secret_missing",
+            "Deepgram STT requires a saved API key.",
+        )
+
+    params = dict(extra_query_params or {})
+
+    if model_name:
+        params["model"] = model_name
+
+    if language:
+        params["language"] = language
+
+    headers = {
+        "Authorization": f"Token {bearer_token}",
+        "Content-Type": content_type or "application/octet-stream",
+    }
+
+    try:
+        response = httpx.post(
+            url,
+            headers=headers,
+            params=params,
+            content=audio_bytes,
+            timeout=60.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "stt_deepgram_request_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "provider_preset": SttProviderPreset.deepgram.value,
+                    "query_keys": sorted(params.keys()),
+                    "audio_byte_count": len(audio_bytes),
+                    "content_type": content_type,
+                }
+            },
+        )
+        raise _translate_http_stt_error(exc) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(
+            502,
+            "stt_response_invalid",
+            "Deepgram response was not valid JSON",
+        ) from exc
+
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
+    )
+```
+
+## Important call-site check
+
+Ensure every path that calls `_transcribe_via_http()` passes:
+
+```python
+provider_preset=config.provider_preset
+```
+
+Specifically check:
+
+```text
+transcribe_with_team_stt
+transcribe_with_stt_snapshot
+run_saved_stt_config_test
+```
+
+The Deepgram branch will not run if `provider_preset` is omitted.
 
 ---
 
-# STT Provider Preset Catalog
+# Phase 5 — Handle query params vs form fields cleanly
 
-Create:
+For this fix, it is acceptable to reuse:
+
+```python
+extra_form_fields_json
+```
+
+as Deepgram query params inside `_transcribe_via_deepgram()`.
+
+But add a comment:
+
+```python
+# For Deepgram, stored extra_form_fields_json represents query parameters
+# for /v1/listen, not multipart form fields.
+```
+
+A later cleanup can rename this to something more general:
+
+```python
+extra_request_options_json
+```
+
+or extend the preset definition with:
+
+```python
+request_options_location: Literal["form", "query"] = "form"
+```
+
+Do **not** do that schema rename in this fix unless you want a larger migration.
+
+---
+
+# Phase 6 — Finalization rules for Deepgram models
+
+Deepgram now has real model discovery. Update finalization behavior so that:
 
 ```text
-app/services/stt_presets.py
+if available_models_json is non-empty:
+    selected model must be in available_models_json
+if available_models_json is empty due to non-auth discovery failure:
+    manual model is allowed
 ```
 
-Equivalent to `llm_presets.py`.
+This likely already exists from the wizard work. Verify that the Deepgram inspection result saves the discovered model list, not just `["nova-3"]`.
 
-Suggested structure:
+## Expected draft result
 
-```python
-@dataclass(frozen=True)
-class SttProviderPresetDefinition:
-    key: str
-    display_name: str
-    adapter_kind: SttAdapterKind
-    default_base_url: str | None
-    transcribe_path: str
-    auth_header_style: Literal["bearer", "token", "xi-api-key", "none"]
-    requires_api_key: bool
-    supports_model_discovery: bool
-    supports_language_selection: bool
-    supports_diarization: bool
-    advanced: bool = False
-    default_model_field_name: str | None = "model"
-    default_file_field_name: str = "file"
-    default_language_field_name: str | None = "language"
-    default_response_text_path: str = "text"
-    default_segments_path: str | None = None
-    help_text: str = ""
-```
+After successful Deepgram draft creation:
 
-Initial presets:
-
-```python
-STT_PROVIDER_PRESETS = {
-    "openai": SttProviderPresetDefinition(
-        key="openai",
-        display_name="OpenAI",
-        adapter_kind=SttAdapterKind.openai_cloud,
-        default_base_url="https://api.openai.com/v1",
-        transcribe_path="/v1/audio/transcriptions",
-        auth_header_style="bearer",
-        requires_api_key=True,
-        supports_model_discovery=True,
-        supports_language_selection=True,
-        supports_diarization=True,
-        default_response_text_path="text",
-    ),
-    "deepgram": SttProviderPresetDefinition(
-        key="deepgram",
-        display_name="Deepgram",
-        adapter_kind=SttAdapterKind.generic_rest,  # or new SttAdapterKind.deepgram_prerecorded
-        default_base_url="https://api.deepgram.com",
-        transcribe_path="/v1/listen",
-        auth_header_style="token",
-        requires_api_key=True,
-        supports_model_discovery=False,
-        supports_language_selection=True,
-        supports_diarization=True,
-        default_response_text_path="results.channels.0.alternatives.0.transcript",
-    ),
-    "elevenlabs": SttProviderPresetDefinition(
-        key="elevenlabs",
-        display_name="ElevenLabs",
-        adapter_kind=SttAdapterKind.generic_rest,  # or new SttAdapterKind.elevenlabs_speech_to_text
-        default_base_url="https://api.elevenlabs.io",
-        transcribe_path="/v1/speech-to-text",
-        auth_header_style="xi-api-key",
-        requires_api_key=True,
-        supports_model_discovery=False,
-        supports_language_selection=True,
-        supports_diarization=True,
-        default_response_text_path="text",
-    ),
-    "custom_openai_compatible": SttProviderPresetDefinition(
-        key="custom_openai_compatible",
-        display_name="Custom OpenAI-compatible · advanced",
-        adapter_kind=SttAdapterKind.openai_compatible_rest,
-        default_base_url=None,
-        transcribe_path="/v1/audio/transcriptions",
-        auth_header_style="bearer",
-        requires_api_key=True,
-        supports_model_discovery=True,
-        supports_language_selection=True,
-        supports_diarization=False,
-        advanced=True,
-        default_response_text_path="text",
-    ),
-    "custom_rest_openapi": SttProviderPresetDefinition(
-        key="custom_rest_openapi",
-        display_name="Custom REST/OpenAPI · advanced",
-        adapter_kind=SttAdapterKind.generic_rest,
-        default_base_url=None,
-        transcribe_path="/v1/audio/transcriptions",
-        auth_header_style="bearer",
-        requires_api_key=False,
-        supports_model_discovery=False,
-        supports_language_selection=True,
-        supports_diarization=False,
-        advanced=True,
-        default_response_text_path="text",
-    ),
+```json
+{
+  "config": {
+    "provider_preset": "deepgram",
+    "setup_status": "pending_model_selection",
+    "model_name": null,
+    "available_models_json": ["nova-3", "..."]
+  },
+  "available_models": ["nova-3", "..."],
+  "credential_status": "verified"
 }
 ```
 
----
+If the implementation preselects a model:
 
-# Adapter Decision
-
-## Recommended first implementation
-
-Do **not** build full async STT job infrastructure yet.
-
-Use two synchronous adapter families:
-
-```text
-openai_stt
-generic_multipart_stt
+```json
+{
+  "config": {
+    "model_name": null
+  },
+  "available_models": ["nova-3", "..."]
+}
 ```
 
-Then add provider-specific auth/header/body behavior for Deepgram and ElevenLabs.
-
-## Needed extension to current STT transport
-
-Current `_transcribe_via_http()` assumes:
-
-```text
-Authorization: Bearer <token>
-multipart form file field
-form fields for model/language
-JSON response text path
-```
-
-That is enough for OpenAI-compatible APIs, but not enough for all branded providers.
-
-Add a small deep module:
-
-```text
-app/services/stt_transport.py
-```
-
-or keep in `stt.py` initially but with clean functions:
-
-```python
-@dataclass(frozen=True)
-class SttTransportRequest:
-    provider_preset: str
-    base_url: str
-    transcribe_path: str
-    bearer_token: str | None
-    audio_bytes: bytes
-    filename: str
-    content_type: str
-    model_name: str | None
-    language: str | None
-    extra_form_fields: dict[str, str]
-```
-
-and:
-
-```python
-def transcribe_with_stt_transport(request: SttTransportRequest) -> dict[str, Any]:
-    ...
-```
-
-This function can handle:
-
-| Provider          | Request style                          |
-| ----------------- | -------------------------------------- |
-| OpenAI            | OpenAI SDK or multipart                |
-| OpenAI-compatible | multipart                              |
-| Deepgram          | provider-specific headers/query/body   |
-| ElevenLabs        | provider-specific headers/multipart    |
-| Custom REST       | current generic multipart/OpenAPI path |
+Keep `config.model_name = null` until finalize if following the LLM-style wizard strictly. The inspect result may include a suggested `model_name`.
 
 ---
 
-# Wizard UX
+# Phase 7 — Tests
 
-## Step 1: Choose provider and credential
+## 1. Deepgram model discovery test
 
-Show only:
+Add to `tests/test_api.py` or a dedicated STT service test.
 
-```text
-Team
-Provider
-API key
-[Check API key and find transcription options]
+```python
+def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "stt": [
+                    {
+                        "name": "Nova 3",
+                        "canonical_name": "nova-3",
+                        "batch": True,
+                        "streaming": True,
+                    },
+                    {
+                        "name": "Streaming Only",
+                        "canonical_name": "stream-only",
+                        "batch": False,
+                        "streaming": True,
+                    },
+                ],
+                "tts": [
+                    {"canonical_name": "aura-2"}
+                ],
+            }
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    models = _list_deepgram_stt_models(
+        api_key="dg-secret",
+        base_url="https://api.deepgram.com",
+    )
+
+    assert models == ["nova-3"]
+    assert captured["url"] == "https://api.deepgram.com/v1/models"
+    assert captured["headers"]["Authorization"] == "Token dg-secret"
 ```
 
-Provider-specific additions:
+## 2. Deepgram invalid credential test
 
-### OpenAI
+```python
+def test_deepgram_model_discovery_rejects_invalid_key(monkeypatch):
+    class FakeResponse:
+        status_code = 401
 
-```text
-Provider: OpenAI
-API key
+        def raise_for_status(self):
+            request = httpx.Request("GET", "https://api.deepgram.com/v1/models")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(AppError) as exc_info:
+        _list_deepgram_stt_models(
+            api_key="bad-key",
+            base_url="https://api.deepgram.com",
+        )
+
+    assert exc_info.value.code == "stt_credential_invalid"
+    assert exc_info.value.status_code == 401
 ```
 
-No base URL by default.
+## 3. Deepgram draft creates discovered models
 
-### Deepgram
+```python
+def test_system_admin_deepgram_draft_discovers_models(client, monkeypatch, make_team, make_user):
+    # Mock Deepgram /v1/models response.
+    # POST /api/v1/stt-configs/drafts
+    # Assert available_models includes nova-3 and not TTS models.
+```
+
+Expected assertions:
+
+```python
+assert body["provider_display_name"] == "Deepgram"
+assert body["available_models"] == ["nova-3"]
+assert body["config"]["available_models_json"] == ["nova-3"]
+assert body["config"]["setup_status"] == "pending_model_selection"
+assert "dg-secret" not in response.text
+```
+
+## 4. Deepgram transcription request shape test
+
+This is the most important regression test.
+
+```python
+def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": {
+                    "channels": [
+                        {
+                            "alternatives": [
+                                {"transcript": "hello from deepgram"}
+                            ]
+                        }
+                    ]
+                }
+            }
+
+    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+        captured.update(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "content": content,
+                "data": data,
+                "files": files,
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = _transcribe_via_http(
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        file_field_name="file",
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        extra_form_fields_json={"smart_format": "true"},
+        bearer_token="dg-secret",
+        model_name="nova-3",
+        model_field_name="model",
+        language="en",
+        language_field_name="language",
+        audio_bytes=b"wav-bytes",
+        filename="audio.wav",
+        content_type="audio/wav",
+        provider_preset=SttProviderPreset.deepgram.value,
+    )
+
+    assert result == "hello from deepgram"
+    assert captured["url"] == "https://api.deepgram.com/v1/listen"
+    assert captured["headers"]["Authorization"] == "Token dg-secret"
+    assert captured["headers"]["Content-Type"] == "audio/wav"
+    assert captured["params"] == {
+        "smart_format": "true",
+        "model": "nova-3",
+        "language": "en",
+    }
+    assert captured["content"] == b"wav-bytes"
+    assert captured["data"] is None
+    assert captured["files"] is None
+```
+
+## 5. Call-site propagation test
+
+Add a test around `transcribe_with_team_stt()` or `transcribe_with_stt_snapshot()` that creates a Deepgram config and proves the Deepgram branch is used.
+
+Minimum assertion:
+
+```python
+assert captured["headers"]["Authorization"] == "Token dg-secret"
+assert captured["files"] is None
+```
+
+This catches a bug where `_transcribe_via_http()` supports Deepgram but callers forget to pass `provider_preset`.
+
+---
+
+# Phase 8 — UI behavior
+
+Update the STT wizard behavior for Deepgram:
+
+## Draft step
+
+Show:
 
 ```text
 Provider: Deepgram
 API key
-```
-
-Optional advanced:
-
-```text
-Base URL
-Default query params
-```
-
-### ElevenLabs
-
-```text
-Provider: ElevenLabs
-API key
-```
-
-Optional advanced:
-
-```text
-Base URL
-Model ID
-```
-
-### Custom OpenAI-compatible
-
-```text
-Provider: Custom OpenAI-compatible
-Base URL
-API key
-```
-
-### Custom REST/OpenAPI
-
-```text
-Provider: Custom REST/OpenAPI
-Base URL
-OpenAPI path
-API key optional
-```
-
-Only custom REST should show the advanced field mapping controls by default.
-
----
-
-## Step 2: Inspection / draft result
-
-After successful inspection:
-
-```text
-Credential: saved
-Provider name
-Default model
-Default language
-Available for team selection
-[Save provider]
-[Replace API key]
-[Delete incomplete setup]
-```
-
-For providers without live model discovery:
-
-```text
-Credential: saved
-Provider name
-Model
-Language
-Available for team selection
-[Save provider]
-```
-
-Do not show the API key again.
-
----
-
-## Step 3: Ready provider
-
-Provider cards should mirror LLM:
-
-```text
-Setup incomplete
-Ready · available
-Ready · unavailable
-Invalid credential
-Partial inspection
-```
-
-STT already has `credential_status`, so STT can display a richer status than LLM:
-
-| `setup_status`            | `credential_status` | Display                       |
-| ------------------------- | ------------------- | ----------------------------- |
-| `pending_model_selection` | any                 | Setup incomplete              |
-| `ready`                   | `verified`          | Ready · available/unavailable |
-| `ready`                   | `partial`           | Ready with warnings           |
-| `ready`                   | `invalid`           | Invalid credential            |
-| `ready`                   | `degraded`          | Degraded                      |
-
----
-
-# API Shape
-
-Follow LLM naming and behavior.
-
-## New schemas
-
-```python
-class SttConfigDraftCreate(BaseModel):
-    team_id: UUID
-    provider_preset: SttProviderPreset
-    label: str | None = Field(default=None, max_length=255)
-    base_url: str = Field(default="", max_length=2048)
-    openapi_path: str | None = Field(default=None, max_length=255)
-    bearer_token: str | None = Field(default=None, min_length=1)
-```
-
-```python
-class SttConfigDraftCreateResult(BaseModel):
-    config: SttConfigDetail
-    provider_display_name: str
-    available_models: list[str]
-    available_model_options: list[SttModelOption]
-    credential_status: ProviderCredentialStatus
-    warnings: list[str] = []
-    notes: list[str] = []
-```
-
-```python
-class SttConfigFinalize(BaseModel):
-    team_id: UUID
-    config_id: UUID
-    label: str
-    model_name: str | None = None
-    language: str | None = None
-    is_active: bool = True
-```
-
-```python
-class SttConfigDraftReplaceCredential(BaseModel):
-    team_id: UUID
-    config_id: UUID
-    bearer_token: str
-```
-
-## New API routes
-
-```text
-POST /api/v1/stt-configs/drafts
-POST /api/v1/stt-configs/{config_id}/finalize
-POST /api/v1/stt-configs/{config_id}/replace-credential
-```
-
-Keep existing:
-
-```text
-POST /api/v1/stt-configs
-POST /api/v1/stt-configs/inspect
-POST /api/v1/stt-configs/{config_id}/inspect
-DELETE /api/v1/stt-configs/{config_id}
-```
-
-The old upsert path remains for backwards compatibility and advanced full-form edits.
-
----
-
-# Service Layer Plan
-
-## Add draft creation
-
-```python
-def create_stt_config_draft(
-    db: Session,
-    actor: User,
-    payload: SttConfigDraftCreate,
-) -> tuple[TeamSttConfig, SttInspectResult]:
-    ...
-```
-
-Behavior:
-
-1. Require system admin.
-2. Resolve team.
-3. Resolve provider preset.
-4. Apply preset defaults.
-5. Require API key if preset requires one.
-6. Inspect provider.
-7. Derive credential status:
-
-   * invalid key → error; do not create draft
-   * reachable + usable → `verified`
-   * reachable but incomplete metadata → `partial`
-   * custom/manual → `pending_inspection` or `partial`
-8. Create `TeamSttConfig`:
-
-   * `setup_status=pending_model_selection`
-   * `is_active=False`
-   * no team selection
-   * credential saved in Vault
-   * `credential_fingerprint` stored
-   * `inspection_metadata_json` saved
-9. Return config + inspection.
-
-## Add finalization
-
-```python
-def finalize_stt_config_draft(
-    db: Session,
-    actor: User,
-    payload: SttConfigFinalize,
-) -> TeamSttConfig:
-    ...
-```
-
-Behavior:
-
-1. Require system admin.
-2. Load draft by team/config ID.
-3. Validate label uniqueness.
-4. If provider has model list, require selected model to be in list.
-5. If provider does not expose model list, allow manual model if preset allows it.
-6. Set:
-
-   * label
-   * model
-   * language
-   * `setup_status=ready`
-   * `is_active=payload.is_active`
-7. Do not select it as the team default STT provider automatically.
-
-## Add credential replacement
-
-```python
-def replace_stt_config_draft_credential(
-    db: Session,
-    actor: User,
-    payload: SttConfigDraftReplaceCredential,
-) -> tuple[TeamSttConfig, SttInspectResult]:
-    ...
-```
-
-Behavior:
-
-1. Re-run inspection with new key.
-2. Store new Vault secret.
-3. Update fingerprint.
-4. Update inspection metadata.
-5. Reset `setup_status=pending_model_selection`.
-6. Set `is_active=False`.
-7. Clear stale model if no longer available.
-
----
-
-# Selection Rules
-
-Tighten selection to mirror LLM.
-
-Current `list_selectable_stt_configs()` filters only:
-
-```text
-team_id
-is_active=True
-```
-
-and `set_team_stt_selection()` filters active and non-invalid credential status. 
-
-Change both to require:
-
-```python
-TeamSttConfig.is_active.is_(True)
-TeamSttConfig.setup_status == SttConfigSetupStatus.ready
-TeamSttConfig.credential_status != ProviderCredentialStatus.invalid
-```
-
-Also require a usable credential through the existing `ensure_stt_config_credential_ready()` call.
-
----
-
-# UI Plan
-
-Update both:
-
-```text
-app/templates/admin.html
-app/templates/admin2.html
-```
-
-## Provider list
-
-Show cards/table rows with:
-
-```text
-Provider label
-Provider brand
-Credential status
-Setup status
-Default model
-Language
-Actions
-```
-
-Statuses:
-
-```text
-Setup incomplete
-Ready · available
-Ready · unavailable
-Invalid credential
-Partial inspection
-```
-
-Actions for incomplete setup:
-
-```text
-Continue setup
-Delete incomplete setup
-```
-
-Actions for ready setup:
-
-```text
-Edit
-Replace API key
-Delete
-```
-
-## New provider form
-
-### Initial step
-
-```text
-Provider
-API key
 [Check API key and find transcription options]
 ```
 
-Only show advanced endpoint fields for:
+No model field on the first step.
+
+## After discovery
+
+Show discovered model dropdown:
 
 ```text
-Custom OpenAI-compatible
-Custom REST/OpenAPI
-```
-
-### Model/settings step
-
-```text
+Provider: Deepgram
 Credential: saved
 Provider name
-Default model
-Default language
-Available for team selection
+Default model: [nova-3 / ...]
+Default language: [optional]
+Available for team selection: [x]
 [Save provider]
-[Replace API key]
-[Delete incomplete setup]
 ```
 
-### Custom REST/OpenAPI advanced step
-
-For custom OpenAPI only, keep the detailed technical fields:
+If discovery returns no models for a non-auth reason:
 
 ```text
-Base URL
-OpenAPI path
-Transcribe path
-File field
-Model field
-Language field
-Response text path
-Segments path
-Segment field mapping
-Extra form fields
+Could not find Deepgram models.
+[Try again]
+[Enter model manually]
 ```
 
-This preserves the current power-user functionality without forcing it on normal admins.
+If auth fails:
+
+```text
+The API key was rejected by Deepgram.
+```
+
+Do not create a draft for invalid credentials.
 
 ---
 
-# Provider Inspection Behavior
+# Phase 9 — Acceptance criteria
 
-## OpenAI
+## Deepgram discovery
 
-Use existing OpenAI model listing and transcription model filter. The code already has `SUPPORTED_OPENAI_TRANSCRIPTION_MODELS`. 
+* `POST /api/v1/stt-configs/drafts` with `provider_preset=deepgram` calls `GET /v1/models`.
+* Uses `Authorization: Token <key>`.
+* Extracts only `stt` models.
+* Excludes TTS models.
+* Excludes models with `batch=False`.
+* Saves discovered models to `available_models_json`.
+* Returns `available_model_options`.
 
-If model listing fails due to credential rejection, fail hard and do not create draft.
+## Deepgram transcription
 
-If model listing is unavailable for non-auth reasons, allow manual model entry only if you decide to preserve current fallback behavior. I would avoid model defaults for consistency with LLM, except OpenAI’s current known transcription list already exists in code.
-
-## Deepgram
-
-First implementation can use static model choices or manual model entry, because Deepgram’s API does not require a model list endpoint for basic use. Use a default model field like:
-
-```text
-nova-3
-```
-
-But if you want consistency with LLM’s “no curated defaults” rule, then make model optional and rely on Deepgram’s endpoint defaults. Deepgram docs show `model=nova-3` in examples, but the provider can operate based on API parameters. ([Deepgram Docs][1])
-
-Recommended UX:
-
-```text
-Model: optional
-Smart format: on by default
-Diarization: optional toggle later
-```
-
-## ElevenLabs
-
-ElevenLabs docs currently surface Scribe v2 as the primary STT model and show a response with `text` and word-level metadata. ([ElevenLabs][6])
-
-Recommended UX:
+* Uses `POST /v1/listen`.
+* Uses `Authorization: Token <key>`.
+* Sends `model`, `smart_format`, and `language` as query params.
+* Sends raw audio bytes as request body.
+* Sets `Content-Type` to the normalized audio content type.
+* Does not send multipart `files`.
+* Extracts transcript from:
 
 ```text
-Model: Scribe v2 or manual model ID
-Language: optional
-Diarization: optional later
+results.channels.0.alternatives.0.transcript
 ```
 
-If you want strict “no defaults,” make model manually entered or inferred from provider response, but this will make ElevenLabs setup worse. I recommend allowing provider preset defaults for STT because STT providers often have fewer exposed model-list APIs than LLM providers.
+## Error behavior
+
+* Invalid Deepgram key during discovery returns `stt_credential_invalid`.
+* Invalid Deepgram key does not create a draft.
+* Deepgram non-auth model discovery failure can allow manual model entry if the rest of the wizard supports that.
+* Runtime transcription errors are logged without leaking API key or audio content.
 
 ---
 
-# Key Product Decision Needed
+# Phase 10 — Suggested agent task list
 
-For LLM we decided:
+## Task 1 — Preset update
 
-```text
-live auto-discovery only; no curated model defaults
-```
+* Change Deepgram `supports_model_discovery` to `True`.
+* Remove `default_model_name="nova-3"` or stop treating it as the only available model.
+* Keep `smart_format=true`.
 
-For STT, that rule may be too strict. Many STT providers do not expose a clean model-list endpoint, or they expose model choice as query/form params rather than a formal `/models` API.
+## Task 2 — Discovery helper
 
-## Recommendation
+* Add `_list_deepgram_stt_models()`.
+* Parse `payload["stt"]`.
+* Use `canonical_name` or `name`.
+* Filter `batch is not False`.
+* Map 401/403 to `stt_credential_invalid`.
 
-For STT, use a different rule:
+## Task 3 — Inspection branch
 
-```text
-Use live discovery where available.
-Use provider preset defaults where the provider does not expose model discovery.
-Allow manual model override.
-```
+* Add Deepgram branch to STT inspection.
+* Return discovered models/options.
+* Save discovered list in draft config.
+* Make invalid credential stop draft creation.
 
-This is more practical for STT.
+## Task 4 — Transport branch
 
----
+* Add `_transcribe_via_deepgram()`.
+* Branch in `_transcribe_via_http()` by `provider_preset`.
+* Send raw audio + query params.
+* Extract transcript with existing response path helper.
 
-# Implementation Sequence
+## Task 5 — Call-site propagation
 
-## Phase 1 — Preset catalog and schema
+* Ensure all `_transcribe_via_http()` callers pass `provider_preset`.
+* Check runtime transcription, saved provider test, and snapshot transcription paths.
 
-1. Add `SttProviderPreset`.
-2. Add `SttConfigSetupStatus`.
-3. Add `provider_preset` and `setup_status` to `TeamSttConfig`.
-4. Add `app/services/stt_presets.py`.
-5. Add `SttConfigDraftCreate`, `SttConfigDraftCreateResult`, `SttConfigFinalize`, `SttConfigDraftReplaceCredential`.
-6. Extend `SttConfigDetail` with:
+## Task 6 — Tests
 
-   * `provider_preset`
-   * `provider_display_name`
-   * `setup_status`
-   * `setup_status_label`
+* Add discovery tests.
+* Add invalid credential tests.
+* Add draft discovery API test.
+* Add raw-audio transcription request-shape test.
+* Add call-site propagation test.
 
-## Phase 2 — Migration
+## Task 7 — Admin UI verification
 
-1. Add columns.
-2. Backfill provider presets from adapter kind.
-3. Backfill setup status.
-4. Deduplicate labels.
-5. Add normalized unique label index.
-6. Add migration tests.
-
-## Phase 3 — Service layer
-
-1. Add provider default resolution.
-2. Add `create_stt_config_draft()`.
-3. Add `finalize_stt_config_draft()`.
-4. Add `replace_stt_config_draft_credential()`.
-5. Tighten selectable STT config queries.
-6. Keep existing upsert path for advanced/backwards-compatible saves.
-7. Preserve duplicate credential fingerprint checks.
-
-## Phase 4 — Provider-specific transport
-
-1. Keep OpenAI path as-is.
-2. Add Deepgram request handling.
-3. Add ElevenLabs request handling.
-4. Keep generic OpenAI-compatible multipart.
-5. Keep generic REST/OpenAPI mapping.
-6. Add tests with mocked HTTP responses.
-
-## Phase 5 — API routes
-
-Add:
-
-```text
-POST /api/v1/stt-configs/drafts
-POST /api/v1/stt-configs/{config_id}/finalize
-POST /api/v1/stt-configs/{config_id}/replace-credential
-```
-
-Update response helpers.
-
-## Phase 6 — Admin browser routes
-
-Add browser form routes matching the API:
-
-```text
-POST /admin/stt-configs/drafts
-POST /admin/stt-configs/{config_id}/finalize
-POST /admin/stt-configs/{config_id}/replace-credential
-```
-
-Reuse existing delete route for incomplete setup deletion.
-
-## Phase 7 — Templates
-
-Update `admin.html` and `admin2.html` with the STT wizard states.
-
-Keep advanced fields only for custom REST/OpenAPI.
-
-## Phase 8 — Tests
-
-### Unit tests
-
-```text
-stt preset catalog returns expected defaults
-provider preset inference from existing adapter kind
-label uniqueness helper
-Deepgram response extraction
-ElevenLabs response extraction
-OpenAI model discovery still works
-```
-
-### Migration tests
-
-```text
-provider_preset added/backfilled
-setup_status added/backfilled
-duplicate STT labels deduped
-unique label index exists
-```
-
-### API tests
-
-```text
-system admin can create STT draft
-draft saves credential to Vault
-draft does not return raw API key
-draft is setup_status=pending_model_selection
-draft is not selectable
-finalize makes ready
-ready + active is selectable
-pending cannot be selected by direct POST
-replace credential re-inspects and resets to pending
-delete incomplete setup deletes Vault secret
-duplicate label rejected
-invalid credential rejected without draft creation
-```
-
-### Admin UI tests
-
-```text
-new STT setup shows provider/API-key step only
-technical fields hidden for branded presets
-custom REST shows advanced fields
-after draft creation API key field hidden
-Continue setup skips API key
-Replace API key visible
-Save provider finalizes
-Setup incomplete card visible
-Ready · available/unavailable states visible
-```
+* Confirm Deepgram shows key-only first step.
+* Confirm model dropdown appears after discovery.
+* Confirm invalid key does not show model step.
+* Confirm manual model path is available only for non-auth discovery failure or no returned models.
 
 ---
 
-# Suggested First PR Scope
+# Final instruction for the dev agent
 
-Keep the first PR focused:
-
-```text
-OpenAI
-Deepgram
-ElevenLabs
-Custom OpenAI-compatible
-Custom REST/OpenAPI
-```
-
-Do **not** include Azure, Google, AWS, AssemblyAI, or Speechmatics in the first PR.
-
-Reason: those providers either require async job orchestration, project/resource/region semantics, cloud auth, object storage, or a different lifecycle. The current STT engine is synchronous direct-upload; expanding beyond that should be a separate PR.
-
----
-
-# Final Agent Instruction
-
-Implement an LLM-style STT provider setup wizard on `master`. Add branded STT provider presets, setup status, draft/finalize routes, and a simplified admin UI. Preserve the existing STT inspection, credential status, credential fingerprint, duplicate detection, and generic REST/OpenAPI power-user path. Include OpenAI, Deepgram, ElevenLabs, Custom OpenAI-compatible, and Custom REST/OpenAPI in the first slice. Pending STT configs must be visible to system admins as setup incomplete, but never selectable by team leaders/users until finalized as ready and active.
-
-[1]: https://developers.deepgram.com/docs/pre-recorded-audio?utm_source=chatgpt.com "Getting Started | Deepgram's Docs"
-[2]: https://elevenlabs.io/docs/capabilities/speech-to-text?utm_source=chatgpt.com "Transcription | ElevenLabs Documentation"
-[3]: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text?utm_source=chatgpt.com "Speech to text REST API - Speech service - Foundry Tools | Microsoft Learn"
-[4]: https://cloud.google.com/speech-to-text/v2/docs/reference/rest?utm_source=chatgpt.com "Cloud Speech-to-Text API  |  Google Cloud"
-[5]: https://docs.aws.amazon.com/transcribe/latest/APIReference/API_StartTranscriptionJob.html?utm_source=chatgpt.com "StartTranscriptionJob - Amazon Transcribe"
-[6]: https://elevenlabs.io/docs/overview/capabilities/speech-to-text?utm_source=chatgpt.com "Transcription | ElevenLabs Documentation"
+Fix Deepgram as a provider-specific STT transport, not as generic multipart REST. Deepgram model discovery should call `GET /v1/models` with `Authorization: Token <key>` and use returned `stt` models that support prerecorded/batch transcription. Deepgram transcription should call `POST /v1/listen` with `Authorization: Token <key>`, query params for `model`, `smart_format`, and language, and raw audio bytes as the request body with the correct content type. Add tests proving both discovery and transcription request shape.

@@ -83,7 +83,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import _safe_http_error_details, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import _list_deepgram_stt_models, _safe_http_error_details, _transcribe_via_http, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.schemas import LlmConfigUpsert, LlmInspectRequest
 from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
@@ -735,9 +735,25 @@ def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_rev
     assert "super-secret-token" not in fetched.text
 
 
-def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_session, make_team, make_user):
+def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin-stt-draft@example.com", password="password-1", is_system_admin=True)
+
+    def fake_get(url, *, headers=None, timeout=None):
+        assert url == "https://api.deepgram.com/v1/models"
+        assert headers == {"Authorization": "Token dg-secret"}
+        assert timeout == 10.0
+        return FakeHttpxResponse(
+            {
+                "stt": [
+                    {"name": "Nova 3", "canonical_name": "nova-3", "batch": True},
+                    {"name": "Streaming Only", "canonical_name": "stream-only", "batch": False},
+                ],
+                "tts": [{"canonical_name": "aura-2"}],
+            }
+        )
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
 
     login(client, email="admin-stt-draft@example.com", password="password-1")
     draft = client.post(
@@ -752,12 +768,15 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     assert body["config"]["provider_preset"] == SttProviderPreset.deepgram.value
     assert body["config"]["setup_status"] == SttConfigSetupStatus.pending_model_selection.value
     assert body["config"]["is_active"] is False
+    assert body["available_models"] == ["nova-3"]
+    assert body["config"]["available_models_json"] == ["nova-3"]
     assert "dg-secret" not in draft.text
 
     persisted = db_session.get(TeamSttConfig, config_id)
     assert persisted is not None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
     assert persisted.model_name is None
+    assert persisted.available_models_json == ["nova-3"]
 
     options_before = client.get(f"/api/v1/stt-selection/options?team_id={team.id}")
     assert options_before.status_code == 200
@@ -795,6 +814,21 @@ def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, mak
     )
 
     assert_error(selected, status_code=404, code="not_found", message="Selectable STT config not found")
+
+
+def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-stt-bad-dg@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+
+    login(client, email="admin-stt-bad-dg@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "deepgram", "bearer_token": "bad-key"},
+    )
+
+    assert_error(response, status_code=401, code="stt_credential_invalid", message="The API key was rejected by Deepgram.")
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
 def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(client, db_session, make_team, make_user, monkeypatch):
@@ -12699,6 +12733,143 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     assert captured["data"]["language"] == "en"
     assert captured["data"]["response_format"] == "verbose_json"
     assert captured["files"]["file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
+
+
+def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return FakeHttpxResponse(
+            {
+                "stt": [
+                    {"name": "Nova 3", "canonical_name": "nova-3", "batch": True, "streaming": True},
+                    {"name": "Streaming Only", "canonical_name": "stream-only", "batch": False, "streaming": True},
+                ],
+                "tts": [{"canonical_name": "aura-2"}],
+            }
+        )
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    models = _list_deepgram_stt_models(api_key="dg-secret", base_url="https://api.deepgram.com")
+
+    assert models == ["nova-3"]
+    assert captured["url"] == "https://api.deepgram.com/v1/models"
+    assert captured["headers"] == {"Authorization": "Token dg-secret"}
+    assert captured["timeout"] == 10.0
+
+
+def test_deepgram_model_discovery_rejects_invalid_key(monkeypatch):
+    def fake_get(*args, **kwargs):
+        return FakeHttpxResponse({"error": "unauthorized"}, status_code=401)
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    with pytest.raises(AppError) as exc_info:
+        _list_deepgram_stt_models(api_key="bad-key", base_url="https://api.deepgram.com")
+
+    assert exc_info.value.code == "stt_credential_invalid"
+    assert exc_info.value.status_code == 401
+
+
+def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
+    captured = {}
+
+    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+        captured.update(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "content": content,
+                "data": data,
+                "files": files,
+                "timeout": timeout,
+            }
+        )
+        return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "hello from deepgram"}]}]}})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    result = _transcribe_via_http(
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        file_field_name="file",
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        extra_form_fields_json={"smart_format": "true"},
+        bearer_token="dg-secret",
+        model_name="nova-3",
+        model_field_name="model",
+        language="en",
+        language_field_name="language",
+        audio_bytes=b"wav-bytes",
+        filename="audio.wav",
+        content_type="audio/wav",
+        provider_preset=SttProviderPreset.deepgram.value,
+    )
+
+    assert result == "hello from deepgram"
+    assert captured["url"] == "https://api.deepgram.com/v1/listen"
+    assert captured["headers"] == {"Authorization": "Token dg-secret", "Content-Type": "audio/wav"}
+    assert captured["params"] == {"smart_format": "true", "model": "nova-3", "language": "en"}
+    assert captured["content"] == b"wav-bytes"
+    assert captured["data"] is None
+    assert captured["files"] is None
+
+
+def test_transcribe_with_team_stt_deepgram_uses_raw_audio_transport(
+    db_session, make_team, make_user, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-deepgram@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = TeamSttConfig(
+        team_id=team.id,
+        label="Deepgram STT",
+        provider_preset=SttProviderPreset.deepgram.value,
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        auth_mode=SttAuthMode.bearer,
+        model_name="nova-3",
+        model_field_name="model",
+        file_field_name="file",
+        language="en",
+        language_field_name="language",
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        extra_form_fields_json={"smart_format": "true"},
+        vault_secret_ref="secret:openscribe/stt/team/test/config/test",
+        is_active=True,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=owner)
+    captured = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "dg-secret")
+
+    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+        captured.update({"headers": headers, "params": params, "content": content, "data": data, "files": files})
+        return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "recognized text"}]}]}})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"normalized-audio",
+        filename="chunk.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "recognized text"
+    assert captured["headers"]["Authorization"] == "Token dg-secret"
+    assert captured["params"] == {"smart_format": "true", "model": "nova-3", "language": "en"}
+    assert captured["content"] == b"normalized-audio"
+    assert captured["data"] is None
+    assert captured["files"] is None
 
 
 def test_transcribe_with_team_stt_uses_saved_model_and_language_field_names(

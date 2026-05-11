@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-05-11 Deepgram STT Wizard Fix
+
+### Scope
+
+- Fixed Deepgram STT wizard discovery and runtime transport: live `/v1/models` discovery, invalid-key rejection before draft creation, and raw-audio `/v1/listen` transcription with query params.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/stt_presets.py`: make Deepgram discover models and stop seeding `nova-3` as static only option.
+- `app/services/stt.py`: add Deepgram model discovery, inspection branch, preferred-model hint, raw-audio transport, and saved-config test propagation.
+- `app/services/provider_inspection.py`: allow numeric list indexes in dotted JSON paths used by Deepgram response paths.
+- `tests/test_api.py`, `tests/test_provider_inspection.py`: add Deepgram discovery, invalid-key, draft, raw-audio transport, call-site propagation, and dotted-index path tests.
+- `docs/stt-config.md`, `docs/progress.md`: document Deepgram-specific discovery/transport.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py tests/test_provider_inspection.py -k "deepgram or stt_provider_draft or transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_response_path or transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields or extract_json_path_supports_dot_paths"`: passed, 9 tests.
+
+### Documentation
+
+- `docs/stt-config.md`: adds Deepgram discovery, credential, model, and raw-audio request behavior.
+
+### Risks / assumptions
+
+- Non-auth Deepgram discovery failures create a partial draft with manual model entry possible, matching existing wizard tolerance for degraded inspection.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content exposure; runtime logs include metadata only, not audio/key/text.
+- Ownership rules preserved: discovery/drafts remain system-admin-only and team-scoped; users only consume active selections.
+- Deletion semantics preserved: no deletion path changed; invalid credentials fail before config persistence.
+- Provider rules preserved: raw API key stays Vault-backed; Deepgram uses Token auth and provider-specific transport.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 STT Provider Wizard
 
 ### Scope

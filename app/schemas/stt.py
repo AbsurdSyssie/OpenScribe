@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttSelectionPurpose
+from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose
 
 
 def _validate_stt_base_url(value: str) -> str:
@@ -34,6 +34,7 @@ class SttConfigUpsert(BaseModel):
     config_id: UUID | None = None
     team_id: UUID | None = None
     label: str = Field(min_length=1, max_length=255)
+    provider_preset: SttProviderPreset | None = None
     adapter_kind: SttAdapterKind = SttAdapterKind.generic_rest
     base_url: str = Field(default="", max_length=2048)
     transcribe_path: str = Field(default="", max_length=255)
@@ -156,6 +157,8 @@ class SttConfigDetail(BaseModel):
     id: UUID
     team_id: UUID
     label: str
+    provider_preset: str
+    provider_display_name: str
     adapter_kind: SttAdapterKind
     base_url: str
     transcribe_path: str
@@ -175,6 +178,8 @@ class SttConfigDetail(BaseModel):
     extra_form_fields_json: dict[str, str]
     credential_status: ProviderCredentialStatus
     inspection_metadata_json: dict
+    setup_status: SttConfigSetupStatus
+    setup_status_label: str | None = None
     is_active: bool
     has_secret: bool
     created_by_user_id: UUID
@@ -218,6 +223,7 @@ class SttInspectRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     team_id: UUID | None = None
+    provider_preset: SttProviderPreset | None = None
     adapter_kind: SttAdapterKind = SttAdapterKind.generic_rest
     base_url: str = Field(default="", max_length=2048)
     openapi_path: str | None = Field(default=None, max_length=255)
@@ -234,6 +240,21 @@ class SttInspectRequest(BaseModel):
             adapter_kind = SttAdapterKind(adapter_kind)
 
         normalized = dict(data)
+        provider_preset = normalized.get("provider_preset")
+        if provider_preset:
+            from app.services.stt_presets import apply_stt_provider_defaults
+
+            preset_key, adapter_kind, base_url, preset = apply_stt_provider_defaults(
+                provider_preset=provider_preset,
+                base_url=normalized.get("base_url"),
+                adapter_kind=adapter_kind,
+            )
+            normalized["provider_preset"] = preset_key
+            normalized["adapter_kind"] = adapter_kind
+            normalized["base_url"] = base_url
+            if adapter_kind is SttAdapterKind.generic_rest and preset_key != SttProviderPreset.custom_rest_openapi.value:
+                normalized["openapi_path"] = None
+                return normalized
         if adapter_kind is SttAdapterKind.openai_cloud:
             normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
             normalized["openapi_path"] = None
@@ -278,7 +299,70 @@ class SttModelOption(BaseModel):
     source: str
     label: str
 
+
+class SttConfigDraftCreate(BaseModel):
     model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    provider_preset: SttProviderPreset = SttProviderPreset.openai
+    label: str | None = Field(default=None, min_length=1, max_length=255)
+    base_url: str = Field(default="", max_length=2048)
+    openapi_path: str | None = Field(default=None, max_length=255)
+    bearer_token: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_provider_defaults(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        from app.services.stt_presets import apply_stt_provider_defaults
+
+        preset, _adapter_kind, base_url, _definition = apply_stt_provider_defaults(
+            provider_preset=normalized.get("provider_preset"),
+            base_url=normalized.get("base_url"),
+        )
+        normalized["provider_preset"] = preset
+        normalized["base_url"] = base_url
+        return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("STT base URL is required")
+        return _validate_stt_base_url(value)
+
+
+class SttConfigDraftCreateResult(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    config: SttConfigDetail
+    provider_display_name: str
+    available_models: list[str] = Field(default_factory=list)
+    available_model_options: list[SttModelOption] = Field(default_factory=list)
+    credential_status: ProviderCredentialStatus
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class SttConfigFinalize(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    config_id: UUID
+    label: str = Field(min_length=1, max_length=255)
+    model_name: str | None = Field(default=None, max_length=255)
+    language: str | None = Field(default=None, max_length=32)
+    is_active: bool = True
+
+
+class SttConfigDraftReplaceCredential(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    config_id: UUID
+    bearer_token: str = Field(min_length=1)
 
 
 class SttInspectResult(BaseModel):

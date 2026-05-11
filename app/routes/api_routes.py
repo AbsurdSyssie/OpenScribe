@@ -422,9 +422,40 @@ def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext
     return inspect_stt_contract_service(db, context.user, payload)
 
 
+def _stt_draft_result(config, inspection):
+    return SttConfigDraftCreateResult(
+        config=stt_config_response(config),
+        provider_display_name=stt_config_response(config).provider_display_name,
+        available_models=list(inspection.available_models),
+        available_model_options=list(inspection.available_model_options),
+        credential_status=config.credential_status,
+        warnings=[note for note in inspection.notes if "failed" in note.lower() or "warning" in note.lower()],
+        notes=list(inspection.notes),
+    )
+
+
+@api.post("/stt-configs/drafts", response_model=SttConfigDraftCreateResult, responses=error_responses)
+def create_stt_config_draft(payload: SttConfigDraftCreate, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    config, inspection = create_stt_config_draft_service(db, context.user, payload)
+    return _stt_draft_result(config, inspection)
+
+
 @api.post("/stt-configs/{config_id}/inspect", response_model=SttConfigDetail, responses=error_responses)
 def reinspect_stt_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     return stt_config_response(reinspect_stt_config_service(db, context.user, config_id=config_id, team_id=team_id))
+
+
+@api.post("/stt-configs/{config_id}/finalize", response_model=SttConfigDetail, responses=error_responses)
+def finalize_stt_config_draft(config_id: UUID, payload: SttConfigFinalize, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    payload = payload.model_copy(update={"config_id": config_id})
+    return stt_config_response(finalize_stt_config_draft_service(db, context.user, payload))
+
+
+@api.post("/stt-configs/{config_id}/replace-credential", response_model=SttConfigDraftCreateResult, responses=error_responses)
+def replace_stt_config_draft_credential(config_id: UUID, payload: SttConfigDraftReplaceCredential, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    payload = payload.model_copy(update={"config_id": config_id})
+    config, inspection = replace_stt_config_draft_credential_service(db, context.user, payload)
+    return _stt_draft_result(config, inspection)
 
 
 @api.post("/stt-configs", response_model=SttConfigDetail, responses=error_responses)

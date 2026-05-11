@@ -1164,6 +1164,8 @@
                 </div>
                 <div class="provider-card__url">{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</div>
                 <div class="provider-card__meta">
+                  <span class="provider-card__meta-item"><strong>Provider:</strong> {{ config.provider_display_name }}</span>
+                  <span class="provider-card__meta-item"><strong>Setup:</strong> {% if config.setup_status.value == 'pending_model_selection' %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}</span>
                   <span class="provider-card__meta-item"><strong>Model:</strong> {{ config.model_name or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Language:</strong> {{ config.language or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Secret:</strong> {{ "yes" if config.vault_secret_ref else "no" }}</span>
@@ -1176,7 +1178,7 @@
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
                   <input type="hidden" name="tab" value="providers">
-                  <button type="submit" class="quick-action">Edit</button>
+                  <button type="submit" class="quick-action">{% if config.setup_status.value == 'pending_model_selection' %}Continue setup{% else %}Edit{% endif %}</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/test">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
@@ -1192,6 +1194,7 @@
                 </form>
                 </div>
                 <div class="quick-actions">
+                {% if config.setup_status.value != 'pending_model_selection' %}
                 <form method="post" action="/admin/stt-selection">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="purpose" value="conversation">
@@ -1208,6 +1211,7 @@
                   <input type="hidden" name="return_tab" value="providers">
                   <button type="submit" class="quick-action">Use for dictation</button>
                 </form>
+                {% endif %}
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1230,6 +1234,57 @@
             <p>Optionally preview endpoint metadata, then save and inspect credentials in one server-side pass.</p>
           </div>
         </div>
+        {% if not stt_config %}
+        <form method="post" action="/admin/stt-configs/drafts">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>
+            Provider
+            <select name="provider_preset">
+              {% for preset in stt_form.stt_provider_presets %}
+              <option value="{{ preset.key }}" {% if stt_form.provider_preset == preset.key %}selected{% endif %}>{{ preset.display_name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Provider name<input type="text" name="label" maxlength="255" value="{{ stt_form.label }}"></label>
+          <label>Base URL for custom providers<input type="url" name="base_url" value="{{ stt_form.base_url }}"></label>
+          <label>OpenAPI path for custom REST/OpenAPI<input type="text" name="openapi_path" value="{{ stt_form.openapi_path }}"></label>
+          <label>API key<input type="password" name="bearer_token"></label>
+          <button type="submit">Check API key and find transcription options</button>
+        </form>
+        {% endif %}
+        {% if stt_config and stt_config.setup_status.value == 'pending_model_selection' %}
+        <p><small>Credential saved. API key hidden. Choose model/language, then save provider.</small></p>
+        <form method="post" action="/admin/stt-configs/{{ stt_config.id }}/finalize">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>Provider name<input type="text" name="label" required maxlength="255" value="{{ stt_form.label }}"></label>
+          <label>
+            Default model
+            {% if stt_form.available_model_options %}
+            <select name="provider_model">
+              {% for model in stt_form.available_model_options %}
+              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input type="text" name="provider_model" value="{{ stt_form.model_name }}">
+            {% endif %}
+          </label>
+          <label>Default language<input type="text" name="language" value="{{ stt_form.language }}"></label>
+          <label class="check"><input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}> Available for team selection</label>
+          <button type="submit">Save provider</button>
+        </form>
+        <form method="post" action="/admin/stt-configs/{{ stt_config.id }}/replace-credential">
+          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
+          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
+          <input type="hidden" name="return_tab" value="providers">
+          <label>Replace API key<input type="password" name="bearer_token" required></label>
+          <button type="submit">Replace API key</button>
+        </form>
+        {% endif %}
         <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">

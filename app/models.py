@@ -93,6 +93,19 @@ class SttAdapterKind(str, enum.Enum):
     openai_compatible_rest = "openai_compatible_rest"
 
 
+class SttProviderPreset(str, enum.Enum):
+    openai = "openai"
+    deepgram = "deepgram"
+    elevenlabs = "elevenlabs"
+    custom_openai_compatible = "custom_openai_compatible"
+    custom_rest_openapi = "custom_rest_openapi"
+
+
+class SttConfigSetupStatus(str, enum.Enum):
+    pending_model_selection = "pending_model_selection"
+    ready = "ready"
+
+
 class ProviderCredentialStatus(str, enum.Enum):
     unknown = "unknown"
     pending_inspection = "pending_inspection"
@@ -521,10 +534,12 @@ class UserRecoveryCode(Base):
 
 class TeamSttConfig(Base):
     __tablename__ = "team_stt_configs"
+    __table_args__ = (Index("uq_team_stt_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_preset: Mapped[str] = mapped_column(String(64), default=SttProviderPreset.custom_rest_openapi.value, nullable=False)
     adapter_kind: Mapped[SttAdapterKind] = mapped_column(Enum(SttAdapterKind), default=SttAdapterKind.generic_rest, nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     transcribe_path: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -551,6 +566,7 @@ class TeamSttConfig(Base):
     )
     credential_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
     inspection_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'"), nullable=False)
+    setup_status: Mapped[SttConfigSetupStatus] = mapped_column(String(64), default=SttConfigSetupStatus.ready, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     updated_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

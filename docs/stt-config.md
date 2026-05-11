@@ -70,6 +70,16 @@ Current adapter families:
 - `openai_cloud`
 - `openai_compatible_rest`
 
+Provider setup now also has an LLM-style wizard layer above these adapter families:
+
+- `openai`
+- `deepgram`
+- `elevenlabs`
+- `custom_openai_compatible`
+- `custom_rest_openapi`
+
+Wizard-created configs start as `setup_status=pending_model_selection` and `is_active=false`. System admins can see and continue these incomplete configs, but team leaders/users cannot select them until finalization sets `setup_status=ready` and `is_active=true`.
+
 `generic_rest` is the fallback:
 
 - OpenAPI inspection uses `base_url + openapi_path`
@@ -156,6 +166,7 @@ This diagnostic is system-admin-only and does not reveal raw provider credential
 Supported metadata fields:
 
 - `label`
+- `provider_preset`
 - `adapter_kind`
 - `base_url`
 - `transcribe_path`
@@ -171,6 +182,7 @@ Supported metadata fields:
 - `segment_end_field`
 - `segment_speaker_field`
 - `extra_form_fields_json`
+- `setup_status`
 - `is_active`
 
 Secret fields:

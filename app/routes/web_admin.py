@@ -827,6 +827,148 @@ def admin_inspect_stt_config(
     )
 
 
+@app.post("/admin/stt-configs/drafts", response_class=HTMLResponse)
+def admin_create_stt_config_draft(
+    request: Request,
+    team_id: str = Form(...),
+    label: str = Form(""),
+    provider_preset: str = Form(""),
+    base_url: str = Form(""),
+    openapi_path: str = Form(""),
+    bearer_token: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        config, _inspection = create_stt_config_draft_service(
+            db,
+            context.user,
+            SttConfigDraftCreate(
+                team_id=UUID(team_id),
+                provider_preset=provider_preset,
+                label=label or None,
+                base_url=base_url,
+                openapi_path=openapi_path or None,
+                bearer_token=bearer_token or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT draft request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        stt_form = stt_form_defaults(None, None)
+        stt_form.update({"label": label, "provider_preset": provider_preset or stt_form["provider_preset"], "base_url": base_url or stt_form["base_url"], "openapi_path": openapi_path or stt_form["openapi_path"]})
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_stt_config_id="new" if _admin_return_view_value(return_view) == "admin2" else None,
+            stt_form_override=stt_form,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="stt",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    redirect_url = _admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id)
+    separator = "&" if "?" in redirect_url else "?"
+    return RedirectResponse(url=f"{redirect_url}{separator}stt_config_id={config.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-configs/{config_id}/finalize", response_class=HTMLResponse)
+def admin_finalize_stt_config_draft(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    label: str = Form(...),
+    provider_model: str = Form(""),
+    language: str = Form(""),
+    is_active: str | None = Form(default=None),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        finalize_stt_config_draft_service(
+            db,
+            context.user,
+            SttConfigFinalize(team_id=UUID(team_id), config_id=config_id, label=label, model_name=provider_model or None, language=language or None, is_active=is_active == "true"),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT finalization request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_stt_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="stt",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-configs/{config_id}/replace-credential", response_class=HTMLResponse)
+def admin_replace_stt_config_draft_credential(
+    request: Request,
+    config_id: UUID,
+    team_id: str = Form(...),
+    bearer_token: str = Form(...),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        replace_stt_config_draft_credential_service(db, context.user, SttConfigDraftReplaceCredential(team_id=UUID(team_id), config_id=config_id, bearer_token=bearer_token))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT credential replacement request"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            selected_stt_config_id=str(config_id),
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            active_provider_tab="stt",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    redirect_url = _admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id)
+    separator = "&" if "?" in redirect_url else "?"
+    return RedirectResponse(url=f"{redirect_url}{separator}stt_config_id={config_id}", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/admin/stt-selection", response_class=HTMLResponse)
 def admin_set_stt_selection(
     request: Request,

@@ -57,7 +57,11 @@ from .llm import (
 from .preferences import LlmDetailLevel, UserAppPreferencesDetail, UserAppPreferencesUpsert
 from .smart_phrases import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
 from .stt import (
+    SttConfigDraftCreate,
+    SttConfigDraftCreateResult,
+    SttConfigDraftReplaceCredential,
     SttConfigDetail,
+    SttConfigFinalize,
     SttConfigUpsert,
     SttInspectFieldTip,
     SttInspectRequest,
@@ -158,7 +162,11 @@ __all__ = [
     "SmartPhraseCreate",
     "SmartPhraseDetail",
     "SmartPhraseUpdate",
+    "SttConfigDraftCreate",
+    "SttConfigDraftCreateResult",
+    "SttConfigDraftReplaceCredential",
     "SttConfigDetail",
+    "SttConfigFinalize",
     "SttConfigUpsert",
     "SttInspectFieldTip",
     "SttInspectRequest",

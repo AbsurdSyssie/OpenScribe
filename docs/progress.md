@@ -1,5 +1,50 @@
 # Progress
 
+## 2026-05-10 STT Provider Wizard
+
+### Scope
+
+- Added LLM-style STT provider presets, draft/finalize/replace-credential API and browser routes, setup status, and selection gating for incomplete providers.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/d3e4f5a6b7c9_add_stt_provider_wizard_fields.py`: add STT provider preset/setup status and unique team label index.
+- `app/services/stt_presets.py`, `app/services/stt.py`: add preset catalog, draft/finalize/replace services, selection gating, and branded auth headers.
+- `app/schemas/stt.py`, `app/routes/api_routes.py`, `app/routes/web_admin.py`, `app/web/presentation.py`: expose wizard schemas/routes and response metadata.
+- `app/templates/admin.html`, `app/templates/admin2.html`: show provider/setup states and draft/finalize controls.
+- `tests/test_api.py`, `tests/test_migrations.py`: cover draft/finalize, pending selection block, and migration fields/index.
+- `docs/stt-config.md`, `docs/progress.md`: document wizard layer and selection rules.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_config or stt_selection or stt_provider or team_stt"`: passed, 30 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin2_exposes_admin_lifecycle_and_provider_controls or admin_page_can_save_team_stt_config_for_selected_team or admin2_stt_config_redirect_preserves_preview_route"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "onboarding_and_session_tables"`: passed, 1 test.
+- `python -m py_compile ...`: passed for changed Python modules.
+
+### Documentation
+
+- `docs/stt-config.md`: documents provider presets and pending-vs-ready selection semantics.
+
+### Risks / assumptions
+
+- Deepgram and ElevenLabs first slice uses preset contracts/static default models, not live provider model discovery.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: routes manage provider metadata/secrets only; no transcript-derived content returned.
+- Ownership rules preserved: provisioning remains system-admin-only; selectors only see ready active team-scoped configs.
+- Deletion semantics preserved: existing STT config deletion and Vault cleanup path unchanged.
+- Provider rules preserved: raw credentials remain Vault-backed, never returned; branded presets map onto existing adapter/runtime model.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-10 LLM Provider Invalid Key and Label Uniqueness
 
 ### Scope

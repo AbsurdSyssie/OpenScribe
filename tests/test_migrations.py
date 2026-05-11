@@ -211,6 +211,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns
     assert {
         "team_id",
+        "provider_preset",
         "adapter_kind",
         "base_url",
         "transcribe_path",
@@ -227,7 +228,10 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "credential_status",
         "credential_fingerprint",
         "inspection_metadata_json",
+        "setup_status",
     } <= stt_columns
+    stt_indexes = inspector.get_indexes("team_stt_configs")
+    assert any(item["name"] == "uq_team_stt_configs_team_label_lower" for item in stt_indexes)
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     llm_indexes = inspector.get_indexes("team_llm_configs")
     assert {"team_id", "provider_preset", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json", "inspection_metadata_json", "setup_status"} <= llm_columns

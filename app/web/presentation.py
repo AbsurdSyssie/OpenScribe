@@ -18,6 +18,8 @@ from ..models import (
     QuickAction,
     SmartPhrase,
     SttAdapterKind,
+    SttConfigSetupStatus,
+    SttProviderPreset,
     SttSelectionPurpose,
     TeamRole,
     TeamStatus,
@@ -29,6 +31,7 @@ from ..models import (
     UserStatus,
 )
 from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, get_llm_provider_preset, infer_llm_provider_preset
+from ..services.stt_presets import STT_PROVIDER_PRESETS, get_stt_provider_preset, infer_stt_provider_preset
 from ..schemas import (
     ClinicalNlpSelectionDetail,
     DeidentificationInspectResult,
@@ -105,10 +108,16 @@ from .templates import templates
 
 
 def stt_config_response(config) -> SttConfigDetail:
+    provider_preset = config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url)
+    provider_display_name = get_stt_provider_preset(provider_preset).display_name
+    setup_status = config.setup_status or SttConfigSetupStatus.ready
+    setup_status_label = "Setup incomplete" if setup_status == SttConfigSetupStatus.pending_model_selection else None
     return SttConfigDetail(
         id=config.id,
         team_id=config.team_id,
         label=config.label,
+        provider_preset=provider_preset,
+        provider_display_name=provider_display_name,
         adapter_kind=config.adapter_kind,
         base_url=config.base_url,
         transcribe_path=config.transcribe_path,
@@ -128,6 +137,8 @@ def stt_config_response(config) -> SttConfigDetail:
         extra_form_fields_json=config.extra_form_fields_json or {},
         credential_status=config.credential_status,
         inspection_metadata_json=config.inspection_metadata_json or {},
+        setup_status=setup_status,
+        setup_status_label=setup_status_label,
         is_active=config.is_active,
         has_secret=bool(config.vault_secret_ref),
         created_by_user_id=config.created_by_user_id,
@@ -485,6 +496,8 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         return {
             "config_id": "",
             "label": "",
+            "provider_preset": infer_stt_provider_preset(inspection.adapter_kind, inspection.base_url),
+            "provider_display_name": get_stt_provider_preset(infer_stt_provider_preset(inspection.adapter_kind, inspection.base_url)).display_name,
             "adapter_kind": inspection.adapter_kind.value,
             "base_url": inspection.base_url,
             "openapi_path": inspection.openapi_path or "/openapi.json",
@@ -505,11 +518,16 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "extra_form_fields_json": json.dumps(inspection.extra_form_fields_json) if inspection.extra_form_fields_json else "",
             "is_active": True,
             "credential_action": default_credential_action(inspection.adapter_kind),
+            "setup_status": "",
+            "is_setup_incomplete": False,
+            "stt_provider_presets": list(STT_PROVIDER_PRESETS.values()),
         }
     if config is not None:
         return {
             "config_id": str(config.id),
             "label": config.label,
+            "provider_preset": config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url),
+            "provider_display_name": get_stt_provider_preset(config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url)).display_name,
             "adapter_kind": config.adapter_kind.value,
             "base_url": config.base_url,
             "openapi_path": "/openapi.json" if config.adapter_kind is SttAdapterKind.generic_rest else "",
@@ -533,10 +551,15 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "extra_form_fields_json": json.dumps(config.extra_form_fields_json) if config.extra_form_fields_json else "",
             "is_active": config.is_active,
             "credential_action": "keep",
+            "setup_status": config.setup_status,
+            "is_setup_incomplete": config.setup_status == SttConfigSetupStatus.pending_model_selection,
+            "stt_provider_presets": list(STT_PROVIDER_PRESETS.values()),
         }
     return {
         "config_id": "",
         "label": "",
+        "provider_preset": SttProviderPreset.openai.value,
+        "provider_display_name": get_stt_provider_preset(SttProviderPreset.openai.value).display_name,
         "adapter_kind": SttAdapterKind.generic_rest.value,
         "base_url": "",
         "openapi_path": "/openapi.json",
@@ -557,6 +580,9 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
         "extra_form_fields_json": "",
         "is_active": True,
         "credential_action": default_credential_action(SttAdapterKind.generic_rest),
+        "setup_status": "",
+        "is_setup_incomplete": False,
+        "stt_provider_presets": list(STT_PROVIDER_PRESETS.values()),
     }
 
 

@@ -51,6 +51,8 @@ from app.models import (
     RedactionRunStatus,
     SttAdapterKind,
     SttAuthMode,
+    SttConfigSetupStatus,
+    SttProviderPreset,
     SttSelectionPurpose,
     Team,
     TeamClinicalNlpSelection,
@@ -731,6 +733,68 @@ def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_rev
     assert fetched.status_code == 200
     assert fetched.json()["label"] == "Clinic STT"
     assert "super-secret-token" not in fetched.text
+
+
+def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-stt-draft@example.com", password="password-1", is_system_admin=True)
+
+    login(client, email="admin-stt-draft@example.com", password="password-1")
+    draft = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "deepgram", "bearer_token": "dg-secret"},
+    )
+
+    assert draft.status_code == 200
+    body = draft.json()
+    config_id = UUID(body["config"]["id"])
+    assert body["provider_display_name"] == "Deepgram"
+    assert body["config"]["provider_preset"] == SttProviderPreset.deepgram.value
+    assert body["config"]["setup_status"] == SttConfigSetupStatus.pending_model_selection.value
+    assert body["config"]["is_active"] is False
+    assert "dg-secret" not in draft.text
+
+    persisted = db_session.get(TeamSttConfig, config_id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
+    assert persisted.model_name is None
+
+    options_before = client.get(f"/api/v1/stt-selection/options?team_id={team.id}")
+    assert options_before.status_code == 200
+    assert options_before.json() == []
+
+    finalized = client.post(
+        f"/api/v1/stt-configs/{config_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(config_id), "label": "Deepgram STT", "model_name": "nova-3", "language": "en", "is_active": True},
+    )
+
+    assert finalized.status_code == 200
+    assert finalized.json()["setup_status"] == SttConfigSetupStatus.ready.value
+    assert finalized.json()["is_active"] is True
+
+    options_after = client.get(f"/api/v1/stt-selection/options?team_id={team.id}")
+    assert options_after.status_code == 200
+    assert [item["id"] for item in options_after.json()] == [str(config_id)]
+
+
+def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, make_user):
+    team = make_team(name="Clinic North")
+    make_user(email="admin-stt-pending@example.com", password="password-1", is_system_admin=True)
+
+    login(client, email="admin-stt-pending@example.com", password="password-1")
+    draft = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "elevenlabs", "bearer_token": "el-secret"},
+    )
+    assert draft.status_code == 200
+    config_id = draft.json()["config"]["id"]
+
+    selected = client.post(
+        "/api/v1/stt-selection",
+        json={"team_id": str(team.id), "stt_config_id": config_id},
+    )
+
+    assert_error(selected, status_code=404, code="not_found", message="Selectable STT config not found")
 
 
 def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(client, db_session, make_team, make_user, monkeypatch):

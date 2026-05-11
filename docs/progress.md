@@ -44,47 +44,6 @@
 - Provider rules preserved: ElevenLabs stays preset contract with Vault-backed key, live model discovery, `xi-api-key` auth, and provider-specific runtime transport.
 - Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
 
-## 2026-05-11 ElevenLabs STT UI Model Lists
-
-### Scope
-
-- Changed ElevenLabs model discovery to keep all provider-returned `model_id` values and fixed active team STT selection UIs to populate/select model dropdowns from discovered models.
-
-### Checklist
-
-- Code complete: yes
-- Tests added/updated: yes
-- Docs added/updated: yes
-- Open issues: none
-
-### Files changed
-
-- `app/services/stt.py`: stop filtering ElevenLabs discovery to hardcoded model ids.
-- `app/templates/admin.html`, `app/templates/home.html`: use resolved active STT model as selected dropdown value.
-- `app/templates/admin2.html`: replace plain active STT model input with dropdown when discovered models exist.
-- `tests/test_api.py`, `tests/test_admin_ui.py`: cover unfiltered ElevenLabs discovery, wizard dropdowns, and active selection model dropdown population.
-- `docs/stt-config.md`, `docs/progress.md`: document unfiltered ElevenLabs model list behavior.
-
-### Tests
-
-- `.venv/bin/pytest -q tests/test_api.py tests/test_admin_ui.py -k "elevenlabs or stt_elevenlabs or admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field or admin2_stt_selection_uses_model_dropdown"`: passed, 17 tests.
-
-### Documentation
-
-- `docs/stt-config.md`: ElevenLabs discovery now documents saving every returned `model_id`.
-
-### Risks / assumptions
-
-- UI now exposes all ElevenLabs model ids returned by provider, including models that may not work with the synchronous `/v1/speech-to-text` endpoint.
-
-### Architecture checkpoint summary
-
-- Privacy boundaries preserved: no raw key or transcript content exposure.
-- Ownership rules preserved: provisioning remains system-admin-only; active selection remains team-scoped.
-- Deletion semantics preserved: no lifecycle/delete path changed.
-- Provider rules preserved: Vault-backed `xi-api-key` contract unchanged; only model-list filtering changed.
-- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
-
 ## 2026-05-11 STT Wizard Model Dropdown
 
 ### Scope

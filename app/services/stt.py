@@ -491,6 +491,65 @@ def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[st
     )
 
 
+def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/models",
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403}:
+            raise AppError(
+                401,
+                "stt_credential_invalid",
+                "The API key was rejected by Deepgram.",
+                {"provider_status": status_code},
+            ) from exc
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Could not load available Deepgram STT models",
+            {"provider_status": status_code},
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Could not reach Deepgram model discovery",
+            {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
+        ) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "stt_inspection_failed", "Deepgram model discovery returned invalid JSON") from exc
+
+    stt_models = payload.get("stt")
+    if not isinstance(stt_models, list):
+        return []
+
+    discovered: list[str] = []
+    for item in stt_models:
+        if not isinstance(item, dict):
+            continue
+        if item.get("batch") is False:
+            continue
+        model_id = item.get("canonical_name") or item.get("name")
+        if isinstance(model_id, str) and model_id.strip():
+            discovered.append(model_id.strip())
+    return sorted(set(discovered))
+
+
+def _preferred_deepgram_model(models: list[str]) -> str | None:
+    for model in ("nova-3", "nova-2"):
+        if model in models:
+            return model
+    return models[0] if models else None
+
+
 def _fallback_openai_transcription_models() -> list[str]:
     return list(SUPPORTED_OPENAI_TRANSCRIPTION_MODELS)
 
@@ -756,6 +815,22 @@ def _transcribe_via_http(
     segment_speaker_field: str | None = None,
 ) -> str:
     url = f"{base_url.rstrip('/')}{transcribe_path}"
+    if provider_preset == SttProviderPreset.deepgram.value:
+        return _transcribe_via_deepgram(
+            url=url,
+            bearer_token=bearer_token,
+            audio_bytes=audio_bytes,
+            content_type=content_type,
+            model_name=model_name,
+            language=language,
+            extra_query_params=extra_form_fields_json or {},
+            response_text_path=response_text_path,
+            segments_path=segments_path,
+            segment_text_field=segment_text_field,
+            segment_start_field=segment_start_field,
+            segment_end_field=segment_end_field,
+            segment_speaker_field=segment_speaker_field,
+        )
     form_fields = dict(extra_form_fields_json or {})
     if model_name and model_field_name:
         form_fields[model_field_name] = model_name
@@ -818,6 +893,75 @@ def _transcribe_via_http(
         segment_start_field=segment_start_field or "start",
         segment_end_field=segment_end_field or "end",
         segment_speaker_field=segment_speaker_field or "speaker",
+    )
+
+
+def _transcribe_via_deepgram(
+    *,
+    url: str,
+    bearer_token: str | None,
+    audio_bytes: bytes,
+    content_type: str,
+    model_name: str | None,
+    language: str | None,
+    extra_query_params: dict[str, str],
+    response_text_path: str,
+    segments_path: str | None = None,
+    segment_text_field: str | None = None,
+    segment_start_field: str | None = None,
+    segment_end_field: str | None = None,
+    segment_speaker_field: str | None = None,
+) -> str:
+    if not bearer_token:
+        raise AppError(409, "stt_config_secret_missing", "Deepgram STT requires a saved API key.")
+
+    # For Deepgram, stored extra_form_fields_json represents query parameters for /v1/listen, not multipart form fields.
+    params = dict(extra_query_params or {})
+    if model_name:
+        params["model"] = model_name
+    if language:
+        params["language"] = language
+
+    try:
+        response = httpx.post(
+            url,
+            headers={
+                "Authorization": f"Token {bearer_token}",
+                "Content-Type": content_type or "application/octet-stream",
+            },
+            params=params,
+            content=audio_bytes,
+            timeout=60.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "stt_deepgram_request_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "provider_preset": SttProviderPreset.deepgram.value,
+                    "query_keys": sorted(params.keys()),
+                    "audio_byte_count": len(audio_bytes),
+                    "content_type": content_type,
+                }
+            },
+        )
+        raise _translate_http_stt_error(exc) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "stt_response_invalid", "Deepgram response was not valid JSON") from exc
+
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
     )
 
 
@@ -1003,7 +1147,6 @@ def run_saved_stt_config_test(
                 base_url=config.base_url,
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
-                provider_preset=config.provider_preset,
                 model_name=config.model_name,
                 language=config.language,
                 audio_bytes=audio_bytes,
@@ -1017,6 +1160,7 @@ def run_saved_stt_config_test(
                 response_text_path=config.response_text_path,
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
+                provider_preset=config.provider_preset,
                 model_name=config.model_name,
                 model_field_name=config.model_field_name or "model",
                 language=config.language,
@@ -1671,7 +1815,46 @@ def _infer_segments_contract(schema: dict[str, Any] | None) -> tuple[str | None,
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset = payload.provider_preset.value if isinstance(payload.provider_preset, SttProviderPreset) else payload.provider_preset
-    if provider_preset in {SttProviderPreset.deepgram.value, SttProviderPreset.elevenlabs.value}:
+    if provider_preset == SttProviderPreset.deepgram.value:
+        preset = get_stt_provider_preset(provider_preset)
+        if not payload.bearer_token:
+            raise AppError(422, "business_rule_violation", "Deepgram requires an API key", {"field": "bearer_token"})
+        notes = ["Discovered Deepgram STT models from /v1/models."]
+        try:
+            models = _list_deepgram_stt_models(api_key=payload.bearer_token, base_url=payload.base_url)
+        except AppError as exc:
+            if _is_credential_rejection(exc):
+                raise
+            models = []
+            notes = [f"Deepgram model discovery failed: {exc.message}. Enter a model manually if needed."]
+        default_model = _preferred_deepgram_model(models)
+        return SttInspectResult(
+            base_url=payload.base_url,
+            openapi_path=None,
+            adapter_kind=preset.adapter_kind,
+            transcribe_path=preset.transcribe_path,
+            model_name=default_model,
+            model_field_name=preset.default_model_field_name if models else None,
+            file_field_name=preset.default_file_field_name,
+            language=None,
+            language_field_name=preset.default_language_field_name,
+            response_text_path=preset.default_response_text_path,
+            segments_path=None,
+            segment_text_field=None,
+            segment_start_field=None,
+            segment_end_field=None,
+            segment_speaker_field=None,
+            extra_form_fields_json=dict(preset.default_extra_form_fields or {}),
+            candidate_paths=[preset.transcribe_path],
+            operation_summary="Known Deepgram prerecorded transcription contract",
+            available_models=models,
+            available_model_options=_stt_model_options(models, source="provider"),
+            field_tips=[
+                SttInspectFieldTip(name=preset.default_file_field_name, role="file", default_value=None, description="Raw audio request body.", required=True),
+            ],
+            notes=notes,
+        )
+    if provider_preset == SttProviderPreset.elevenlabs.value:
         preset = get_stt_provider_preset(provider_preset)
         models = [preset.default_model_name] if preset.default_model_name else []
         return SttInspectResult(

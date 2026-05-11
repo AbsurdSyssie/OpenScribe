@@ -21,6 +21,7 @@ def test_extract_json_path_supports_dot_paths_and_jsonpath_indexes():
     payload = {"result": {"text": "dot text"}, "results": [{"alternatives": [{"transcript": "jsonpath text"}]}]}
 
     assert extract_json_path(payload, "result.text") == "dot text"
+    assert extract_json_path(payload, "results.0.alternatives.0.transcript") == "jsonpath text"
     assert extract_json_path(payload, "$.results[0].alternatives[0].transcript") == "jsonpath text"
 
 

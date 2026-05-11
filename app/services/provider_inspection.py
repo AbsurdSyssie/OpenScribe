@@ -103,6 +103,12 @@ def extract_json_path(payload: Any, path: str) -> Any:
         return values[0] if len(values) == 1 else values
     current = payload
     for part in path.split("."):
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index >= len(current):
+                raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
+            current = current[index]
+            continue
         if not isinstance(current, dict) or part not in current:
             raise AppError(502, "provider_response_invalid", "Provider response did not contain the configured JSON path")
         current = current[part]

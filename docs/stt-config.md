@@ -146,6 +146,16 @@ Both OpenAI adapter families still keep:
 - runtime sends `model` and optional `language` as query params and extracts transcript text from `results.channels.0.alternatives.0.transcript`
 - raw API keys remain Vault-backed and are never returned by API/admin responses
 
+`elevenlabs` is a provider-specific known contract on top of `generic_rest`:
+
+- inspection requires an API key and calls `GET https://api.elevenlabs.io/v1/models`
+- discovery uses `xi-api-key: <api key>` and keeps only synchronous STT model ids `scribe_v2` and `scribe_v1`
+- invalid ElevenLabs credentials fail draft creation and do not create a config row
+- realtime-only `scribe_v2_realtime` and non-STT models are not shown in the wizard dropdown
+- runtime transcription calls `POST /v1/speech-to-text` as multipart form data with `xi-api-key` auth, `file`, `model_id`, and optional `language_code`
+- provider-default language values such as blank, `None`, `auto`, and `default` are normalized to no language value and are not sent to providers
+- raw API keys remain Vault-backed and are never returned by API/admin responses
+
 ## Admin diagnostics
 
 System admins can now run a saved-config STT diagnostic directly from `/admin` for the selected team.

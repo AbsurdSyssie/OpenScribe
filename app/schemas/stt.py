@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose
+from app.stt_normalization import normalize_stt_language
 
 
 def _validate_stt_base_url(value: str) -> str:
@@ -131,6 +132,11 @@ class SttConfigUpsert(BaseModel):
         trimmed = value.strip()
         return trimmed or None
 
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str | None) -> str | None:
+        return normalize_stt_language(value)
+
     @field_validator("extra_form_fields_json")
     @classmethod
     def validate_extra_fields(cls, value: dict[str, str]) -> dict[str, str]:
@@ -197,6 +203,11 @@ class SttSelectionUpsert(BaseModel):
     stt_config_id: UUID
     model_name_override: str | None = Field(default=None, max_length=255)
     language_override: str | None = Field(default=None, max_length=32)
+
+    @field_validator("language_override")
+    @classmethod
+    def normalize_language_override(cls, value: str | None) -> str | None:
+        return normalize_stt_language(value)
 
 
 class SttSelectionDetail(BaseModel):
@@ -355,6 +366,11 @@ class SttConfigFinalize(BaseModel):
     model_name: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=32)
     is_active: bool = True
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str | None) -> str | None:
+        return normalize_stt_language(value)
 
 
 class SttConfigDraftReplaceCredential(BaseModel):

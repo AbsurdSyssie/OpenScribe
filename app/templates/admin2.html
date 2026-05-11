@@ -408,7 +408,7 @@
                           <input type="hidden" name="purpose" value="conversation">
                           <div class="setting"><div><div class="rtitle">Conversation provider</div><div class="desc">Used for live or uploaded consultation transcription.</div></div><select class="select" name="stt_config_id">{% for config in selectable_stt_configs or stt_configs or [] %}<option value="{{ config.id }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>{% endfor %}</select></div>
                           <div class="setting"><div><div class="rtitle">Default STT model</div><div class="desc">Team default from provider’s allowed model list.</div></div><input class="input" name="provider_model" value="{{ stt_selection.resolved_model_name if stt_selection else '' }}"></div>
-                          <div class="setting"><div><div class="rtitle">Default language</div><div class="desc">Leave blank for auto-detection.</div></div><input class="input" name="language" value="{{ stt_selection.resolved_language if stt_selection and stt_selection.resolved_language is defined else '' }}"></div>
+                          <div class="setting"><div><div class="rtitle">Default language</div><div class="desc">Provider default / auto-detect when blank.</div></div><input class="input" name="language" value="{{ stt_selection.resolved_language if stt_selection and stt_selection.resolved_language is defined else '' }}" placeholder="Provider default / auto-detect"></div>
                           <div class="setting"><div><div class="rtitle">Save conversation STT</div><div class="desc">Applies provider selection to this team only.</div></div><button class="btn blue" type="submit">Save</button></div>
                         </form>
 
@@ -634,7 +634,7 @@
                         {% endif %}
                         <div class="field"><label>Model</label>{% if config.available_models_json %}<select class="select" name="provider_model">{% for model in config.available_models_json %}<option value="{{ model }}" {% if config.model_name == model %}selected{% endif %}>{{ model }} (saved)</option>{% endfor %}</select>{% else %}<input class="input" name="provider_model" value="{{ config.model_name or '' }}" placeholder="Enter model name">{% endif %}</div>
                         <div class="field"><label>File field name</label><input class="input" name="file_field_name" value="{{ config.file_field_name or 'file' }}"></div>
-                        <div class="field"><label>Language</label><input class="input" name="language" value="{{ config.language or '' }}"></div>
+                        <div class="field"><label>Language</label><input class="input" name="language" value="{{ config.language or '' }}" placeholder="Provider default / auto-detect"></div>
                         <div class="field"><label>Response text path</label><input class="input" name="response_text_path" value="{{ config.response_text_path or 'text' }}"></div>
                         <div class="field"><label>Extra form fields JSON</label><textarea class="textarea" name="extra_form_fields_json">{{ config.extra_form_fields_json or '{}' }}</textarea></div>
                         <label><input type="checkbox" name="is_active" value="true" {% if config.is_active %}checked{% endif %}> Active</label>

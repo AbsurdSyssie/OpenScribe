@@ -1,5 +1,49 @@
 # Progress
 
+## 2026-05-11 ElevenLabs STT Wizard Completion
+
+### Scope
+
+- Completed missing STT wizard behavior for ElevenLabs. Draft creation now validates `xi-api-key` via `/v1/models`, filters synchronous STT models, rejects invalid keys before DB/Vault persistence, normalizes provider-default language values, and runtime/admin tests use ElevenLabs `xi-api-key` multipart transcription instead of bearer auth.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/stt_normalization.py`, `app/schemas/stt.py`: add STT optional/language normalization and apply it to config/finalize/selection payloads.
+- `app/services/stt_presets.py`: make ElevenLabs discoverable, remove static default model, and use `language_code`.
+- `app/services/stt.py`: add ElevenLabs model/key validation helper, exact sync-STT filter, runtime `xi-api-key` transcription branch, and defensive language normalization.
+- `app/routes/web_admin.py`, `app/routes/web_home_transcribe.py`: normalize STT language at form boundaries.
+- `app/templates/admin.html`, `app/templates/admin2.html`, `app/templates/home.html`: render provider-default language as blank with clear placeholder.
+- `tests/test_api.py`: add ElevenLabs discovery, invalid-key, draft, request-shape, default-language, generic-language, and admin saved-test parity coverage.
+- `docs/stt-config.md`, `docs/progress.md`: document ElevenLabs wizard validation and progress.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "elevenlabs or default_language or generic_stt_transport_does_not_send_default_language or pending_stt_provider_cannot_be_selected_directly or system_admin_can_create_and_finalize_stt_provider_draft or saved_test_uses_elevenlabs"`: passed, 21 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field or admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 2 tests.
+
+### Documentation
+
+- `docs/stt-config.md`: documents ElevenLabs `/v1/models` validation, exact synchronous STT model filtering, runtime contract, language normalization, and secret handling.
+
+### Risks / assumptions
+
+- ElevenLabs model discovery is intentionally narrow: only `scribe_v2` and `scribe_v1` are selectable until realtime/WebSocket STT is supported.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript content path touched; raw API keys never returned/logged.
+- Ownership rules preserved: system-admin-only team-scoped STT draft route unchanged.
+- Deletion semantics preserved: invalid credentials fail before config row/Vault write; no deletion path changed.
+- Provider rules preserved: ElevenLabs stays preset contract with Vault-backed key, live model discovery, `xi-api-key` auth, and provider-specific runtime transport.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-11 STT Wizard Model Dropdown
 
 ### Scope

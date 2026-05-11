@@ -1139,7 +1139,7 @@
           </label>
           <label>
             Language override
-            <input type="text" name="language" value="{{ stt_selection.language_override if stt_selection else '' }}">
+            <input type="text" name="language" value="{{ stt_selection.language_override if stt_selection else '' }}" placeholder="Provider default / auto-detect">
           </label>
           <button type="submit">Save active STT selection</button>
         </form>
@@ -1275,7 +1275,7 @@
             <input type="text" name="provider_model" value="{{ stt_form.model_name }}" placeholder="Enter model name">
             {% endif %}
           </label>
-          <label>Default language<input type="text" name="language" value="{{ stt_form.language }}"></label>
+          <label>Default language<input type="text" name="language" value="{{ stt_form.language or '' }}" placeholder="Provider default / auto-detect"></label>
           <label class="check"><input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}> Available for team selection</label>
           <button type="submit">Save provider</button>
         </form>
@@ -1418,7 +1418,7 @@
           </label>
           <label>
             Language
-            <input type="text" name="language" value="{{ stt_form.language }}">
+            <input type="text" name="language" value="{{ stt_form.language or '' }}" placeholder="Provider default / auto-detect">
           </label>
           <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
             Language field name

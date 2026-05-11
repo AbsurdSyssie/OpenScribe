@@ -28,6 +28,7 @@ from app.schemas import (
     SttModelOption,
     SttSelectionUpsert,
 )
+from app.stt_normalization import normalize_optional_stt_text, normalize_stt_language
 from app.services.stt_presets import apply_stt_provider_defaults, default_stt_config_label, get_stt_provider_preset, infer_stt_provider_preset
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
 from app.services.provider_inspection import (
@@ -45,6 +46,14 @@ SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
     "gpt-4o-transcribe",
     "gpt-4o-transcribe-diarize",
     "whisper-1",
+)
+ELEVENLABS_SYNC_STT_MODEL_IDS = {
+    "scribe_v2",
+    "scribe_v1",
+}
+ELEVENLABS_PREFERRED_STT_MODELS = (
+    "scribe_v2",
+    "scribe_v1",
 )
 
 
@@ -325,7 +334,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
             purpose=payload.purpose,
             stt_config_id=config.id,
             model_name_override=override,
-            language_override=payload.language_override.strip() if payload.language_override else None,
+            language_override=normalize_stt_language(payload.language_override),
             selected_by_user_id=actor.id,
         )
         db.add(selection)
@@ -333,7 +342,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
         selection.purpose = payload.purpose
         selection.stt_config_id = config.id
         selection.model_name_override = override
-        selection.language_override = payload.language_override.strip() if payload.language_override else None
+        selection.language_override = normalize_stt_language(payload.language_override)
         selection.selected_by_user_id = actor.id
         db.add(selection)
 
@@ -401,11 +410,11 @@ def resolve_selected_team_stt(
     selection = active_team_stt_selection(db, team_id=team_id, purpose=purpose)
     config = selection.config
     provider_models = list(config.available_models_json or [])
-    resolved_model_name = selection.model_name_override or config.model_name
+    resolved_model_name = normalize_optional_stt_text(selection.model_name_override) or normalize_optional_stt_text(config.model_name)
     if provider_models:
         if resolved_model_name not in provider_models:
             resolved_model_name = provider_models[0]
-    resolved_language = selection.language_override or config.language
+    resolved_language = normalize_stt_language(selection.language_override) or normalize_stt_language(config.language)
     return selection, config, resolved_model_name, resolved_language
 
 
@@ -541,6 +550,68 @@ def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
         if isinstance(model_id, str) and model_id.strip():
             discovered.append(model_id.strip())
     return sorted(set(discovered))
+
+
+def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/models",
+            headers={"xi-api-key": api_key},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403}:
+            raise AppError(
+                401,
+                "stt_credential_invalid",
+                "The API key was rejected by ElevenLabs.",
+                {"provider_status": status_code},
+            ) from exc
+        raise AppError(502, "stt_inspection_failed", "Could not load available ElevenLabs STT models", {"provider_status": status_code}) from exc
+    except httpx.HTTPError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Could not reach ElevenLabs model discovery",
+            {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
+        ) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "stt_inspection_failed", "ElevenLabs model discovery returned invalid JSON") from exc
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else payload
+    if not isinstance(raw_models, list):
+        return []
+
+    discovered: list[str] = []
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("model_id")
+        if not isinstance(model_id, str):
+            continue
+        normalized = model_id.strip()
+        if normalized in ELEVENLABS_SYNC_STT_MODEL_IDS:
+            discovered.append(normalized)
+    return sorted(set(discovered), key=_elevenlabs_model_sort_key)
+
+
+def _elevenlabs_model_sort_key(model_id: str) -> tuple[int, str]:
+    try:
+        return (ELEVENLABS_PREFERRED_STT_MODELS.index(model_id), model_id)
+    except ValueError:
+        return (999, model_id)
+
+
+def _preferred_elevenlabs_model(models: list[str]) -> str | None:
+    for model in ELEVENLABS_PREFERRED_STT_MODELS:
+        if model in models:
+            return model
+    return models[0] if models else None
 
 
 def _preferred_deepgram_model(models: list[str]) -> str | None:
@@ -831,7 +902,24 @@ def _transcribe_via_http(
             segment_end_field=segment_end_field,
             segment_speaker_field=segment_speaker_field,
         )
+    if provider_preset == SttProviderPreset.elevenlabs.value:
+        return _transcribe_via_elevenlabs(
+            url=url,
+            api_key=bearer_token,
+            audio_bytes=audio_bytes,
+            filename=filename,
+            content_type=content_type,
+            model_name=model_name,
+            language=language,
+            response_text_path=response_text_path,
+            segments_path=segments_path,
+            segment_text_field=segment_text_field,
+            segment_start_field=segment_start_field,
+            segment_end_field=segment_end_field,
+            segment_speaker_field=segment_speaker_field,
+        )
     form_fields = dict(extra_form_fields_json or {})
+    language = normalize_stt_language(language)
     if model_name and model_field_name:
         form_fields[model_field_name] = model_name
     if language and language_field_name:
@@ -896,6 +984,70 @@ def _transcribe_via_http(
     )
 
 
+def _transcribe_via_elevenlabs(
+    *,
+    url: str,
+    api_key: str | None,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+    model_name: str | None,
+    language: str | None,
+    response_text_path: str,
+    segments_path: str | None = None,
+    segment_text_field: str | None = None,
+    segment_start_field: str | None = None,
+    segment_end_field: str | None = None,
+    segment_speaker_field: str | None = None,
+) -> str:
+    if not api_key:
+        raise AppError(409, "stt_config_secret_missing", "ElevenLabs STT requires a saved API key.")
+
+    data: dict[str, str] = {"model_id": normalize_optional_stt_text(model_name) or "scribe_v2"}
+    language = normalize_stt_language(language)
+    if language:
+        data["language_code"] = language
+
+    try:
+        response = httpx.post(
+            url,
+            headers={"xi-api-key": api_key},
+            data=data,
+            files={"file": (filename, audio_bytes, content_type or "application/octet-stream")},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "stt_elevenlabs_request_failed",
+            extra={
+                "stt_transport": {
+                    **_safe_http_error_details(exc),
+                    "provider_preset": SttProviderPreset.elevenlabs.value,
+                    "form_field_keys": sorted(data.keys()),
+                    "audio_byte_count": len(audio_bytes),
+                    "content_type": content_type,
+                }
+            },
+        )
+        raise _translate_http_stt_error(exc) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "stt_response_invalid", "ElevenLabs response was not valid JSON") from exc
+
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
+    )
+
+
 def _transcribe_via_deepgram(
     *,
     url: str,
@@ -917,6 +1069,7 @@ def _transcribe_via_deepgram(
 
     # For Deepgram, stored extra_form_fields_json represents query parameters for /v1/listen, not multipart form fields.
     params = dict(extra_query_params or {})
+    language = normalize_stt_language(language)
     if model_name:
         params["model"] = model_name
     if language:
@@ -982,6 +1135,8 @@ def _transcribe_via_openai_cloud(
         "file": audio_file,
         "model": model_name or "whisper-1",
     }
+    if language:
+        language = normalize_stt_language(language)
     if language:
         kwargs["language"] = language
     if response_format := (extra_form_fields_json or {}).get("response_format"):
@@ -1335,7 +1490,7 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     config.label = label
     config.model_name = model_name
     config.available_models_json = available
-    config.language = payload.language.strip() if payload.language else None
+    config.language = normalize_stt_language(payload.language)
     config.setup_status = SttConfigSetupStatus.ready
     config.is_active = payload.is_active
     config.updated_by_user_id = actor.id
@@ -1457,7 +1612,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             model_field_name=payload.model_field_name or ("model" if payload.model_name else None),
             available_models_json=available_models_json,
             file_field_name=payload.file_field_name.strip(),
-            language=payload.language.strip() if payload.language else None,
+            language=normalize_stt_language(payload.language),
             language_field_name=payload.language_field_name or ("language" if payload.language else None),
             response_text_path=payload.response_text_path.strip(),
             segments_path=payload.segments_path,
@@ -1486,7 +1641,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.model_field_name = payload.model_field_name or ("model" if payload.model_name else None)
         config.available_models_json = available_models_json or list(config.available_models_json or [])
         config.file_field_name = payload.file_field_name.strip()
-        config.language = payload.language.strip() if payload.language else None
+        config.language = normalize_stt_language(payload.language)
         config.language_field_name = payload.language_field_name or ("language" if payload.language else None)
         config.response_text_path = payload.response_text_path.strip()
         config.segments_path = payload.segments_path
@@ -1856,32 +2011,41 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
         )
     if provider_preset == SttProviderPreset.elevenlabs.value:
         preset = get_stt_provider_preset(provider_preset)
-        models = [preset.default_model_name] if preset.default_model_name else []
+        if not payload.bearer_token:
+            raise AppError(422, "business_rule_violation", "ElevenLabs requires an API key", {"field": "bearer_token"})
+        notes = ["Validated ElevenLabs API key via /v1/models."]
+        try:
+            models = _list_elevenlabs_stt_models(api_key=payload.bearer_token, base_url=payload.base_url)
+        except AppError as exc:
+            if _is_credential_rejection(exc):
+                raise
+            models = []
+            notes = [f"ElevenLabs model discovery failed: {exc.message}. Enter a model manually if needed."]
         return SttInspectResult(
             base_url=payload.base_url,
             openapi_path=None,
             adapter_kind=preset.adapter_kind,
             transcribe_path=preset.transcribe_path,
-            model_name=preset.default_model_name,
-            model_field_name=preset.default_model_field_name,
+            model_name=_preferred_elevenlabs_model(models),
+            model_field_name=preset.default_model_field_name if models else None,
             file_field_name=preset.default_file_field_name,
             language=None,
             language_field_name=preset.default_language_field_name,
             response_text_path=preset.default_response_text_path,
-            segments_path=None,
-            segment_text_field=None,
-            segment_start_field=None,
-            segment_end_field=None,
-            segment_speaker_field=None,
+            segments_path="words",
+            segment_text_field="text",
+            segment_start_field="start",
+            segment_end_field="end",
+            segment_speaker_field="speaker_id",
             extra_form_fields_json=dict(preset.default_extra_form_fields or {}),
-            candidate_paths=[preset.transcribe_path],
-            operation_summary=f"Known {preset.display_name} transcription contract",
+            candidate_paths=[preset.transcribe_path, "/v1/models"],
+            operation_summary="ElevenLabs Speech to Text",
             available_models=models,
-            available_model_options=_stt_model_options(models, source="preset"),
+            available_model_options=_stt_model_options(models, source="provider"),
             field_tips=[
                 SttInspectFieldTip(name=preset.default_file_field_name, role="file", default_value=None, description="Audio file upload.", required=True),
             ],
-            notes=[f"This adapter uses OpenScribe's {preset.display_name} preset; no OpenAPI fetch was required."],
+            notes=[*notes, "This adapter uses OpenScribe's ElevenLabs preset; no OpenAPI fetch was required."],
         )
     if payload.adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
         transcribe_path, file_field_name, response_text_path = _normalized_known_adapter_fields(payload.adapter_kind)

@@ -2066,7 +2066,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </label>
 <label class="form-label">
 <span class="form-label__text">Language</span>
-<input type="text" name="language" class="form-input" value="{{ stt_selection.language_override if stt_selection else '' }}" placeholder="Default">
+<input type="text" name="language" class="form-input" value="{{ stt_selection.language_override if stt_selection else '' }}" placeholder="Provider default / auto-detect">
 </label>
 </div>
 <button type="submit" class="btn-primary-sm">Save</button>

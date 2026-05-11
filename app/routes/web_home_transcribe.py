@@ -10,6 +10,7 @@ from ..main import (
     _page_context_or_redirect,
     _template_config_from_form,
 )
+from ..stt_normalization import normalize_stt_language
 
 
 @app.get("/home", response_class=HTMLResponse)
@@ -1178,7 +1179,7 @@ def home_set_stt_selection(
                 purpose=SttSelectionPurpose(purpose),
                 stt_config_id=UUID(stt_config_id),
                 model_name_override=provider_model or None,
-                language_override=language or None,
+                language_override=normalize_stt_language(language),
             ),
         )
     except (ValueError, AppError) as exc:

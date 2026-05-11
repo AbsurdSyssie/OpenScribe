@@ -1,5 +1,45 @@
 # Progress
 
+## 2026-05-11 STT Wizard Model Dropdown
+
+### Scope
+
+- Implemented `STT_Wizard.md` UI fix: pending STT drafts now show saved discovered models as dropdown choices in both admin templates, and pending model-step forms do not expose credential fields.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/templates/admin.html`: use discovered `available_model_options` for STT model dropdowns and hide inspect/save credential form while a draft waits for model selection.
+- `app/templates/admin2.html`: use saved `available_models_json` for STT draft/edit dropdowns and hide credential controls while a draft waits for model selection.
+- `tests/test_admin_ui.py`: add Deepgram draft UI regression covering model dropdowns and credential-field hiding in both admin UIs.
+- `docs/stt-config.md`, `docs/progress.md`: document wizard dropdown behavior and progress.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field or admin_page_can_inspect_team_stt_config_before_saving or admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 3 tests.
+
+### Documentation
+
+- `docs/stt-config.md`: documents saved discovered-model dropdowns and no credential-field render on pending draft pages.
+
+### Risks / assumptions
+
+- Existing `provider_model` browser field name remains because current web finalization route expects it.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: raw provider secrets remain Vault-backed and are no longer re-rendered on pending model-step forms.
+- Ownership rules preserved: system-admin-only STT provisioning routes/templates unchanged.
+- Deletion semantics preserved: no deletion path changed.
+- Provider rules preserved: saved discovered Deepgram models remain provider metadata; runtime/provider resolution unchanged.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-11 Deepgram STT Wizard Fix
 
 ### Scope

@@ -1154,6 +1154,7 @@
         {% if stt_configs %}
         <div class="provider-grid">
             {% for config in stt_configs %}
+            {% set is_stt_pending = config.setup_status.value == 'pending_model_selection' if config.setup_status is defined and config.setup_status.value is defined else config.setup_status == 'pending_model_selection' %}
             {% set stt_is_active = (stt_selection and stt_selection.stt_config_id == config.id) or (stt_dictation_selection and stt_dictation_selection.stt_config_id == config.id) %}
             <article class="provider-card{% if stt_is_active %} is-active{% endif %}">
               <div class="provider-card__main">
@@ -1165,7 +1166,7 @@
                 <div class="provider-card__url">{{ config.adapter_kind.value }} · {{ config.base_url }}{{ config.transcribe_path }}</div>
                 <div class="provider-card__meta">
                   <span class="provider-card__meta-item"><strong>Provider:</strong> {{ config.provider_display_name }}</span>
-                  <span class="provider-card__meta-item"><strong>Setup:</strong> {% if config.setup_status.value == 'pending_model_selection' %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}</span>
+                  <span class="provider-card__meta-item"><strong>Setup:</strong> {% if is_stt_pending %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}</span>
                   <span class="provider-card__meta-item"><strong>Model:</strong> {{ config.model_name or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Language:</strong> {{ config.language or "not set" }}</span>
                   <span class="provider-card__meta-item"><strong>Secret:</strong> {{ "yes" if config.vault_secret_ref else "no" }}</span>
@@ -1178,7 +1179,7 @@
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="stt_config_id" value="{{ config.id }}">
                   <input type="hidden" name="tab" value="providers">
-                  <button type="submit" class="quick-action">{% if config.setup_status.value == 'pending_model_selection' %}Continue setup{% else %}Edit{% endif %}</button>
+                  <button type="submit" class="quick-action">{% if is_stt_pending %}Continue setup{% else %}Edit{% endif %}</button>
                 </form>
                 <form method="post" action="/admin/stt-configs/{{ config.id }}/test">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
@@ -1194,7 +1195,7 @@
                 </form>
                 </div>
                 <div class="quick-actions">
-                {% if config.setup_status.value != 'pending_model_selection' %}
+                {% if not is_stt_pending %}
                 <form method="post" action="/admin/stt-selection">
                   <input type="hidden" name="team_id" value="{{ selected_team_id }}">
                   <input type="hidden" name="purpose" value="conversation">
@@ -1254,7 +1255,8 @@
           <button type="submit">Check API key and find transcription options</button>
         </form>
         {% endif %}
-        {% if stt_config and stt_config.setup_status.value == 'pending_model_selection' %}
+        {% set selected_stt_pending = stt_config and (stt_config.setup_status.value == 'pending_model_selection' if stt_config.setup_status is defined and stt_config.setup_status.value is defined else stt_config.setup_status == 'pending_model_selection') %}
+        {% if selected_stt_pending %}
         <p><small>Credential saved. API key hidden. Choose model/language, then save provider.</small></p>
         <form method="post" action="/admin/stt-configs/{{ stt_config.id }}/finalize">
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
@@ -1266,25 +1268,19 @@
             {% if stt_form.available_model_options %}
             <select name="provider_model">
               {% for model in stt_form.available_model_options %}
-              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label or model.id }}</option>
               {% endfor %}
             </select>
             {% else %}
-            <input type="text" name="provider_model" value="{{ stt_form.model_name }}">
+            <input type="text" name="provider_model" value="{{ stt_form.model_name }}" placeholder="Enter model name">
             {% endif %}
           </label>
           <label>Default language<input type="text" name="language" value="{{ stt_form.language }}"></label>
           <label class="check"><input type="checkbox" name="is_active" value="true" {% if stt_form.is_active %}checked{% endif %}> Available for team selection</label>
           <button type="submit">Save provider</button>
         </form>
-        <form method="post" action="/admin/stt-configs/{{ stt_config.id }}/replace-credential">
-          <input type="hidden" name="team_id" value="{{ selected_team_id }}">
-          <input type="hidden" name="return_view" value="{{ admin_return_view }}">
-          <input type="hidden" name="return_tab" value="providers">
-          <label>Replace API key<input type="password" name="bearer_token" required></label>
-          <button type="submit">Replace API key</button>
-        </form>
         {% endif %}
+        {% if not selected_stt_pending %}
         <form method="post" action="/admin/stt-configs/inspect" data-stt-inspect-form>
           <input type="hidden" name="team_id" value="{{ selected_team_id }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
@@ -1402,14 +1398,14 @@
           <p><small>Blank token is accepted only when action keeps or removes the saved credential. New token always replaces.</small></p>
           <label>
             Model
-            {% if stt_form.adapter_kind == "openai_cloud" and stt_form.available_model_options %}
+            {% if stt_form.available_model_options %}
             <select name="provider_model">
               {% for model in stt_form.available_model_options %}
-              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label }}</option>
+              <option value="{{ model.id }}" {% if stt_form.model_name == model.id %}selected{% endif %}>{{ model.label or model.id }}</option>
               {% endfor %}
             </select>
             {% else %}
-            <input type="text" name="provider_model" value="{{ stt_form.model_name }}">
+            <input type="text" name="provider_model" value="{{ stt_form.model_name }}" placeholder="Enter model name">
             {% endif %}
           </label>
           <label data-show-for="generic_rest"{% if stt_form.adapter_kind != "generic_rest" %} hidden{% endif %}>
@@ -1458,6 +1454,7 @@
             {% endif %}
           </div>
         </form>
+        {% endif %}
         {% if stt_test_result %}
         <div class="result {% if stt_test_result.success %}success{% else %}error{% endif %}">
           <div class="stack">

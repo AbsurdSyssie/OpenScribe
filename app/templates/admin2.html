@@ -602,17 +602,18 @@
             <div class="trow head provider"><span>Name</span><span>Provider</span><span>Model</span><span>Status</span><span></span></div>
             {% for config in stt_configs or [] %}
               {% set is_expanded = (config.id|string) == (selected_stt_id|string) %}
+              {% set is_stt_pending = config.setup_status.value == 'pending_model_selection' if config.setup_status is defined and config.setup_status.value is defined else config.setup_status == 'pending_model_selection' %}
               <div class="trow provider">
                 <div class="title"><span class="dot blue">{{ config.label[:1]|upper }}</span><span><strong>{{ config.label }}</strong><br><span class="desc">{{ config.base_url }}{{ config.transcribe_path }}</span></span></div>
                 <span>{{ config.provider_display_name or config.provider_preset }}</span>
                 <span>{{ config.model_name or '—' }}</span>
-                <span class="status {{ 'green' if config.is_active and config.credential_status.value != 'invalid' and config.setup_status.value != 'pending_model_selection' else 'red' if config.credential_status.value == 'invalid' else '' }}">{% if config.setup_status.value == 'pending_model_selection' %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}{% if config.has_secret %} · secret{% endif %}</span>
-                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=stt&team_id={{ config.team_id }}&stt_config_id={{ config.id }}">{{ 'Continue setup' if config.setup_status.value == 'pending_model_selection' else 'Edit' }}</a><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/inspect">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Re-inspect</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/test">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Test</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
+                <span class="status {{ 'green' if config.is_active and config.credential_status.value != 'invalid' and not is_stt_pending else 'red' if config.credential_status.value == 'invalid' else '' }}">{% if is_stt_pending %}Setup incomplete{% elif config.is_active %}Ready · available{% else %}Ready · unavailable{% endif %}{% if config.has_secret %} · secret{% endif %}</span>
+                <span class="control"><a class="btn {{ 'blue' if is_expanded else '' }}" href="{{ admin_page_route }}?tab=stt&team_id={{ config.team_id }}&stt_config_id={{ config.id }}">{{ 'Continue setup' if is_stt_pending else 'Edit' }}</a><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/inspect">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Re-inspect</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/test">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn small" type="submit">Test</button></form><form class="inline" method="post" action="/admin/stt-configs/{{ config.id }}/delete" data-confirm-submit="Delete this provisioned STT endpoint and its saved secret?">{{ return_fields('stt') }}<input type="hidden" name="team_id" value="{{ config.team_id }}"><button class="btn red small" type="submit">Delete</button></form></span>
               </div>
               {% if is_expanded %}
                 <div class="expanded"><div class="expanded-inner">
                   <div class="inline-header"><div class="inline-title"><span class="dot blue">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Credential status: {{ config.credential_status.value }} · re-inspect uses saved Vault credential.</div></div></div></div>
-                  <form method="post" action="{{ '/admin/stt-configs/' ~ config.id ~ '/finalize' if config.setup_status.value == 'pending_model_selection' else '/admin/stt-configs' }}">
+                  <form method="post" action="{{ '/admin/stt-configs/' ~ config.id ~ '/finalize' if is_stt_pending else '/admin/stt-configs' }}">
                     {{ return_fields('stt') }}
                     <input type="hidden" name="config_id" value="{{ config.id }}">
                     <div class="inline-grid">
@@ -624,10 +625,14 @@
                         <div class="field"><label>Transcribe path</label><input class="input" name="transcribe_path" value="{{ config.transcribe_path }}" required></div>
                       </section>
                       <section class="section"><div class="section-head"><h2>Contract</h2></div>
+                        {% if is_stt_pending %}
+                        <p class="desc">Credential: saved</p>
+                        {% else %}
                         <div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer">bearer</option></select></div>
                         <div class="field"><label>Bearer token for save and inspect</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Leave blank to keep saved Vault secret' if config.has_secret else 'Paste token once' }}"></div>
                         <div class="field"><label>Credential action</label><select class="select" name="credential_action"><option value="keep" selected>keep</option><option value="replace">replace</option><option value="remove">remove</option></select></div>
-                        <div class="field"><label>Model</label><input class="input" name="provider_model" value="{{ config.model_name or '' }}"></div>
+                        {% endif %}
+                        <div class="field"><label>Model</label>{% if config.available_models_json %}<select class="select" name="provider_model">{% for model in config.available_models_json %}<option value="{{ model }}" {% if config.model_name == model %}selected{% endif %}>{{ model }} (saved)</option>{% endfor %}</select>{% else %}<input class="input" name="provider_model" value="{{ config.model_name or '' }}" placeholder="Enter model name">{% endif %}</div>
                         <div class="field"><label>File field name</label><input class="input" name="file_field_name" value="{{ config.file_field_name or 'file' }}"></div>
                         <div class="field"><label>Language</label><input class="input" name="language" value="{{ config.language or '' }}"></div>
                         <div class="field"><label>Response text path</label><input class="input" name="response_text_path" value="{{ config.response_text_path or 'text' }}"></div>
@@ -636,7 +641,7 @@
                         <label><input type="checkbox" name="confirm_duplicate" value="true"> Confirm duplicate credential if warned</label>
                       </section>
                     </div>
-                    <div class="control"><input type="hidden" name="openapi_path" value=""><button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Preview contract</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/inspect" formmethod="post">Re-inspect saved credential</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/test" formmethod="post">Test saved config</button><button class="btn blue" type="submit">{{ 'Save provider' if config.setup_status.value == 'pending_model_selection' else 'Save and inspect provider' }}</button></div>
+                    <div class="control"><input type="hidden" name="openapi_path" value="">{% if not is_stt_pending %}<button class="btn" type="submit" formaction="/admin/stt-configs/inspect" formmethod="post">Preview contract</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/inspect" formmethod="post">Re-inspect saved credential</button><button class="btn" type="submit" formaction="/admin/stt-configs/{{ config.id }}/test" formmethod="post">Test saved config</button>{% endif %}<button class="btn blue" type="submit">{{ 'Save provider' if is_stt_pending else 'Save and inspect provider' }}</button></div>
                   </form>
                 </div></div>
               {% endif %}

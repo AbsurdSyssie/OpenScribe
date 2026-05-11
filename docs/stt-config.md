@@ -140,6 +140,7 @@ Both OpenAI adapter families still keep:
 - discovery uses `Authorization: Token <api key>` and stores only `stt` models where `batch` is not `false`
 - invalid Deepgram credentials fail draft creation and do not create a config row
 - successful discovery saves returned model ids in `available_models_json`; finalization must choose from that list when non-empty
+- admin draft finalization pages render saved discovered models as a dropdown in both admin UIs, without re-rendering the saved API key field
 - runtime transcription calls `POST /v1/listen` with raw audio bytes, not multipart form data
 - Deepgram query options use the existing `extra_form_fields_json` metadata field; for this provider those values are sent as query params, including `smart_format=true`
 - runtime sends `model` and optional `language` as query params and extracts transcript text from `results.channels.0.alternatives.0.transcript`

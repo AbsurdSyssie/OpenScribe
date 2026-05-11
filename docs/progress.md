@@ -1,5 +1,92 @@
 # Progress
 
+## 2026-05-11 STT Provider Error Diagnostics
+
+### Scope
+
+- Saved STT diagnostics now keep and render safe upstream provider error metadata, including provider HTTP status and provider error code.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/stt.py`: parses provider JSON error codes from HTTP failures and includes them in saved STT test results.
+- `app/templates/admin.html`: renders provider error code/status in the admin STT test panel.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover provider error metadata extraction, propagation, and admin rendering.
+- `docs/api.md`, `docs/stt-config.md`, `docs/progress.md`: document diagnostic metadata behavior.
+
+### Tests
+
+- `.venv/bin/python -m py_compile app/services/stt.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "safe_http_error_details_includes_provider_error_code_without_message or system_admin_stt_test_result_surfaces_provider_failure_without_secret_reveal"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "saved_stt_provider_error_details or saved_stt_test_and_render_result"`: passed, 2 tests.
+
+### Documentation
+
+- `docs/api.md`: documents safe `provider_error_code` on upstream STT failures.
+- `docs/stt-config.md`: documents admin diagnostic provider metadata.
+
+### Risks / assumptions
+
+- Provider error messages are intentionally not propagated to logs/UI because they can include provider account/key labels or other nonessential detail.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note/provider secret content is exposed; only status codes and provider error codes are surfaced.
+- Ownership rules preserved: diagnostic remains system-admin-only and team-scoped.
+- Deletion semantics preserved: no lifecycle or cascade path changed.
+- Provider rules preserved: raw credentials remain Vault-backed; provider failure metadata is safe operational metadata only.
+- Structured-note contract preserved: no generated-document or EMIS behavior changed.
+
+## 2026-05-11 ElevenLabs Dedicated STT Adapter
+
+### Scope
+
+- Implemented `STT_Wizard.md`: ElevenLabs now uses dedicated `elevenlabs_speech_to_text` adapter, built-in sync model list, hard-coded request/response contract, and migration backfill for existing ElevenLabs configs.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/e4f5a6b7c9d1_add_elevenlabs_stt_adapter.py`: add adapter enum value and backfill ElevenLabs config rows/contract metadata.
+- `app/services/stt_presets.py`, `app/services/stt.py`, `app/schemas/stt.py`: map ElevenLabs preset to dedicated adapter, hard-code supported models, validate model choices, and dispatch runtime through ElevenLabs contract.
+- `app/templates/admin.html`: expose dedicated adapter in legacy admin form and keep known-contract fields hidden/defaulted.
+- `tests/test_api.py`, `tests/test_migrations.py`: cover ElevenLabs adapter mapping/model rejection and enum migration value.
+- `docs/stt-config.md`, `docs/progress.md`: document dedicated adapter behavior and progress.
+
+### Tests
+
+- `.venv/bin/python -m py_compile app/models.py app/schemas/stt.py app/services/stt.py app/services/stt_presets.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "elevenlabs"`: passed, 15 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "onboarding_and_session_tables"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field or admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 2 tests.
+
+### Documentation
+
+- `docs/stt-config.md`: documents `elevenlabs_speech_to_text`, built-in sync model contract, request/response shape, and validation points.
+
+### Risks / assumptions
+
+- `/v1/models` remains credential/catalog probe. Selectable ElevenLabs STT models intentionally stay fixed to `scribe_v2` and `scribe_v1` until realtime/non-sync adapters exist.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content access changed; STT request logging remains metadata-only.
+- Ownership rules preserved: STT draft/finalize/save routes stay system-admin team-scoped; team selection gating unchanged.
+- Deletion semantics preserved: no cascade/delete path changed; migration mutates provider metadata only.
+- Provider rules preserved: raw ElevenLabs API key stays Vault-backed, never returned; runtime uses `xi-api-key` and dedicated provider contract.
+- Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
+
 ## 2026-05-11 ElevenLabs STT Wizard Completion
 
 ### Scope

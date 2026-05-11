@@ -1295,11 +1295,14 @@
               <option value="generic_rest" {% if stt_form.adapter_kind == "generic_rest" %}selected{% endif %}>generic_rest</option>
               <option value="openai_cloud" {% if stt_form.adapter_kind == "openai_cloud" %}selected{% endif %}>openai_cloud</option>
               <option value="openai_compatible_rest" {% if stt_form.adapter_kind == "openai_compatible_rest" %}selected{% endif %}>openai_compatible_rest</option>
+              <option value="elevenlabs_speech_to_text" {% if stt_form.adapter_kind == "elevenlabs_speech_to_text" %}selected{% endif %}>elevenlabs_speech_to_text</option>
             </select>
           </label>
           <p data-show-for="openai_cloud"{% if stt_form.adapter_kind != "openai_cloud" %} hidden{% endif %}><small>The official OpenAI adapter uses the known transcription contract and defaults to `https://api.openai.com/v1`.</small></p>
+          <p data-show-for="elevenlabs_speech_to_text"{% if stt_form.adapter_kind != "elevenlabs_speech_to_text" %} hidden{% endif %}><small>ElevenLabs uses `/v1/speech-to-text`, `xi-api-key`, and built-in `scribe_v2`/`scribe_v1` model choices.</small></p>
           <input type="hidden" name="base_url" value="{{ stt_form.base_url or 'https://api.openai.com/v1' }}" data-openai-base-url {% if stt_form.adapter_kind != "openai_cloud" %}disabled{% endif %}>
-          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
+          <input type="hidden" name="base_url" value="{{ stt_form.base_url or 'https://api.elevenlabs.io' }}" data-elevenlabs-base-url {% if stt_form.adapter_kind != "elevenlabs_speech_to_text" %}disabled{% endif %}>
+          <label data-hide-for="openai_cloud elevenlabs_speech_to_text"{% if stt_form.adapter_kind in ["openai_cloud", "elevenlabs_speech_to_text"] %} hidden{% endif %}>
             Base URL
             <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
           </label>
@@ -1309,7 +1312,7 @@
           </label>
           <input type="hidden" name="openapi_path" value="" data-non-generic-openapi {% if stt_form.adapter_kind == "generic_rest" %}disabled{% endif %}>
           <label>
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key for inspection{% else %}Bearer token for inspection (optional){% endif %}</span>
+            <span data-stt-token-label>{% if stt_form.adapter_kind in ["openai_cloud", "elevenlabs_speech_to_text"] %}API key for inspection{% else %}Bearer token for inspection (optional){% endif %}</span>
             <input type="password" name="bearer_token">
           </label>
           <button type="submit">Preview contract</button>
@@ -1367,7 +1370,19 @@
           <input type="hidden" name="language_field_name" value="{{ stt_form.language_field_name or 'language' }}">
           <input type="hidden" name="response_text_path" value="{{ stt_form.response_text_path }}">
           {% endif %}
-          <label data-hide-for="openai_cloud"{% if stt_form.adapter_kind == "openai_cloud" %} hidden{% endif %}>
+          {% if stt_form.adapter_kind == "elevenlabs_speech_to_text" %}
+          <input type="hidden" name="transcribe_path" value="/v1/speech-to-text">
+          <input type="hidden" name="file_field_name" value="file">
+          <input type="hidden" name="model_field_name" value="model_id">
+          <input type="hidden" name="language_field_name" value="language_code">
+          <input type="hidden" name="response_text_path" value="text">
+          <input type="hidden" name="segments_path" value="words">
+          <input type="hidden" name="segment_text_field" value="text">
+          <input type="hidden" name="segment_start_field" value="start">
+          <input type="hidden" name="segment_end_field" value="end">
+          <input type="hidden" name="segment_speaker_field" value="speaker_id">
+          {% endif %}
+          <label data-hide-for="openai_cloud elevenlabs_speech_to_text"{% if stt_form.adapter_kind in ["openai_cloud", "elevenlabs_speech_to_text"] %} hidden{% endif %}>
             Base URL
             <input type="url" name="base_url" data-require-for="generic_rest openai_compatible_rest" {% if stt_form.adapter_kind == "generic_rest" or stt_form.adapter_kind == "openai_compatible_rest" %}required{% endif %} value="{{ stt_form.base_url }}">
           </label>
@@ -1383,8 +1398,8 @@
             <input type="text" name="transcribe_path" data-require-for="generic_rest" required value="{{ stt_form.transcribe_path }}">
           </label>
           <label>
-            <span data-stt-token-label>{% if stt_form.adapter_kind == "openai_cloud" %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
-            <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind == "openai_cloud" and not stt_config %}required{% endif %}>
+            <span data-stt-token-label>{% if stt_form.adapter_kind in ["openai_cloud", "elevenlabs_speech_to_text"] %}API key{% else %}Bearer token (optional for no-auth endpoints){% endif %}</span>
+            <input type="password" name="bearer_token" data-stt-token-input {% if stt_form.adapter_kind in ["openai_cloud", "elevenlabs_speech_to_text"] and not stt_config %}required{% endif %}>
             <small>Tokens are never retained after inspection responses. Re-enter a token to save or replace credentials. When editing an existing provider, choose keep saved credential to leave the saved token unchanged.</small>
           </label>
           <label>
@@ -1492,6 +1507,15 @@
               <dt>Outcome</dt>
               <dd>{{ stt_test_result.error_message }}{% if stt_test_result.error_code %} ({{ stt_test_result.error_code }}){% endif %}</dd>
             </div>
+            {% if stt_test_result.provider_status_code or stt_test_result.provider_error_code %}
+            <div>
+              <dt>Provider error</dt>
+              <dd>
+                {% if stt_test_result.provider_error_code %}{{ stt_test_result.provider_error_code }}{% endif %}
+                {% if stt_test_result.provider_status_code %}{% if stt_test_result.provider_error_code %} · {% endif %}HTTP {{ stt_test_result.provider_status_code }}{% endif %}
+              </dd>
+            </div>
+            {% endif %}
             {% endif %}
           </dl>
         </div>
@@ -3047,7 +3071,7 @@
           el.hidden = el.getAttribute('data-show-for') !== adapter;
         });
         form.querySelectorAll('[data-hide-for]').forEach((el) => {
-          el.hidden = el.getAttribute('data-hide-for') === adapter;
+          el.hidden = el.getAttribute('data-hide-for').split(/\s+/).filter(Boolean).includes(adapter);
         });
         form.querySelectorAll('[data-show-for], [data-hide-for]').forEach((container) => {
           container.querySelectorAll('input, select, textarea').forEach((field) => {
@@ -3059,23 +3083,30 @@
           field.required = !field.disabled && adapters.includes(adapter);
         });
         form.querySelectorAll('[data-stt-token-label]').forEach((el) => {
-          el.textContent = adapter === 'openai_cloud'
+          const apiKeyAdapter = adapter === 'openai_cloud' || adapter === 'elevenlabs_speech_to_text';
+          el.textContent = apiKeyAdapter
             ? (form.matches('[data-stt-inspect-form]') ? 'API key for inspection' : 'API key')
             : (form.matches('[data-stt-inspect-form]') ? 'Bearer token for inspection (optional)' : 'Bearer token (optional for no-auth endpoints)');
         });
         const tokenInput = form.querySelector('[data-stt-token-input]');
         if (tokenInput) {
-          tokenInput.required = adapter === 'openai_cloud' && !form.querySelector('input[name="config_id"]')?.value;
+          tokenInput.required = (adapter === 'openai_cloud' || adapter === 'elevenlabs_speech_to_text') && !form.querySelector('input[name="config_id"]')?.value;
         }
         const credentialAction = form.querySelector('select[name="credential_action"]');
         const isNewConfig = !form.querySelector('input[name="config_id"]')?.value;
         if (credentialAction && isNewConfig && !tokenInput?.value) {
-          credentialAction.value = adapter === 'openai_cloud' ? 'replace' : 'keep';
+          credentialAction.value = (adapter === 'openai_cloud' || adapter === 'elevenlabs_speech_to_text') ? 'replace' : 'keep';
         }
         form.querySelectorAll('[data-openai-base-url]').forEach((el) => {
           el.disabled = adapter !== 'openai_cloud';
           if (adapter === 'openai_cloud') {
             el.value = el.value || 'https://api.openai.com/v1';
+          }
+        });
+        form.querySelectorAll('[data-elevenlabs-base-url]').forEach((el) => {
+          el.disabled = adapter !== 'elevenlabs_speech_to_text';
+          if (adapter === 'elevenlabs_speech_to_text') {
+            el.value = el.value || 'https://api.elevenlabs.io';
           }
         });
         form.querySelectorAll('[data-non-generic-openapi]').forEach((el) => {

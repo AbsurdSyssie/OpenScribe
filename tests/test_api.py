@@ -853,6 +853,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
     assert response.status_code == 200
     body = response.json()
     assert body["config"]["provider_preset"] == SttProviderPreset.elevenlabs.value
+    assert body["config"]["adapter_kind"] == SttAdapterKind.elevenlabs_speech_to_text.value
     assert body["available_models"] == ["scribe_v2", "scribe_v1"]
     assert body["config"]["model_name"] is None
     assert body["config"]["language_field_name"] == "language_code"
@@ -862,6 +863,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
 
     persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert persisted is not None
+    assert persisted.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text
     assert persisted.available_models_json == ["scribe_v2", "scribe_v1"]
     assert persisted.model_name is None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
@@ -916,6 +918,33 @@ def test_elevenlabs_model_discovery_rejects_invalid_key(monkeypatch):
 
     assert exc_info.value.code == "stt_credential_invalid"
     assert exc_info.value.status_code == 401
+
+
+def test_elevenlabs_finalize_rejects_non_sync_model(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic ElevenLabs Invalid Model")
+    make_user(email="admin-stt-el-invalid-model@example.com", password="password-1", is_system_admin=True)
+
+    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"models": []}))
+
+    login(client, email="admin-stt-el-invalid-model@example.com", password="password-1")
+    draft = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "elevenlabs", "bearer_token": "el-secret"},
+    )
+    assert draft.status_code == 200
+
+    response = client.post(
+        f"/api/v1/stt-configs/{draft.json()['config']['id']}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": draft.json()["config"]["id"],
+            "label": "ElevenLabs STT",
+            "model_name": "scribe_v2_realtime",
+            "is_active": True,
+        },
+    )
+
+    assert_error(response, status_code=422, code="business_rule_violation", message="Selected ElevenLabs STT model is not supported")
 
 
 def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
@@ -1673,6 +1702,7 @@ def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
         language="None",
     )
     config.provider_preset = SttProviderPreset.elevenlabs.value
+    config.adapter_kind = SttAdapterKind.elevenlabs_speech_to_text
     config.model_field_name = "model_id"
     config.language_field_name = "language_code"
     db_session.add(config)
@@ -1717,7 +1747,12 @@ def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_r
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
     def raise_failure(**kwargs):
-        raise AppError(502, "stt_request_failed", "STT provider request failed", {"status_code": 500})
+        raise AppError(
+            502,
+            "stt_request_failed",
+            "STT provider request failed",
+            {"status_code": 401, "provider_error_code": "quota_exceeded"},
+        )
 
     monkeypatch.setattr("app.services.stt._transcribe_via_http", raise_failure)
 
@@ -1727,7 +1762,30 @@ def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_r
     assert result["health_status"] == "skipped"
     assert result["error_code"] == "stt_request_failed"
     assert result["error_message"] == "STT provider request failed"
+    assert result["provider_status_code"] == 401
+    assert result["provider_error_code"] == "quota_exceeded"
     assert result["transcript_text"] is None
+
+
+def test_safe_http_error_details_includes_provider_error_code_without_message():
+    request = httpx.Request("POST", "https://api.elevenlabs.io/v1/speech-to-text")
+    response = httpx.Response(
+        401,
+        request=request,
+        json={
+            "detail": {
+                "status": "quota_exceeded",
+                "message": "This request includes provider account details",
+            }
+        },
+    )
+    exc = httpx.HTTPStatusError("provider failed", request=request, response=response)
+
+    details = _safe_http_error_details(exc)
+
+    assert details["status_code"] == 401
+    assert details["provider_error_code"] == "quota_exceeded"
+    assert "message" not in details
 
 
 def test_paragraphize_timestamped_segments_splits_on_long_pauses():

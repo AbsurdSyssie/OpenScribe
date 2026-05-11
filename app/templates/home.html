@@ -2060,7 +2060,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </label>
 <label class="form-label">
 <span class="form-label__text">Model</span>
-<select name="provider_model" data-stt-model-select class="form-select" data-selected-value="{{ stt_selection.model_name_override if stt_selection else '' }}">
+<select name="provider_model" data-stt-model-select class="form-select" data-selected-value="{{ stt_selection.model_name_override or stt_selection.config.model_name if stt_selection else '' }}">
 <option value="">Default</option>
 </select>
 </label>

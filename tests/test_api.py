@@ -853,7 +853,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
     assert response.status_code == 200
     body = response.json()
     assert body["config"]["provider_preset"] == SttProviderPreset.elevenlabs.value
-    assert body["available_models"] == ["scribe_v2", "scribe_v1"]
+    assert body["available_models"] == ["scribe_v2", "scribe_v1", "scribe_v2_realtime", "tts_only"]
     assert body["config"]["model_name"] is None
     assert body["config"]["language_field_name"] == "language_code"
     assert body["config"]["segments_path"] == "words"
@@ -862,7 +862,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
 
     persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert persisted is not None
-    assert persisted.available_models_json == ["scribe_v2", "scribe_v1"]
+    assert persisted.available_models_json == ["scribe_v2", "scribe_v1", "scribe_v2_realtime", "tts_only"]
     assert persisted.model_name is None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
     assert persisted.credential_fingerprint
@@ -883,7 +883,7 @@ def test_system_admin_elevenlabs_draft_rejects_invalid_credential(client, db_ses
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
-def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
+def test_elevenlabs_model_discovery_keeps_provider_models(monkeypatch):
     captured = {}
 
     def fake_get(url, *, headers=None, timeout=None):
@@ -901,7 +901,7 @@ def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
 
     models = _list_elevenlabs_stt_models(api_key="el-secret", base_url="https://api.elevenlabs.io")
 
-    assert models == ["scribe_v2", "scribe_v1"]
+    assert models == ["scribe_v2", "scribe_v1", "eleven_multilingual_v2", "scribe_v2_realtime"]
     assert captured["url"] == "https://api.elevenlabs.io/v1/models"
     assert captured["headers"] == {"xi-api-key": "el-secret"}
     assert "Authorization" not in captured["headers"]

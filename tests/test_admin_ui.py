@@ -41,6 +41,7 @@ from app.models import (
     TeamSttConfig,
     SttSelectionPurpose,
     SttAdapterKind,
+    SttConfigSetupStatus,
     TeamSttSelection,
     TemplateMode,
     TemplateScope,
@@ -69,6 +70,9 @@ class FakeHttpxResponse:
 
     def json(self):
         return self._payload
+
+    def raise_for_status(self):
+        return None
 
 
 STT_OPENAPI_DOCUMENT = {
@@ -1740,6 +1744,67 @@ def test_admin_llm_check_key_creates_draft_and_redirects_to_model_step(
     assert saved.model_name is None
     assert saved.label == "Admin Router"
     assert f"llm_config_id={saved.id}" in created.headers["location"]
+
+
+def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Clinic STT Draft UI")
+    make_user(email="admin-stt-draft-ui@example.com", password="password-1", is_system_admin=True)
+
+    def fake_get(url, *, headers=None, timeout=None):
+        assert url == "https://api.deepgram.com/v1/models"
+        assert headers == {"Authorization": "Token dg-secret"}
+        return FakeHttpxResponse(
+            {
+                "stt": [
+                    {"canonical_name": "nova-3", "batch": True},
+                    {"canonical_name": "nova-2", "batch": True},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    client.post("/login", data={"email": "admin-stt-draft-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    created = client.post(
+        "/admin/stt-configs/drafts",
+        data={
+            "team_id": str(team.id),
+            "provider_preset": "deepgram",
+            "bearer_token": "dg-secret",
+            "return_view": "admin",
+            "return_tab": "providers",
+        },
+        follow_redirects=False,
+    )
+
+    assert created.status_code == 303
+    saved = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
+    assert saved is not None
+    assert saved.setup_status == SttConfigSetupStatus.pending_model_selection
+    assert saved.available_models_json == ["nova-2", "nova-3"]
+
+    page = client.get(created.headers["location"])
+    assert page.status_code == 200
+    assert team.name in page.text, created.headers["location"]
+    assert "Setup incomplete" in page.text, created.headers["location"]
+    assert f'action="/admin/stt-configs/{saved.id}/finalize"' in page.text, page.text[:4000]
+    finalize_form = page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
+    assert '<select name="provider_model">' in finalize_form
+    assert '<option value="nova-3"' in finalize_form
+    assert '<option value="nova-2"' in finalize_form
+    assert 'name="bearer_token"' not in finalize_form
+
+    admin2_page = client.get(f"/admin2?team_id={team.id}&tab=stt&stt_config_id={saved.id}")
+    assert admin2_page.status_code == 200
+    admin2_form = admin2_page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
+    assert '<select class="select" name="provider_model">' in admin2_form
+    assert '<option value="nova-3"' in admin2_form
+    assert '<option value="nova-2"' in admin2_form
+    assert 'name="bearer_token"' not in admin2_form
+    assert "dg-secret" not in page.text
+    assert "dg-secret" not in admin2_page.text
 
 
 def test_admin_llm_bad_key_stays_on_credential_step_without_ready_state(client, db_session, make_team, make_user, monkeypatch):

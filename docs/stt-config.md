@@ -149,9 +149,9 @@ Both OpenAI adapter families still keep:
 `elevenlabs` is a provider-specific known contract on top of `generic_rest`:
 
 - inspection requires an API key and calls `GET https://api.elevenlabs.io/v1/models`
-- discovery uses `xi-api-key: <api key>` and keeps only synchronous STT model ids `scribe_v2` and `scribe_v1`
+- discovery uses `xi-api-key: <api key>` and saves every returned `model_id` for admin selection
 - invalid ElevenLabs credentials fail draft creation and do not create a config row
-- realtime-only `scribe_v2_realtime` and non-STT models are not shown in the wizard dropdown
+- returned model ids, including realtime or non-standard models, are shown in the wizard dropdown; admins are responsible for choosing a model compatible with the configured synchronous endpoint
 - runtime transcription calls `POST /v1/speech-to-text` as multipart form data with `xi-api-key` auth, `file`, `model_id`, and optional `language_code`
 - provider-default language values such as blank, `None`, `auto`, and `default` are normalized to no language value and are not sent to providers
 - raw API keys remain Vault-backed and are never returned by API/admin responses

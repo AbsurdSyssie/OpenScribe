@@ -47,10 +47,6 @@ SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
     "gpt-4o-transcribe-diarize",
     "whisper-1",
 )
-ELEVENLABS_SYNC_STT_MODEL_IDS = {
-    "scribe_v2",
-    "scribe_v1",
-}
 ELEVENLABS_PREFERRED_STT_MODELS = (
     "scribe_v2",
     "scribe_v1",
@@ -595,7 +591,7 @@ def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
         if not isinstance(model_id, str):
             continue
         normalized = model_id.strip()
-        if normalized in ELEVENLABS_SYNC_STT_MODEL_IDS:
+        if normalized:
             discovered.append(normalized)
     return sorted(set(discovered), key=_elevenlabs_model_sort_key)
 

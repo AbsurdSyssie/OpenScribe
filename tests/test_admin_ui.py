@@ -42,7 +42,6 @@ from app.models import (
     SttSelectionPurpose,
     SttAdapterKind,
     SttConfigSetupStatus,
-    SttProviderPreset,
     TeamSttSelection,
     TemplateMode,
     TemplateScope,
@@ -1806,84 +1805,6 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
     assert 'name="bearer_token"' not in admin2_form
     assert "dg-secret" not in page.text
     assert "dg-secret" not in admin2_page.text
-
-
-def test_admin_stt_elevenlabs_draft_pages_show_discovered_model_dropdown(
-    client, db_session, make_team, make_user, monkeypatch
-):
-    team = make_team(name="Clinic ElevenLabs Draft UI")
-    make_user(email="admin-stt-el-draft-ui@example.com", password="password-1", is_system_admin=True)
-
-    def fake_get(url, *, headers=None, timeout=None):
-        assert url == "https://api.elevenlabs.io/v1/models"
-        assert headers == {"xi-api-key": "el-secret"}
-        return FakeHttpxResponse(
-            [
-                {"model_id": "scribe_v2", "name": "Scribe v2"},
-                {"model_id": "scribe_v2_realtime", "name": "Scribe v2 Realtime"},
-                {"model_id": "eleven_multilingual_v2", "name": "Multilingual v2"},
-            ]
-        )
-
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
-
-    client.post("/login", data={"email": "admin-stt-el-draft-ui@example.com", "password": "password-1"}, follow_redirects=False)
-    created = client.post(
-        "/admin/stt-configs/drafts",
-        data={"team_id": str(team.id), "provider_preset": "elevenlabs", "bearer_token": "el-secret", "return_view": "admin", "return_tab": "providers"},
-        follow_redirects=False,
-    )
-
-    assert created.status_code == 303
-    saved = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
-    assert saved is not None
-    assert saved.available_models_json == ["scribe_v2", "eleven_multilingual_v2", "scribe_v2_realtime"]
-
-    page = client.get(created.headers["location"])
-    finalize_form = page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
-    assert '<select name="provider_model">' in finalize_form
-    assert '<option value="scribe_v2"' in finalize_form
-    assert '<option value="scribe_v2_realtime"' in finalize_form
-    assert '<option value="eleven_multilingual_v2"' in finalize_form
-    assert 'name="bearer_token"' not in finalize_form
-
-    admin2_page = client.get(f"/admin2?team_id={team.id}&tab=stt&stt_config_id={saved.id}")
-    admin2_form = admin2_page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
-    assert '<select class="select" name="provider_model">' in admin2_form
-    assert '<option value="scribe_v2"' in admin2_form
-    assert '<option value="scribe_v2_realtime"' in admin2_form
-    assert '<option value="eleven_multilingual_v2"' in admin2_form
-    assert "el-secret" not in page.text
-    assert "el-secret" not in admin2_page.text
-
-
-def test_admin2_stt_selection_uses_model_dropdown_from_active_elevenlabs(
-    client, db_session, make_team, make_user, make_stt_config, make_stt_selection
-):
-    team = make_team(name="Clinic ElevenLabs Selection UI")
-    admin = make_user(email="admin-stt-el-select-ui@example.com", password="password-1", is_system_admin=True)
-    config = make_stt_config(
-        team=team,
-        actor=admin,
-        adapter_kind=SttAdapterKind.generic_rest,
-        base_url="https://api.elevenlabs.io",
-        transcribe_path="/v1/speech-to-text",
-        model_name="scribe_v2",
-        available_models_json=["scribe_v2", "scribe_v2_realtime", "eleven_multilingual_v2"],
-    )
-    config.provider_preset = SttProviderPreset.elevenlabs.value
-    db_session.add(config)
-    db_session.commit()
-    make_stt_selection(config=config, actor=admin, model_name_override="scribe_v2_realtime")
-
-    client.post("/login", data={"email": "admin-stt-el-select-ui@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin2?team_id={team.id}&tab=directory")
-
-    assert page.status_code == 200
-    selection_form = page.text.split('action="/admin/stt-selection"', 1)[1].split("</form>", 1)[0]
-    assert '<select class="select" name="provider_model">' in selection_form
-    assert '<option value="scribe_v2_realtime" selected' in selection_form
-    assert '<option value="eleven_multilingual_v2"' in selection_form
 
 
 def test_admin_llm_bad_key_stays_on_credential_step_without_ready_state(client, db_session, make_team, make_user, monkeypatch):

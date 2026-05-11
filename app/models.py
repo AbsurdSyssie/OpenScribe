@@ -91,6 +91,7 @@ class SttAdapterKind(str, enum.Enum):
     generic_rest = "generic_rest"
     openai_cloud = "openai_cloud"
     openai_compatible_rest = "openai_compatible_rest"
+    elevenlabs_speech_to_text = "elevenlabs_speech_to_text"
 
 
 class SttProviderPreset(str, enum.Enum):

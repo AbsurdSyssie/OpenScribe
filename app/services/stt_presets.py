@@ -59,7 +59,7 @@ STT_PROVIDER_PRESETS: dict[str, SttProviderPresetDefinition] = {
     SttProviderPreset.elevenlabs.value: SttProviderPresetDefinition(
         key=SttProviderPreset.elevenlabs.value,
         display_name="ElevenLabs",
-        adapter_kind=SttAdapterKind.generic_rest,
+        adapter_kind=SttAdapterKind.elevenlabs_speech_to_text,
         default_base_url="https://api.elevenlabs.io",
         transcribe_path="/v1/speech-to-text",
         auth_header_style="xi-api-key",
@@ -121,6 +121,8 @@ def infer_stt_provider_preset(adapter_kind: str | SttAdapterKind, base_url: str 
     host = (urlparse(base_url or "").hostname or "").lower()
     if adapter_value == SttAdapterKind.openai_cloud.value:
         return SttProviderPreset.openai.value
+    if adapter_value == SttAdapterKind.elevenlabs_speech_to_text.value:
+        return SttProviderPreset.elevenlabs.value
     if host == "api.deepgram.com":
         return SttProviderPreset.deepgram.value
     if host == "api.elevenlabs.io":

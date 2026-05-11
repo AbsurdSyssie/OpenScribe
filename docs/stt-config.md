@@ -69,6 +69,7 @@ Current adapter families:
 - `generic_rest`
 - `openai_cloud`
 - `openai_compatible_rest`
+- `elevenlabs_speech_to_text`
 
 Provider setup now also has an LLM-style wizard layer above these adapter families:
 
@@ -146,13 +147,15 @@ Both OpenAI adapter families still keep:
 - runtime sends `model` and optional `language` as query params and extracts transcript text from `results.channels.0.alternatives.0.transcript`
 - raw API keys remain Vault-backed and are never returned by API/admin responses
 
-`elevenlabs` is a provider-specific known contract on top of `generic_rest`:
+`elevenlabs` is a provider-specific known contract using the dedicated `elevenlabs_speech_to_text` adapter:
 
 - inspection requires an API key and calls `GET https://api.elevenlabs.io/v1/models`
-- discovery uses `xi-api-key: <api key>` and keeps only synchronous STT model ids `scribe_v2` and `scribe_v1`
+- the `/v1/models` call is a credential/catalog probe only; selectable STT models are hard-coded to synchronous ids `scribe_v2` and `scribe_v1`
 - invalid ElevenLabs credentials fail draft creation and do not create a config row
 - realtime-only `scribe_v2_realtime` and non-STT models are not shown in the wizard dropdown
 - runtime transcription calls `POST /v1/speech-to-text` as multipart form data with `xi-api-key` auth, `file`, `model_id`, and optional `language_code`
+- finalize, direct save, selection override, and runtime reject non-sync ElevenLabs models
+- response formatting reads `text` and timestamp/speaker data from `words` using `speaker_id`
 - provider-default language values such as blank, `None`, `auto`, and `default` are normalized to no language value and are not sent to providers
 - raw API keys remain Vault-backed and are never returned by API/admin responses
 
@@ -273,6 +276,7 @@ First implementation rules:
 - system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth; browser forms default those optional-token adapters to `credential_action=keep` so a blank token is saved as no credential instead of a failed replacement
 - `openai_cloud` still requires a saved API key
 - if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
+- saved-config diagnostics surface safe provider failure metadata to system admins, including HTTP status and provider error code such as `quota_exceeded`, without exposing raw secrets or provider error messages
 - leaders should eventually configure team policy without touching raw credential material
 - responses and logs must never echo the raw secret
 

@@ -232,6 +232,20 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     } <= stt_columns
     stt_indexes = inspector.get_indexes("team_stt_configs")
     assert any(item["name"] == "uq_team_stt_configs_team_label_lower" for item in stt_indexes)
+    with isolated_engine.connect() as connection:
+        stt_adapter_values = set(
+            connection.execute(
+                text(
+                    """
+                    SELECT enumlabel
+                    FROM pg_enum
+                    JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+                    WHERE pg_type.typname = 'sttadapterkind'
+                    """
+                )
+            ).scalars()
+        )
+    assert "elevenlabs_speech_to_text" in stt_adapter_values
     assert {"team_id", "purpose", "stt_config_id", "model_name_override", "language_override", "selected_by_user_id"} <= stt_selection_columns
     llm_indexes = inspector.get_indexes("team_llm_configs")
     assert {"team_id", "provider_preset", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json", "inspection_metadata_json", "setup_status"} <= llm_columns

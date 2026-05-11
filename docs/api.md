@@ -644,7 +644,7 @@ Current whole-file ingestion behavior:
 - generic REST STT failures now keep safer detail at the job level:
   - connect failure -> `stt_unavailable`
   - timeout -> `stt_timeout`
-  - upstream non-2xx -> `stt_request_failed` with `status_code`
+  - upstream non-2xx -> `stt_request_failed` with `status_code`, `provider_status_code`, and a safe `provider_error_code` when the provider returns one
   - unreadable JSON or missing transcript text path -> `stt_response_invalid`
 - `GET /api/v1/transcripts/{transcript_id}` now includes the latest ingestion failure metadata when present:
   - `next_live_chunk_sequence_no_upload`

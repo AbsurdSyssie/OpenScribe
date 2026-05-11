@@ -68,6 +68,18 @@ class SttConfigUpsert(BaseModel):
             adapter_kind = SttAdapterKind(adapter_kind)
 
         normalized = dict(data)
+        provider_preset = normalized.get("provider_preset")
+        if provider_preset:
+            from app.services.stt_presets import apply_stt_provider_defaults
+
+            preset_key, adapter_kind, base_url, _preset = apply_stt_provider_defaults(
+                provider_preset=provider_preset,
+                base_url=normalized.get("base_url"),
+                adapter_kind=adapter_kind,
+            )
+            normalized["provider_preset"] = preset_key
+            normalized["adapter_kind"] = adapter_kind
+            normalized["base_url"] = base_url
         if adapter_kind is SttAdapterKind.openai_cloud:
             normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
             normalized["transcribe_path"] = "/v1/audio/transcriptions"
@@ -75,6 +87,18 @@ class SttConfigUpsert(BaseModel):
             normalized["model_field_name"] = "model"
             normalized["language_field_name"] = "language"
             normalized["response_text_path"] = "text"
+        elif adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+            normalized["base_url"] = (normalized.get("base_url") or "https://api.elevenlabs.io").strip()
+            normalized["transcribe_path"] = "/v1/speech-to-text"
+            normalized["file_field_name"] = "file"
+            normalized["model_field_name"] = "model_id"
+            normalized["language_field_name"] = "language_code"
+            normalized["response_text_path"] = "text"
+            normalized["segments_path"] = "words"
+            normalized["segment_text_field"] = "text"
+            normalized["segment_start_field"] = "start"
+            normalized["segment_end_field"] = "end"
+            normalized["segment_speaker_field"] = "speaker_id"
         elif adapter_kind is SttAdapterKind.openai_compatible_rest:
             normalized["transcribe_path"] = "/v1/audio/transcriptions"
             normalized["file_field_name"] = "file"
@@ -152,6 +176,8 @@ class SttConfigUpsert(BaseModel):
     def validate_known_adapter_requirements(self):
         if self.adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest} and not self.model_name:
             raise ValueError("Model name is required for OpenAI STT adapters")
+        if self.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text and self.model_name not in {"scribe_v2", "scribe_v1"}:
+            raise ValueError("Model name must be scribe_v2 or scribe_v1 for ElevenLabs STT")
         if self.model_name and not self.model_field_name:
             self.model_field_name = "model"
         if self.language and not self.language_field_name:
@@ -263,11 +289,17 @@ class SttInspectRequest(BaseModel):
             normalized["provider_preset"] = preset_key
             normalized["adapter_kind"] = adapter_kind
             normalized["base_url"] = base_url
+            if adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+                normalized["openapi_path"] = None
+                return normalized
             if adapter_kind is SttAdapterKind.generic_rest and preset_key != SttProviderPreset.custom_rest_openapi.value:
                 normalized["openapi_path"] = None
                 return normalized
         if adapter_kind is SttAdapterKind.openai_cloud:
             normalized["base_url"] = (normalized.get("base_url") or "https://api.openai.com/v1").strip()
+            normalized["openapi_path"] = None
+        elif adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+            normalized["base_url"] = (normalized.get("base_url") or "https://api.elevenlabs.io").strip()
             normalized["openapi_path"] = None
         elif adapter_kind is SttAdapterKind.openai_compatible_rest and normalized.get("openapi_path") is None:
             normalized["openapi_path"] = None

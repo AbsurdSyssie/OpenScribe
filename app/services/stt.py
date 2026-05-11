@@ -47,14 +47,11 @@ SUPPORTED_OPENAI_TRANSCRIPTION_MODELS = (
     "gpt-4o-transcribe-diarize",
     "whisper-1",
 )
-ELEVENLABS_SYNC_STT_MODEL_IDS = {
-    "scribe_v2",
-    "scribe_v1",
-}
 ELEVENLABS_PREFERRED_STT_MODELS = (
     "scribe_v2",
     "scribe_v1",
 )
+ELEVENLABS_SYNC_STT_MODEL_IDS = set(ELEVENLABS_PREFERRED_STT_MODELS)
 
 
 logger = logging.getLogger("openscribe.stt")
@@ -306,6 +303,8 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
 
     provider_models = list(config.available_models_json or [])
     override = payload.model_name_override.strip() if payload.model_name_override else None
+    if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text and override:
+        _validated_elevenlabs_model(override, field="model_name_override")
     if override:
         if not provider_models:
             raise AppError(
@@ -414,6 +413,8 @@ def resolve_selected_team_stt(
     if provider_models:
         if resolved_model_name not in provider_models:
             resolved_model_name = provider_models[0]
+    if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        resolved_model_name = _validated_elevenlabs_model(resolved_model_name)
     resolved_language = normalize_stt_language(selection.language_override) or normalize_stt_language(config.language)
     return selection, config, resolved_model_name, resolved_language
 
@@ -462,6 +463,8 @@ def ensure_stt_config_credential_ready(*, team_id: UUID, config: TeamSttConfig) 
 def _normalized_known_adapter_fields(adapter_kind: SttAdapterKind) -> tuple[str, str, str]:
     if adapter_kind in {SttAdapterKind.openai_cloud, SttAdapterKind.openai_compatible_rest}:
         return "/v1/audio/transcriptions", "file", "text"
+    if adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        return "/v1/speech-to-text", "file", "text"
     raise ValueError(f"Unsupported known adapter kind: {adapter_kind}")
 
 
@@ -612,6 +615,18 @@ def _preferred_elevenlabs_model(models: list[str]) -> str | None:
         if model in models:
             return model
     return models[0] if models else None
+
+
+def _validated_elevenlabs_model(model_name: str | None, *, field: str = "model_name") -> str:
+    normalized = normalize_optional_stt_text(model_name) or ELEVENLABS_PREFERRED_STT_MODELS[0]
+    if normalized not in ELEVENLABS_SYNC_STT_MODEL_IDS:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "Selected ElevenLabs STT model is not supported",
+            {"field": field, "allowed_models": list(ELEVENLABS_PREFERRED_STT_MODELS)},
+        )
+    return normalized
 
 
 def _preferred_deepgram_model(models: list[str]) -> str | None:
@@ -832,14 +847,47 @@ def _translate_http_stt_error(exc: httpx.HTTPError) -> AppError:
             {"provider_error_code": "connection_error"},
         )
     if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code if exc.response is not None else None
+        details = _safe_http_error_details(exc)
+        status_code = details.get("status_code")
         return AppError(
             502,
             "stt_request_failed",
             "STT provider request failed",
-            {"status_code": status_code},
+            {
+                "status_code": status_code,
+                "provider_status_code": status_code,
+                "provider_error_code": details.get("provider_error_code"),
+            },
         )
     return AppError(502, "stt_unavailable", "STT provider is unavailable")
+
+
+def _provider_error_code_from_response(response: httpx.Response | None) -> str | None:
+    if response is None:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        status_value = detail.get("status")
+        if isinstance(status_value, str) and status_value:
+            return status_value[:255]
+        code_value = detail.get("code")
+        if isinstance(code_value, str) and code_value:
+            return code_value[:255]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code_value = error.get("code")
+        if isinstance(code_value, str) and code_value:
+            return code_value[:255]
+    code_value = payload.get("code")
+    if isinstance(code_value, str) and code_value:
+        return code_value[:255]
+    return None
 
 
 def _safe_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
@@ -857,7 +905,7 @@ def _safe_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
     elif isinstance(exc, httpx.ConnectError):
         details["provider_error_code"] = "connection_error"
     elif isinstance(exc, httpx.HTTPStatusError):
-        details["provider_error_code"] = "http_status_error"
+        details["provider_error_code"] = _provider_error_code_from_response(response) or "http_status_error"
     else:
         details["provider_error_code"] = "http_error"
     return details
@@ -879,6 +927,7 @@ def _transcribe_via_http(
     filename: str,
     content_type: str,
     provider_preset: str | None = None,
+    adapter_kind: SttAdapterKind | None = None,
     segments_path: str | None = None,
     segment_text_field: str | None = None,
     segment_start_field: str | None = None,
@@ -886,6 +935,16 @@ def _transcribe_via_http(
     segment_speaker_field: str | None = None,
 ) -> str:
     url = f"{base_url.rstrip('/')}{transcribe_path}"
+    if adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        return _transcribe_via_elevenlabs_speech_to_text(
+            base_url=base_url,
+            api_key=bearer_token,
+            audio_bytes=audio_bytes,
+            filename=filename,
+            content_type=content_type,
+            model_name=model_name,
+            language=language,
+        )
     if provider_preset == SttProviderPreset.deepgram.value:
         return _transcribe_via_deepgram(
             url=url,
@@ -984,26 +1043,21 @@ def _transcribe_via_http(
     )
 
 
-def _transcribe_via_elevenlabs(
+def _transcribe_via_elevenlabs_speech_to_text(
     *,
-    url: str,
+    base_url: str,
     api_key: str | None,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
     model_name: str | None,
     language: str | None,
-    response_text_path: str,
-    segments_path: str | None = None,
-    segment_text_field: str | None = None,
-    segment_start_field: str | None = None,
-    segment_end_field: str | None = None,
-    segment_speaker_field: str | None = None,
 ) -> str:
     if not api_key:
         raise AppError(409, "stt_config_secret_missing", "ElevenLabs STT requires a saved API key.")
 
-    data: dict[str, str] = {"model_id": normalize_optional_stt_text(model_name) or "scribe_v2"}
+    url = f"{base_url.rstrip('/')}/v1/speech-to-text"
+    data: dict[str, str] = {"model_id": _validated_elevenlabs_model(model_name)}
     language = normalize_stt_language(language)
     if language:
         data["language_code"] = language
@@ -1039,13 +1093,27 @@ def _transcribe_via_elevenlabs(
 
     return _format_timestamped_transcript_payload_with_segments(
         payload,
-        response_text_path=response_text_path,
-        segments_path=segments_path,
-        segment_text_field=segment_text_field,
-        segment_start_field=segment_start_field,
-        segment_end_field=segment_end_field,
-        segment_speaker_field=segment_speaker_field,
+        response_text_path="text",
+        segments_path="words",
+        segment_text_field="text",
+        segment_start_field="start",
+        segment_end_field="end",
+        segment_speaker_field="speaker_id",
     )
+
+
+def _transcribe_via_elevenlabs(**kwargs: Any) -> str:
+    if "url" in kwargs:
+        url = str(kwargs.pop("url"))
+        suffix = "/v1/speech-to-text"
+        kwargs["base_url"] = url[: -len(suffix)] if url.endswith(suffix) else url.rstrip("/")
+    kwargs.pop("response_text_path", None)
+    kwargs.pop("segments_path", None)
+    kwargs.pop("segment_text_field", None)
+    kwargs.pop("segment_start_field", None)
+    kwargs.pop("segment_end_field", None)
+    kwargs.pop("segment_speaker_field", None)
+    return _transcribe_via_elevenlabs_speech_to_text(**kwargs)
 
 
 def _transcribe_via_deepgram(
@@ -1187,6 +1255,7 @@ def transcribe_with_team_stt(
         extra_form_fields_json=config.extra_form_fields_json,
         bearer_token=bearer_token,
         provider_preset=config.provider_preset,
+        adapter_kind=config.adapter_kind,
         model_name=resolved_model_name,
         model_field_name=config.model_field_name or "model",
         language=resolved_language,
@@ -1263,6 +1332,7 @@ def transcribe_with_stt_snapshot(
         extra_form_fields_json=extra_form_fields_json,
         bearer_token=bearer_token,
         provider_preset=infer_stt_provider_preset(resolved_adapter, base_url),
+        adapter_kind=resolved_adapter,
         model_name=model_name,
         model_field_name=model_field_name or "model",
         language=language,
@@ -1316,6 +1386,7 @@ def run_saved_stt_config_test(
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
                 provider_preset=config.provider_preset,
+                adapter_kind=config.adapter_kind,
                 model_name=config.model_name,
                 model_field_name=config.model_field_name or "model",
                 language=config.language,
@@ -1343,8 +1414,11 @@ def run_saved_stt_config_test(
             "transcript_text": transcript_text,
             "error_code": None,
             "error_message": None,
+            "provider_status_code": None,
+            "provider_error_code": None,
         }
     except AppError as exc:
+        details = exc.details or {}
         return {
             "success": False,
             "health_status": health_status,
@@ -1358,6 +1432,8 @@ def run_saved_stt_config_test(
             "transcript_text": None,
             "error_code": exc.code,
             "error_message": exc.message,
+            "provider_status_code": details.get("provider_status_code") or details.get("status_code"),
+            "provider_error_code": details.get("provider_error_code"),
         }
 
 
@@ -1380,6 +1456,7 @@ def _verify_generic_stt_config_with_sample(
         extra_form_fields_json=config.extra_form_fields_json,
         bearer_token=bearer_token,
         provider_preset=config.provider_preset,
+        adapter_kind=config.adapter_kind,
         model_name=config.model_name,
         model_field_name=config.model_field_name or "model",
         language=config.language,
@@ -1482,6 +1559,8 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     label = payload.label.strip()
     _ensure_unique_stt_config_label(db, team_id=team.id, label=label, current_config_id=config.id)
     model_name = payload.model_name.strip() if payload.model_name else None
+    if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        model_name = _validated_elevenlabs_model(model_name)
     available = list(config.available_models_json or [])
     if available and model_name and model_name not in available:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
@@ -1585,6 +1664,10 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
     if payload.adapter_kind is SttAdapterKind.openai_cloud and removing_secret:
         raise AppError(422, "business_rule_violation", "OpenAI Cloud STT configs require a saved bearer token", {"field": "credential_action"})
+    if payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text and config is None and not replacing_secret:
+        raise AppError(422, "business_rule_violation", "API key is required for ElevenLabs STT configs", {"field": "bearer_token"})
+    if payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text and removing_secret:
+        raise AppError(422, "business_rule_violation", "ElevenLabs STT configs require a saved API key", {"field": "credential_action"})
 
     available_models_json: list[str] = []
     if payload.adapter_kind is SttAdapterKind.openai_cloud:
@@ -1595,6 +1678,9 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 available_models_json = _fallback_openai_transcription_models()
         elif config is not None:
             available_models_json = list(config.available_models_json or [])
+    elif payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        _validated_elevenlabs_model(payload.model_name)
+        available_models_json = list(ELEVENLABS_PREFERRED_STT_MODELS)
 
     if config is None:
         config = TeamSttConfig(
@@ -1676,12 +1762,26 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.credential_status = ProviderCredentialStatus.unknown
     elif payload.adapter_kind is SttAdapterKind.openai_cloud and not config.vault_secret_ref:
         raise AppError(422, "business_rule_violation", "Bearer token is required for OpenAI Cloud STT configs", {"field": "bearer_token"})
+    elif payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text and not config.vault_secret_ref:
+        raise AppError(422, "business_rule_violation", "API key is required for ElevenLabs STT configs", {"field": "bearer_token"})
 
     if replacing_secret and payload.bearer_token:
         try:
             if payload.adapter_kind is SttAdapterKind.generic_rest:
                 _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
                 inspection = None
+            elif payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+                inspection = inspect_stt_contract(
+                    db,
+                    actor,
+                    SttInspectRequest(
+                        team_id=team.id,
+                        provider_preset=SttProviderPreset.elevenlabs,
+                        adapter_kind=payload.adapter_kind,
+                        base_url=payload.base_url,
+                        bearer_token=payload.bearer_token,
+                    ),
+                )
             else:
                 inspection = inspect_stt_contract(
                     db,
@@ -1970,6 +2070,8 @@ def _infer_segments_contract(schema: dict[str, Any] | None) -> tuple[str | None,
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset = payload.provider_preset.value if isinstance(payload.provider_preset, SttProviderPreset) else payload.provider_preset
+    if payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        provider_preset = SttProviderPreset.elevenlabs.value
     if provider_preset == SttProviderPreset.deepgram.value:
         preset = get_stt_provider_preset(provider_preset)
         if not payload.bearer_token:
@@ -2015,19 +2117,22 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             raise AppError(422, "business_rule_violation", "ElevenLabs requires an API key", {"field": "bearer_token"})
         notes = ["Validated ElevenLabs API key via /v1/models."]
         try:
-            models = _list_elevenlabs_stt_models(api_key=payload.bearer_token, base_url=payload.base_url)
+            catalog_models = _list_elevenlabs_stt_models(api_key=payload.bearer_token, base_url=payload.base_url)
         except AppError as exc:
             if _is_credential_rejection(exc):
                 raise
-            models = []
-            notes = [f"ElevenLabs model discovery failed: {exc.message}. Enter a model manually if needed."]
+            catalog_models = []
+            notes = [f"ElevenLabs credential probe degraded: {exc.message}. Using built-in synchronous STT model list."]
+        models = list(ELEVENLABS_PREFERRED_STT_MODELS)
+        if catalog_models:
+            notes.append("ElevenLabs catalog probe succeeded; selectable STT models remain the built-in synchronous list.")
         return SttInspectResult(
             base_url=payload.base_url,
             openapi_path=None,
             adapter_kind=preset.adapter_kind,
             transcribe_path=preset.transcribe_path,
-            model_name=_preferred_elevenlabs_model(models),
-            model_field_name=preset.default_model_field_name if models else None,
+            model_name=ELEVENLABS_PREFERRED_STT_MODELS[0],
+            model_field_name=preset.default_model_field_name,
             file_field_name=preset.default_file_field_name,
             language=None,
             language_field_name=preset.default_language_field_name,

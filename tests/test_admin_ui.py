@@ -5891,6 +5891,8 @@ def test_admin_page_can_run_saved_stt_test_and_render_result(client, make_team, 
             "transcript_text": "more or less",
             "error_code": None,
             "error_message": None,
+            "provider_status_code": None,
+            "provider_error_code": None,
         },
     )
 
@@ -5903,6 +5905,40 @@ def test_admin_page_can_run_saved_stt_test_and_render_result(client, make_team, 
     assert "MoreOrLess.wav" in tested.text
     assert "more or less" in tested.text
     assert "Test STT" in tested.text
+
+
+def test_admin_page_renders_saved_stt_provider_error_details(client, make_team, make_user, make_stt_config, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="Clinic STT")
+
+    monkeypatch.setattr(
+        "app.main.run_saved_stt_config_test_service",
+        lambda db, actor, config_id, team_id: {
+            "success": False,
+            "health_status": "skipped",
+            "sample_filename": "MoreOrLess.wav",
+            "sample_size_bytes": 882920,
+            "health_url": None,
+            "transcribe_url": "https://api.elevenlabs.io/v1/speech-to-text",
+            "model_name": "scribe_v2",
+            "language": None,
+            "duration_ms": 321,
+            "transcript_text": None,
+            "error_code": "stt_request_failed",
+            "error_message": "STT provider request failed",
+            "provider_status_code": 401,
+            "provider_error_code": "quota_exceeded",
+        },
+    )
+
+    client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
+    tested = client.post(f"/admin/stt-configs/{config.id}/test", data={"team_id": str(team.id)})
+
+    assert tested.status_code == 200
+    assert "Provider error" in tested.text
+    assert "quota_exceeded" in tested.text
+    assert "HTTP 401" in tested.text
 
 
 def test_admin_page_includes_client_side_stt_adapter_toggle(client, make_team, make_user):

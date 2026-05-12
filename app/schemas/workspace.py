@@ -21,6 +21,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     stt_selected: bool
     stt_available: bool
     stt_status_message: str | None = None
+    stt_health: dict | None = None
     dictation_stt_selected: bool = False
     dictation_stt_available: bool = False
     dictation_stt_status_message: str | None = None

@@ -1,5 +1,83 @@
 # Progress
 
+## 2026-05-12 Status Pill Review Fixes
+
+### Scope
+
+- Fixed status pill review regressions: skipped STT health probes are neutral, and inactive-capture upload/stopping labels remain visible.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: focused syntax/API checks; frontend-only aggregation behavior changed.
+- Docs added/updated: yes
+- Open issues: no browser automation in this slice.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: treats skipped `unknown` STT health as neutral, keeps real warnings/unavailable states visible, and maps local `uploading`/`stopping` states before idle fallback.
+- `docs/progress.md`: records review fix checklist and architecture checkpoints.
+- `docs/progress/Daily Note 12-5-26 Status Pill Review Fixes.md`: local daily note added; directory is gitignored.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_health or transcribe_workspace"`: passed, 14 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: status pill shows operational state only, no transcript/note/prompt/audio content.
+- Ownership rules preserved: frontend display logic only; workspace owner/provider resolution unchanged.
+- Deletion semantics preserved: no persistence, cascade, retention, or hard-delete behavior changed.
+- Provider rules preserved: intentionally skipped provider health is neutral; unavailable/warning health still surfaces.
+- Structured-note contract preserved: no generated-document JSON or EMIS section behavior changed.
+
+## 2026-05-12 Transcription Status Pill Health
+
+### Scope
+
+- Added the implementation plan and first slice for the transcription status pill: server-side STT health warnings, manual recheck, local live-capture status precedence, mic issue reporting, and multi-issue pill details.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no persistent health history or configurable health URL in this slice.
+
+### Files changed
+
+- `STATUS_PILL_PLAN.md`: captures the agreed hierarchy, behavior, scope, and test checklist.
+- `app/services/stt.py`: adds selected STT health checks with 60-second in-memory cache and detail filtering.
+- `app/web/transcribe_workspace.py`, `app/schemas/workspace.py`, `app/routes/api_routes.py`: expose workspace health and manual recheck.
+- `app/static/js/transcribe/app.js`, `app/static/js/transcribe/media.js`, `app/static/js/transcribe/bootstrap.js`: aggregate pill states, show details, preserve live phases, and map mic errors.
+- `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_head_assets.html`, `app/templates/transcribe/_shell_extras.html`: add pill detail styles, bootstrap health, and stop ready-state pulsing.
+- `tests/test_api.py`: covers workspace STT health privacy/detail behavior and recheck cache bypass.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_health or transcribe_workspace"`: passed, 14 tests.
+- `.venv/bin/python -m py_compile app/services/stt.py app/web/transcribe_workspace.py app/routes/api_routes.py app/schemas/workspace.py`: passed.
+- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/media.js && node --check app/static/js/transcribe/bootstrap.js`: passed.
+
+### Documentation
+
+- Added root implementation guidance in `STATUS_PILL_PLAN.md` and this progress entry.
+
+### Risks / assumptions
+
+- STT health checks infer `${base_url}/health` only for generic/openai-compatible REST providers; provider-specific health remains future work.
+- Health cache is process-local by design for MVP.
+- Frontend JS behavior is syntax-checked; no browser automation was run in this slice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: health and pill details expose operational status only, not transcript/note/prompt/audio content.
+- Ownership rules preserved: workspace/recheck resolve only the current user's team-selected STT provider; transcript content remains owner scoped.
+- Deletion semantics preserved: no persisted health state or schema lifecycle added.
+- Provider rules preserved: raw credentials stay Vault-backed and are used only server-side; leaders get safe diagnostics, normal users get plain messages.
+- Structured-note contract preserved: no generated-document JSON or EMIS section behavior changed.
+
 ## 2026-05-12 Alembic Logger Preservation
 
 ### Scope

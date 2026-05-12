@@ -22,6 +22,7 @@ export function createAudioCaptureController({
   setRetryAvailability,
   showFlash,
   reflectBackendStatus,
+  reportMicIssue,
 }) {
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   const MIC_VISUALIZER_BAR_COUNT = 12;
@@ -484,7 +485,7 @@ export function createAudioCaptureController({
     const chunkSequenceNo = nextLiveChunkSequenceNo;
     setNextLiveChunkSequenceNo(chunkSequenceNo + 1);
     setMicStatus(`Sending live audio part ${chunkSequenceNo}...`);
-    setVisibleStatus('uploading');
+    setVisibleStatus('sending chunk');
     setSessionProgress(`Sending live audio part ${chunkSequenceNo}...`);
     const formData = new FormData();
     formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
@@ -526,7 +527,7 @@ export function createAudioCaptureController({
       }
       return;
     }
-    setVisibleStatus('transcribing');
+    setVisibleStatus('finalizing');
     setSessionProgress('Finalizing live capture and checking redaction...');
     try {
       await finalizeLiveCapture({ keepalive });
@@ -552,7 +553,7 @@ export function createAudioCaptureController({
       ...commonVadCallbacks({
         onSpeechStart: () => {
           liveSpeechActive = true;
-          setVisibleStatus('recording');
+          setVisibleStatus('speech detected');
           setSessionProgress('Speech detected. Preparing the next live audio part...');
           setMicStatus('Speech detected. Waiting for a pause or 30 second split...');
           armLiveChunkTimeout();
@@ -587,7 +588,7 @@ export function createAudioCaptureController({
             return;
           }
           setMicStatus('Listening for speech...');
-          setVisibleStatus('idle');
+          setVisibleStatus('listening');
           setSessionProgress('Listening for speech. Live chunks will queue after a pause.');
         },
       }),
@@ -600,7 +601,7 @@ export function createAudioCaptureController({
     }
     liveVadInstance.start();
     setMicVisualizerVadActive(false);
-    setVisibleStatus('idle');
+    setVisibleStatus('listening');
     setSessionProgress('Listening for speech. The Silero browser VAD will queue live chunks after 2 seconds of silence.');
     setMicStatus('Listening for speech...');
   };
@@ -610,7 +611,7 @@ export function createAudioCaptureController({
     try {
       liveRestartPending = true;
       cleanupLiveVad();
-      setVisibleStatus('transcribing');
+      setVisibleStatus('sending chunk');
       setSessionProgress('Live audio part sent. Getting ready for the next one...');
       setMicStatus('Getting live capture ready again...');
       if (config.liveRestartDelayMs > 0) {
@@ -665,7 +666,7 @@ export function createAudioCaptureController({
         return;
       }
       setMicStatus('Listening for speech...');
-      setVisibleStatus('idle');
+      setVisibleStatus('listening');
       setSessionProgress('Live chunk queued. Listening for the next utterance...');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not send this live audio part.';
@@ -893,6 +894,7 @@ export function createAudioCaptureController({
       return;
     }
     if (!window.vad?.MicVAD || !navigator.mediaDevices?.getUserMedia) {
+      reportMicIssue?.({ name: 'NotFoundError' });
       setMicStatus('Live speech detection could not start in this browser.', 'error');
       return;
     }
@@ -903,12 +905,14 @@ export function createAudioCaptureController({
       liveRestartPending = false;
       liveChunkProcessing = Promise.resolve();
       liveVadInstance = await buildLiveVadInstance();
+      reportMicIssue?.(null);
       beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
       startLiveListeningLoop();
-    } catch (_) {
+    } catch (error) {
       resetRecordingState();
+      reportMicIssue?.(error);
       setMicStatus('Microphone access was denied, or live speech detection could not start.', 'error');
     }
   };
@@ -949,6 +953,7 @@ export function createAudioCaptureController({
       return;
     }
     if (!window.vad?.MicVAD || !navigator.mediaDevices?.getUserMedia) {
+      reportMicIssue?.({ name: 'NotFoundError' });
       setMicStatus('Voice-only microphone capture could not start in this browser.', 'error');
       return;
     }
@@ -961,6 +966,7 @@ export function createAudioCaptureController({
       batchRolloverUploadPending = false;
       batchSpeechSegments = [];
       batchVadInstance = await buildBatchVadInstance();
+      reportMicIssue?.(null);
       beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
@@ -969,8 +975,9 @@ export function createAudioCaptureController({
       setMicStatus('Listening for speech. Voice-only capture keeps buffered speech until you stop.');
       setVisibleStatus('recording');
       setSessionProgress('Listening on this device. Silence is skipped; voiced audio with buffer stays local until upload.');
-    } catch (_) {
+    } catch (error) {
       resetRecordingState();
+      reportMicIssue?.(error);
       setMicStatus('Microphone access was denied or unavailable.', 'error');
     }
   };

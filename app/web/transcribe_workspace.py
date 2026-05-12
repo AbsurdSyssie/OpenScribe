@@ -50,6 +50,7 @@ from ..services.llm import (
 from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
 from ..services.dictations import dictation_detail_response, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
+from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.templates import (
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
@@ -527,6 +528,7 @@ def resolve_transcribe_workspace(
     stt_selection = None
     stt_available = False
     stt_status_message = None
+    stt_health = None
     dictation_stt_selection = None
     dictation_stt_available = False
     dictation_stt_status_message = None
@@ -542,6 +544,7 @@ def resolve_transcribe_workspace(
             stt_status_message = _missing_stt_selection_message(team_leader_email=team_leader_email)
         else:
             stt_available = True
+            stt_health = check_selected_stt_health_service(db, current_user, purpose=SttSelectionPurpose.conversation)
         try:
             dictation_stt_selection = active_team_stt_selection_service(
                 db,
@@ -636,6 +639,7 @@ def resolve_transcribe_workspace(
         "stt_selection": stt_selection,
         "stt_available": stt_available,
         "stt_status_message": stt_status_message,
+        "stt_health": stt_health,
         "dictation_stt_selection": dictation_stt_selection,
         "dictation_stt_selected": bool(dictation_stt_selection),
         "dictation_stt_available": dictation_stt_available,
@@ -737,6 +741,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
         stt_status_message=workspace.get("stt_status_message"),
+        stt_health=workspace.get("stt_health"),
         dictation_stt_selected=bool(workspace.get("dictation_stt_selection")),
         dictation_stt_available=bool(workspace.get("dictation_stt_available")),
         dictation_stt_status_message=workspace.get("dictation_stt_status_message"),

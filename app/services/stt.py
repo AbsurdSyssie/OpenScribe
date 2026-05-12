@@ -4,7 +4,7 @@ import hmac
 import logging
 import os
 from pathlib import Path
-from time import monotonic
+from time import monotonic, time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
@@ -839,6 +839,164 @@ def ensure_stt_service_healthy(
             "Could not reach the STT provider health endpoint",
             {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
         ) from exc
+
+
+_STT_HEALTH_CACHE_TTL_SECONDS = 60
+_stt_health_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def clear_stt_health_cache() -> None:
+    _stt_health_cache.clear()
+
+
+def _stt_health_detail_allowed(actor: User) -> bool:
+    return bool(actor.is_system_admin or actor.team_role is TeamRole.leader)
+
+
+def _stt_health_response(
+    *,
+    status: str,
+    message: str,
+    checked: bool,
+    checked_at: float | None = None,
+    details: dict[str, Any] | None = None,
+    include_details: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": status,
+        "message": message,
+        "checked": checked,
+        "checked_at": checked_at,
+    }
+    if include_details and details:
+        payload["details"] = details
+    return payload
+
+
+def _filter_stt_health_payload(payload: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
+    filtered = dict(payload)
+    if not include_details:
+        filtered.pop("details", None)
+    return filtered
+
+
+def _stt_health_skip_reason(config: TeamSttConfig) -> str | None:
+    if config.adapter_kind is SttAdapterKind.openai_cloud:
+        return "openai_cloud_skipped"
+    if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
+        return "elevenlabs_skipped"
+    if config.provider_preset in {SttProviderPreset.deepgram.value, SttProviderPreset.elevenlabs.value}:
+        return "provider_specific_health_skipped"
+    if config.adapter_kind not in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
+        return "unsupported_adapter_skipped"
+    return None
+
+
+def check_selected_stt_health(
+    db: Session,
+    actor: User,
+    *,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    include_details = _stt_health_detail_allowed(actor)
+    if actor.team_id is None:
+        return _stt_health_response(status="unavailable", message="Speech service is not configured.", checked=False, include_details=include_details)
+    try:
+        selection = active_team_stt_selection(db, team_id=actor.team_id, purpose=purpose)
+    except AppError:
+        return _stt_health_response(status="unavailable", message="Speech service is not configured.", checked=False, include_details=include_details)
+    config = selection.config
+    cache_key = (str(actor.team_id), str(config.id), purpose.value)
+    now = time()
+    if not bypass_cache:
+        cached = _stt_health_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _STT_HEALTH_CACHE_TTL_SECONDS:
+            return _filter_stt_health_payload(cached[1], include_details=include_details)
+
+    checked_at = now
+    skip_reason = _stt_health_skip_reason(config)
+    if skip_reason:
+        payload = _stt_health_response(
+            status="unknown",
+            message="Speech service health is not reported.",
+            checked=False,
+            checked_at=checked_at,
+            details={"reason": skip_reason},
+            include_details=True,
+        )
+        _stt_health_cache[cache_key] = (now, payload)
+        return _filter_stt_health_payload(payload, include_details=include_details)
+
+    health_url = f"{config.base_url.rstrip('/')}/health"
+    try:
+        bearer_token = _read_saved_stt_bearer_token(team_id=actor.team_id, config=config)
+    except AppError:
+        payload = _stt_health_response(
+            status="unavailable",
+            message="Speech service needs attention from your team lead.",
+            checked=False,
+            checked_at=checked_at,
+            details={"reason": "credential_unavailable", "health_url": _sanitize_logged_url(health_url)},
+            include_details=True,
+        )
+        _stt_health_cache[cache_key] = (now, payload)
+        return _filter_stt_health_payload(payload, include_details=include_details)
+    headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+    started_at = monotonic()
+    details: dict[str, Any] = {"health_url": _sanitize_logged_url(health_url)}
+    try:
+        response = httpx.get(health_url, headers=headers, timeout=5.0)
+        duration_ms = int((monotonic() - started_at) * 1000)
+        details.update({"status_code": response.status_code, "duration_ms": duration_ms})
+        if 200 <= response.status_code < 300:
+            payload = _stt_health_response(
+                status="healthy",
+                message="Speech service reachable.",
+                checked=True,
+                checked_at=checked_at,
+                details=details,
+                include_details=True,
+            )
+        elif response.status_code == 404:
+            payload = _stt_health_response(
+                status="unknown",
+                message="Speech service health is not reported.",
+                checked=True,
+                checked_at=checked_at,
+                details=details,
+                include_details=True,
+            )
+        elif response.status_code in {401, 403}:
+            payload = _stt_health_response(
+                status="warning",
+                message="Speech service needs attention from your team lead.",
+                checked=True,
+                checked_at=checked_at,
+                details={**details, "provider_error_code": _provider_error_code_from_response(response) or "http_status_error"},
+                include_details=True,
+            )
+        else:
+            payload = _stt_health_response(
+                status="warning",
+                message="Speech service may be unavailable; transcription may fail.",
+                checked=True,
+                checked_at=checked_at,
+                details={**details, "provider_error_code": _provider_error_code_from_response(response) or "http_status_error"},
+                include_details=True,
+            )
+    except httpx.HTTPError as exc:
+        error_details = _safe_http_error_details(exc)
+        payload = _stt_health_response(
+            status="warning",
+            message="Speech service may be unavailable; transcription may fail.",
+            checked=True,
+            checked_at=checked_at,
+            details={**details, **error_details, "duration_ms": int((monotonic() - started_at) * 1000)},
+            include_details=True,
+        )
+    _stt_health_cache[cache_key] = (now, payload)
+    return _filter_stt_health_payload(payload, include_details=include_details)
 
 
 def _translate_http_stt_error(exc: httpx.HTTPError) -> AppError:

@@ -6,6 +6,7 @@ const DEFAULT_BOOTSTRAP = {
   hasDictationSttSelection: false,
   hasLlmSelection: false,
   sttAvailable: false,
+  sttHealth: null,
   dictationSttAvailable: false,
   sttStatusMessage: null,
   dictationSttStatusMessage: null,

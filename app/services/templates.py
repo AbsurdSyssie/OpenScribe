@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from datetime import timezone
-from typing import TypedDict
+from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 import httpx
@@ -70,6 +70,7 @@ usage_logger = logging.getLogger("openscribe.usage")
 TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner_name_lower"}
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
+QUICK_ACTION_CONTEXT_MARKER = "\n\nAdditional context:\n"
 
 
 class GenerationUsage(TypedDict):
@@ -1597,16 +1598,10 @@ def _generate_freeform_output_ollama(
 def _generation_request_snapshot(
     *,
     adapter_kind: LlmAdapterKind,
-    base_url: str,
     model: str,
     user_id: UUID,
     system_message: str,
     user_message: str,
-    document: GeneratedDocument,
-    transcript_text: str,
-    dictation_text: str,
-    prompt_text: str,
-    structured_context: dict | None = None,
 ) -> dict[str, object]:
     messages = [
         {"role": "system", "content": system_message},
@@ -1628,28 +1623,7 @@ def _generation_request_snapshot(
         }
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
-    generation_type = document.generator_type.value
-    return {
-        "provider": {
-            "adapter_kind": adapter_kind.value,
-            "base_url": base_url,
-            "model": model,
-        },
-        "generation": {
-            "type": generation_type,
-            "template_version_id": str(document.template_version_id) if document.template_version_id else None,
-            "quick_action_version_id": str(document.quick_action_version_id) if document.quick_action_version_id else None,
-        },
-        "request": request_body,
-        "input": {
-            "transcript_text": transcript_text,
-            "dictation_text": dictation_text or None,
-            "structured_context": structured_context or None,
-            "template_prompt_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.template.value else None,
-            "follow_up_prompt_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.followup.value else None,
-            "quick_action_context_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.quick_action.value else None,
-        },
-    }
+    return request_body
 
 
 def _build_template_generation_messages(
@@ -1906,6 +1880,63 @@ def _effective_dictation_text(db: Session, *, transcript: Transcript) -> str:
     return dictation_effective_text(db, dictation=dictation).strip()
 
 
+def _redact_dynamic_prompt_text(
+    db: Session,
+    text: str | None,
+    *,
+    team_id: UUID,
+    start_index: int,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    if text is None:
+        return None, []
+    if not text.strip():
+        return text, []
+    result = redact_transient_text(db, text, team_id=team_id, start_index=start_index)
+    return result["redacted_text"], list(result["phi_index"])
+
+
+def _redact_dynamic_prompt_value(
+    db: Session,
+    value: object,
+    *,
+    team_id: UUID,
+    start_index: int,
+) -> tuple[object, list[dict[str, Any]]]:
+    if isinstance(value, str):
+        return _redact_dynamic_prompt_text(db, value, team_id=team_id, start_index=start_index)
+    if isinstance(value, list):
+        redacted_items: list[object] = []
+        phi_index: list[dict[str, Any]] = []
+        next_index = start_index
+        for item in value:
+            redacted_item, item_phi_index = _redact_dynamic_prompt_value(
+                db,
+                item,
+                team_id=team_id,
+                start_index=next_index,
+            )
+            redacted_items.append(redacted_item)
+            phi_index.extend(item_phi_index)
+            next_index += len(item_phi_index)
+        return redacted_items, phi_index
+    if isinstance(value, dict):
+        redacted_dict: dict[object, object] = {}
+        phi_index: list[dict[str, Any]] = []
+        next_index = start_index
+        for key, item in value.items():
+            redacted_item, item_phi_index = _redact_dynamic_prompt_value(
+                db,
+                item,
+                team_id=team_id,
+                start_index=next_index,
+            )
+            redacted_dict[key] = redacted_item
+            phi_index.extend(item_phi_index)
+            next_index += len(item_phi_index)
+        return redacted_dict, phi_index
+    return value, []
+
+
 def _redacted_generation_source_texts(
     db: Session,
     *,
@@ -1913,19 +1944,16 @@ def _redacted_generation_source_texts(
     redaction_run,
     dictation_text: str,
 ) -> tuple[str, str, list[dict[str, str | int]]]:
+    transcript_text = redaction_run_text(db, run=redaction_run) or ""
     if not dictation_text.strip():
-        return redaction_run_text(db, run=redaction_run) or "", "", []
-    combined_source_redaction = redact_transient_text(
+        return transcript_text, "", []
+    redacted_dictation_text, phi_index = _redact_dynamic_prompt_text(
         db,
-        f"{transcript_version_text(db, transcript_version=transcript_version)}{DICTATION_SOURCE_SPLIT_MARKER}{dictation_text}",
+        dictation_text,
         team_id=transcript_version.transcript.team_id,
         start_index=next_placeholder_index(redaction_run),
     )
-    redacted_text = combined_source_redaction["redacted_text"]
-    if DICTATION_SOURCE_SPLIT_MARKER not in redacted_text:
-        raise AppError(500, "redaction_failed", "Combined dictation redaction lost split marker")
-    redacted_transcript_text, redacted_dictation_text = redacted_text.split(DICTATION_SOURCE_SPLIT_MARKER, 1)
-    return redacted_transcript_text.strip(), redacted_dictation_text.strip(), list(combined_source_redaction["phi_index"])
+    return transcript_text.strip(), (redacted_dictation_text or "").strip(), phi_index
 
 
 def _manual_pii_entities_for_transcript(db: Session, *, transcript_id: UUID, owner_user_id: UUID) -> list[TranscriptManualPiiEntity]:
@@ -2204,7 +2232,7 @@ def queue_quick_action_generation(
     clean_context_text = (context_text or "").strip()
     prompt_snapshot_text = latest_version.prompt_text.strip()
     if clean_context_text:
-        prompt_snapshot_text = f"{prompt_snapshot_text}\n\nAdditional context:\n{clean_context_text}"
+        prompt_snapshot_text = f"{prompt_snapshot_text}{QUICK_ACTION_CONTEXT_MARKER}{clean_context_text}"
 
     generated_document = GeneratedDocument(
         id=uuid4(),
@@ -2298,44 +2326,32 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
     )
     extra_phi_index.extend(manual_phi_index)
-    request_prompt_text = ""
-    request_structured_context: dict | None = None
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
-        prompt_redaction = redact_transient_text(
-            db,
-            prompt_text,
-            team_id=document.team_id,
-            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-        )
-        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
-        prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
-            db,
-            transcript_id=document.transcript_id,
-            owner_user_id=document.owner_user_id,
-            transcript_text=prompt_redaction["redacted_text"],
-            dictation_text="",
-            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-        )
-        extra_phi_index.extend(manual_prompt_phi_index)
-        request_prompt_text = prompt_text_redacted
         template_config = None
         if document.template_version_id:
             template_version = db.get(PromptTemplateVersion, document.template_version_id)
             if template_version is not None:
                 template_config = _template_version_config(template_version)
         structured_context_json = generated_document_structured_context(db, document=document)
-        request_structured_context = structured_context_json or None
         if document.document_mode is TemplateMode.structured:
             if template_config is None:
                 raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
+            redacted_structured_context, structured_phi_index = _redact_dynamic_prompt_value(
+                db,
+                structured_context_json,
+                team_id=document.team_id,
+                start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+            )
+            extra_phi_index.extend(structured_phi_index)
+            if not isinstance(redacted_structured_context, dict):
+                raise AppError(500, "redaction_failed", "Structured context redaction changed shape")
             context_lines: list[str] = []
-            placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
             for section in sorted(template_config.sections, key=lambda item: item.section_order):
-                raw_prefill_value = structured_context_json.get(section.section_key, [])
+                raw_prefill_value = redacted_structured_context.get(section.section_key, [])
                 if isinstance(raw_prefill_value, list):
                     prefill_lines = [str(item).strip() for item in raw_prefill_value if isinstance(item, str) and item.strip()]
                 elif isinstance(raw_prefill_value, str) and raw_prefill_value.strip():
@@ -2344,25 +2360,20 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                     prefill_lines = []
                 if prefill_lines:
                     prefill_text = "\n".join(prefill_lines)
-                    prefill_redaction = redact_transient_text(db, prefill_text, team_id=document.team_id, start_index=placeholder_index)
-                    extra_phi_index.extend(list(prefill_redaction["phi_index"]))
-                    placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
-                    prefill_text_redacted, _, manual_prefill_phi_index = _apply_manual_pii_redaction(
+                    prefill_text, _, manual_prefill_phi_index = _apply_manual_pii_redaction(
                         db,
                         transcript_id=document.transcript_id,
                         owner_user_id=document.owner_user_id,
-                        transcript_text=prefill_redaction["redacted_text"],
+                        transcript_text=prefill_text,
                         dictation_text="",
-                        start_index=placeholder_index,
+                        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
                     )
                     extra_phi_index.extend(manual_prefill_phi_index)
-                    placeholder_index = next_placeholder_index(redaction_run) + len(extra_phi_index)
-                    context_lines.append(f'- "{section.section_key}": {prefill_text_redacted}')
+                    context_lines.append(f'- "{section.section_key}": {prefill_text}')
             context_block = "\n".join(context_lines).strip()
-            prompt_with_context = prompt_text_redacted
+            prompt_with_context = prompt_text
             if context_block:
                 prompt_with_context = f"{prompt_with_context}\n\nExisting section context to preserve or refine:\n{context_block}"
-            request_prompt_text = prompt_with_context
             system_message, user_message = _build_structured_template_generation_messages(
                 template_name=document.source_template_name,
                 global_instruction=prompt_with_context,
@@ -2373,7 +2384,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         else:
             system_message, user_message = _build_template_generation_messages(
                 template_name=document.source_template_name,
-                prompt_text=prompt_text_redacted,
+                prompt_text=prompt_text,
                 transcript_text=transcript_text,
                 dictation_text=dictation_text,
             )
@@ -2381,23 +2392,22 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         follow_up_prompt_text = generated_document_text(db, document=document, field="follow_up_prompt_text").strip()
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
-        prompt_redaction = redact_transient_text(
+        redacted_follow_up_prompt_text, follow_up_phi_index = _redact_dynamic_prompt_text(
             db,
             follow_up_prompt_text,
             team_id=document.team_id,
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
-        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
+        extra_phi_index.extend(follow_up_phi_index)
         prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
             db,
             transcript_id=document.transcript_id,
             owner_user_id=document.owner_user_id,
-            transcript_text=prompt_redaction["redacted_text"],
+            transcript_text=redacted_follow_up_prompt_text or "",
             dictation_text="",
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(manual_prompt_phi_index)
-        request_prompt_text = prompt_text_redacted
         system_message, user_message = _build_followup_generation_messages(
             transcript_text=transcript_text,
             follow_up_prompt_text=prompt_text_redacted,
@@ -2407,23 +2417,29 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Quick action snapshot is missing for this generated document")
-        prompt_redaction = redact_transient_text(
-            db,
-            prompt_text,
-            team_id=document.team_id,
-            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-        )
-        extra_phi_index.extend(list(prompt_redaction["phi_index"]))
-        prompt_text_redacted, _, manual_prompt_phi_index = _apply_manual_pii_redaction(
-            db,
-            transcript_id=document.transcript_id,
-            owner_user_id=document.owner_user_id,
-            transcript_text=prompt_redaction["redacted_text"],
-            dictation_text="",
-            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-        )
-        extra_phi_index.extend(manual_prompt_phi_index)
-        request_prompt_text = prompt_text_redacted
+        quick_action_prompt_text = prompt_text
+        quick_action_context_text = ""
+        if QUICK_ACTION_CONTEXT_MARKER in prompt_text:
+            quick_action_prompt_text, quick_action_context_text = prompt_text.split(QUICK_ACTION_CONTEXT_MARKER, 1)
+        prompt_text_redacted = quick_action_prompt_text
+        if quick_action_context_text.strip():
+            redacted_context_text, context_phi_index = _redact_dynamic_prompt_text(
+                db,
+                quick_action_context_text,
+                team_id=document.team_id,
+                start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+            )
+            extra_phi_index.extend(context_phi_index)
+            redacted_context_text, _, manual_context_phi_index = _apply_manual_pii_redaction(
+                db,
+                transcript_id=document.transcript_id,
+                owner_user_id=document.owner_user_id,
+                transcript_text=redacted_context_text or "",
+                dictation_text="",
+                start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+            )
+            extra_phi_index.extend(manual_context_phi_index)
+            prompt_text_redacted = f"{prompt_text_redacted}{QUICK_ACTION_CONTEXT_MARKER}{redacted_context_text}"
         system_message, user_message = _build_quick_action_generation_messages(
             transcript_text=transcript_text,
             quick_action_text=prompt_text_redacted,
@@ -2436,16 +2452,10 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     base_url = document.llm_base_url or config.base_url
     llm_request_payload = _generation_request_snapshot(
         adapter_kind=adapter_kind,
-        base_url=base_url,
         model=document.model_used,
         user_id=document.owner_user_id,
         system_message=system_message,
         user_message=user_message,
-        document=document,
-        transcript_text=transcript_text,
-        dictation_text=dictation_text,
-        prompt_text=request_prompt_text,
-        structured_context=request_structured_context,
     )
     set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
 
@@ -2469,9 +2479,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
 
     try:
         bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
-        request_body = llm_request_payload["request"]
-        if not isinstance(request_body, dict):  # pragma: no cover
-            raise AppError(500, "llm_generation_failed", "Stored LLM request payload is invalid")
+        request_body = llm_request_payload
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(
                 api_key=bearer_token or "",

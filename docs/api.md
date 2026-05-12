@@ -443,7 +443,8 @@ Current generation behavior:
   - `redaction_entities` persist the placeholder-to-original mapping for later reconstruction
   - generated-document rows keep the `redaction_run_id` used for that run
   - transcript text is sent to the external LLM only in redacted form
-  - free-text follow-up/template/quick-action instructions are also redacted transiently before the provider call
+  - static template and quick-action asset instructions are sent as configured, without PHI redaction
+  - dynamic clinician/user/patient-originated prompt inputs such as dictation, follow-up requests, quick-action additional context, and structured context strings are redacted transiently before the provider call
   - generated output is validated so only well-formed known placeholders survive to re-identification
   - final stored output is re-identified before being written back into `generated_documents`
 - clinical NLP snapshots are created beside successful redaction runs when the team has selected a clinical NLP endpoint:

@@ -114,6 +114,9 @@ Browser navigation behavior:
 - `GET /api/v1/stt-configs/{config_id}`
 - `POST /api/v1/stt-configs/inspect`
 - `POST /api/v1/stt-configs/{config_id}/inspect`
+- `POST /api/v1/stt-configs/drafts`
+- `POST /api/v1/stt-configs/{config_id}/finalize`
+- `POST /api/v1/stt-configs/{config_id}/replace-credential`
 - `POST /api/v1/stt-configs`
 - `DELETE /api/v1/stt-configs/{config_id}`
 - `GET /api/v1/stt-selection`
@@ -129,6 +132,7 @@ Browser navigation behavior:
 - inspect validates/dereferences OpenAPI documents, then proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
 - runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
+- STT draft finalization and draft credential replacement take `config_id` from the path; JSON bodies include team/label/model or replacement token fields only and do not require a duplicate body `config_id`
 - STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
 - blank `bearer_token` on edit keeps the saved credential only when `credential_action` is `keep`; `remove` clears credential-derived state and deletes the saved Vault secret
 - create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
@@ -246,8 +250,8 @@ Rate-limited requests return the same envelope with:
   - `POST /transcribe/upload`
 - whole-file upload throttling keys to the authenticated user when a valid session resolves, with hashed-session/IP fallback only when user resolution is unavailable
 - whole-file uploads are also capped by:
-  - raw upload size: `25 MB`
-  - normalized whole-file duration: `30 minutes`
+  - raw upload size: `200 MB`
+  - normalized whole-file duration: `4 hours`
 
 ### Pending-MFA sessions
 
@@ -621,8 +625,9 @@ Current whole-file ingestion behavior:
 - `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
 - whole-file queueing now records both `source_audio_size_bytes` and `source_audio_duration_seconds` on the ingestion job for later upload reporting
 - whole-file queueing enforces a rolling hourly upload budget per authenticated owner:
-  - upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `262144000`)
-  - source audio duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS` (default `7200`)
+- upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `209715200`)
+- source audio duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS` (default `14400`)
+- whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref

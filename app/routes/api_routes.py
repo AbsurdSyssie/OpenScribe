@@ -11,7 +11,13 @@ from ..main import (
     _set_session_cookie,
     _set_trusted_device_cookie,
 )
-from ..schemas import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
+from ..schemas import (
+    SmartPhraseCreate,
+    SmartPhraseDetail,
+    SmartPhraseUpdate,
+    SttConfigDraftReplaceCredentialBody,
+    SttConfigFinalizeBody,
+)
 from ..services.smart_phrases import (
     create_personal_smart_phrase as create_personal_smart_phrase_service,
     delete_personal_smart_phrase as delete_personal_smart_phrase_service,
@@ -446,15 +452,15 @@ def reinspect_stt_config(config_id: UUID, team_id: UUID | None = None, context: 
 
 
 @api.post("/stt-configs/{config_id}/finalize", response_model=SttConfigDetail, responses=error_responses)
-def finalize_stt_config_draft(config_id: UUID, payload: SttConfigFinalize, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    payload = payload.model_copy(update={"config_id": config_id})
-    return stt_config_response(finalize_stt_config_draft_service(db, context.user, payload))
+def finalize_stt_config_draft(config_id: UUID, payload: SttConfigFinalizeBody, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    service_payload = SttConfigFinalize(**payload.model_dump(), config_id=config_id)
+    return stt_config_response(finalize_stt_config_draft_service(db, context.user, service_payload))
 
 
 @api.post("/stt-configs/{config_id}/replace-credential", response_model=SttConfigDraftCreateResult, responses=error_responses)
-def replace_stt_config_draft_credential(config_id: UUID, payload: SttConfigDraftReplaceCredential, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    payload = payload.model_copy(update={"config_id": config_id})
-    config, inspection = replace_stt_config_draft_credential_service(db, context.user, payload)
+def replace_stt_config_draft_credential(config_id: UUID, payload: SttConfigDraftReplaceCredentialBody, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    service_payload = SttConfigDraftReplaceCredential(**payload.model_dump(), config_id=config_id)
+    config, inspection = replace_stt_config_draft_credential_service(db, context.user, service_payload)
     return _stt_draft_result(config, inspection)
 
 

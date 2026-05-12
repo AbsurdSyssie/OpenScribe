@@ -417,7 +417,7 @@ Current routes:
 - `POST /api/v1/stt-configs/{config_id}/inspect`
   - system-admin-only saved-provider re-inspection using Vault reference
 - `DELETE /api/v1/stt-configs/{config_id}`
-  - system-admin-only delete of a provisioned endpoint row and its Vault-backed secret; active selection rows are cleared before the DB row is removed, then Vault cleanup runs after commit
+  - system-admin-only delete of a provisioned endpoint row and its current Vault-backed secret reference; active selection rows are cleared before the DB row is removed, then Vault cleanup runs after commit
 - `GET /api/v1/stt-selection`
   - leader for own team
   - system admin with explicit `team_id`

@@ -862,13 +862,14 @@ def make_user_app_preference(db_session: Session) -> Callable[..., UserAppPrefer
 
 @pytest.fixture(autouse=True)
 def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
-    def fake_write_team_stt_bearer_token(*, team_id, config_id, bearer_token):
-        return f"secret:openscribe/stt/team/{team_id}/config/{config_id}"
+    def fake_write_team_stt_bearer_token(*, team_id, config_id, bearer_token, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/stt/team/{team_id}/config/{config_id}{suffix}"
 
-    def fake_delete_team_stt_bearer_token(*, team_id, config_id):
+    def fake_delete_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         return None
 
-    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+    def fake_read_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         return "test-stt-token"
 
     def fake_write_team_llm_bearer_token(*, team_id, config_id, bearer_token):

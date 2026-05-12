@@ -578,8 +578,11 @@ Implemented now:
 - live chunk uploads normalize audio through `ffmpeg` before STT submission
 - whole-file uploads normalize audio through `ffmpeg` before STT submission
 - whole-file uploads are bounded by:
-  - raw upload size cap: `25 MB`
-  - normalized duration cap: `30 minutes`
+  - raw upload size cap: `200 MB`
+  - normalized duration cap: `4 hours`
+- long whole-file processing is bounded by:
+  - ffmpeg normalization timeout: `AUDIO_FFMPEG_TIMEOUT_SECONDS` default `1800`
+  - STT provider request timeout: `STT_TRANSCRIPTION_TIMEOUT_SECONDS` default `14400`
 - normalization failures surface as provider-path errors without storing newly uploaded raw audio in Postgres
 - queued/generated LLM output now snapshots prompt/provider execution context as well:
   - transcript draft is committed into a `transcript_versions` row before generation

@@ -1,3 +1,4 @@
+import logging
 import os
 
 import pytest
@@ -33,6 +34,17 @@ def reset_public_schema() -> None:
 def current_tables() -> set[str]:
     inspector = inspect(engine)
     return set(inspector.get_table_names())
+
+
+@pytest.mark.migration
+def test_alembic_upgrade_keeps_application_loggers_enabled():
+    reset_public_schema()
+    stt_logger = logging.getLogger("openscribe.stt")
+    stt_logger.disabled = False
+
+    command.upgrade(alembic_config(), "head")
+
+    assert stt_logger.disabled is False
 
 
 @pytest.mark.migration
@@ -462,6 +474,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "declared_duration_seconds",
         "result_text_encrypted",
         "stt_config_id",
+        "stt_provider_preset",
         "stt_adapter_kind",
         "stt_base_url",
         "stt_transcribe_path",
@@ -1183,6 +1196,33 @@ def test_alembic_head_supports_new_stt_adapter_values():
         adapter_kind = connection.execute(text("SELECT adapter_kind::text FROM team_stt_configs")).scalar_one()
 
     assert adapter_kind == "openai_cloud"
+
+
+@pytest.mark.migration
+def test_elevenlabs_stt_adapter_migration_downgrades_enum_without_type_collision():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "e4f5a6b7c9d1")
+
+    command.downgrade(config, "d3e4f5a6b7c9")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        adapter_values = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+                WHERE pg_type.typname = 'sttadapterkind'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+        temporary_type_count = connection.execute(text("SELECT COUNT(*) FROM pg_type WHERE typname = 'sttadapterkind_new'")).scalar_one()
+
+    assert adapter_values == ["generic_rest", "openai_cloud", "openai_compatible_rest"]
+    assert temporary_type_count == 0
 
 
 @pytest.mark.migration

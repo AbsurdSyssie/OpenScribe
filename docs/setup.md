@@ -356,13 +356,18 @@ The script prints temporary passwords once, marks affected users for password ch
 
 Whole-file uploads are bounded by both size and duration:
 
-- raw upload size default: `25 MB`
-- normalized whole-file duration default: `30 minutes`
+- raw upload size default: `200 MB`
+- normalized whole-file duration default: `4 hours`
 
 These are configurable with:
 
 - `WHOLE_FILE_MAX_UPLOAD_BYTES`
 - `WHOLE_FILE_MAX_DURATION_SECONDS`
+
+Long whole-file processing has separate timeout knobs:
+
+- `AUDIO_FFMPEG_TIMEOUT_SECONDS` default: `1800`
+- `STT_TRANSCRIPTION_TIMEOUT_SECONDS` default: `14400`
 
 ### Database reset
 

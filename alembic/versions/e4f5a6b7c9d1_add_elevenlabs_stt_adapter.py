@@ -81,6 +81,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("ALTER TYPE sttadapterkind RENAME TO sttadapterkind_new")
     old_stt_adapter_kind.create(op.get_bind(), checkfirst=False)
     op.execute(
         """

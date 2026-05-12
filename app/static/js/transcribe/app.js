@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20260505-pii-copy-raw';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260421-pii-refresh';
+import { createDocumentNavigator } from './documents.js?v=20260512-llm-request-payload';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260421-pii-refresh';
 import { createStructuredEditor } from './structured.js?v=20260501-copy-review-no-sentinel';

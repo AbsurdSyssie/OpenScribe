@@ -1628,18 +1628,27 @@ def _generation_request_snapshot(
         }
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
+    generation_type = document.generator_type.value
     return {
-        "generation_type": document.generator_type.value,
         "provider": {
             "adapter_kind": adapter_kind.value,
-            "model": model,
             "base_url": base_url,
+            "model": model,
         },
-        "request_body": request_body,
-        "prompt_text": prompt_text,
-        "transcript_text": transcript_text,
-        "dictation_text": dictation_text,
-        "structured_context": structured_context or None,
+        "generation": {
+            "type": generation_type,
+            "template_version_id": str(document.template_version_id) if document.template_version_id else None,
+            "quick_action_version_id": str(document.quick_action_version_id) if document.quick_action_version_id else None,
+        },
+        "request": request_body,
+        "input": {
+            "transcript_text": transcript_text,
+            "dictation_text": dictation_text or None,
+            "structured_context": structured_context or None,
+            "template_prompt_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.template.value else None,
+            "follow_up_prompt_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.followup.value else None,
+            "quick_action_context_text": prompt_text if generation_type == GeneratedDocumentGeneratorType.quick_action.value else None,
+        },
     }
 
 
@@ -2460,7 +2469,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
 
     try:
         bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
-        request_body = llm_request_payload["request_body"]
+        request_body = llm_request_payload["request"]
         if not isinstance(request_body, dict):  # pragma: no cover
             raise AppError(500, "llm_generation_failed", "Stored LLM request payload is invalid")
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:

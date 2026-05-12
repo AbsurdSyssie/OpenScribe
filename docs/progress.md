@@ -16,15 +16,17 @@
 ### Files changed
 
 - `app/models.py`, `alembic/versions/f5a6b7c9d1e2_add_llm_request_payload_to_generated_documents.py`: add nullable encrypted generated-document payload column.
-- `app/services/templates.py`: builds one provider request body, stores encrypted snapshot, and sends that same body to OpenAI-compatible/Bedrock/Ollama adapters.
+- `app/services/templates.py`: builds one provider request body, stores grouped encrypted snapshot (`provider`, `generation`, `request`, `input`), and sends that same body to OpenAI-compatible/Bedrock/Ollama adapters.
 - `app/schemas/templates.py`, `app/web/presentation.py`: expose decrypted `llm_request_payload_json` through generated-document detail responses.
 - `app/templates/transcribe/_workspace.html`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/documents.js`: render selected note/follow-up `LLM request` details and update on document switch.
-- `tests/test_api.py`: verifies encrypted storage and API serialization of the request snapshot.
+- `tests/test_api.py`: verifies encrypted storage, API serialization, exact provider request reuse, and template/follow-up/quick-action payload inputs.
+- `tests/test_migrations.py`: verifies `generated_documents.llm_request_payload_json_encrypted` exists at Alembic head.
 - `docs/llm-providers.md`, `docs/progress.md`: document behavior and progress.
 
 ### Tests
 
-- `.venv/bin/pytest -q tests/test_api.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "generated_document or llm_request or template or followup or quick_action"`: passed, 35 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "onboarding_and_session_tables"`: passed, 1 test.
 
 ### Documentation
 

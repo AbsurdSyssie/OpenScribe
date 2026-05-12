@@ -315,6 +315,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "prompt_snapshot_text",
         "structured_context_json",
         "structured_section_definitions_json",
+        "llm_request_payload_json_encrypted",
         "original_output_text_encrypted",
         "llm_adapter_kind",
         "llm_base_url",

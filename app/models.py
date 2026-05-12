@@ -1296,6 +1296,7 @@ class GeneratedDocument(Base):
     original_output_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     edited_output_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     failed_provider_output_redacted_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_request_payload_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_edited: Mapped[bool] = mapped_column(default=False, nullable=False)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)

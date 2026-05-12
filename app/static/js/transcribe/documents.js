@@ -23,6 +23,8 @@ export function createDocumentNavigator({
     latestFollowupOutput,
     outputRedactionSlot,
     followupRedactionSlot,
+    outputLlmRequestSlot,
+    followupLlmRequestSlot,
   } = dom;
   const {
     escapeHtml,
@@ -93,6 +95,23 @@ export function createDocumentNavigator({
       `;
       container.appendChild(button);
     });
+  };
+
+  const renderLlmRequestPanel = (slot, document) => {
+    if (!slot) return;
+    slot.innerHTML = '';
+    if (!document) return;
+    const wrapper = window.document.createElement('details');
+    wrapper.className = 'border border-stone bg-white p-3 mt-4 rounded-lg';
+    const payload = document.llm_request_payload_json || null;
+    const body = payload
+      ? escapeHtml(JSON.stringify(payload, null, 2))
+      : 'LLM request not available for this document.';
+    wrapper.innerHTML = `
+      <summary class="cursor-pointer text-sm font-medium text-ink">LLM request</summary>
+      <pre class="mt-3 max-h-80 overflow-auto rounded bg-parchment p-3 text-xs whitespace-pre-wrap text-slate">${body}</pre>
+    `;
+    slot.appendChild(wrapper);
   };
 
   const renderNoteHistory = (documents, selectedId) => {
@@ -214,6 +233,7 @@ export function createDocumentNavigator({
       kind: "note",
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
+    renderLlmRequestPanel(outputLlmRequestSlot, selectedNote);
     renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };
@@ -241,6 +261,7 @@ export function createDocumentNavigator({
       kind: "followup",
     });
     renderFollowupHistory(state.workspaceFollowupDocuments, selectedFollowup?.id || null);
+    renderLlmRequestPanel(followupLlmRequestSlot, selectedFollowup);
     renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
     dispatchLegacyWorkspaceSelection('followup', selectedFollowup);
   };

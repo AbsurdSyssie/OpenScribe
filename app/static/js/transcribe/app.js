@@ -140,6 +140,8 @@ import { csrfFetch } from '../csrf.js';
       const followupHistory = document.querySelector('[data-followup-history]');
       const outputRedactionSlot = document.querySelector('[data-output-redaction-debug-slot]');
       const followupRedactionSlot = document.querySelector('[data-followup-redaction-debug-slot]');
+      const outputLlmRequestSlot = document.querySelector('[data-output-llm-request-slot]');
+      const followupLlmRequestSlot = document.querySelector('[data-followup-llm-request-slot]');
       const copyStructuredLinesButton = document.querySelector('[data-copy-structured-lines]');
       const clearStructuredSelectionButton = document.querySelector('[data-clear-structured-selection]');
       const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');
@@ -1997,6 +1999,8 @@ import { csrfFetch } from '../csrf.js';
           latestFollowupOutput,
           outputRedactionSlot,
           followupRedactionSlot,
+          outputLlmRequestSlot,
+          followupLlmRequestSlot,
         },
         helpers: {
           escapeHtml,

@@ -66,6 +66,15 @@ Required-token presets must have an existing or replacement Vault-backed token. 
 
 Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.
 
+## Generated Document Request Payloads
+
+New generated documents store an encrypted snapshot of the outbound LLM request on `generated_documents.llm_request_payload_json_encrypted`.
+
+- The snapshot includes generation type, adapter/model/base URL metadata, exact request body/messages sent to the provider adapter, redacted transcript/dictation text, redacted template or quick-action prompt, and structured context where applicable.
+- Raw provider secrets are not stored in the snapshot.
+- The generated-document detail API decrypts and returns `llm_request_payload_json` only through existing generated-document owner access paths.
+- Older generated documents may have `llm_request_payload_json=null`; the transcript UI shows `LLM request not available for this document.`
+
 ## Labels
 
 LLM config labels are unique per team after trimming surrounding whitespace and comparing case-insensitively. Draft creation, finalization, and legacy save paths all return `409 conflict` with `An LLM provider with this name already exists for this team.` before saving duplicates.

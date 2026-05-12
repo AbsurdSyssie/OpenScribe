@@ -92,6 +92,7 @@ from ..services.stt import (
     list_stt_configs as list_stt_configs_service,
 )
 from ..services.templates import (
+    generated_document_llm_request_payload as generated_document_llm_request_payload_service,
     generated_document_section_text as generated_document_section_text_service,
     generated_document_text as generated_document_text_service,
     list_personal_quick_actions as list_personal_quick_actions_service,
@@ -432,6 +433,7 @@ def generated_document_response(db: Session, document: GeneratedDocument) -> Gen
     payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
     payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
     payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
+    payload["llm_request_payload_json"] = generated_document_llm_request_payload_service(db, document=document)
     payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
     payload["sections"] = [
         GeneratedDocumentSectionDetail.model_validate(

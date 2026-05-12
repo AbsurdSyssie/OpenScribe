@@ -5592,7 +5592,25 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert processed.redaction_run_id == preview_redaction_run.id
     assert processed.title == "Visit summary"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
+    assert is_encrypted_envelope(processed.llm_request_payload_json_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
+    stored_request_payload = decrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="llm_request_payload_json_encrypted",
+        record_id=processed.id,
+        stored_value=processed.llm_request_payload_json_encrypted,
+    )
+    assert stored_request_payload["generation_type"] == "template"
+    assert stored_request_payload["provider"]["adapter_kind"] == "openai_chat"
+    assert stored_request_payload["provider"]["model"] == "gpt-4o-mini"
+    assert stored_request_payload["request_body"]["model"] == "gpt-4o-mini"
+    assert stored_request_payload["request_body"]["messages"][1]["content"] == (
+        "Template name: Team SOAP\n\n"
+        "Template instructions:\nWrite a concise SOAP note.\n\n"
+        "Consultation transcript:\nPatient says symptoms improved."
+    )
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -5600,6 +5618,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert generated_rows.json()[0]["edited_output_text"] == "Generated note body"
     assert generated_rows.json()[0]["input_token_count"] == 123
     assert generated_rows.json()[0]["output_token_count"] == 45
+    assert generated_rows.json()[0]["llm_request_payload_json"] == stored_request_payload
 
     versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
     assert len(versions) == 1
@@ -6136,9 +6155,14 @@ def test_generate_freeform_output_ollama_streams_chunks_and_collects_usage(monke
     generated_text, usage = _generate_freeform_output_ollama(
         base_url="http://localhost:11434",
         bearer_token=None,
-        model="llama3.2",
-        system_message="System",
-        user_message="User",
+        request_body={
+            "model": "llama3.2",
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": "System"},
+                {"role": "user", "content": "User"},
+            ],
+        },
     )
 
     assert generated_text == '{"title":"Visit summary","content":"Body text"}'
@@ -6158,9 +6182,14 @@ def test_generate_freeform_output_ollama_surfaces_stream_timeouts(monkeypatch):
         _generate_freeform_output_ollama(
             base_url="http://localhost:11434",
             bearer_token=None,
-            model="llama3.2",
-            system_message="System",
-            user_message="User",
+            request_body={
+                "model": "llama3.2",
+                "stream": True,
+                "messages": [
+                    {"role": "system", "content": "System"},
+                    {"role": "user", "content": "User"},
+                ],
+            },
         )
         assert False, "expected AppError"
     except AppError as exc:

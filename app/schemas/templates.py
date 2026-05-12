@@ -145,6 +145,7 @@ class GeneratedDocumentDetail(BaseModel):
     document_mode: TemplateMode
     original_output_text: str = ""
     edited_output_text: str = ""
+    llm_request_payload_json: dict | None = None
     is_edited: bool
     retention_expires_at: datetime
     model_used: str | None

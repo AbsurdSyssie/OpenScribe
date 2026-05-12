@@ -1424,6 +1424,37 @@ def set_generated_document_structured_context(db: Session, *, document: Generate
     )
 
 
+def generated_document_llm_request_payload(db: Session, *, document: GeneratedDocument) -> dict | None:
+    value = decrypt_json_for_owner(
+        db,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="llm_request_payload_json_encrypted",
+        record_id=document.id,
+        stored_value=document.llm_request_payload_json_encrypted,
+    )
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AppError(500, "content_crypto_invalid", "Generated document LLM request payload is invalid")
+    return value
+
+
+def set_generated_document_llm_request_payload(db: Session, *, document: GeneratedDocument, plaintext: dict | None) -> None:
+    document.llm_request_payload_json_encrypted = (
+        encrypt_json_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field="llm_request_payload_json_encrypted",
+            record_id=document.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
 def generated_document_section_text(db: Session, *, section: GeneratedDocumentSection, field: str) -> str:
     stored_value = getattr(section, field)
     return (
@@ -1467,30 +1498,12 @@ def _generate_freeform_output_openai(
     *,
     api_key: str,
     base_url: str,
-    model: str,
-    user_id: UUID,
-    system_message: str,
-    user_message: str,
+    request_body: dict[str, object],
  ) -> tuple[str, GenerationUsage]:
     started = time.perf_counter()
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=0.2,
-            max_completion_tokens=1600,
-            user=str(user_id),
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_message,
-                },
-                {
-                    "role": "user",
-                    "content": user_message,
-                },
-            ],
-        )
+        completion = client.chat.completions.create(**request_body)
     except Exception as exc:  # pragma: no cover - exercised via service error behavior, not live provider calls
         raise _translate_openai_generation_error(exc) from exc
 
@@ -1522,9 +1535,7 @@ def _generate_freeform_output_ollama(
     *,
     base_url: str,
     bearer_token: str | None,
-    model: str,
-    system_message: str,
-    user_message: str,
+    request_body: dict[str, object],
 ) -> tuple[str, GenerationUsage]:
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     started = time.perf_counter()
@@ -1535,20 +1546,7 @@ def _generate_freeform_output_ollama(
             "POST",
             f"{base_url.rstrip('/')}/api/chat",
             headers=headers,
-            json={
-                "model": model,
-                "stream": True,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_message,
-                    },
-                    {
-                        "role": "user",
-                        "content": user_message,
-                    },
-                ],
-            },
+            json=request_body,
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=60.0),
         ) as response:
             response.raise_for_status()
@@ -1594,6 +1592,55 @@ def _generate_freeform_output_ollama(
         duration_ms=int((time.perf_counter() - started) * 1000),
         provider_duration_ms=provider_duration_ms,
     )
+
+
+def _generation_request_snapshot(
+    *,
+    adapter_kind: LlmAdapterKind,
+    base_url: str,
+    model: str,
+    user_id: UUID,
+    system_message: str,
+    user_message: str,
+    document: GeneratedDocument,
+    transcript_text: str,
+    dictation_text: str,
+    prompt_text: str,
+    structured_context: dict | None = None,
+) -> dict[str, object]:
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+    if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+        request_body: dict[str, object] = {
+            "model": model,
+            "temperature": 0.2,
+            "max_completion_tokens": 1600,
+            "user": str(user_id),
+            "messages": messages,
+        }
+    elif adapter_kind is LlmAdapterKind.ollama_chat:
+        request_body = {
+            "model": model,
+            "stream": True,
+            "messages": messages,
+        }
+    else:  # pragma: no cover
+        raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
+    return {
+        "generation_type": document.generator_type.value,
+        "provider": {
+            "adapter_kind": adapter_kind.value,
+            "model": model,
+            "base_url": base_url,
+        },
+        "request_body": request_body,
+        "prompt_text": prompt_text,
+        "transcript_text": transcript_text,
+        "dictation_text": dictation_text,
+        "structured_context": structured_context or None,
+    }
 
 
 def _build_template_generation_messages(
@@ -2242,6 +2289,8 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
     )
     extra_phi_index.extend(manual_phi_index)
+    request_prompt_text = ""
+    request_structured_context: dict | None = None
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
@@ -2263,12 +2312,14 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(manual_prompt_phi_index)
+        request_prompt_text = prompt_text_redacted
         template_config = None
         if document.template_version_id:
             template_version = db.get(PromptTemplateVersion, document.template_version_id)
             if template_version is not None:
                 template_config = _template_version_config(template_version)
         structured_context_json = generated_document_structured_context(db, document=document)
+        request_structured_context = structured_context_json or None
         if document.document_mode is TemplateMode.structured:
             if template_config is None:
                 raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
@@ -2302,6 +2353,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             prompt_with_context = prompt_text_redacted
             if context_block:
                 prompt_with_context = f"{prompt_with_context}\n\nExisting section context to preserve or refine:\n{context_block}"
+            request_prompt_text = prompt_with_context
             system_message, user_message = _build_structured_template_generation_messages(
                 template_name=document.source_template_name,
                 global_instruction=prompt_with_context,
@@ -2336,6 +2388,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(manual_prompt_phi_index)
+        request_prompt_text = prompt_text_redacted
         system_message, user_message = _build_followup_generation_messages(
             transcript_text=transcript_text,
             follow_up_prompt_text=prompt_text_redacted,
@@ -2361,6 +2414,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(manual_prompt_phi_index)
+        request_prompt_text = prompt_text_redacted
         system_message, user_message = _build_quick_action_generation_messages(
             transcript_text=transcript_text,
             quick_action_text=prompt_text_redacted,
@@ -2368,6 +2422,23 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         )
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported generated document type", {"generator_type": document.generator_type.value})
+
+    adapter_kind = LlmAdapterKind(document.llm_adapter_kind or config.adapter_kind.value)
+    base_url = document.llm_base_url or config.base_url
+    llm_request_payload = _generation_request_snapshot(
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model=document.model_used,
+        user_id=document.owner_user_id,
+        system_message=system_message,
+        user_message=user_message,
+        document=document,
+        transcript_text=transcript_text,
+        dictation_text=dictation_text,
+        prompt_text=request_prompt_text,
+        structured_context=request_structured_context,
+    )
+    set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
 
     document.status = GeneratedDocumentStatus.processing
     document.started_at = document.started_at or utcnow()
@@ -2389,24 +2460,20 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
 
     try:
         bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
-        adapter_kind = LlmAdapterKind(document.llm_adapter_kind or config.adapter_kind.value)
-        base_url = document.llm_base_url or config.base_url
+        request_body = llm_request_payload["request_body"]
+        if not isinstance(request_body, dict):  # pragma: no cover
+            raise AppError(500, "llm_generation_failed", "Stored LLM request payload is invalid")
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(
                 api_key=bearer_token or "",
                 base_url=base_url,
-                model=document.model_used,
-                user_id=document.owner_user_id,
-                system_message=system_message,
-                user_message=user_message,
+                request_body=request_body,
             )
         elif adapter_kind is LlmAdapterKind.ollama_chat:
             generated_text, usage = _generate_freeform_output_ollama(
                 base_url=base_url,
                 bearer_token=bearer_token,
-                model=document.model_used,
-                system_message=system_message,
-                user_message=user_message,
+                request_body=request_body,
             )
         else:  # pragma: no cover
             raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})

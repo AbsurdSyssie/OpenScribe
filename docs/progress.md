@@ -1,5 +1,47 @@
 # Progress
 
+## 2026-05-12 LLM Request Payload Inspection
+
+### Scope
+
+- Implemented `LLM_request_payload.md`: newly generated notes, follow-ups, and quick actions now persist encrypted outbound LLM request snapshots and show them in collapsed `LLM request` panels on the transcript workspace.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: frontend rendering covered by implementation/manual inspection only; no JS test harness found.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/f5a6b7c9d1e2_add_llm_request_payload_to_generated_documents.py`: add nullable encrypted generated-document payload column.
+- `app/services/templates.py`: builds one provider request body, stores encrypted snapshot, and sends that same body to OpenAI-compatible/Bedrock/Ollama adapters.
+- `app/schemas/templates.py`, `app/web/presentation.py`: expose decrypted `llm_request_payload_json` through generated-document detail responses.
+- `app/templates/transcribe/_workspace.html`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/documents.js`: render selected note/follow-up `LLM request` details and update on document switch.
+- `tests/test_api.py`: verifies encrypted storage and API serialization of the request snapshot.
+- `docs/llm-providers.md`, `docs/progress.md`: document behavior and progress.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation"`: passed, 1 test.
+
+### Documentation
+
+- `docs/llm-providers.md`: documents encrypted request snapshots, API exposure boundary, and old-document null behavior.
+
+### Risks / assumptions
+
+- Snapshot intentionally contains redacted consultation source text and prompt content, so it remains encrypted with owner content DEK and available only via owner-generated-document access.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: payload content is encrypted and returned only through existing owner-scoped generated-document API/UI.
+- Ownership rules preserved: no team leader/system-admin content read path added.
+- Deletion semantics preserved: payload lives on generated-document row and cascades with transcript-root/generated-document deletion.
+- Provider rules preserved: provider/model metadata is stored, but Vault-backed bearer tokens and secret refs are never included.
+- Structured-note contract preserved: structured EMIS JSON output validation unchanged; structured context is captured as request input only.
+
 ## 2026-05-11 STT Provider Error Diagnostics
 
 ### Scope

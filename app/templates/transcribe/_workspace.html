@@ -428,6 +428,7 @@ data-generated-freeform-panel
 </div>
 </div>
 
+<div data-output-llm-request-slot></div>
 <div data-output-redaction-debug-slot>
 {% if show_redaction_debug and latest_generated_document %}
 <details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">
@@ -623,6 +624,7 @@ Create
 {% endif %}
 </div>
 
+<div data-followup-llm-request-slot></div>
 <div data-followup-redaction-debug-slot>
 {% if show_redaction_debug and latest_followup_document %}
 <details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">

@@ -109,6 +109,7 @@ from app.services.templates import (
     _parse_generated_note_json,
     delete_personal_template,
     process_generated_document,
+    generated_document_llm_request_payload,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation,
     queue_quick_action_generation,
@@ -5513,10 +5514,13 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
         id = "generated-task-1"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ('{"title":"Visit summary","content":"Generated note body"}', {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168, "duration_ms": 10}),
-    )
+    captured_provider_request = {}
+
+    def fake_generate_openai(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return '{"title":"Visit summary","content":"Generated note body"}', {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168, "duration_ms": 10}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
 
     login(client, email="leader@example.com", password="password-2")
     created_team_template = client.post(
@@ -5531,6 +5535,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     )
     assert created_team_template.status_code == 200
     team_template_id = created_team_template.json()["id"]
+    team_template_version_id = created_team_template.json()["latest_version"]["id"]
     assert created_team_template.json()["scope"] == "team"
 
     client.post("/api/v1/auth/logout")
@@ -5594,7 +5599,9 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert is_encrypted_envelope(processed.llm_request_payload_json_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated note body"
-    stored_request_payload = decrypt_json_for_owner(
+    assert "messages" not in processed.llm_request_payload_json_encrypted
+    stored_request_payload = generated_document_llm_request_payload(db_session, document=processed)
+    assert stored_request_payload == decrypt_json_for_owner(
         db_session,
         owner_user_id=owner.id,
         table="generated_documents",
@@ -5602,15 +5609,22 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
         record_id=processed.id,
         stored_value=processed.llm_request_payload_json_encrypted,
     )
-    assert stored_request_payload["generation_type"] == "template"
+    assert stored_request_payload["generation"]["type"] == "template"
+    assert stored_request_payload["generation"]["template_version_id"] == team_template_version_id
+    assert stored_request_payload["generation"]["quick_action_version_id"] is None
     assert stored_request_payload["provider"]["adapter_kind"] == "openai_chat"
     assert stored_request_payload["provider"]["model"] == "gpt-4o-mini"
-    assert stored_request_payload["request_body"]["model"] == "gpt-4o-mini"
-    assert stored_request_payload["request_body"]["messages"][1]["content"] == (
+    assert stored_request_payload["request"]["model"] == captured_provider_request["model"]
+    assert stored_request_payload["request"]["messages"] == captured_provider_request["messages"]
+    assert stored_request_payload["request"]["messages"][1]["content"] == (
         "Template name: Team SOAP\n\n"
         "Template instructions:\nWrite a concise SOAP note.\n\n"
         "Consultation transcript:\nPatient says symptoms improved."
     )
+    assert stored_request_payload["input"]["transcript_text"] == "Patient says symptoms improved."
+    assert stored_request_payload["input"]["template_prompt_text"] == "Write a concise SOAP note."
+    assert "vault" not in json.dumps(stored_request_payload).lower()
+    assert "authorization" not in json.dumps(stored_request_payload).lower()
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -6235,10 +6249,13 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
         id = "generated-task-followup"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("Please arrange repeat bloods in two weeks and advise review if symptoms persist.", {"input_tokens": 12, "output_tokens": 22, "total_tokens": 34, "duration_ms": 10}),
-    )
+    captured_provider_request = {}
+
+    def fake_generate_followup(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "Please arrange repeat bloods in two weeks and advise review if symptoms persist.", {"input_tokens": 12, "output_tokens": 22, "total_tokens": 34, "duration_ms": 10}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_followup)
 
     login(client, email="owner-followup@example.com", password="password-2")
     started = client.post(
@@ -6267,6 +6284,12 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
     assert processed.status is GeneratedDocumentStatus.ready
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert "repeat bloods" in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
+    followup_payload = generated_document_llm_request_payload(db_session, document=processed)
+    assert followup_payload["generation"]["type"] == "followup"
+    assert followup_payload["generation"]["template_version_id"] is None
+    assert followup_payload["request"]["messages"] == captured_provider_request["messages"]
+    assert followup_payload["input"]["follow_up_prompt_text"] == "Arrange repeat bloods and advise review if the cough persists."
+    assert followup_payload["input"]["transcript_text"] == "Patient reports a persistent cough for three weeks."
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -6340,9 +6363,10 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
 
     def fake_generate(**kwargs):
-        assert "[PHI-1] reports headaches." in kwargs["user_message"]
-        assert "John Smith reports headaches." not in kwargs["user_message"]
-        assert "Write a note for [PHI-2]." in kwargs["user_message"]
+        user_message = kwargs["request_body"]["messages"][1]["content"]
+        assert "[PHI-1] reports headaches." in user_message
+        assert "John Smith reports headaches." not in user_message
+        assert "Write a note for [PHI-2]." in user_message
         return (
             '{"title":"[PHI-1] review","content":"[PHI-1] should rest and [PHI-2] should book review."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
@@ -6430,9 +6454,10 @@ def test_process_generated_document_applies_manual_pii_before_provider_call(
     )
 
     def fake_generate(**kwargs):
-        assert "Riverside House" not in kwargs["user_message"]
-        assert "Riverside\n   House" not in kwargs["user_message"]
-        assert "Patient lives at [PHI-1] and reports headaches." in kwargs["user_message"]
+        user_message = kwargs["request_body"]["messages"][1]["content"]
+        assert "Riverside House" not in user_message
+        assert "Riverside\n   House" not in user_message
+        assert "Patient lives at [PHI-1] and reports headaches." in user_message
         return (
             '{"title":"Manual PII","content":"Send letter to [PHI-1]."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
@@ -6524,7 +6549,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     captured = {}
 
     def fake_generate(**kwargs):
-        captured["user_message"] = kwargs["user_message"]
+        captured["user_message"] = kwargs["request_body"]["messages"][1]["content"]
         return (
             '{"title":"[PHI-2] review","content":"[PHI-3] should book review."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
@@ -6618,7 +6643,7 @@ def test_process_generated_document_redacts_dictation_only_session_before_provid
     captured = {}
 
     def fake_generate(**kwargs):
-        captured["user_message"] = kwargs["user_message"]
+        captured["user_message"] = kwargs["request_body"]["messages"][1]["content"]
         return (
             '{"title":"Dictation only","content":"[PHI-1] needs blood tests."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
@@ -7864,10 +7889,13 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     db_session.commit()
 
     document = queue_quick_action_generation(db_session, owner, transcript_id=transcript.id, quick_action_id=quick_action.id)
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
-    )
+    captured_provider_request = {}
+
+    def fake_generate_quick_action(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_quick_action)
 
     from app.services.templates import delete_personal_quick_action as delete_personal_quick_action_service
 
@@ -7881,6 +7909,11 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     assert processed.status is GeneratedDocumentStatus.ready
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
+    quick_action_payload = generated_document_llm_request_payload(db_session, document=processed)
+    assert quick_action_payload["generation"]["type"] == "quick_action"
+    assert quick_action_payload["generation"]["quick_action_version_id"] is None
+    assert quick_action_payload["request"]["messages"] == captured_provider_request["messages"]
+    assert quick_action_payload["input"]["quick_action_context_text"] == "Write a short SMS update."
 
 
 def test_upsert_personal_template_translates_raced_integrity_error_to_conflict(
@@ -8009,15 +8042,23 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
     )
     assert document.prompt_snapshot_text == "Write a short SMS update.\n\nAdditional context:\nMention the agreed follow-up call."
 
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}),
-    )
+    captured_provider_request = {}
+
+    def fake_generate_quick_action_with_context(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "SMS body", {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10, "duration_ms": 8}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_quick_action_with_context)
 
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
+    quick_action_payload = generated_document_llm_request_payload(db_session, document=processed)
+    assert quick_action_payload["generation"]["type"] == "quick_action"
+    assert quick_action_payload["generation"]["quick_action_version_id"] == str(quick_action.versions[0].id)
+    assert quick_action_payload["request"]["messages"] == captured_provider_request["messages"]
+    assert quick_action_payload["input"]["quick_action_context_text"] == "Write a short SMS update.\n\nAdditional context:\nMention the agreed follow-up call."
 
 
 def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(client, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template):

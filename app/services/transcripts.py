@@ -39,8 +39,8 @@ from app.services.vault import (
 
 LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", "3600"))
 LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS = float(os.getenv("LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS", "600"))
-WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(250 * 1024 * 1024)))
-WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", "7200"))
+WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", str(4 * 60 * 60)))
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 
@@ -955,6 +955,7 @@ def queue_audio_chunk_ingestion(
         source_audio_size_bytes=len(source_audio_bytes),
         declared_duration_seconds=measured_duration_seconds,
         stt_config_id=config.id,
+        stt_provider_preset=config.provider_preset,
         stt_adapter_kind=config.adapter_kind.value,
         stt_base_url=config.base_url,
         stt_transcribe_path=config.transcribe_path,
@@ -1086,6 +1087,7 @@ def queue_audio_file_ingestion(
         source_audio_size_bytes=len(source_audio_blob),
         source_audio_duration_seconds=resolved_source_audio_duration_seconds,
         stt_config_id=config.id,
+        stt_provider_preset=config.provider_preset,
         stt_adapter_kind=config.adapter_kind.value,
         stt_base_url=config.base_url,
         stt_transcribe_path=config.transcribe_path,
@@ -1357,6 +1359,7 @@ def process_transcript_ingestion_job(
             db,
             team_id=transcript.team_id,
             stt_config_id=job.stt_config_id,
+            provider_preset=job.stt_provider_preset,
             adapter_kind=job.stt_adapter_kind,
             base_url=job.stt_base_url,
             transcribe_path=job.stt_transcribe_path,

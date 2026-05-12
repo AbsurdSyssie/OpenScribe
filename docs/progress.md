@@ -1,5 +1,298 @@
 # Progress
 
+## 2026-05-12 Alembic Logger Preservation
+
+### Scope
+
+- Fixed Alembic migration logging setup so migration tests no longer disable existing `openscribe.*` application loggers before later API tests run.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `alembic/env.py`: keeps existing loggers enabled when loading Alembic logging config.
+- `tests/test_migrations.py`: adds regression coverage for `openscribe.stt` logger state after migration upgrade.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_migrations.py tests/test_api.py -k "stt or migration or elevenlabs or deepgram"`: passed, 97 tests.
+
+### Documentation
+
+- Progress note added for logging test-order fix.
+
+### Risks / assumptions
+
+- Assumes existing application loggers must remain active across Alembic commands in test and runtime processes.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no content or credential logging added.
+- Ownership rules preserved: no auth or team-scope behavior changed.
+- Deletion semantics preserved: no lifecycle behavior changed.
+- Provider rules preserved: STT provider runtime unchanged; diagnostic warning capture restored.
+- Structured-note contract preserved: no generated document behavior changed.
+
+## 2026-05-12 STT Secret Readiness Review Fix
+
+### Scope
+
+- Fixed STT credential readiness so provider presets that require API keys, including Deepgram, fail before selection/upload when no Vault secret is saved.
+- Updated stale STT Vault test doubles to accept the new `secret_ref` keyword.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `app/services/stt.py`: centralizes saved-credential requirement around STT provider preset metadata.
+- `tests/test_api.py`: updates Vault read fakes and adds Deepgram missing-secret regression coverage.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "stt_selection_rejects_config_with_missing_saved_secret or deepgram_stt_selection_requires_saved_secret or audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing or transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_response_path"`: passed, 4 tests.
+
+### Documentation
+
+- Progress note added for review fix.
+
+### Risks / assumptions
+
+- Custom REST/OpenAPI providers remain allowed without credentials because their preset marks `requires_api_key=False`.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no credential values logged or exposed.
+- Ownership rules preserved: STT selection remains scoped to team leader/system-admin checks.
+- Deletion semantics preserved: no lifecycle or cascade behavior changed.
+- Provider rules strengthened: credential-required STT presets must have a saved Vault secret before use.
+- Structured-note contract preserved: no generated document behavior changed.
+
+## 2026-05-12 STT Rotated Secret Deletion
+
+### Scope
+
+- Fixed STT config deletion and team deletion so post-commit Vault cleanup deletes the stored `vault_secret_ref`, including rotated credential refs.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `app/services/stt.py`: captures the STT config's current Vault ref before deleting the row and passes it to cleanup after commit.
+- `app/services/admin.py`: records each team STT config Vault ref during team hard-delete and passes it to post-commit cleanup.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: verify config and team deletion pass the saved STT secret ref.
+- `docs/stt-config.md`, `docs/progress.md`: document current-ref cleanup.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "delete_provisioned_stt_config"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "delete_team_and_owned_records or team_delete_checks_system_admin_members_before_vault_cleanup or team_delete_defers_vault_cleanup_until_after_db_commit"`: passed, 3 tests.
+- `python3 -m py_compile app/services/stt.py app/services/admin.py`: passed.
+
+### Documentation
+
+- Updated STT config API notes to say deletion removes the current Vault-backed secret reference after commit.
+
+### Risks / assumptions
+
+- Existing retry/compensation model is unchanged: Vault cleanup failure is logged after DB commit.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no credential values logged or exposed.
+- Ownership rules preserved: system-admin delete scope unchanged.
+- Deletion semantics improved: rotated provider credential refs are enumerated before DB deletion and cleaned after commit.
+- Provider rules preserved: STT provisioning, selection, and credential resolution unchanged.
+- Structured-note contract preserved: no generated document behavior changed.
+
+## 2026-05-12 Long Upload STT Timeout
+
+### Scope
+
+- Fixed long whole-file uploads being marked failed before STT completed by replacing fixed 60 second STT HTTP timeouts with `STT_TRANSCRIPTION_TIMEOUT_SECONDS` defaulting to 4 hours.
+- Raised ffmpeg normalization timeout from 60 seconds to `AUDIO_FFMPEG_TIMEOUT_SECONDS` defaulting to 30 minutes, matching longer accepted files.
+- Kept timeout values configurable for deployments with shorter proxy/provider limits.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: providers or reverse proxies with their own shorter hard timeouts can still fail long synchronous transcription; deployment config must align with these app defaults.
+
+### Files changed
+
+- `app/services/stt.py`: adds env-backed STT transcription timeout and applies it to generic REST, ElevenLabs, Deepgram, and OpenAI SDK paths.
+- `app/services/audio.py`: raises default ffmpeg normalization timeout.
+- `tests/test_api.py`: asserts long-upload timeout defaults and verifies STT transports pass the long timeout.
+- `docs/api.md`, `docs/setup.md`, `docs/transcript-capture.md`: document timeout knobs.
+- `docs/progress.md`: records diagnosis, tests, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "whole_file_upload_default_caps_match_four_hour_policy or elevenlabs_transcription_uses_xi_api_key_not_bearer or transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_response_path or deepgram_transcription_uses_query_params_and_raw_audio or audio_normalization_timeout_surfaces_app_error or processing_audio_file_job_fails_when_normalized_duration_exceeds_limit"`: passed, 6 tests.
+
+### Documentation
+
+- Documented `AUDIO_FFMPEG_TIMEOUT_SECONDS` and `STT_TRANSCRIPTION_TIMEOUT_SECONDS` defaults in API, setup, and transcript capture docs.
+
+### Risks / assumptions
+
+- Root cause was app-side synchronous request timeout, not provider rejection: accepted 45 minute audio can need more than 60 seconds for normalization/provider transcription.
+- This keeps the current synchronous STT contract. Very long provider jobs would be better served by provider-native async/batch APIs if available.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no audio/transcript logging added; uploaded audio remains owner-only transcript-derived content.
+- Ownership rules preserved: upload and processing still use existing owner/team scoped transcript and STT selection checks.
+- Deletion semantics preserved: retry source storage/cleanup and transcript-root cascade behavior unchanged.
+- Provider rules preserved: credential resolution and provider selection unchanged; only request timeout changes.
+- Structured-note contract preserved: no generated document or structured JSON behavior changed.
+
+## 2026-05-12 Four Hour Whole-File Upload Caps
+
+### Scope
+
+- Raised default whole-file upload duration cap from 30 minutes to 4 hours.
+- Raised default raw whole-file upload size cap to 200 MB, matching the previous 25 MB per 30 minutes ratio.
+- Raised default rolling whole-file owner budget to 200 MB / 4 hours so one max-size upload is not rejected by hourly budget defaults.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/audio.py`: updates default per-file upload size and duration caps.
+- `app/services/transcripts.py`: updates default rolling whole-file owner budget.
+- `tests/test_api.py`: adds regression coverage for four-hour default policy and keeps focused cap/budget coverage.
+- `docs/api.md`, `docs/setup.md`, `docs/transcript-capture.md`: document new defaults.
+- `docs/progress.md`: records implementation and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "whole_file_upload_default_caps_match_four_hour_policy or audio_file_upload_rejects_oversized_payload or audio_file_upload_enforces_hourly_upload_size_budget or audio_file_upload_enforces_hourly_duration_budget or processing_audio_file_job_fails_when_normalized_duration_exceeds_limit"`: passed, 5 tests.
+
+### Documentation
+
+- Updated API, setup, and transcript capture docs with 200 MB / 4 hour whole-file defaults and rolling budget defaults.
+
+### Risks / assumptions
+
+- 200 MB is calculated as commensurate with the previous 25 MB / 30 minute ratio.
+- Longer queued PHI audio increases Vault/storage and STT processing burden, but does not change visibility or deletion rules.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: uploaded audio remains owner-only transcript-derived content; no new content logging or admin visibility.
+- Ownership rules preserved: upload routes still require authenticated owner transcript access and active team STT selection.
+- Deletion semantics preserved: source audio lifecycle, retry source cleanup, and transcript-root cascade behavior unchanged.
+- Provider rules preserved: STT provider resolution and credential snapshot behavior unchanged.
+- Structured-note contract preserved: no structured-output behavior changed.
+
+## 2026-05-12 Tutorial Document Areas
+
+### Scope
+
+- Added static tutorial markdown areas for user, team leader, admin, onboarding, and system-admin setup guidance.
+- Ordered tutorials so team leaders inherit user workflow guidance without duplicate content.
+- Expanded user and team leader tutorials into beginner-first, step-by-step guidance that explains core terms and first-use workflow.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: not applicable; docs-only change
+- Docs added/updated: yes
+- Open issues: app routes/navigation for rendering tutorials in-product are not implemented in this slice
+
+### Files changed
+
+- `docs/tutorials/README.md`: tutorial index and content safety note.
+- `docs/tutorials/user.md`: beginner clinician workflow, definitions, review/copy steps, privacy, deletion, and troubleshooting guidance.
+- `docs/tutorials/team-leader.md`: beginner leader role explanation, team readiness checks, provider selection, user setup, template, quick-action, and escalation guidance.
+- `docs/tutorials/admin.md`: system-admin daily admin workspace guidance and boundaries.
+- `docs/tutorials/onboarding.md`: account setup, MFA, and recovery-code guidance.
+- `docs/tutorials/system-admin-setup.md`: first bootstrap, provider provisioning, and pre-clinical setup guidance.
+- `docs/progress.md`: records this docs slice.
+
+### Tests
+
+- Not run; markdown-only documentation update.
+
+### Documentation
+
+- Added `docs/tutorials/` tutorial set.
+
+### Risks / assumptions
+
+- Tutorials are currently repository documentation only. A later UI slice should expose them from Home, Transcribe, Admin, and onboarding surfaces.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: tutorials contain no transcript-derived examples or patient content.
+- Ownership rules preserved: docs state leaders/admins do not gain transcript or note visibility by role.
+- Deletion semantics preserved: docs describe irreversible transcript-root and system-level user deletion without changing lifecycle behavior.
+- Provider rules preserved: docs keep system-admin provisioning, leader selection, user preference, Vault-backed secret handling, and fallback boundaries.
+- Structured-note contract preserved: user/admin docs list allowed EMIS section keys and do not expand the structured JSON contract.
+
+## 2026-05-12 LLM Request Panel State
+
+### Scope
+
+- Implemented remaining `LLM_request_payload.md` UI fix: selected generated document `LLM request` details now stays open across same-document transcript workspace re-renders.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/static/js/transcribe/documents.js`: preserves same-document LLM request panel open state while rebuilding panel content.
+- `tests/test_admin_ui.py`: adds static regression checks for panel state preservation wiring.
+- `docs/progress.md`: records implementation and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "global_template_selector"`: verifies transcribe frontend bundle includes state-preserving LLM request panel logic.
+
+### Documentation
+
+- `docs/progress.md`: updated with change scope, tests, and checkpoint summary.
+
+### Risks / assumptions
+
+- Same-document re-render preserves open state. Switching documents resets closed, matching accepted simple fix in `LLM_request_payload.md`.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content source or API exposure; existing owner-scoped payload remains unchanged.
+- Ownership rules preserved: UI uses already-authorized generated document data only.
+- Deletion semantics preserved: no persistence/lifecycle changes.
+- Provider rules preserved: no provider request or secret handling changes.
+- Structured-note contract preserved: no structured output parsing or section behavior changes.
+
 ## 2026-05-12 LLM Request Payload Inspection
 
 ### Scope
@@ -4897,3 +5190,33 @@
 - Expanded `/admin2?tab=llm` parity assertions for branded provider options, Bedrock region selector, manual fallback copy, and override/reclassification copy.
 - Docs updated in `docs/llm-providers.md`.
 - Architecture checkpoint: no schema change; system-admin LLM provisioning boundary unchanged; no transcript content access; no deletion or encryption/key semantics changed; provider fallback preserved for manual-required/no-model-list state; structured-note contract unaffected.
+
+# 2026-05-12 STT Credential Review Fixes
+
+- Restored OpenAI-compatible STT save/replacement credential validation through the bundled sample transcription probe.
+- Preserved OpenAI Cloud inspection fallback to built-in transcription models when SDK/model discovery raises an unexpected non-credential exception.
+- Fixed ElevenLabs STT adapter enum downgrade by renaming the current enum before recreating the old enum.
+- Added focused API and migration regressions for provider rejection, fallback, duplicate saves, URL scope, and enum downgrade.
+- Architecture checkpoint: privacy boundaries unchanged; provider provisioning remains system-admin scoped; no ownership, deletion, encryption/key, or structured-note contract changes.
+
+# 2026-05-12 STT Review Follow-up Fixes
+
+- Added DB server defaults for `team_stt_configs.provider_preset` and `setup_status` so raw inserts after migration keep ORM-compatible defaults.
+- Added Vault compensation for STT draft create when a secret is written but the DB commit fails.
+- Snapshotted `stt_provider_preset` onto transcript ingestion jobs and replay queued jobs with that saved preset; old snapshots default to custom REST semantics unless an explicit preset exists.
+- Added focused regressions for draft cleanup, queued preset replay, old snapshot fallback, and migration schema/default behavior.
+- Architecture checkpoint: provider routing semantics preserved across queued jobs; secret cleanup follows DB rollback; no transcript visibility, ownership, deletion, encryption-key, or structured-note contract changes.
+
+# 2026-05-12 STT Provider Preset Migration Review Fix
+
+- Added tracked Alembic coverage for `transcript_ingestion_jobs.stt_provider_preset` so upgraded databases receive the queued-job provider snapshot column before ORM writes use it.
+- Kept column nullable for existing queued jobs; replay logic still treats missing preset as custom REST fallback.
+- Architecture checkpoint: provider snapshot persistence fixed; no transcript visibility, ownership, deletion, encryption-key, or structured-note contract changes.
+
+# 2026-05-12 STT Draft Credential Vault Ordering Fix
+
+- Changed STT credential replacement to write replacement secrets to a new Vault ref, then point the DB row at that ref on commit.
+- Failed replacement commits now clean up only the new Vault secret and leave the previous saved credential untouched.
+- Runtime STT credential reads now use the persisted Vault ref, preserving old deterministic refs and new replacement refs.
+- Added focused API regression coverage for draft replacement commit failure preserving the old Vault secret.
+- Architecture checkpoint: provider secret integrity improved; system-admin provisioning scope unchanged; no transcript visibility, ownership, deletion cascade, encryption-key, or structured-note contract changes.

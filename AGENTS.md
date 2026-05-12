@@ -117,6 +117,7 @@ Every change must include:
    - affected tests
    - architecture risks
    - refer to docs/ .md files
+   - Decide where extra code can be avoided by re-using or refining existing code
 
 2. **Checkpoint updates during coding**
    - schema checkpoint

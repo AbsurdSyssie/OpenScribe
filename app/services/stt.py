@@ -57,6 +57,7 @@ ELEVENLABS_SYNC_STT_MODEL_IDS = set(ELEVENLABS_PREFERRED_STT_MODELS)
 logger = logging.getLogger("openscribe.stt")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
+STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
 
 
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
@@ -242,11 +243,12 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
         )
     secret_team_id = config.team_id
     secret_config_id = config.id
+    secret_ref = config.vault_secret_ref
     _clear_stt_selections_for_config(db, config_id=config.id)
     db.delete(config)
     db.commit()
     try:
-        delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id)
+        delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id, secret_ref=secret_ref or None)
     except AppError as exc:
         logger.warning(
             "stt_config_secret_cleanup_failed",
@@ -430,15 +432,23 @@ def _missing_stt_credential_error(*, team_id: UUID, config_id: UUID) -> AppError
 
 def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str | None:
     if not config.vault_secret_ref:
-        if config.adapter_kind is SttAdapterKind.openai_cloud:
+        if _stt_config_requires_saved_credential(config):
             raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
         return None
     try:
-        return read_team_stt_bearer_token(team_id=team_id, config_id=config.id)
+        return read_team_stt_bearer_token(team_id=team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
     except AppError as exc:
         if exc.code == "vault_read_failed":
             raise _missing_stt_credential_error(team_id=team_id, config_id=config.id) from exc
         raise
+
+
+def _stt_config_requires_saved_credential(config: TeamSttConfig) -> bool:
+    try:
+        preset = get_stt_provider_preset(config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url))
+    except ValueError:
+        return config.adapter_kind is SttAdapterKind.openai_cloud
+    return preset.requires_api_key or config.adapter_kind is SttAdapterKind.openai_cloud
 
 
 def _read_stt_snapshot_bearer_token(
@@ -998,7 +1008,7 @@ def _transcribe_via_http(
             headers=headers,
             data=form_fields,
             files={file_field_name: (filename, audio_bytes, content_type)},
-            timeout=60.0,
+            timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -1068,7 +1078,7 @@ def _transcribe_via_elevenlabs_speech_to_text(
             headers={"xi-api-key": api_key},
             data=data,
             files={"file": (filename, audio_bytes, content_type or "application/octet-stream")},
-            timeout=60.0,
+            timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -1152,7 +1162,7 @@ def _transcribe_via_deepgram(
             },
             params=params,
             content=audio_bytes,
-            timeout=60.0,
+            timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -1196,7 +1206,7 @@ def _transcribe_via_openai_cloud(
     audio_bytes: bytes,
     filename: str,
 ) -> str:
-    client = OpenAI(api_key=bearer_token, base_url=base_url)
+    client = OpenAI(api_key=bearer_token, base_url=base_url, timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS)
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     kwargs: dict[str, Any] = {
@@ -1287,6 +1297,7 @@ def transcribe_with_stt_snapshot(
     audio_bytes: bytes,
     filename: str,
     content_type: str,
+    provider_preset: str | None = None,
     model_field_name: str | None = None,
     language_field_name: str | None = None,
     segments_path: str | None = None,
@@ -1324,6 +1335,7 @@ def transcribe_with_stt_snapshot(
         )
     if not transcribe_path or not file_field_name or not response_text_path:
         raise AppError(422, "business_rule_violation", "Queued STT snapshot is incomplete")
+    replay_provider_preset = provider_preset or SttProviderPreset.custom_rest_openapi.value
     return _transcribe_via_http(
         base_url=base_url,
         transcribe_path=transcribe_path,
@@ -1331,7 +1343,7 @@ def transcribe_with_stt_snapshot(
         response_text_path=response_text_path,
         extra_form_fields_json=extra_form_fields_json,
         bearer_token=bearer_token,
-        provider_preset=infer_stt_provider_preset(resolved_adapter, base_url),
+        provider_preset=replay_provider_preset,
         adapter_kind=resolved_adapter,
         model_name=model_name,
         model_field_name=model_field_name or "model",
@@ -1536,14 +1548,29 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
+    secret_written = False
     try:
         db.flush()
         if payload.bearer_token:
             config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+            secret_written = True
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        if secret_written:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         _raise_stt_label_conflict_if_needed(exc)
+        raise
+    except Exception:
+        db.rollback()
+        if secret_written:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         raise
     db.refresh(config)
     return config, inspection
@@ -1604,7 +1631,9 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
             bearer_token=payload.bearer_token,
         ),
     )
-    config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+    old_secret_ref = config.vault_secret_ref
+    new_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=uuid4())
+    config.vault_secret_ref = new_secret_ref
     config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
     config.credential_status = _inspection_status(inspection, had_secret=True)
     config.available_models_json = list(inspection.available_models)
@@ -1615,7 +1644,20 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
     config.is_active = False
     config.updated_by_user_id = actor.id
     db.add(config)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=new_secret_ref)
+        except AppError as cleanup_exc:
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+        raise
+    if old_secret_ref and old_secret_ref != new_secret_ref:
+        try:
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=old_secret_ref)
+        except AppError as cleanup_exc:
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
     db.refresh(config)
     return config, inspection
 
@@ -1637,6 +1679,8 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 {"config_id": str(config.id)},
             )
     creating = config is None
+    old_secret_ref = config.vault_secret_ref if config is not None else ""
+    pending_secret_ref = ""
     replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
     removing_secret = payload.credential_action == "remove"
     if removing_secret and payload.bearer_token:
@@ -1744,11 +1788,13 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         db.add(config)
 
     delete_after_commit = False
+    delete_secret_ref = ""
     if replacing_secret and payload.bearer_token:
         config.credential_status = ProviderCredentialStatus.pending_inspection
     elif removing_secret:
         if config.vault_secret_ref:
             delete_after_commit = True
+            delete_secret_ref = config.vault_secret_ref
         config.vault_secret_ref = ""
         config.credential_fingerprint = None
         config.credential_status = ProviderCredentialStatus.unknown
@@ -1767,7 +1813,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
 
     if replacing_secret and payload.bearer_token:
         try:
-            if payload.adapter_kind is SttAdapterKind.generic_rest:
+            if payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
                 _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
                 inspection = None
             elif payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
@@ -1816,18 +1862,37 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             else:
                 config.credential_status = _inspection_status(inspection, had_secret=True)
                 config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
-        config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+        pending_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=None if creating else uuid4())
+        config.vault_secret_ref = pending_secret_ref
         config.credential_fingerprint = fingerprint
 
     try:
         db.commit()
     except IntegrityError as exc:
+        if pending_secret_ref:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=pending_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         db.rollback()
         _raise_stt_label_conflict_if_needed(exc)
         raise
+    except Exception:
+        if pending_secret_ref:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=pending_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+        db.rollback()
+        raise
     if delete_after_commit:
         try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=delete_secret_ref)
+        except AppError as exc:
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
+    elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:
+        try:
+            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=old_secret_ref)
         except AppError as exc:
             logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(config)
@@ -2166,6 +2231,10 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
                 except AppError as exc:
                     if _is_credential_rejection(exc):
                         raise
+                    available_models = _fallback_openai_transcription_models()
+                    available_model_options = _openai_model_options(available_models, source="default")
+                    notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list.")
+                except Exception:
                     available_models = _fallback_openai_transcription_models()
                     available_model_options = _openai_model_options(available_models, source="default")
                     notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list.")

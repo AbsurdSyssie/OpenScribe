@@ -99,10 +99,24 @@ export function createDocumentNavigator({
 
   const renderLlmRequestPanel = (slot, document) => {
     if (!slot) return;
+    const previousPanel = slot.querySelector('[data-llm-request-panel]');
+    const previousDocumentId = previousPanel?.dataset?.generatedDocumentId || '';
+    const shouldRestoreOpen = Boolean(
+      previousPanel?.open &&
+      document?.id &&
+      previousDocumentId === document.id
+    );
+
     slot.innerHTML = '';
     if (!document) return;
     const wrapper = window.document.createElement('details');
     wrapper.className = 'border border-stone bg-white p-3 mt-4 rounded-lg';
+    wrapper.dataset.llmRequestPanel = 'true';
+    wrapper.dataset.generatedDocumentId = document.id || '';
+    if (shouldRestoreOpen) {
+      wrapper.open = true;
+    }
+
     const payload = document.llm_request_payload_json || null;
     const body = payload
       ? escapeHtml(JSON.stringify(payload, null, 2))

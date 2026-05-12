@@ -16,8 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("team_stt_configs", sa.Column("provider_preset", sa.String(length=64), nullable=True))
-    op.add_column("team_stt_configs", sa.Column("setup_status", sa.String(length=64), nullable=True))
+    op.add_column("team_stt_configs", sa.Column("provider_preset", sa.String(length=64), server_default="custom_rest_openapi", nullable=True))
+    op.add_column("team_stt_configs", sa.Column("setup_status", sa.String(length=64), server_default="ready", nullable=True))
     op.execute(
         sa.text(
             """

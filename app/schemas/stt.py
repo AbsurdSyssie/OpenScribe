@@ -405,11 +405,33 @@ class SttConfigFinalize(BaseModel):
         return normalize_stt_language(value)
 
 
+class SttConfigFinalizeBody(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    label: str = Field(min_length=1, max_length=255)
+    model_name: str | None = Field(default=None, max_length=255)
+    language: str | None = Field(default=None, max_length=32)
+    is_active: bool = True
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str | None) -> str | None:
+        return normalize_stt_language(value)
+
+
 class SttConfigDraftReplaceCredential(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     team_id: UUID
     config_id: UUID
+    bearer_token: str = Field(min_length=1)
+
+
+class SttConfigDraftReplaceCredentialBody(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
     bearer_token: str = Field(min_length=1)
 
 

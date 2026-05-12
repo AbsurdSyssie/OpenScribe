@@ -83,10 +83,17 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import _list_deepgram_stt_models, _list_elevenlabs_stt_models, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, ensure_stt_service_healthy, paragraphize_timestamped_segments, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.schemas import LlmConfigUpsert, LlmInspectRequest
-from app.services.audio import NormalizedAudio, normalize_audio_to_wav_16k_mono, probe_audio_duration_seconds
+from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttInspectResult
+from app.services.audio import (
+    AUDIO_FFMPEG_TIMEOUT_SECONDS,
+    WHOLE_FILE_MAX_DURATION_SECONDS,
+    WHOLE_FILE_MAX_UPLOAD_BYTES,
+    NormalizedAudio,
+    normalize_audio_to_wav_16k_mono,
+    probe_audio_duration_seconds,
+)
 from app.services.content_crypto import (
     decrypt_json_for_owner,
     decrypt_text_for_owner,
@@ -117,6 +124,8 @@ from app.services.templates import (
     upsert_personal_template,
 )
 from app.services.transcripts import (
+    WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS,
+    WHOLE_FILE_HOURLY_UPLOAD_BYTES,
     create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
@@ -691,9 +700,10 @@ def test_leader_can_review_only_own_team_requests_and_approve_them(client, make_
     assert approved.json()["team_id"] == str(team.id)
 
 
-def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user):
+def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
 
     login(client, email="admin@example.com", password="password-1")
     created = client.post(
@@ -756,13 +766,14 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
 
     monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
 
-    login(client, email="admin-stt-draft@example.com", password="password-1")
+    logged_in = login(client, email="admin-stt-draft@example.com", password="password-1")
+    assert logged_in.status_code == 200, logged_in.text
     draft = client.post(
         "/api/v1/stt-configs/drafts",
         json={"team_id": str(team.id), "provider_preset": "deepgram", "bearer_token": "dg-secret"},
     )
 
-    assert draft.status_code == 200
+    assert draft.status_code == 200, draft.text
     body = draft.json()
     config_id = UUID(body["config"]["id"])
     assert body["provider_display_name"] == "Deepgram"
@@ -785,7 +796,7 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
 
     finalized = client.post(
         f"/api/v1/stt-configs/{config_id}/finalize",
-        json={"team_id": str(team.id), "config_id": str(config_id), "label": "Deepgram STT", "model_name": "nova-3", "language": "en", "is_active": True},
+        json={"team_id": str(team.id), "label": "Deepgram STT", "model_name": "nova-3", "language": "en", "is_active": True},
     )
 
     assert finalized.status_code == 200
@@ -795,6 +806,44 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     options_after = client.get(f"/api/v1/stt-selection/options?team_id={team.id}")
     assert options_after.status_code == 200
     assert [item["id"] for item in options_after.json()] == [str(config_id)]
+
+
+def test_system_admin_can_replace_stt_draft_credential_without_body_config_id(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic STT Replace")
+    make_user(email="admin-stt-replace@example.com", password="password-1", is_system_admin=True)
+    seen_tokens = []
+
+    def fake_get(url, *, headers=None, timeout=None):
+        assert url == "https://api.deepgram.com/v1/models"
+        seen_tokens.append(headers["Authorization"])
+        return FakeHttpxResponse({"stt": [{"name": "Nova 3", "canonical_name": "nova-3", "batch": True}]})
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    logged_in = login(client, email="admin-stt-replace@example.com", password="password-1")
+    assert logged_in.status_code == 200, logged_in.text
+    draft = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "deepgram", "bearer_token": "dg-old"},
+    )
+    assert draft.status_code == 200, draft.text
+    config_id = UUID(draft.json()["config"]["id"])
+
+    replaced = client.post(
+        f"/api/v1/stt-configs/{config_id}/replace-credential",
+        json={"team_id": str(team.id), "bearer_token": "dg-new"},
+    )
+
+    assert replaced.status_code == 200
+    assert replaced.json()["config"]["setup_status"] == SttConfigSetupStatus.pending_model_selection.value
+    assert replaced.json()["available_models"] == ["nova-3"]
+    assert "dg-new" not in replaced.text
+    assert seen_tokens == ["Token dg-old", "Token dg-new"]
+
+    persisted = db_session.get(TeamSttConfig, config_id)
+    assert persisted is not None
+    assert persisted.credential_status is ProviderCredentialStatus.verified
+    assert persisted.credential_fingerprint
 
 
 def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, make_user, monkeypatch):
@@ -974,7 +1023,7 @@ def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
     assert "Authorization" not in captured["headers"]
     assert captured["data"] == {"model_id": "scribe_v2"}
     assert captured["files"]["file"][0] == "audio.wav"
-    assert captured["timeout"] == 60.0
+    assert captured["timeout"] == STT_TRANSCRIPTION_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("language", ["", "None", "none", "null", "undefined", "auto", "default", "provider_default"])
@@ -1046,9 +1095,105 @@ def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_sessi
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
+def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-stt-draft-cleanup@example.com", password="password-1", is_system_admin=True)
+    written_config_ids: list[str] = []
+    deleted_config_ids: list[str] = []
+
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
+    monkeypatch.setattr(
+        "app.services.stt.write_team_stt_bearer_token",
+        lambda *, team_id, config_id, bearer_token: written_config_ids.append(str(config_id)) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
+    )
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
+    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("insert", {}, Exception("duplicate"))))
+
+    with pytest.raises(IntegrityError):
+        create_stt_config_draft(
+            db_session,
+            admin,
+            SttConfigDraftCreate(team_id=team.id, provider_preset=SttProviderPreset.openai.value, bearer_token="secret-token"),
+        )
+
+    assert written_config_ids
+    assert deleted_config_ids == written_config_ids
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
+
+
+def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-stt-draft-replace-cleanup@example.com", password="password-1", is_system_admin=True)
+    secrets_by_ref: dict[str, str] = {}
+    deleted_refs: list[str] = []
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        secret_ref = f"secret:openscribe/stt/team/{team_id}/config/{config_id}{suffix}"
+        secrets_by_ref[secret_ref] = bearer_token
+        return secret_ref
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        deleted_refs.append(secret_ref or f"secret:openscribe/stt/team/{team_id}/config/{config_id}")
+        secrets_by_ref.pop(deleted_refs[-1], None)
+
+    inspection = SttInspectResult(
+        base_url="https://api.openai.com",
+        openapi_path=None,
+        adapter_kind=SttAdapterKind.openai_cloud,
+        transcribe_path="/v1/audio/transcriptions",
+        model_name="whisper-1",
+        model_field_name="model",
+        file_field_name="file",
+        language=None,
+        language_field_name="language",
+        response_text_path="text",
+        segments_path=None,
+        segment_text_field=None,
+        segment_start_field=None,
+        segment_end_field=None,
+        segment_speaker_field=None,
+        extra_form_fields_json={},
+        candidate_paths=[],
+        operation_summary=None,
+        available_models=["whisper-1"],
+        available_model_options=[],
+        field_tips=[],
+        notes=[],
+    )
+
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: inspection)
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
+    config, _ = create_stt_config_draft(
+        db_session,
+        admin,
+        SttConfigDraftCreate(team_id=team.id, provider_preset=SttProviderPreset.openai.value, bearer_token="old-token"),
+    )
+    old_secret_ref = config.vault_secret_ref
+
+    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("update", {}, Exception("duplicate"))))
+
+    with pytest.raises(IntegrityError):
+        replace_stt_config_draft_credential(
+            db_session,
+            admin,
+            SttConfigDraftReplaceCredential(team_id=team.id, config_id=config.id, bearer_token="new-token"),
+        )
+
+    assert secrets_by_ref == {old_secret_ref: "old-token"}
+    assert deleted_refs and old_secret_ref not in deleted_refs
+    db_session.expire_all()
+    persisted = db_session.get(TeamSttConfig, config.id)
+    assert persisted is not None
+    assert persisted.vault_secret_ref == old_secret_ref
+
+
 def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-duplicate-stt@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
     login(client, email="admin-duplicate-stt@example.com", password="password-1")
     first = client.post(
         "/api/v1/stt-configs",
@@ -1077,9 +1222,10 @@ def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(c
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Duplicate STT")) is None
 
 
-def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_team, make_user):
+def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin-confirm-duplicate-stt@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
     login(client, email="admin-confirm-duplicate-stt@example.com", password="password-1")
     payload = {"team_id": str(team.id), "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "same-secret", "model_name": "whisper-1"}
     first = client.post("/api/v1/stt-configs", json={**payload, "label": "Clinic STT"})
@@ -1095,14 +1241,11 @@ def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client
     make_user(email="admin-invalid-stt@example.com", password="password-1", is_system_admin=True)
     events: list[str] = []
 
-    def fake_inspect(*args, **kwargs):
-        raise AppError(401, "unauthorized", "Provider rejected credential")
-
-    def fake_delete(*, team_id, config_id):
+    def fake_delete(*, team_id, config_id, secret_ref=None):
         assert db_session.get(TeamSttConfig, config_id) is None
         events.append("deleted")
 
-    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
 
     login(client, email="admin-invalid-stt@example.com", password="password-1")
@@ -1120,14 +1263,14 @@ def test_stt_config_valid_secret_with_discovery_failure_saves_partial(client, db
     team = make_team(name="Clinic North")
     make_user(email="admin-partial-stt@example.com", password="password-1", is_system_admin=True)
 
-    def fake_inspect(*args, **kwargs):
+    def fail_model_discovery(**kwargs):
         raise AppError(502, "stt_inspection_failed", "Provider metadata discovery failed")
 
-    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", fail_model_discovery)
     login(client, email="admin-partial-stt@example.com", password="password-1")
     created = client.post(
         "/api/v1/stt-configs",
-        json={"team_id": str(team.id), "label": "Partial STT", "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "secret", "model_name": "whisper-1"},
+        json={"team_id": str(team.id), "label": "Partial STT", "adapter_kind": "openai_cloud", "bearer_token": "secret", "model_name": "whisper-1"},
     )
 
     assert created.status_code == 200
@@ -1145,7 +1288,7 @@ def test_stt_reinspect_uses_saved_vault_secret_and_invalid_clears_selection(clie
     make_stt_selection(config=config, actor=admin)
     reads: list[str] = []
 
-    def fake_read(*, team_id, config_id):
+    def fake_read(*, team_id, config_id, secret_ref=None):
         reads.append(str(config_id))
         return "saved-secret"
 
@@ -1198,7 +1341,7 @@ def test_system_admin_edit_preserves_saved_stt_secret_when_token_blank(client, d
     config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
     deleted: list[tuple[str, str]] = []
 
-    def fake_delete_team_stt_bearer_token(*, team_id, config_id):
+    def fake_delete_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         deleted.append((str(team_id), str(config_id)))
         return None
 
@@ -1237,7 +1380,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
     deleted: list[str] = []
 
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-stt-secret@example.com", password="password-1")
     updated = client.post(
@@ -1347,12 +1490,12 @@ def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selecti
     written_tokens: list[str] = []
     deleted_config_ids: list[str] = []
 
-    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda *, team_id, config_id: "old-token")
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: "old-token")
     monkeypatch.setattr(
         "app.services.stt.write_team_stt_bearer_token",
         lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted_config_ids.append(str(config_id)))
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
     monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
 
     login(client, email="admin-generic-stt-replace@example.com", password="password-1")
@@ -1417,7 +1560,7 @@ def test_openai_compatible_stt_bad_replacement_token_preserves_existing_config_a
         "app.services.stt.write_team_stt_bearer_token",
         lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id: deleted_config_ids.append(str(config_id)))
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
     monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
 
     login(client, email="admin-openai-compatible-stt-replace@example.com", password="password-1")
@@ -1451,11 +1594,18 @@ def test_openai_compatible_stt_bad_replacement_token_preserves_existing_config_a
     assert deleted_config_ids == []
 
 
-def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
+def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=admin)
+    secret_ref = config.vault_secret_ref
+    deleted_refs: list[str | None] = []
+
+    def fake_delete_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
+        deleted_refs.append(secret_ref)
+
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
 
     login(client, email="admin@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/stt-configs/{config.id}?team_id={team.id}")
@@ -1463,6 +1613,7 @@ def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(c
 
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is None
+    assert deleted_refs == [secret_ref]
 
     selection = client.get(f"/api/v1/stt-selection?team_id={team.id}")
     assert selection.status_code == 200
@@ -2023,12 +2174,13 @@ def test_stt_routes_require_admin_provisioning_or_leader_selection_scope_and_ful
 
 
 def test_stt_config_validates_urls_and_enforces_admin_provisioning_plus_leader_team_selection_scope(
-    client, make_team, make_user, make_stt_config
+    client, make_team, make_user, make_stt_config, monkeypatch
 ):
     north = make_team(name="Clinic North")
     south = make_team(name="Clinic South")
     make_user(email="admin@example.com", password="password-2", is_system_admin=True)
     make_user(email="leader@example.com", password="password-1", team=north, team_role=TeamRole.leader)
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
 
     login(client, email="admin@example.com", password="password-2")
 
@@ -2472,7 +2624,7 @@ def test_stt_selection_rejects_config_with_missing_saved_secret(client, make_tea
     make_user(email="leader-stt-secret@example.com", password="password-2", team=team, team_role=TeamRole.leader)
     config = make_stt_config(team=team, actor=admin, model_name="whisper-1")
 
-    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+    def fake_read_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         raise AppError(
             502,
             "vault_read_failed",
@@ -2487,6 +2639,36 @@ def test_stt_selection_rejects_config_with_missing_saved_secret(client, make_tea
         "/api/v1/stt-selection",
         json={"stt_config_id": str(config.id)},
     )
+
+    assert_error(
+        rejected,
+        status_code=409,
+        code="stt_config_secret_missing",
+        message="The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
+    )
+
+
+def test_deepgram_stt_selection_requires_saved_secret(client, db_session, make_team, make_user, make_stt_config):
+    team = make_team(name="Clinic Deepgram")
+    admin = make_user(email="admin-deepgram-no-secret@example.com", password="password-1", is_system_admin=True)
+    make_user(email="leader-deepgram-no-secret@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Deepgram STT",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        model_name="nova-3",
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        has_secret=False,
+    )
+    config.provider_preset = SttProviderPreset.deepgram.value
+    db_session.add(config)
+    db_session.commit()
+
+    login(client, email="leader-deepgram-no-secret@example.com", password="password-2")
+    rejected = client.post("/api/v1/stt-selection", json={"stt_config_id": str(config.id)})
 
     assert_error(
         rejected,
@@ -11056,6 +11238,7 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         *,
         team_id,
         stt_config_id,
+        provider_preset,
         adapter_kind,
         base_url,
         transcribe_path,
@@ -11077,6 +11260,7 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
     ):
         assert team_id == team.id
         assert stt_config_id == config.id
+        assert provider_preset == config.provider_preset
         assert content_type == "audio/wav"
         assert segments_path is None
         assert segment_text_field is None
@@ -12027,7 +12211,7 @@ def test_audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=owner)
 
-    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+    def fake_read_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         raise AppError(
             502,
             "vault_read_failed",
@@ -12205,6 +12389,15 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
 
     assert first.status_code == 202
     assert_error(second, status_code=429, code="rate_limited", message="Too many requests")
+
+
+def test_whole_file_upload_default_caps_match_four_hour_policy():
+    assert WHOLE_FILE_MAX_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert WHOLE_FILE_MAX_DURATION_SECONDS == 4 * 60 * 60
+    assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 4 * 60 * 60
+    assert AUDIO_FFMPEG_TIMEOUT_SECONDS == 30 * 60
+    assert STT_TRANSCRIPTION_TIMEOUT_SECONDS == 4 * 60 * 60
 
 
 def test_audio_file_upload_rejects_oversized_payload(
@@ -12535,6 +12728,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         *,
         team_id,
         stt_config_id,
+        provider_preset,
         adapter_kind,
         base_url,
         transcribe_path,
@@ -12556,6 +12750,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     ):
         assert team_id == team.id
         assert stt_config_id == config.id
+        assert provider_preset == config.provider_preset
         assert adapter_kind == config.adapter_kind.value
         assert base_url == config.base_url
         assert transcribe_path == config.transcribe_path
@@ -12730,6 +12925,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         *,
         team_id,
         stt_config_id,
+        provider_preset,
         adapter_kind,
         base_url,
         transcribe_path,
@@ -12751,6 +12947,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
     ):
         assert team_id == team.id
         assert stt_config_id == config_one.id
+        assert provider_preset == config_one.provider_preset
         assert base_url == config_one.base_url
         assert transcribe_path == config_one.transcribe_path
         assert model_name == "whisper-1"
@@ -12770,6 +12967,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert refreshed_job is not None
     assert refreshed_job.stt_config_id == config_one.id
+    assert refreshed_job.stt_provider_preset == config_one.provider_preset
     assert refreshed_job.stt_base_url == config_one.base_url
     assert refreshed_job.stt_model_name == "whisper-1"
 
@@ -13065,7 +13263,7 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
 
     captured = {}
 
-    def fake_read_team_stt_bearer_token(*, team_id, config_id):
+    def fake_read_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         assert team_id == team.id
         assert config_id == config.id
         return "secret-token"
@@ -13096,6 +13294,7 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
     assert captured["data"]["language"] == "en"
     assert captured["data"]["response_format"] == "verbose_json"
     assert captured["files"]["file"] == ("chunk.wav", b"normalized-audio", "audio/wav")
+    assert captured["timeout"] == STT_TRANSCRIPTION_TIMEOUT_SECONDS
 
 
 def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
@@ -13179,6 +13378,7 @@ def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
     assert captured["content"] == b"wav-bytes"
     assert captured["data"] is None
     assert captured["files"] is None
+    assert captured["timeout"] == STT_TRANSCRIPTION_TIMEOUT_SECONDS
 
 
 def test_transcribe_with_team_stt_deepgram_uses_raw_audio_transport(
@@ -13558,7 +13758,7 @@ def test_transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields(
         team_id=team.id,
         stt_config_id=config.id,
         adapter_kind=SttAdapterKind.generic_rest.value,
-        base_url="http://127.0.0.1:7000",
+        base_url="https://api.deepgram.com",
         transcribe_path="/speech/transcribe",
         file_field_name="audio_file",
         response_text_path="transcript",
@@ -13578,6 +13778,7 @@ def test_transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields(
     )
 
     assert snapshot_text == "snapshot transcript"
+    assert captured["provider_preset"] == SttProviderPreset.custom_rest_openapi.value
     assert captured["model_field_name"] == "model_id"
     assert captured["language_field_name"] == "lang"
     assert captured["file_field_name"] == "audio_file"
@@ -13586,6 +13787,28 @@ def test_transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields(
     assert captured["segment_start_field"] == "start_time"
     assert captured["segment_end_field"] == "end_time"
     assert captured["segment_speaker_field"] == "speaker_id"
+
+    captured.clear()
+    explicit_preset_text = transcribe_with_stt_snapshot(
+        db_session,
+        team_id=team.id,
+        stt_config_id=config.id,
+        adapter_kind=SttAdapterKind.generic_rest.value,
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        file_field_name="file",
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        extra_form_fields_json={},
+        model_name="nova-3",
+        language="en-GB",
+        audio_bytes=b"audio",
+        filename="deepgram.wav",
+        content_type="audio/wav",
+        provider_preset=SttProviderPreset.deepgram.value,
+    )
+
+    assert explicit_preset_text == "snapshot transcript"
+    assert captured["provider_preset"] == SttProviderPreset.deepgram.value
 
 
 def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
@@ -13686,7 +13909,11 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cle
     except AppError as exc:
         assert exc.code == "stt_request_failed"
         assert exc.message == "STT provider request failed"
-        assert exc.details == {"status_code": 503}
+        assert exc.details == {
+            "status_code": 503,
+            "provider_status_code": 503,
+            "provider_error_code": "http_status_error",
+        }
         assert "stt_http_request_failed" in caplog.text
         log_record = next(record for record in caplog.records if record.message == "stt_http_request_failed")
         assert log_record.stt_transport["provider_error_code"] == "http_status_error"

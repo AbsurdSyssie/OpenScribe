@@ -4041,6 +4041,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {" in documents_js
+    assert "const previousPanel = slot.querySelector('[data-llm-request-panel]');" in documents_js
+    assert "previousDocumentId === document.id" in documents_js
+    assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js
+    assert "wrapper.open = true;" in documents_js
     assert "const selectDocumentFromUi = async (kind, documentId) => {" in documents_js
     assert "const savedDocument = await persistNoteEditsSilently?.();" in documents_js
     assert "if (!savedDocument) {" in documents_js
@@ -5324,6 +5328,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     make_deidentification_provider,
     make_deidentification_provider_assignment,
     make_deidentification_selection,
+    monkeypatch,
 ):
     admin = make_user(email="admin-delete-team@example.com", password="password-1", is_system_admin=True)
     team = make_team(name="Delete Clinic")
@@ -5334,6 +5339,12 @@ def test_admin_page_can_delete_team_and_owned_records(
     make_quick_action(scope=TemplateScope.team, team=team, actor=leader, name="Team action", prompt_text="Send a follow-up")
     stt_config = make_stt_config(team=team, actor=admin, label="Team STT")
     make_stt_selection(config=stt_config, actor=admin)
+    stt_secret_ref = stt_config.vault_secret_ref
+    deleted_stt_refs: list[str | None] = []
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_stt_bearer_token",
+        lambda *, team_id, config_id, secret_ref=None: deleted_stt_refs.append(secret_ref),
+    )
     llm_config = make_llm_config(team=team, actor=admin, label="Team LLM", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=llm_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
     deidentification_provider = make_deidentification_provider(actor=admin, label="Team Deid", adapter_kind=DeidentificationAdapterKind.generic_rest, base_url="https://deid.example.com", detect_path="/detect")
@@ -5389,6 +5400,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     assert db_session.scalar(select(func.count()).select_from(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_([leader.id, member.id]))) == 0
     assert db_session.get(User, leader.id) is None
     assert db_session.get(User, member.id) is None
+    assert deleted_stt_refs == [stt_secret_ref]
 
 
 def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
@@ -5412,7 +5424,7 @@ def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
     deleted_secret_calls: list[str] = []
     monkeypatch.setattr(
         "app.services.admin.delete_team_stt_bearer_token",
-        lambda *, team_id, config_id: deleted_secret_calls.append(f"stt:{config_id}"),
+        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"stt:{config_id}"),
     )
     monkeypatch.setattr(
         "app.services.admin.delete_team_llm_bearer_token",
@@ -5448,7 +5460,7 @@ def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
     deleted_secret_calls: list[str] = []
     monkeypatch.setattr(
         "app.services.admin.delete_team_stt_bearer_token",
-        lambda *, team_id, config_id: deleted_secret_calls.append(f"stt:{config_id}"),
+        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"stt:{config_id}"),
     )
     monkeypatch.setattr(
         "app.services.admin.delete_team_llm_bearer_token",

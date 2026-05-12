@@ -2,7 +2,7 @@ import { attachTranscribeActions } from './actions.js?v=20260505-pii-copy-raw';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260512-llm-request-payload';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
-import { createAudioCaptureController } from './media.js?v=20260421-pii-refresh';
+import { createAudioCaptureController } from './media.js?v=20260512-status-pill-health';
 import { createStructuredEditor } from './structured.js?v=20260501-copy-review-no-sentinel';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -28,6 +28,7 @@ import { csrfFetch } from '../csrf.js';
       let sttAvailable = bootstrap.sttAvailable;
       let dictationSttAvailable = bootstrap.dictationSttAvailable;
       let sttStatusMessage = bootstrap.sttStatusMessage;
+      let sttHealth = bootstrap.sttHealth || null;
       let dictationSttStatusMessage = bootstrap.dictationSttStatusMessage;
       let latestIngestionJobStatus = bootstrap.latestIngestionJobStatus;
       let latestIngestionErrorMessage = bootstrap.latestIngestionErrorMessage;
@@ -216,6 +217,11 @@ import { csrfFetch } from '../csrf.js';
 
       let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let captureController = null;
+      let localStatusLabel = null;
+      let micIssue = null;
+      let lastRenderedTranscriptId = transcriptId || null;
+      let statusDetailsVisible = false;
+let statusDetailsHideTimer = null;
       let structuredEditor = null;
       let workspaceRefreshBurstTimeoutIds = [];
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
@@ -526,53 +532,278 @@ import { csrfFetch } from '../csrf.js';
         }, immediate ? 0 : 700);
       }
 
+      const statusPriority = {
+        'Transcription failed': 10,
+        'Generation failed': 20,
+        'Mic not detected': 30,
+        'Mic blocked': 40,
+        'Mic unavailable': 50,
+        'Recording blocked': 60,
+        'Speech issue': 70,
+        'Generation unavailable': 80,
+        'Redaction issue': 90,
+        'Clinical NLP issue': 100,
+        'Finalizing': 110,
+        'Uploading': 120,
+        'Sending chunk': 130,
+        'Speech detected': 140,
+        'Listening': 150,
+        'Generating': 160,
+        'Transcribing': 170,
+        'Ready': 180,
+        'Idle': 190,
+      };
+
       const statusPillKind = (label) => {
-        const normalized = String(label || '').toLowerCase();
-        if (normalized.includes('failed') || normalized.includes('unavailable') || normalized.includes('error')) return 'error';
-        if (normalized.includes('ready')) return 'ready';
-        if (
-          normalized.includes('recording')
-          || normalized.includes('listening')
-          || normalized.includes('speech')
-          || normalized.includes('sending')
-          || normalized.includes('stopping')
-          || normalized.includes('uploading')
-        ) {
-          return 'active';
-        }
+        if (['Transcription failed', 'Generation failed'].includes(label)) return 'error';
+        if (['Mic not detected', 'Mic blocked', 'Mic unavailable', 'Recording blocked'].includes(label)) return 'error';
+        if (['Speech issue', 'Generation unavailable', 'Redaction issue', 'Clinical NLP issue'].includes(label)) return 'warning';
+        if (['Finalizing', 'Uploading', 'Sending chunk', 'Speech detected', 'Listening', 'Generating', 'Transcribing'].includes(label)) return 'active';
+        if (label === 'Ready') return 'ready';
         return 'idle';
+      };
+
+      const sentenceCaseStatus = (label) => {
+        const value = String(label || 'idle').trim();
+        if (!value) return 'Idle';
+        return value.charAt(0).toUpperCase() + value.slice(1);
+      };
+
+      const ensureStatusDetailsUi = () => {
+        if (!activeStatusPill) return null;
+        activeStatusPill.tabIndex = 0;
+        activeStatusPill.setAttribute('role', 'button');
+        activeStatusPill.setAttribute('aria-haspopup', 'dialog');
+        let badge = activeStatusPill.querySelector('[data-active-status-count]');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'status-pill-count';
+          badge.dataset.activeStatusCount = '';
+          badge.hidden = true;
+          activeStatusPill.appendChild(badge);
+        }
+        let details = activeStatusPill.querySelector('[data-active-status-details]');
+        if (!details) {
+          details = document.createElement('div');
+          details.className = 'status-pill-details';
+          details.dataset.activeStatusDetails = '';
+          details.hidden = true;
+    activeStatusPill.appendChild(details);
+    details.addEventListener('mouseenter', () => { clearTimeout(statusDetailsHideTimer); showStatusDetails(true); });
+    details.addEventListener('mouseleave', () => { statusDetailsHideTimer = setTimeout(() => showStatusDetails(false), 150); });
+    activeStatusPill.addEventListener('mouseenter', () => { clearTimeout(statusDetailsHideTimer); showStatusDetails(true); });
+    activeStatusPill.addEventListener('mouseleave', () => { statusDetailsHideTimer = setTimeout(() => showStatusDetails(false), 150); });
+    activeStatusPill.addEventListener('focusin', () => { clearTimeout(statusDetailsHideTimer); showStatusDetails(true); });
+    activeStatusPill.addEventListener('focusout', (event) => {
+      if (!activeStatusPill.contains(event.relatedTarget)) {
+        statusDetailsHideTimer = setTimeout(() => showStatusDetails(false), 150);
+      }
+    });
+    activeStatusPill.addEventListener('click', (event) => {
+      if (event.target instanceof HTMLElement && event.target.hasAttribute('data-stt-health-recheck')) return;
+      clearTimeout(statusDetailsHideTimer);
+      statusDetailsVisible = !statusDetailsVisible;
+      showStatusDetails(statusDetailsVisible);
+    });
+    activeStatusPill.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      clearTimeout(statusDetailsHideTimer);
+      statusDetailsVisible = !statusDetailsVisible;
+      showStatusDetails(statusDetailsVisible);
+    });
+          document.addEventListener('click', (event) => {
+            if (!statusDetailsVisible || !(event.target instanceof Node) || activeStatusPill.contains(event.target)) return;
+            statusDetailsVisible = false;
+            showStatusDetails(false);
+          });
+          details.addEventListener('click', (event) => {
+            const trigger = event.target instanceof HTMLElement ? event.target.closest('[data-stt-health-recheck]') : null;
+            if (!trigger) return;
+            event.preventDefault();
+            void recheckSttHealth(trigger);
+          });
+        }
+        return { badge, details };
+      };
+
+      function showStatusDetails(show) {
+        const details = activeStatusPill?.querySelector('[data-active-status-details]');
+        if (!details) return;
+        details.hidden = !show;
+        activeStatusPill?.setAttribute('aria-expanded', show ? 'true' : 'false');
+        statusDetailsVisible = show;
+      }
+
+      const pushStatusItem = (items, label, detail, severity = null) => {
+        if (!label) return;
+        items.push({
+          label,
+          detail: detail || label,
+          severity: severity || statusPillKind(label),
+          priority: statusPriority[label] || 500,
+        });
+      };
+
+      const sttHealthNeedsAttention = () => {
+        const status = String(sttHealth?.status || '').toLowerCase();
+        if (status === 'unknown') return sttHealth?.checked === true;
+        return ['warning', 'unavailable'].includes(status);
+      };
+
+      const buildStatusItems = () => {
+        const items = [];
+        if (latestIngestionJobStatus === 'failed' || currentTranscriptStatus === 'failed') {
+          pushStatusItem(items, 'Transcription failed', latestIngestionErrorMessage || 'The last transcription attempt failed.');
+        }
+        if (workspaceNoteDocuments.some((document) => document.status === 'failed') || workspaceFollowupDocuments.some((document) => document.status === 'failed')) {
+          pushStatusItem(items, 'Generation failed', 'Latest note or follow-up generation failed.');
+        }
+        if (micIssue) {
+          pushStatusItem(items, micIssue.label, micIssue.detail);
+        }
+        if (transcriptId && activeIngestionMode && (!hasSttSelection || !sttAvailable)) {
+          pushStatusItem(items, 'Recording blocked', sttStatusMessage || 'Speech service is not configured.');
+        }
+        if (transcriptId && hasSttSelection && sttAvailable && sttHealthNeedsAttention()) {
+          pushStatusItem(items, 'Speech issue', sttHealth?.message || 'Speech service health is not reported.');
+        }
+        if (transcriptId && !hasLlmSelection && (readActiveDraftText().trim() || lastSavedDictationText.trim())) {
+          pushStatusItem(items, 'Generation unavailable', 'Note generation is not configured.');
+        }
+        if (workspaceRedactionStatus?.status === 'failed') {
+          const code = workspaceRedactionStatus?.error_code;
+          pushStatusItem(items, 'Redaction issue', `Redaction check failed${code ? `: ${code}` : ''}.`);
+        }
+        if (workspaceClinicalNlpStatus?.status === 'failed') {
+          const code = workspaceClinicalNlpStatus?.error_code;
+          pushStatusItem(items, 'Clinical NLP issue', `Clinical NLP failed${code ? `: ${code}` : ''}.`);
+        }
+        const normalizedLocal = String(localStatusLabel || '').toLowerCase();
+        const recordingActive = captureController?.isLiveCaptureUiActive?.() || captureController?.isCaptureUiActive?.();
+        if (recordingActive === true || ['finalizing', 'stopping', 'uploading', 'sending chunk', 'speech detected', 'listening', 'recording'].includes(normalizedLocal)) {
+          if (normalizedLocal.includes('final') || normalizedLocal.includes('stopping')) pushStatusItem(items, 'Finalizing', 'Live capture is finalizing.');
+          else if (normalizedLocal.includes('uploading')) pushStatusItem(items, 'Uploading', 'Uploading audio.');
+          else if (normalizedLocal.includes('sending')) pushStatusItem(items, 'Sending chunk', 'Sending live audio chunk.');
+          else if (normalizedLocal.includes('speech')) pushStatusItem(items, 'Speech detected', 'Speech detected locally.');
+          else pushStatusItem(items, 'Listening', 'Listening for speech.');
+        }
+        if (workspaceNoteDocuments.some((document) => document.status === 'queued' || document.status === 'processing') || workspaceFollowupDocuments.some((document) => document.status === 'queued' || document.status === 'processing')) {
+          pushStatusItem(items, 'Generating', 'Generating note or follow-up.');
+        }
+        if (['queued', 'processing'].includes(latestIngestionJobStatus || '') || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '')) {
+          pushStatusItem(items, currentTranscriptStatus === 'uploading' ? 'Sending chunk' : 'Transcribing', 'Backend is processing audio.');
+        }
+        if (items.length === 0) {
+          if (currentTranscriptStatus === 'ready') {
+            pushStatusItem(items, 'Ready', 'All systems healthy.');
+          } else {
+            pushStatusItem(items, 'Idle', 'Ready when you are.');
+          }
+        }
+        return items.sort((left, right) => left.priority - right.priority);
+      };
+
+      const renderStatusDetails = (items) => {
+        const ui = ensureStatusDetailsUi();
+        if (!ui) return;
+        const extraCount = Math.max(0, items.length - 1);
+        ui.badge.hidden = extraCount === 0;
+        ui.badge.textContent = extraCount > 0 ? `+${extraCount}` : '';
+        ui.details.innerHTML = '';
+        const list = document.createElement('div');
+        list.className = 'status-pill-details__list';
+        items.forEach((item) => {
+          const row = document.createElement('div');
+          row.className = `status-pill-details__item status-pill-details__item--${item.severity}`;
+          row.textContent = item.detail;
+          list.appendChild(row);
+        });
+        ui.details.appendChild(list);
+        if (sttHealthNeedsAttention()) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'status-pill-details__recheck';
+          button.dataset.sttHealthRecheck = '';
+          button.textContent = 'Recheck speech service';
+          ui.details.appendChild(button);
+        }
+      };
+
+      const renderStatusPill = () => {
+        const items = buildStatusItems();
+        const top = items[0] || { label: 'Idle', severity: 'idle' };
+        if (activeStatus) activeStatus.textContent = top.label;
+        syncStatusPillStyle(top.label);
+        renderStatusDetails(items);
+        if (transcriptId) {
+          const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
+          if (sidebarStatus) sidebarStatus.textContent = top.label;
+        }
+      };
+
+      const recheckSttHealth = async (trigger) => {
+        if (trigger) trigger.disabled = true;
+        try {
+          const response = await csrfFetch('/api/v1/transcribe/stt-health/recheck', {
+            method: 'POST',
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not recheck speech service.'));
+          }
+          sttHealth = await response.json();
+          renderStatusPill();
+        } catch (error) {
+          showFlash(error instanceof Error ? error.message : 'Could not recheck speech service.', 'error');
+        } finally {
+          if (trigger) trigger.disabled = false;
+        }
       };
 
       const syncStatusPillStyle = (label) => {
         if (!activeStatusPill || !activeStatus) return;
         const dot = activeStatusPill.querySelector('span:first-child');
-        activeStatusPill.classList.remove('bg-teal-pale', 'bg-coral/15', 'bg-white', 'border', 'border-stone');
-        activeStatus.classList.remove('text-teal-deep', 'text-coral', 'text-slate');
-        dot?.classList.remove('bg-teal-deep', 'bg-coral', 'bg-slate', 'status-pulse');
-        const kind = statusPillKind(label);
-        if (kind === 'error') {
-          activeStatusPill.classList.add('bg-coral/15');
-          activeStatus.classList.add('text-coral');
-          dot?.classList.add('bg-coral');
-        } else if (kind === 'ready' || kind === 'active') {
-          activeStatusPill.classList.add('bg-teal-pale');
-          activeStatus.classList.add('text-teal-deep');
-          dot?.classList.add('bg-teal-deep', 'status-pulse');
+        activeStatusPill.classList.remove('bg-teal-pale', 'bg-coral/15', 'bg-amber-100', 'bg-white', 'border', 'border-stone', 'bg-recording-red');
+        activeStatus.classList.remove('text-teal-deep', 'text-coral', 'text-slate', 'text-amber-800', 'text-recording-red');
+        dot?.classList.remove('bg-teal-deep', 'bg-coral', 'bg-slate', 'bg-amber-600', 'bg-dot-recording', 'status-pulse', 'status-pulse-recording', 'dot-recording');
+        const isRecording = captureController?.isCaptureUiActive?.() && (label === 'Listening' || label === 'Speech detected');
+        if (isRecording) {
+          activeStatusPill.classList.add('bg-recording-red');
+          activeStatus.classList.add('text-recording-red');
+          dot?.classList.remove('w-2', 'h-2');
+          dot?.classList.add('bg-dot-recording', 'status-pulse-recording', 'dot-recording');
         } else {
-          activeStatusPill.classList.add('bg-white', 'border', 'border-stone');
-          activeStatus.classList.add('text-slate');
-          dot?.classList.add('bg-slate');
+          dot?.classList.add('w-2', 'h-2');
+          const kind = statusPillKind(label);
+          if (kind === 'error') {
+            activeStatusPill.classList.add('bg-coral/15');
+            activeStatus.classList.add('text-coral');
+            dot?.classList.add('bg-coral');
+          } else if (kind === 'warning') {
+            activeStatusPill.classList.add('bg-amber-100');
+            activeStatus.classList.add('text-amber-800');
+            dot?.classList.add('bg-amber-600');
+          } else if (kind === 'active') {
+            activeStatusPill.classList.add('bg-teal-pale');
+            activeStatus.classList.add('text-teal-deep');
+            dot?.classList.add('bg-teal-deep', 'status-pulse');
+          } else if (kind === 'ready') {
+            activeStatusPill.classList.add('bg-teal-pale');
+            activeStatus.classList.add('text-teal-deep');
+            dot?.classList.add('bg-teal-deep');
+          } else {
+            activeStatusPill.classList.add('bg-white', 'border', 'border-stone');
+            activeStatus.classList.add('text-slate');
+            dot?.classList.add('bg-slate');
+          }
         }
       };
 
       const setVisibleStatus = (label) => {
         const nextLabel = label || 'idle';
-        if (activeStatus) activeStatus.textContent = nextLabel;
-        syncStatusPillStyle(nextLabel);
-        if (transcriptId) {
-          const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
-          if (sidebarStatus) sidebarStatus.textContent = nextLabel;
-        }
+        localStatusLabel = nextLabel;
+        renderStatusPill();
       };
 
       const statusLabelForRecordingProgress = (message) => {
@@ -607,6 +838,20 @@ import { csrfFetch } from '../csrf.js';
         } else if (kind === 'success') {
           micStatus.classList.add('text-success');
         }
+      };
+
+      const reportMicIssue = (error) => {
+        const name = String(error?.name || '').toLowerCase();
+        if (name === 'notfounderror' || name === 'devicesnotfounderror') {
+          micIssue = { label: 'Mic not detected', detail: 'No microphone was detected.' };
+        } else if (name === 'notallowederror' || name === 'permissiondeniederror') {
+          micIssue = { label: 'Mic blocked', detail: 'Microphone permission is blocked.' };
+        } else if (error === null) {
+          micIssue = null;
+        } else {
+          micIssue = { label: 'Mic unavailable', detail: 'Microphone capture could not start.' };
+        }
+        renderStatusPill();
       };
 
       const setDictationMicStatus = (message, kind = '') => {
@@ -1233,7 +1478,10 @@ import { csrfFetch } from '../csrf.js';
       const reflectBackendStatus = (statusLabel, errorMessage = null) => {
         currentTranscriptStatus = statusLabel || null;
         const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
-        setVisibleStatus(visibleStatus);
+        if (!captureController?.isCaptureUiActive?.() && !['queued', 'transcribing', 'processing', 'uploading'].includes(visibleStatus || '')) {
+          localStatusLabel = null;
+        }
+        renderStatusPill();
         if (visibleStatus === 'queued') {
           setSessionProgress('Waiting to be turned into text.');
         } else if (visibleStatus === 'transcribing') {
@@ -1249,6 +1497,7 @@ import { csrfFetch } from '../csrf.js';
         } else {
           setSessionProgress('Ready when you are.');
         }
+        renderStatusPill();
       };
 
       const clearWorkspaceRefreshBurst = () => {
@@ -1661,6 +1910,7 @@ import { csrfFetch } from '../csrf.js';
         setRetryAvailability,
         showFlash,
         reflectBackendStatus,
+        reportMicIssue,
       });
 
       const syncDeleteState = () => {
@@ -2146,6 +2396,12 @@ import { csrfFetch } from '../csrf.js';
         const noteDocuments = generatedDocuments.filter((document) => document.generator_type === 'template');
         const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
         const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
+        const nextTranscriptId = transcript?.id || null;
+        if (nextTranscriptId !== lastRenderedTranscriptId) {
+          micIssue = null;
+          localStatusLabel = null;
+          lastRenderedTranscriptId = nextTranscriptId;
+        }
         transcriptId = transcript?.id || null;
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
         workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
@@ -2156,6 +2412,7 @@ import { csrfFetch } from '../csrf.js';
         hasSttSelection = Boolean(workspace.stt_selected);
         hasDictationSttSelection = Boolean(workspace.dictation_stt_selected);
         sttAvailable = Boolean(workspace.stt_available);
+        sttHealth = workspace.stt_health || null;
         dictationSttAvailable = Boolean(workspace.dictation_stt_available);
         sttStatusMessage = workspace.stt_status_message || null;
         dictationSttStatusMessage = workspace.dictation_stt_status_message || null;
@@ -2251,6 +2508,7 @@ import { csrfFetch } from '../csrf.js';
           structuredEditor.syncStructuredTemplateUi();
         }
         syncTemplatePickerUi();
+        renderStatusPill();
         if (
           latestIngestionJobStatus === 'queued'
           || latestIngestionJobStatus === 'processing'

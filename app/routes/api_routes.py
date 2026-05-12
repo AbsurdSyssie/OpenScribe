@@ -26,6 +26,7 @@ from ..services.smart_phrases import (
     mark_personal_smart_phrase_used as mark_personal_smart_phrase_used_service,
     update_personal_smart_phrase as update_personal_smart_phrase_service,
 )
+from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..web.presentation import smart_phrase_response
 
 
@@ -1155,6 +1156,14 @@ def get_transcribe_workspace(
         transcript_id=str(transcript_id) if transcript_id is not None else None,
         queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
     )
+
+
+@api.post("/transcribe/stt-health/recheck", responses=error_responses)
+def recheck_transcribe_stt_health(
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return check_selected_stt_health_service(db, context.user, bypass_cache=True)
 
 
 @api.get("/transcribe/workspace/stream", responses=error_responses)

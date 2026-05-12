@@ -2618,6 +2618,89 @@ def test_transcribe_workspace_includes_post_consultation_dictation(
     assert workspace.json()["dictation_stt_selected"] is True
 
 
+def test_transcribe_workspace_stt_health_plain_for_user_diagnostic_for_leader(
+    client,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    from app.services.stt import clear_stt_health_cache
+
+    clear_stt_health_cache()
+    team = make_team(name="Clinic Workspace STT Health")
+    admin = make_user(email="admin-workspace-stt-health@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-workspace-stt-health@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    leader = make_user(email="leader-workspace-stt-health@example.com", password="password-3", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(team=team, actor=admin, label="Workspace Health STT", base_url="http://127.0.0.1:9100")
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    def fake_get(url, **kwargs):
+        assert url == "http://127.0.0.1:9100/health"
+        return FakeHttpxResponse({"error": {"code": "downstream_down"}}, status_code=503)
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Workspace STT health"})
+    transcript_id = transcript_created.json()["id"]
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    user_health = workspace.json()["stt_health"]
+    assert user_health["status"] == "warning"
+    assert user_health["message"] == "Speech service may be unavailable; transcription may fail."
+    assert "details" not in user_health
+
+    login(client, email=leader.email, password="password-3")
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    leader_health = workspace.json()["stt_health"]
+    assert leader_health["status"] == "warning"
+    assert leader_health["details"]["status_code"] == 503
+    assert leader_health["details"]["provider_error_code"] == "downstream_down"
+    assert leader_health["details"]["health_url"] == "http://127.0.0.1:9100/health"
+
+
+def test_transcribe_stt_health_recheck_bypasses_workspace_cache(
+    client,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    from app.services.stt import clear_stt_health_cache
+
+    clear_stt_health_cache()
+    team = make_team(name="Clinic STT Health Recheck")
+    admin = make_user(email="admin-stt-health-recheck@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-stt-health-recheck@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Recheck STT", base_url="http://127.0.0.1:9200")
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+    calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        calls["count"] += 1
+        return FakeHttpxResponse({"ok": True})
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Recheck STT health"})
+    transcript_id = transcript_created.json()["id"]
+    first = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    second = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["count"] == 1
+
+    recheck = client.post("/api/v1/transcribe/stt-health/recheck")
+    assert recheck.status_code == 200
+    assert recheck.json()["status"] == "healthy"
+    assert calls["count"] == 2
+
+
 def test_stt_selection_rejects_config_with_missing_saved_secret(client, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-secret@example.com", password="password-1", is_system_admin=True)

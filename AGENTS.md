@@ -118,7 +118,7 @@ Every change must include:
    - architecture risks
    - refer to docs/ .md files
    - Decide where extra code can be avoided by re-using or refining existing code
-
+   - Minimise hand rolling code, reuse high quality, secure libraries when possible. 
 2. **Checkpoint updates during coding**
    - schema checkpoint
    - auth/ownership checkpoint

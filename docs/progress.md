@@ -1,5 +1,48 @@
 # Progress
 
+## 2026-05-12 LLM Redaction Boundary
+
+### Scope
+
+- Fixed generation request construction so static template/quick-action asset text is not PHI-redacted, dynamic prompt inputs are redacted before provider send, and displayed `LLM request` is exactly the provider request body.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/templates.py`: separates static prompt assets from dynamic prompt inputs, redacts structured context recursively, and stores/sends one provider request body.
+- `tests/test_api.py`: updates request-payload expectations and adds redaction-boundary regressions.
+- `docs/api.md`: documents static-vs-dynamic generation redaction behavior.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "redaction_boundary or redacts_transcript_and_reidentifies_output or redacts_dictation_before_provider_call or redacts_dictation_only_session_before_provider_call or followup_generation_queues_and_processes_with_owner_scope or quick_action_context or template_generation_queues"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_request or generated_document or template_generation or followup_generation or quick_action"`: passed, 31 tests.
+- `.venv/bin/pytest -q tests/test_pii_response_minimisation.py`: passed, 9 tests.
+- `.venv/bin/python -m py_compile app/services/templates.py`: passed.
+
+### Documentation
+
+- Updated API generation behavior notes for static assets, dynamic inputs, and LLM request payload shape.
+
+### Risks / assumptions
+
+- Static asset prompts remain config, not transcript-derived content. If users intentionally put patient text into reusable templates/actions, it is treated as configuration by this boundary.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: transcript, dictation, follow-up prompt, quick-action context, and structured context content are redacted before LLM send; no raw content logging added.
+- Ownership rules preserved: generation still resolves owner-scoped transcript/generated-document records only.
+- Deletion semantics preserved: no schema, cascade, retention, or hard-delete path changed.
+- Provider rules preserved: LLM selection, Vault-backed secret lookup, and adapter dispatch unchanged; only request body construction changed.
+- Structured-note contract preserved: EMIS section keys/order remain validated; structured context shape is preserved while string values are redacted.
+
 ## 2026-05-12 Status Pill Review Fixes
 
 ### Scope

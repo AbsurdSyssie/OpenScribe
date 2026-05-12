@@ -5874,22 +5874,20 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
         record_id=processed.id,
         stored_value=processed.llm_request_payload_json_encrypted,
     )
-    assert stored_request_payload["generation"]["type"] == "template"
-    assert stored_request_payload["generation"]["template_version_id"] == team_template_version_id
-    assert stored_request_payload["generation"]["quick_action_version_id"] is None
-    assert stored_request_payload["provider"]["adapter_kind"] == "openai_chat"
-    assert stored_request_payload["provider"]["model"] == "gpt-4o-mini"
-    assert stored_request_payload["request"]["model"] == captured_provider_request["model"]
-    assert stored_request_payload["request"]["messages"] == captured_provider_request["messages"]
-    assert stored_request_payload["request"]["messages"][1]["content"] == (
+    assert stored_request_payload == captured_provider_request
+    assert stored_request_payload["model"] == "gpt-4o-mini"
+    assert stored_request_payload["messages"] == captured_provider_request["messages"]
+    assert stored_request_payload["messages"][1]["content"] == (
         "Template name: Team SOAP\n\n"
         "Template instructions:\nWrite a concise SOAP note.\n\n"
         "Consultation transcript:\nPatient says symptoms improved."
     )
-    assert stored_request_payload["input"]["transcript_text"] == "Patient says symptoms improved."
-    assert stored_request_payload["input"]["template_prompt_text"] == "Write a concise SOAP note."
     assert "vault" not in json.dumps(stored_request_payload).lower()
     assert "authorization" not in json.dumps(stored_request_payload).lower()
+    assert "generation" not in stored_request_payload
+    assert "input" not in stored_request_payload
+    assert "provider" not in stored_request_payload
+    assert "request" not in stored_request_payload
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -6521,6 +6519,17 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
         return "Please arrange repeat bloods in two weeks and advise review if symptoms persist.", {"input_tokens": 12, "output_tokens": 22, "total_tokens": 34, "duration_ms": 10}
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_followup)
+    monkeypatch.setattr(
+        "app.services.templates.redact_transient_text",
+        lambda db, text, *, team_id, start_index: {
+            "redacted_text": f"Arrange repeat bloods for [PHI-{start_index}] and advise review if the cough persists.",
+            "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": start_index, "type": "PERSON", "value": "John Smith", "placeholder": f"[PHI-{start_index}]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        },
+    )
 
     login(client, email="owner-followup@example.com", password="password-2")
     started = client.post(
@@ -6531,30 +6540,33 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
 
     queued = client.post(
         f"/api/v1/transcripts/{transcript_id}/generate-followup",
-        json={"prompt_text": "Arrange repeat bloods and advise review if the cough persists."},
+        json={"prompt_text": "Arrange repeat bloods for John Smith and advise review if the cough persists."},
     )
     assert queued.status_code == 202
     assert queued.json()["generator_type"] == "followup"
     assert queued.json()["status"] == "queued"
-    assert queued.json()["follow_up_prompt_text"] == "Arrange repeat bloods and advise review if the cough persists."
+    assert queued.json()["follow_up_prompt_text"] == "Arrange repeat bloods for John Smith and advise review if the cough persists."
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.followup
     assert persisted_document.celery_task_id == "generated-task-followup"
     assert is_encrypted_envelope(persisted_document.follow_up_prompt_text)
-    assert decrypt_generated_document_field(db_session, persisted_document, "follow_up_prompt_text") == "Arrange repeat bloods and advise review if the cough persists."
+    assert decrypt_generated_document_field(db_session, persisted_document, "follow_up_prompt_text") == "Arrange repeat bloods for John Smith and advise review if the cough persists."
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert "repeat bloods" in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
     followup_payload = generated_document_llm_request_payload(db_session, document=processed)
-    assert followup_payload["generation"]["type"] == "followup"
-    assert followup_payload["generation"]["template_version_id"] is None
-    assert followup_payload["request"]["messages"] == captured_provider_request["messages"]
-    assert followup_payload["input"]["follow_up_prompt_text"] == "Arrange repeat bloods and advise review if the cough persists."
-    assert followup_payload["input"]["transcript_text"] == "Patient reports a persistent cough for three weeks."
+    assert followup_payload == captured_provider_request
+    assert followup_payload["messages"] == captured_provider_request["messages"]
+    assert "Arrange repeat bloods for [PHI-1]" in json.dumps(followup_payload)
+    assert "Arrange repeat bloods for John Smith" not in json.dumps(followup_payload)
+    assert "generation" not in followup_payload
+    assert "input" not in followup_payload
+    assert "provider" not in followup_payload
+    assert "request" not in followup_payload
 
     generated_rows = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert generated_rows.status_code == 200
@@ -6584,7 +6596,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     owner = make_user(email="owner-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
     config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
-    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Redaction note", prompt_text="Write a note for John Smith.")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Redaction note", prompt_text="You are a GP who works in the NHS.")
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -6615,14 +6627,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     )
 
     def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
-        return {
-            "redacted_text": "Write a note for [PHI-2].",
-            "phi_mapping": {"phi-2": {"type": "PERSON", "value": "John Smith"}},
-            "phi_index": [{"index": 2, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-2]"}],
-            "phi_count": 1,
-            "api_provider": "native_presidio",
-            "api_model_or_version": "en_core_web_sm",
-        }
+        raise AssertionError(f"static template text should not be transiently redacted: {text}")
 
     monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
     monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
@@ -6631,9 +6636,10 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         user_message = kwargs["request_body"]["messages"][1]["content"]
         assert "[PHI-1] reports headaches." in user_message
         assert "John Smith reports headaches." not in user_message
-        assert "Write a note for [PHI-2]." in user_message
+        assert "You are a GP who works in the NHS." in user_message
+        assert "You are a [PHI-" not in user_message
         return (
-            '{"title":"[PHI-1] review","content":"[PHI-1] should rest and [PHI-2] should book review."}',
+            '{"title":"[PHI-1] review","content":"[PHI-1] should rest."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
         )
 
@@ -6645,7 +6651,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
     assert processed.redaction_run_id == run.id
     assert processed.title == "John Smith review"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
-    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should rest and John Smith should book review."
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should rest."
 
 
 def test_process_generated_document_applies_manual_pii_before_provider_call(
@@ -6752,7 +6758,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     owner = make_user(email="owner-dictation-redaction@example.com", password="password-2", team=team, team_role=TeamRole.user)
     config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
-    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Dictation redaction note", prompt_text="Write a note for John Smith.")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Dictation redaction note", prompt_text="Write a note.")
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -6784,29 +6790,20 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     )
 
     def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
-        if text.startswith("John Smith reports headaches."):
+        if text == "John Smith should book blood tests.":
             return {
-                "redacted_text": f"[PHI-2] reports headaches.{DICTATION_SOURCE_SPLIT_MARKER}[PHI-3] should book blood tests.",
+                "redacted_text": "[PHI-2] should book blood tests.",
                 "phi_mapping": {
                     "phi-2": {"type": "PERSON", "value": "John Smith"},
-                    "phi-3": {"type": "PERSON", "value": "John Smith"},
                 },
                 "phi_index": [
                     {"index": 2, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-2]"},
-                    {"index": 3, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-3]"},
                 ],
-                "phi_count": 2,
+                "phi_count": 1,
                 "api_provider": "native_presidio",
                 "api_model_or_version": "en_core_web_sm",
             }
-        return {
-            "redacted_text": "Write a note for [PHI-4].",
-            "phi_mapping": {"phi-4": {"type": "PERSON", "value": "John Smith"}},
-            "phi_index": [{"index": 4, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-4]"}],
-            "phi_count": 1,
-            "api_provider": "native_presidio",
-            "api_model_or_version": "en_core_web_sm",
-        }
+        raise AssertionError(f"unexpected transient redaction input: {text}")
 
     monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
     monkeypatch.setattr("app.services.templates.reidentify_text", redaction_reidentify_text)
@@ -6816,7 +6813,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     def fake_generate(**kwargs):
         captured["user_message"] = kwargs["request_body"]["messages"][1]["content"]
         return (
-            '{"title":"[PHI-2] review","content":"[PHI-3] should book review."}',
+            '{"title":"[PHI-1] review","content":"[PHI-2] should book review."}',
             {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
         )
 
@@ -6825,8 +6822,8 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
     processed = process_generated_document(db_session, document_id=document.id)
 
     assert processed.status is GeneratedDocumentStatus.ready
-    assert "Consultation transcript:\n[PHI-2] reports headaches." in captured["user_message"]
-    assert "Post-consultation dictation:\n[PHI-3] should book blood tests." in captured["user_message"]
+    assert "Consultation transcript:\n[PHI-1] reports headaches." in captured["user_message"]
+    assert "Post-consultation dictation:\n[PHI-2] should book blood tests." in captured["user_message"]
     assert "John Smith should book blood tests." not in captured["user_message"]
     assert processed.title == "John Smith review"
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith should book review."
@@ -6884,9 +6881,9 @@ def test_process_generated_document_redacts_dictation_only_session_before_provid
     monkeypatch.setattr("app.services.redaction.redact_text_with_mapping", reject_empty_persistent_redaction)
 
     def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
-        if DICTATION_SOURCE_SPLIT_MARKER in text:
+        if text == "John Smith needs blood tests.":
             return {
-                "redacted_text": f"{DICTATION_SOURCE_SPLIT_MARKER}[PHI-1] needs blood tests.",
+                "redacted_text": "[PHI-1] needs blood tests.",
                 "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
                 "phi_index": [{"index": 1, "type": "PERSON", "value": "John Smith", "placeholder": "[PHI-1]"}],
                 "phi_count": 1,
@@ -6923,6 +6920,121 @@ def test_process_generated_document_redacts_dictation_only_session_before_provid
     assert "Post-consultation dictation:\n[PHI-1] needs blood tests." in captured["user_message"]
     assert "John Smith needs blood tests." not in captured["user_message"]
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "John Smith needs blood tests."
+
+
+def test_process_generated_document_redaction_boundary_for_static_and_structured_dynamic_inputs(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_redaction_run,
+):
+    team = make_team(name="Clinic Redaction Boundary")
+    admin = make_user(email="admin-redaction-boundary@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-redaction-boundary@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS redaction boundary",
+        prompt_text="You are a GP who works in the NHS.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "history", "section_label": "History", "instruction": "Summarise history.", "section_order": 1},
+                {"section_key": "social_history", "section_label": "Social History", "instruction": "Summarise social history.", "section_order": 2},
+            ],
+        },
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Boundary session",
+        current_draft_text_encrypted="John Smith attended with low mood.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="John Smith dictated additional context.")
+    document = queue_document_generation_from_template_service(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        template_id=template.id,
+        structured_context={
+            "history": ["John Smith has poor sleep."],
+            "social_history": ["John Smith lives alone."],
+        },
+    )
+    transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=transcript_version,
+        owner=owner,
+        redacted_text="[PHI-1] attended with low mood.",
+        entities=[(1, "PERSON", "John Smith")],
+    )
+    monkeypatch.setattr("app.services.templates.ensure_redaction_run_for_transcript_version", lambda db, *, transcript_version: run)
+
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
+        assert "GP" not in text
+        assert "NHS" not in text
+        mapping = {
+            "John Smith dictated additional context.": "[PHI-2] dictated additional context.",
+            "John Smith has poor sleep.": "[PHI-3] has poor sleep.",
+            "John Smith lives alone.": "[PHI-4] lives alone.",
+        }
+        redacted = mapping[text]
+        return {
+            "redacted_text": redacted,
+            "phi_mapping": {f"phi-{start_index}": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": start_index, "type": "PERSON", "value": "John Smith", "placeholder": f"[PHI-{start_index}]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    captured_provider_request = {}
+
+    def fake_generate(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return (
+            '{"title":"[PHI-1] review","content":{"history":"[PHI-3] has poor sleep.","social_history":"[PHI-4] lives alone."}}',
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.ready
+    provider_request_json = json.dumps(captured_provider_request)
+    assert "You are a GP who works in the NHS." in provider_request_json
+    assert "You are a [PHI-" not in provider_request_json
+    assert "[PHI-1] attended with low mood." in provider_request_json
+    assert "John Smith attended with low mood." not in provider_request_json
+    assert "[PHI-2] dictated additional context." in provider_request_json
+    assert "John Smith dictated additional context." not in provider_request_json
+    assert "[PHI-3] has poor sleep." in provider_request_json
+    assert "[PHI-4] lives alone." in provider_request_json
+    assert "John Smith has poor sleep." not in provider_request_json
+    assert "John Smith lives alone." not in provider_request_json
+    displayed_request = generated_document_llm_request_payload(db_session, document=processed)
+    assert displayed_request == captured_provider_request
+    assert "generation" not in displayed_request
+    assert "input" not in displayed_request
+    assert "provider" not in displayed_request
+    assert "request" not in displayed_request
 
 
 def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
@@ -8175,10 +8287,12 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
     quick_action_payload = generated_document_llm_request_payload(db_session, document=processed)
-    assert quick_action_payload["generation"]["type"] == "quick_action"
-    assert quick_action_payload["generation"]["quick_action_version_id"] is None
-    assert quick_action_payload["request"]["messages"] == captured_provider_request["messages"]
-    assert quick_action_payload["input"]["quick_action_context_text"] == "Write a short SMS update."
+    assert quick_action_payload == captured_provider_request
+    assert quick_action_payload["messages"] == captured_provider_request["messages"]
+    assert "generation" not in quick_action_payload
+    assert "input" not in quick_action_payload
+    assert "provider" not in quick_action_payload
+    assert "request" not in quick_action_payload
 
 
 def test_upsert_personal_template_translates_raced_integrity_error_to_conflict(
@@ -8303,9 +8417,20 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
         owner,
         transcript_id=transcript.id,
         quick_action_id=quick_action.id,
-        context_text="Mention the agreed follow-up call.",
+        context_text="Mention John Smith's agreed follow-up call.",
     )
-    assert document.prompt_snapshot_text == "Write a short SMS update.\n\nAdditional context:\nMention the agreed follow-up call."
+    assert document.prompt_snapshot_text == "Write a short SMS update.\n\nAdditional context:\nMention John Smith's agreed follow-up call."
+    monkeypatch.setattr(
+        "app.services.templates.redact_transient_text",
+        lambda db, text, *, team_id, start_index: {
+            "redacted_text": f"Mention [PHI-{start_index}]'s agreed follow-up call.",
+            "phi_mapping": {"phi-1": {"type": "PERSON", "value": "John Smith"}},
+            "phi_index": [{"index": start_index, "type": "PERSON", "value": "John Smith", "placeholder": f"[PHI-{start_index}]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        },
+    )
 
     captured_provider_request = {}
 
@@ -8320,10 +8445,15 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
     quick_action_payload = generated_document_llm_request_payload(db_session, document=processed)
-    assert quick_action_payload["generation"]["type"] == "quick_action"
-    assert quick_action_payload["generation"]["quick_action_version_id"] == str(quick_action.versions[0].id)
-    assert quick_action_payload["request"]["messages"] == captured_provider_request["messages"]
-    assert quick_action_payload["input"]["quick_action_context_text"] == "Write a short SMS update.\n\nAdditional context:\nMention the agreed follow-up call."
+    assert quick_action_payload == captured_provider_request
+    assert quick_action_payload["messages"] == captured_provider_request["messages"]
+    assert "Write a short SMS update." in json.dumps(quick_action_payload)
+    assert "Mention [PHI-1]'s agreed follow-up call." in json.dumps(quick_action_payload)
+    assert "Mention John Smith's agreed follow-up call." not in json.dumps(quick_action_payload)
+    assert "generation" not in quick_action_payload
+    assert "input" not in quick_action_payload
+    assert "provider" not in quick_action_payload
+    assert "request" not in quick_action_payload
 
 
 def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(client, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template):

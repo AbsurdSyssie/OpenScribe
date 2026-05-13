@@ -2,7 +2,7 @@ import { attachTranscribeActions } from './actions.js?v=20260513-quick-action-co
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260512-llm-request-payload';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
-import { createAudioCaptureController } from './media.js?v=20260512-status-pill-health';
+import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
 import { createStructuredEditor } from './structured.js?v=20260501-copy-review-no-sentinel';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -95,6 +95,8 @@ import { csrfFetch } from '../csrf.js';
       const micStatus = document.querySelector('[data-mic-status]');
       const micTimer = document.querySelector('[data-mic-timer]');
       const micVisualizer = document.querySelector('[data-mic-visualizer]');
+      const silencePrompt = document.querySelector('[data-vad-silence-prompt]');
+      const silencePromptDismiss = document.querySelector('[data-vad-silence-prompt-dismiss]');
       const dictationMicStatus = document.querySelector('[data-dictation-mic-status]');
       const dictationMicTimer = document.querySelector('[data-dictation-mic-timer]');
       const dictationMicVisualizer = document.querySelector('[data-dictation-mic-visualizer]');
@@ -1854,6 +1856,8 @@ let statusDetailsHideTimer = null;
           micTimer,
           micVisualizer,
           recordToggleButton,
+          silencePrompt,
+          silencePromptDismiss,
           uploadForm,
         },
         config: {
@@ -1878,6 +1882,7 @@ let statusDetailsHideTimer = null;
           liveVadModel,
           liveVadOnnxBasePath,
           liveVadSampleRate,
+          vadSilencePromptMs: 30000,
         },
         canUseLiveInput,
         canUseWholeFileInput,

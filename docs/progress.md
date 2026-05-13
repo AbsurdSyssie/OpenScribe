@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-05-13 VAD Inactivity Behavior Tests
+
+### Scope
+
+- Added executable browser-logic regression coverage for VAD inactivity prompt dismiss, re-arm, stop, and page-lifecycle reset behavior.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no production code changed.
+
+### Files changed
+
+- `tests/test_vad_inactivity_js.py`: runs `media.js` in a Node VM with fake DOM/timers/VAD to verify inactivity lifecycle behavior.
+- `docs/live_stt.md`: documents dismiss/re-arm/reset prompt semantics.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_vad_inactivity_js.py`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k transcribe_frontend_uses_global_template_selector_for_generation_controls`: passed, 1 test selected.
+- `node --check app/static/js/transcribe/media.js`: passed.
+
+### Documentation
+
+- Updated live STT notes for inactivity prompt dismiss scope and reset behavior.
+
+### Risks / assumptions
+
+- Test harness simulates browser APIs and VAD callbacks; it does not replace full browser automation.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: tests and docs cover local UI state only; no transcript, note, prompt, audio, or provider secret content exposed.
+- Ownership rules preserved: no API ownership checks or user/team scoping changed.
+- Deletion semantics preserved: no persistence, cascade, retention, or hard-delete path changed.
+- Provider rules preserved: STT/LLM/de-identification provider resolution unchanged.
+- Structured-note contract preserved: no generated-document JSON or EMIS section behavior changed.
+
 ## 2026-05-12 LLM Redaction Boundary
 
 ### Scope

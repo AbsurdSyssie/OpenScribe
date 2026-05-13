@@ -2200,6 +2200,46 @@ background: rgba(56, 161, 105, 0.96);
 opacity: 0.96;
 }
 
+.vad-silence-prompt {
+display: inline-flex;
+align-items: center;
+gap: 0.65rem;
+align-self: flex-start;
+max-width: min(100%, 24rem);
+padding: 0.55rem 0.7rem;
+background: #fffaf0;
+border: 1px solid rgba(217, 125, 84, 0.35);
+border-radius: 0.5rem;
+box-shadow: 0 0.75rem 1.5rem rgba(31, 41, 55, 0.12);
+color: var(--fg);
+font-size: 0.88rem;
+font-weight: 600;
+z-index: 35;
+}
+
+.vad-silence-prompt[hidden] {
+display: none;
+}
+
+.vad-silence-prompt button {
+flex-shrink: 0;
+padding: 0.35rem 0.55rem;
+background: white;
+border: 1px solid var(--border);
+border-radius: 0.45rem;
+color: var(--fg);
+font-size: 0.82rem;
+font-weight: 600;
+cursor: pointer;
+}
+
+.vad-silence-prompt button:hover,
+.vad-silence-prompt button:focus-visible {
+border-color: var(--accent);
+background: rgba(224, 242, 245, 0.45);
+outline: none;
+}
+
 @media (max-width: 640px) {
 .mic-visualizer {
 min-width: 3.8rem;
@@ -2210,6 +2250,11 @@ gap: 0.14rem;
 .mic-visualizer__bar {
 width: 0.15rem;
 height: 1.15rem;
+}
+
+.vad-silence-prompt {
+width: 100%;
+justify-content: space-between;
 }
 }
 

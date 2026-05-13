@@ -78,7 +78,9 @@ Browser navigation behavior:
 - `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}`
 - `GET /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
 - `PATCH /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
+- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
@@ -445,6 +447,7 @@ Current generation behavior:
   - transcript text is sent to the external LLM only in redacted form
   - static template and quick-action asset instructions are sent as configured, without PHI redaction
   - dynamic clinician/user/patient-originated prompt inputs such as dictation, follow-up requests, quick-action additional context, and structured context strings are redacted transiently before the provider call
+  - quick-action context audio preview uses the post-consultation dictation STT selection, returns `{ "text": "..." }`, and does not persist a separate transcript-derived row before the client submits the existing quick-action context field
   - generated output is validated so only well-formed known placeholders survive to re-identification
   - final stored output is re-identified before being written back into `generated_documents`
 - clinical NLP snapshots are created beside successful redaction runs when the team has selected a clinical NLP endpoint:

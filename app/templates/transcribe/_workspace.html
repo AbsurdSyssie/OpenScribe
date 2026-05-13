@@ -541,6 +541,17 @@ class="followup-textarea followup-textarea--compact"
 data-quick-action-context-input></textarea>
 </label>
 </div>
+<div class="followup-controls__row">
+<button
+type="button"
+class="btn-ghost-sm"
+data-quick-action-context-record
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+<i data-lucide="mic"></i>
+<span data-quick-action-context-record-label>Record context</span>
+</button>
+<span class="text-xs text-slate" data-quick-action-context-status></span>
+</div>
 <div class="followup-controls__divider">or</div>
 <div class="followup-controls__row">
 <label class="followup-label flex-1">

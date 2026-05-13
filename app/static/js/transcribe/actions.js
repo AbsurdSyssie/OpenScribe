@@ -38,6 +38,113 @@ export function attachTranscribeActions({
     }
   };
 
+  let quickActionContextRecorder = null;
+  let quickActionContextStream = null;
+  let quickActionContextChunks = [];
+  let quickActionContextRecording = false;
+
+  const setQuickActionContextStatus = (message = '') => {
+    if (dom.quickActionContextStatus) {
+      dom.quickActionContextStatus.textContent = message;
+    }
+  };
+
+  const syncQuickActionContextRecorderControls = () => {
+    if (dom.quickActionContextRecordButton) {
+      dom.quickActionContextRecordButton.disabled = !quickActionContextRecording && (!getTranscriptId() || Boolean(dom.quickActionContextInput?.disabled));
+      dom.quickActionContextRecordButton.dataset.state = quickActionContextRecording ? 'recording' : 'idle';
+    }
+    if (dom.quickActionContextRecordLabel) {
+      dom.quickActionContextRecordLabel.textContent = quickActionContextRecording ? 'Stop' : 'Record context';
+    }
+  };
+
+  const appendQuickActionContextText = (text) => {
+    if (!dom.quickActionContextInput) return;
+    const next = String(text || '').trim();
+    if (!next) return;
+    const current = dom.quickActionContextInput.value.trim();
+    dom.quickActionContextInput.value = current ? `${current}\n${next}` : next;
+    dom.quickActionContextInput.focus();
+  };
+
+  const uploadQuickActionContextAudio = async (blob) => {
+    const transcriptId = getTranscriptId();
+    if (!transcriptId || !blob) return;
+    const formData = new FormData();
+    formData.append('audio', blob, 'quick-action-context.webm');
+    setQuickActionContextStatus('Transcribing...');
+    const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/quick-action-context/preview-audio-file`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(await parseErrorMessage(response, 'Could not transcribe quick-action context.'));
+    }
+    const body = await response.json();
+    appendQuickActionContextText(body.text || '');
+    setQuickActionContextStatus('Transcript added.');
+  };
+
+  const stopQuickActionContextStream = () => {
+    quickActionContextStream?.getTracks?.().forEach((track) => track.stop());
+    quickActionContextStream = null;
+  };
+
+  const startQuickActionContextRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      showFlash('Context recording is not supported in this browser.', 'error');
+      return;
+    }
+    try {
+      quickActionContextChunks = [];
+      quickActionContextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      quickActionContextRecorder = new MediaRecorder(quickActionContextStream);
+      quickActionContextRecorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 0) {
+          quickActionContextChunks.push(event.data);
+        }
+      });
+      quickActionContextRecorder.addEventListener('stop', async () => {
+        quickActionContextRecording = false;
+        syncQuickActionContextRecorderControls();
+        const type = quickActionContextRecorder?.mimeType || 'audio/webm';
+        const blob = quickActionContextChunks.length ? new Blob(quickActionContextChunks, { type }) : null;
+        stopQuickActionContextStream();
+        if (!blob) {
+          setQuickActionContextStatus('No audio captured.');
+          return;
+        }
+        try {
+          await uploadQuickActionContextAudio(blob);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not transcribe quick-action context.';
+          setQuickActionContextStatus('');
+          showFlash(message, 'error');
+        } finally {
+          syncQuickActionContextRecorderControls();
+        }
+      });
+      quickActionContextRecording = true;
+      quickActionContextRecorder.start();
+      setQuickActionContextStatus('Recording...');
+      syncQuickActionContextRecorderControls();
+    } catch (_) {
+      quickActionContextRecording = false;
+      stopQuickActionContextStream();
+      setQuickActionContextStatus('');
+      syncQuickActionContextRecorderControls();
+      showFlash('Microphone access was denied or unavailable.', 'error');
+    }
+  };
+
+  const stopQuickActionContextRecording = () => {
+    if (!quickActionContextRecorder || quickActionContextRecorder.state === 'inactive') return;
+    setQuickActionContextStatus('Stopping...');
+    quickActionContextRecorder.stop();
+  };
+
   dom.noteSelector?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-document-id]');
     if (!button) return;
@@ -545,4 +652,13 @@ export function attachTranscribeActions({
       }
     });
   }
+
+  dom.quickActionContextRecordButton?.addEventListener('click', () => {
+    if (quickActionContextRecording) {
+      stopQuickActionContextRecording();
+    } else {
+      void startQuickActionContextRecording();
+    }
+  });
+  syncQuickActionContextRecorderControls();
 }

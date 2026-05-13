@@ -75,6 +75,7 @@ from .schemas import (
     PostConsultationDictationDetail,
     PostConsultationDictationPreview,
     PostConsultationDictationUpdate,
+    PromptContextPreview,
     EMIS_SECTION_KEYS,
     EMIS_SECTION_LABELS,
     ErrorResponse,
@@ -247,6 +248,7 @@ from .services.dictations import (
     append_post_consultation_dictation_audio,
     dictation_detail_response,
     get_post_consultation_dictation,
+    transcribe_prompt_context_audio,
     transcribe_post_consultation_dictation_audio,
     update_post_consultation_dictation,
 )

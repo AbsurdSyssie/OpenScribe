@@ -5261,6 +5261,48 @@
 - Provider rules preserved: required-token providers still require credentials; optional local/self-hosted providers may save without credentials.
 - Structured-note contract preserved: no generated-document or EMIS JSON behavior changed.
 
+# 2026-05-13 Quick Action Context Audio Preview
+
+### Scope
+
+- Added transient quick-action context audio preview. Browser records short audio, backend transcribes through existing dictation STT path, UI appends returned text to quick-action context textarea.
+- No new persisted dictation/content type added.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none
+
+### Files changed
+
+- `app/services/dictations.py`: extracted reusable prompt-context STT helper using owner transcript lookup, upload caps, normalization, duration check, and post-consultation dictation STT purpose.
+- `app/routes/api_routes.py`, `app/schemas/dictation.py`, `app/schemas/__init__.py`, `app/main.py`: added quick-action context preview endpoint/response.
+- `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_shell_extras.html`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/actions.js`: added compact quick-action context recording toggle and textarea append flow.
+- `tests/test_api.py`: added owner/non-owner/no-persistence/STT-purpose coverage and tightened quick-action context redaction assertion.
+- `docs/api.md`, `docs/transcript-capture.md`: documented transient audio preview behavior.
+
+### Tests
+
+- Focused API tests cover owner access, non-owner rejection, no dictation rows/segments persisted, dictation-purpose STT call, and quick-action context redaction while static quick-action instructions stay unredacted.
+
+### Documentation
+
+- Updated API route list/redaction behavior and transcript-capture workflow notes.
+
+### Risks / assumptions
+
+- Uses existing `post_consultation_dictation` STT selection intentionally; no new enum/config/migration added.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: STT preview text becomes user-visible quick-action context only; final LLM path still redacts dynamic context.
+- Ownership rules preserved: endpoint requires full session and transcript owner.
+- Deletion semantics preserved: preview creates no server-side transcript-derived child rows.
+- Provider rules preserved: existing dictation STT selection and upload limits reused.
+- Structured-note contract preserved: no EMIS/template JSON contract changes.
+
 ## 2026-05-01 Transcribe Copy Review Marker Fix
 
 ### Scope

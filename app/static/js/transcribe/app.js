@@ -1,6 +1,6 @@
-import { attachTranscribeActions } from './actions.js?v=20260513-quick-action-context-audio';
+import { attachTranscribeActions } from './actions.js?v=20260513-followups-redesign';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260512-llm-request-payload';
+import { createDocumentNavigator } from './documents.js?v=20260513-followups-redesign';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
 import { createStructuredEditor } from './structured.js?v=20260501-copy-review-no-sentinel';
@@ -182,9 +182,18 @@ import { csrfFetch } from '../csrf.js';
       const runQuickActionSelect = document.querySelector('[data-quick-action-select]');
       const runQuickActionTrigger = document.querySelector('[data-run-quick-action-trigger]');
       const quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+      const quickActionSearchInput = document.querySelector('[data-quick-action-search]');
       const quickActionContextRecordButton = document.querySelector('[data-quick-action-context-record]');
       const quickActionContextRecordLabel = document.querySelector('[data-quick-action-context-record-label]');
       const quickActionContextStatus = document.querySelector('[data-quick-action-context-status]');
+      const followupClearButton = document.querySelector('[data-followup-clear]');
+      const contextCharCount = document.querySelector('[data-context-char-count]');
+      const customPromptCharCount = document.querySelector('[data-custom-prompt-char-count]');
+      const recordCustomPromptButton = document.querySelector('[data-record-custom-prompt]');
+      const recordCustomPromptLabel = document.querySelector('[data-record-custom-prompt-label]');
+      const copyLatestFollowupButton = document.querySelector('[data-copy-latest-followup]');
+      const deleteLatestFollowupButton = document.querySelector('[data-followup-delete-latest]');
+      const followupLlmRequestToggle = document.querySelector('[data-followup-llm-request-toggle]');
       const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
@@ -1756,6 +1765,9 @@ let statusDetailsHideTimer = null;
         if (quickActionContextRecordButton) {
           quickActionContextRecordButton.disabled = !canRunQuickAction;
         }
+        if (recordCustomPromptButton) {
+          recordCustomPromptButton.disabled = !canGenerateFollowup;
+        }
         quickActionQuickPicks.forEach((button) => {
           button.disabled = !canRunQuickAction;
         });
@@ -2013,11 +2025,19 @@ let statusDetailsHideTimer = null;
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
         if (!document) {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-ups yet.</span>';
+          latestFollowupOutput.dataset.latestFollowupStatus = '';
+          latestFollowupOutput.dataset.latestFollowupId = '';
+          latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Select a quick action and generate a follow-up.</div></div>';
           return;
         }
         if (document.status === 'ready' && document.edited_output_text) {
-          latestFollowupOutput.textContent = document.edited_output_text;
+          latestFollowupOutput.innerHTML = `
+            <div class="followup-output-card-v2__meta">
+              <span class="followup-status followup-status--ready">ready</span>
+              <span>${escapeHtml(document.created_at || '')}</span>
+            </div>
+            <div class="followup-output-card-v2__content" data-followup-copy-body>${escapeHtml(document.edited_output_text)}</div>
+          `;
           return;
         }
         if (document.status === 'queued') {
@@ -2029,10 +2049,10 @@ let statusDetailsHideTimer = null;
           return;
         }
         if (document.status === 'failed') {
-          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest follow-up could not be created${document.error_message ? `: ${document.error_message}` : ''}.</span>`;
+          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest follow-up could not be created${document.error_message ? `: ${escapeHtml(document.error_message)}` : ''}.</span>`;
           return;
         }
-        latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-ups yet.</span>';
+        latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up content yet.</span>';
       };
 
       const renderRedactionDebugPanel = (slot, document) => {
@@ -2693,6 +2713,7 @@ let statusDetailsHideTimer = null;
           fileInput,
           followupSelector,
           followupHistory,
+          latestFollowupOutput,
           generateFollowupForm,
           generateFollowupPromptInput,
           generateFollowupTrigger,
@@ -2706,8 +2727,17 @@ let statusDetailsHideTimer = null;
           quickActionContextRecordButton,
           quickActionContextRecordLabel,
           quickActionContextInput,
+          quickActionSearchInput,
           quickActionQuickPicks,
           quickActionContextStatus,
+          followupClearButton,
+          contextCharCount,
+          customPromptCharCount,
+          recordCustomPromptButton,
+          recordCustomPromptLabel,
+          copyLatestFollowupButton,
+          deleteLatestFollowupButton,
+          followupLlmRequestToggle,
           recordingModeSelect,
           renameTitleInput,
           runQuickActionForm,

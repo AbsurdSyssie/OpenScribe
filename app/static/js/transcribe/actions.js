@@ -31,6 +31,7 @@ export function attachTranscribeActions({
     dom.quickActionQuickPicks?.forEach((button) => {
       const isSelected = (button.dataset.quickActionId || '') === selectedId;
       button.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+      button.classList.toggle('is-selected', isSelected);
     });
     const hiddenIdInput = dom.runQuickActionForm?.querySelector('[data-quick-action-id-input]');
     if (hiddenIdInput) {
@@ -42,6 +43,7 @@ export function attachTranscribeActions({
   let quickActionContextStream = null;
   let quickActionContextChunks = [];
   let quickActionContextRecording = false;
+  let quickActionContextRecordingTarget = 'context';
 
   const setQuickActionContextStatus = (message = '') => {
     if (dom.quickActionContextStatus) {
@@ -50,22 +52,34 @@ export function attachTranscribeActions({
   };
 
   const syncQuickActionContextRecorderControls = () => {
+    const targetInput = quickActionContextRecordingTarget === 'customPrompt'
+      ? dom.generateFollowupPromptInput
+      : dom.quickActionContextInput;
     if (dom.quickActionContextRecordButton) {
       dom.quickActionContextRecordButton.disabled = !quickActionContextRecording && (!getTranscriptId() || Boolean(dom.quickActionContextInput?.disabled));
       dom.quickActionContextRecordButton.dataset.state = quickActionContextRecording ? 'recording' : 'idle';
     }
     if (dom.quickActionContextRecordLabel) {
-      dom.quickActionContextRecordLabel.textContent = quickActionContextRecording ? 'Stop' : 'Record context';
+      dom.quickActionContextRecordLabel.textContent = quickActionContextRecording && quickActionContextRecordingTarget === 'context' ? 'Stop' : 'Record context';
     }
+    if (dom.recordCustomPromptButton) {
+      dom.recordCustomPromptButton.disabled = !quickActionContextRecording && (!getTranscriptId() || Boolean(dom.generateFollowupPromptInput?.disabled));
+      dom.recordCustomPromptButton.dataset.state = quickActionContextRecording ? 'recording' : 'idle';
+    }
+    if (dom.recordCustomPromptLabel) {
+      dom.recordCustomPromptLabel.textContent = quickActionContextRecording && quickActionContextRecordingTarget === 'customPrompt' ? 'Stop' : 'Record description';
+    }
+    if (!targetInput && quickActionContextRecording) stopQuickActionContextRecording();
   };
 
-  const appendQuickActionContextText = (text) => {
-    if (!dom.quickActionContextInput) return;
+  const appendTextToField = (field, text) => {
+    if (!field) return;
     const next = String(text || '').trim();
     if (!next) return;
-    const current = dom.quickActionContextInput.value.trim();
-    dom.quickActionContextInput.value = current ? `${current}\n${next}` : next;
-    dom.quickActionContextInput.focus();
+    const current = field.value.trim();
+    field.value = current ? `${current}\n${next}` : next;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus();
   };
 
   const uploadQuickActionContextAudio = async (blob) => {
@@ -83,7 +97,10 @@ export function attachTranscribeActions({
       throw new Error(await parseErrorMessage(response, 'Could not transcribe quick-action context.'));
     }
     const body = await response.json();
-    appendQuickActionContextText(body.text || '');
+    appendTextToField(
+      quickActionContextRecordingTarget === 'customPrompt' ? dom.generateFollowupPromptInput : dom.quickActionContextInput,
+      body.text || '',
+    );
     setQuickActionContextStatus('Transcript added.');
   };
 
@@ -92,12 +109,13 @@ export function attachTranscribeActions({
     quickActionContextStream = null;
   };
 
-  const startQuickActionContextRecording = async () => {
+  const startQuickActionContextRecording = async (target = 'context') => {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
       showFlash('Context recording is not supported in this browser.', 'error');
       return;
     }
     try {
+      quickActionContextRecordingTarget = target === 'customPrompt' ? 'customPrompt' : 'context';
       quickActionContextChunks = [];
       quickActionContextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       quickActionContextRecorder = new MediaRecorder(quickActionContextStream);
@@ -230,6 +248,41 @@ export function attachTranscribeActions({
     const button = event.target.closest('[data-document-id]');
     if (!button) return;
     selectDocumentFromUi('followup', button.dataset.documentId || '');
+  });
+
+  dom.copyLatestFollowupButton?.addEventListener('click', async () => {
+    const text = dom.latestFollowupOutput?.querySelector('[data-followup-copy-body]')?.textContent?.trim() || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showCopyToast();
+    } catch (_) {
+      showFlash('Could not copy the follow-up.', 'error');
+    }
+  });
+
+  dom.deleteLatestFollowupButton?.addEventListener('click', async () => {
+    const generatedDocumentId = dom.latestFollowupOutput?.dataset.latestFollowupId || '';
+    if (!generatedDocumentId) return;
+    if (!window.confirm('Delete this follow-up permanently?')) return;
+    try {
+      const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        throw new Error(await parseErrorMessage(response, 'Could not delete the follow-up.'));
+      }
+      showFlash('Follow-up deleted.', 'success');
+      await fetchWorkspace();
+    } catch (error) {
+      showFlash(error instanceof Error ? error.message : 'Could not delete the follow-up.', 'error');
+    }
+  });
+
+  dom.followupLlmRequestToggle?.addEventListener('click', () => {
+    const panel = window.document.querySelector('[data-followup-llm-request-slot] [data-llm-request-panel]');
+    if (panel) panel.open = !panel.open;
   });
 
   if (dom.copyTranscriptButton) {
@@ -612,6 +665,44 @@ export function attachTranscribeActions({
     });
   }
 
+  dom.quickActionSearchInput?.addEventListener('input', () => {
+    const query = dom.quickActionSearchInput.value.trim().toLowerCase();
+    dom.quickActionQuickPicks?.forEach((card) => {
+      const haystack = [card.dataset.quickActionName, card.dataset.quickActionDescription].join(' ').toLowerCase();
+      card.hidden = Boolean(query && !haystack.includes(query));
+    });
+  });
+
+  const bindCharacterCounter = (input, counter, max) => {
+    if (!input || !counter) return;
+    const update = () => {
+      counter.textContent = `${input.value.length} / ${max}`;
+    };
+    input.addEventListener('input', update);
+    update();
+  };
+  bindCharacterCounter(dom.quickActionContextInput, dom.contextCharCount, 4000);
+  bindCharacterCounter(dom.generateFollowupPromptInput, dom.customPromptCharCount, 1000);
+
+  dom.followupClearButton?.addEventListener('click', () => {
+    if (dom.quickActionContextInput) dom.quickActionContextInput.value = '';
+    if (dom.generateFollowupPromptInput) dom.generateFollowupPromptInput.value = '';
+    dom.quickActionContextInput?.dispatchEvent(new Event('input', { bubbles: true }));
+    dom.generateFollowupPromptInput?.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
+  dom.quickActionContextInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    dom.runQuickActionTrigger?.click();
+  });
+
+  dom.generateFollowupPromptInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    dom.generateFollowupTrigger?.click();
+  });
+
   if (dom.runQuickActionForm) {
     syncQuickActionQuickPickState();
     dom.runQuickActionForm.addEventListener('submit', async (event) => {
@@ -624,7 +715,10 @@ export function attachTranscribeActions({
       const quickActionContextText = dom.quickActionContextInput?.value?.trim()
         || dom.runQuickActionForm.querySelector('[data-quick-action-context-hidden]')?.value?.trim()
         || '';
-      if (!quickActionId) return;
+      if (!quickActionId) {
+        showFlash('Select a quick action first.', 'warning');
+        return;
+      }
       const hiddenIdInput = dom.runQuickActionForm.querySelector('[data-quick-action-id-input]');
       if (hiddenIdInput) {
         hiddenIdInput.value = quickActionId;
@@ -657,7 +751,14 @@ export function attachTranscribeActions({
     if (quickActionContextRecording) {
       stopQuickActionContextRecording();
     } else {
-      void startQuickActionContextRecording();
+      void startQuickActionContextRecording('context');
+    }
+  });
+  dom.recordCustomPromptButton?.addEventListener('click', () => {
+    if (quickActionContextRecording) {
+      stopQuickActionContextRecording();
+    } else {
+      void startQuickActionContextRecording('customPrompt');
     }
   });
   syncQuickActionContextRecorderControls();

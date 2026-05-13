@@ -158,62 +158,22 @@ export function createDocumentNavigator({
     if (!followupHistory) return;
     followupHistory.innerHTML = "";
     if (!documents.length) {
-      followupHistory.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-state__icon">
-            <i class="w-12 h-12 text-slate/40" data-lucide="message-square-more"></i>
-          </div>
-          <div class="empty-state__text">Select a quick action or describe what you need to create a follow-up message.</div>
-        </div>
-      `;
+      followupHistory.innerHTML = '<div class="followup-empty-v2">No follow-ups for this transcript yet.</div>';
       refreshIcons?.(followupHistory);
       return;
     }
     documents.forEach((item) => {
-      const card = window.document.createElement("div");
-      card.className = `followup-card${item.id === selectedId ? " followup-card--active" : ""}`;
-      card.role = "button";
-      card.tabIndex = 0;
+      const card = window.document.createElement("button");
+      card.type = "button";
+      card.className = `followup-recent-item-v2${item.id === selectedId ? " is-selected" : ""}`;
       card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
-      const body = item.status === "ready" && item.edited_output_text
-        ? `<div class="followup-card__content" data-followup-copy-body>${escapeHtml(item.edited_output_text)}</div>`
-        : item.status === "queued"
-          ? '<div class="followup-card__content followup-card__content--placeholder">Waiting to be written...</div>'
-          : item.status === "processing"
-            ? '<div class="followup-card__content followup-card__content--placeholder">Being written...</div>'
-            : item.status === "failed"
-              ? `<div class="followup-card__content followup-card__content--error">Failed${item.error_message ? `: ${escapeHtml(item.error_message)}` : ""}</div>`
-              : "";
-      const typeLabel = item.generator_type === "quick_action" ? "Quick action" : "Custom";
       const title = item.generator_type === "quick_action"
         ? (item.source_quick_action_name || item.title || "Quick action")
         : followupDocumentLabel(item);
-      const actions = `
-        <div class="followup-card__actions">
-          ${item.status === "ready" && item.edited_output_text ? `
-            <button type="button" class="btn-icon" data-followup-copy title="Copy to clipboard">
-              <i class="w-4 h-4" data-lucide="copy"></i>
-            </button>
-          ` : ""}
-          <button type="button" class="btn-icon" data-followup-delete data-generated-document-id="${escapeHtml(item.id || "")}" title="Delete permanently">
-            <i class="w-4 h-4" data-lucide="trash-2"></i>
-          </button>
-        </div>
-      `;
       card.innerHTML = `
-        <div class="followup-card__header">
-          <div class="followup-card__meta">
-            <span class="followup-card__type">${escapeHtml(typeLabel)}</span>
-            <span class="followup-card__name">${escapeHtml(title)}</span>
-          </div>
-          ${actions}
-        </div>
-        <div class="followup-card__status">
-          <span class="followup-status followup-status--${escapeHtml(item.status || "")}">${escapeHtml(item.status || "")}</span>
-          <span class="followup-card__date">${escapeHtml(item.created_at || "")}</span>
-        </div>
-        ${body}
+        <span>${escapeHtml(title)}</span>
+        <span>${escapeHtml(item.created_at || "")} <i data-lucide="chevron-right"></i></span>
       `;
       followupHistory.appendChild(card);
     });

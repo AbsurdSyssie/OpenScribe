@@ -213,27 +213,34 @@ Contained information:
 - quick-action guidance text
 - latest follow-up output
 - follow-up generation status
-- follow-up history
+- current-transcript follow-up recents
 - empty-state guidance when nothing exists yet
 
 User can change:
 - enter a custom follow-up request
 - generate follow-up output
-- review historical follow-up outputs
+- select a recent output for the current consultation
 
 How:
-- type request text
+- select a quick action and optionally add context
+- type secondary free-text request text
 - trigger follow-up generation
+- click current-transcript recents to load the selected output
 
 Access:
 - owner only
+
+Notes:
+- the Follow Ups tab is a three-panel workspace: quick actions, context/request, selected generated follow-up
+- quick actions are the primary flow; free-text generation is kept as a smaller secondary flow
+- the right panel renders only the selected follow-up, with current-transcript recents directly below it for selection
 
 ### Quick actions
 
 Contained information:
 - available quick actions
 - quick-action scope visibility
-- quick-pick favourites
+- quick-action search and card list
 - optional one-off guidance text
 - latest quick-action output
 - quick-action history mixed into follow-up-type output history
@@ -245,8 +252,8 @@ User can change:
 - trigger quick action generation
 
 How:
-- select quick action
-- use quick-pick
+- select a quick-action card
+- search visible quick actions
 - add optional guidance
 - run generation
 
@@ -256,6 +263,7 @@ Access:
 Notes:
 - quick actions and follow-ups should unlock when transcript text or note content exists
 - visible follow-up/quick-action content must refresh when switching consultations
+- quick actions are ordered by default preference, then favourites, then name when usage counts are not available
 
 ### Service/model context
 

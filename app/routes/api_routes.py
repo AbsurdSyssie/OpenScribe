@@ -1119,6 +1119,31 @@ def preview_transcript_dictation_audio_file(
 
 
 @api.post(
+    "/transcripts/{transcript_id}/quick-action-context/preview-audio-file",
+    response_model=PromptContextPreview,
+    responses=error_responses,
+)
+@WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
+@WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
+def preview_quick_action_context_audio_file(
+    request: Request,
+    transcript_id: UUID,
+    audio: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    audio_bytes = audio.file.read()
+    text = transcribe_prompt_context_audio(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=audio.filename or "audio.bin",
+    )
+    return PromptContextPreview(text=text)
+
+
+@api.post(
     "/transcripts/{transcript_id}/post-consultation-dictation/audio-file",
     response_model=PostConsultationDictationDetail,
     responses=error_responses,

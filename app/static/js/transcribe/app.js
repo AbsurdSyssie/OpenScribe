@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260505-pii-copy-raw';
+import { attachTranscribeActions } from './actions.js?v=20260513-quick-action-context-audio';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260512-llm-request-payload';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -180,6 +180,9 @@ import { csrfFetch } from '../csrf.js';
       const runQuickActionSelect = document.querySelector('[data-quick-action-select]');
       const runQuickActionTrigger = document.querySelector('[data-run-quick-action-trigger]');
       const quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+      const quickActionContextRecordButton = document.querySelector('[data-quick-action-context-record]');
+      const quickActionContextRecordLabel = document.querySelector('[data-quick-action-context-record-label]');
+      const quickActionContextStatus = document.querySelector('[data-quick-action-context-status]');
       const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
@@ -1748,6 +1751,9 @@ let statusDetailsHideTimer = null;
         if (quickActionContextInput) {
           quickActionContextInput.disabled = !canRunQuickAction;
         }
+        if (quickActionContextRecordButton) {
+          quickActionContextRecordButton.disabled = !canRunQuickAction;
+        }
         quickActionQuickPicks.forEach((button) => {
           button.disabled = !canRunQuickAction;
         });
@@ -2692,8 +2698,11 @@ let statusDetailsHideTimer = null;
           newSessionForm,
           noteDeleteButton,
           noteSelector,
+          quickActionContextRecordButton,
+          quickActionContextRecordLabel,
           quickActionContextInput,
           quickActionQuickPicks,
+          quickActionContextStatus,
           recordingModeSelect,
           renameTitleInput,
           runQuickActionForm,

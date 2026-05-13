@@ -2507,6 +2507,60 @@ def test_owner_can_preview_post_consultation_dictation_without_persisting(
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
+def test_quick_action_context_audio_preview_transcribes_for_owner_without_persisting(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Quick Action Context Preview")
+    admin = make_user(email="admin-quick-action-context-preview@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-quick-action-context-preview@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-quick-action-context-preview@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Dictation STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="quick-action-context.wav", content_type="audio/wav", data=b"normalized-context"),
+    )
+    monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    captured_stt_kwargs = {}
+
+    def fake_transcribe_with_team_stt(db, **kwargs):
+        captured_stt_kwargs.update(kwargs)
+        return "Mention John Smith follow-up"
+
+    monkeypatch.setattr("app.services.dictations.transcribe_with_team_stt", fake_transcribe_with_team_stt)
+
+    login(client, email=owner.email, password="password-2")
+    transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Quick Action Context"})
+    transcript_id = transcript_created.json()["id"]
+
+    preview = client.post(
+        f"/api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file",
+        files={"audio": ("context.webm", b"raw-context", "audio/webm")},
+    )
+    assert preview.status_code == 200
+    assert preview.json() == {"text": "Mention John Smith follow-up"}
+    assert captured_stt_kwargs["team_id"] == team.id
+    assert captured_stt_kwargs["purpose"] is SttSelectionPurpose.post_consultation_dictation
+    assert captured_stt_kwargs["audio_bytes"] == b"normalized-context"
+    assert db_session.scalar(select(PostConsultationDictation).where(PostConsultationDictation.transcript_id == UUID(transcript_id))) is None
+    assert db_session.scalar(select(PostConsultationDictationSegment)) is None
+
+    client.post("/auth/logout")
+    login(client, email=other.email, password="password-3")
+    forbidden = client.post(
+        f"/api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file",
+        files={"audio": ("context.webm", b"raw-context", "audio/webm")},
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
 def test_post_consultation_dictation_upload_requires_dictation_stt_selection(
     client,
     make_team,
@@ -8448,6 +8502,7 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
     assert quick_action_payload == captured_provider_request
     assert quick_action_payload["messages"] == captured_provider_request["messages"]
     assert "Write a short SMS update." in json.dumps(quick_action_payload)
+    assert "Write a [PHI-" not in json.dumps(quick_action_payload)
     assert "Mention [PHI-1]'s agreed follow-up call." in json.dumps(quick_action_payload)
     assert "Mention John Smith's agreed follow-up call." not in json.dumps(quick_action_payload)
     assert "generation" not in quick_action_payload

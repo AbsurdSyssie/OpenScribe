@@ -2198,7 +2198,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260505-pii-source-visible"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260513-quick-action-context-audio"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2620,7 +2620,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260505-pii-source-visible" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260513-quick-action-context-audio" in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
 
@@ -2661,6 +2661,9 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     assert 'data-followup-history' in page.text
     assert 'data-generate-output-form' in page.text
     assert 'data-quick-action-context-input' in page.text
+    assert 'data-quick-action-context-record' in page.text
+    assert 'data-quick-action-context-record-label' in page.text
+    assert 'data-quick-action-context-stop' not in page.text
     assert 'Create' in page.text
     assert 'Saved instructions' not in page.text
     assert 'data-selected-template-mode' not in page.text
@@ -3752,6 +3755,9 @@ def test_user_transcribe_page_enables_followups_from_structured_note_content(
     assert 'data-run-quick-action-trigger' in page.text
     assert 'data-quick-action-select' in page.text
     assert 'data-quick-action-context-input' in page.text
+    assert 'data-quick-action-context-record' in page.text
+    assert 'data-quick-action-context-record-label' in page.text
+    assert 'data-quick-action-context-stop' not in page.text
     assert 'data-followup-prompt-input' in page.text
     assert 'data-run-quick-action-trigger\ndisabled' not in page.text
     assert 'data-quick-action-select\nclass="followup-select"\n>' in page.text
@@ -4080,7 +4086,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260505-pii-source-visible" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260513-quick-action-context-audio" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

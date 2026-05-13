@@ -131,7 +131,7 @@ def update_post_consultation_dictation(
     return dictation
 
 
-def transcribe_post_consultation_dictation_audio(
+def transcribe_prompt_context_audio(
     db: Session,
     owner: User,
     *,
@@ -154,6 +154,23 @@ def transcribe_post_consultation_dictation_audio(
     if not transcript_text:
         raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
     return transcript_text
+
+
+def transcribe_post_consultation_dictation_audio(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    audio_bytes: bytes,
+    filename: str,
+) -> str:
+    return transcribe_prompt_context_audio(
+        db,
+        owner,
+        transcript_id=transcript_id,
+        audio_bytes=audio_bytes,
+        filename=filename,
+    )
 
 
 def append_post_consultation_dictation_audio(

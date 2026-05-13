@@ -141,6 +141,7 @@ Workspace UX:
 - dictation-only sessions are still backed by a transcript root; generation may proceed from saved dictation even when the consultation transcript draft is empty
 - live dictation is the primary path; audio upload remains a secondary fallback for separately recorded dictation audio and follows the same preview-before-save modal flow
 - after the first successful consultation recording stop for a transcript with no generated documents and no saved dictation, the browser may show a one-time localStorage-backed nudge toast and CTA flash encouraging a short clinician summary
+- quick-action context recording is a transient prompt-context helper: it sends short audio through the post-consultation dictation STT selection, inserts returned text into the existing quick-action context field, and relies on the current quick-action redaction boundary before any LLM request.
 
 Shared backend concepts:
 

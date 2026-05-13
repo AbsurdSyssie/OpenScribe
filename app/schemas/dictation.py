@@ -12,6 +12,10 @@ class PostConsultationDictationPreview(BaseModel):
     text: str
 
 
+class PromptContextPreview(BaseModel):
+    text: str
+
+
 class PostConsultationDictationDetail(BaseModel):
     id: UUID
     transcript_id: UUID

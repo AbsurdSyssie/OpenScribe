@@ -74,6 +74,7 @@ When testing or inspecting providers, only safe operational metadata should appe
 - cost estimates
 
 Do not log or display raw secrets, transcript text, prompts, generated note text, or provider responses containing patient data.
+If using openscribe for personal data or special category data, remember that you will require a data processing agreement with the data controller and any sub-processors which you use. 
 
 ## Default Templates and Quick Actions
 

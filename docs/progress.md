@@ -1,5 +1,97 @@
 # Progress
 
+## 2026-05-13 Clinical Note Empty State Spacing
+
+### Scope
+
+- Reduced vertical padding, icon size, and preserved-template whitespace for the empty Clinical Note guidance so it takes less screen height before note lines exist.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: marks the empty Clinical Note output and its top empty state with compact modifiers.
+- `app/templates/transcribe/_head_assets.html`: applies compact spacing only to that Clinical Note empty output/state.
+- `tests/test_web_refactor.py`: verifies the compact empty-state hook and styles remain present.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 5 tests.
+
+### Documentation
+
+- Updated this progress record.
+
+### Risks / assumptions
+
+- Visual-only change; no product behavior or content flow changed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: CSS/template-only layout change; no transcript/note content exposure changes.
+- Ownership rules preserved: owner-scoped workspace rendering unchanged.
+- Deletion semantics preserved: no lifecycle or cascade paths changed.
+- Provider rules preserved: no STT/LLM/de-identification provider logic changed.
+- Structured-note contract preserved: no structured output keys, validation, or editor data model changed.
+
+## 2026-05-13 Follow Ups Redesign
+
+### Scope
+
+- Redesigned Follow Ups tab into quick-action list, context/request, and selected-output panels with current-transcript recents.
+- Follow-up recents now sit under the selected output; visual-only rating controls were removed.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no usage-count schema exists in this slice, so no Popular/Most used badges were added.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: replaces Follow Ups body with v2 three-panel markup while preserving generation hooks.
+- `app/templates/transcribe/_head_assets.html`: adds v2 panel/card/request/output responsive styles.
+- `app/templates/transcribe/_shell_extras.html`: bumps frontend module cache key.
+- `app/static/js/transcribe/app.js`: wires new DOM refs and selected output rendering.
+- `app/static/js/transcribe/actions.js`: adds quick-action search, card selection sync, counters, clear/enter behavior, selected-output copy/delete, and recorder targeting for context/custom prompt.
+- `app/static/js/transcribe/documents.js`: renders follow-up recents instead of stacked output cards.
+- `app/web/transcribe_workspace.py`: orders quick actions/templates by default preference, favourites, then name without schema changes.
+- `tests/test_web_refactor.py`: covers ordering and required Follow Ups hooks.
+- `docs/transcribe_brief.md`: documents new Follow Ups flow and constraints.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/python -m py_compile app/web/transcribe_workspace.py`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace or quick_action_context"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- No backend usage metadata was found, so most-used sorting and badges are intentionally omitted.
+- Recorder still uses the existing quick-action context transcription preview endpoint, now targeting either context or custom prompt textareas.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: frontend-only layout/interaction changes; no transcript/note/prompt content becomes shareable or visible to non-owners.
+- Ownership rules preserved: existing owner-scoped workspace and generated-document endpoints remain the only data source/mutation path.
+- Deletion semantics preserved: selected follow-up delete still calls existing generated-document hard-delete endpoint; no undo or cascade behavior changed.
+- Provider rules preserved: LLM/STT provider resolution unchanged; no provider credentials or raw secrets exposed.
+- Structured-note contract preserved: EMIS structured-note generation/editor paths unchanged.
+
 ## 2026-05-13 VAD Inactivity Behavior Tests
 
 ### Scope

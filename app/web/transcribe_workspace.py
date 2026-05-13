@@ -140,18 +140,23 @@ def _default_emis_section_definitions() -> list[dict[str, str]]:
     return [{"key": key, "label": EMIS_SECTION_LABELS[key]} for key in EMIS_SECTION_KEYS]
 
 
-def _order_assets_by_favourites(assets, favorite_ids: list[str] | None):
-    if not assets or not favorite_ids:
+def _order_assets_by_preferences(assets, favorite_ids: list[str] | None, default_id: str | None = None):
+    if not assets:
         return assets
-    favorite_position = {value: index for index, value in enumerate(favorite_ids)}
+    favorite_position = {value: index for index, value in enumerate(favorite_ids or [])}
     return sorted(
         assets,
         key=lambda asset: (
+            0 if default_id and str(asset.id) == default_id else 1,
             0 if str(asset.id) in favorite_position else 1,
             favorite_position.get(str(asset.id), 999),
             str(getattr(asset, "name", "")).lower(),
         ),
     )
+
+
+def _order_assets_by_favourites(assets, favorite_ids: list[str] | None):
+    return _order_assets_by_preferences(assets, favorite_ids)
 
 
 def _preferred_template_from_preferences(available_templates, preferred_template_id: str | None):
@@ -587,8 +592,16 @@ def resolve_transcribe_workspace(
     available_templates = list_available_templates_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_quick_actions = list_available_quick_actions_for_user_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
     available_smart_phrases = list_available_smart_phrases_service(db, current_user) if current_user.team_id is not None and not current_user.is_system_admin else []
-    available_templates = _order_assets_by_favourites(available_templates, user_app_preferences_json.get("favorite_template_ids"))
-    available_quick_actions = _order_assets_by_favourites(available_quick_actions, user_app_preferences_json.get("favorite_quick_action_ids"))
+    available_templates = _order_assets_by_preferences(
+        available_templates,
+        user_app_preferences_json.get("favorite_template_ids"),
+        user_app_preferences_json.get("default_template_id"),
+    )
+    available_quick_actions = _order_assets_by_preferences(
+        available_quick_actions,
+        user_app_preferences_json.get("favorite_quick_action_ids"),
+        user_app_preferences_json.get("default_quick_action_id"),
+    )
     preferred_template = _preferred_template_from_preferences(available_templates, user_app_preferences_json.get("default_template_id"))
     generated_documents = (
         list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)

@@ -188,6 +188,9 @@ For `live_chunked` sessions:
 - the workspace keeps polling while live capture is active so newly applied transcript text appears without a manual refresh
 - when the tab is backgrounded, the browser pauses `MicVAD` to flush live capture before background timer throttling can delay chunking
 - when the tab is unloaded, the browser stops local mic state and sends a best-effort keepalive finalize request so already uploaded chunks are reconciled instead of leaving the transcript stuck in `recording`
+- while microphone recording is active, 30 seconds without VAD-detected speech shows a local, non-blocking `Are you still there?` prompt
+- the inactivity prompt is browser UI only; it does not stop capture, upload audio, finalize capture, or change transcript ownership/state
+- dismissing the inactivity prompt suppresses only the current silent interval; later VAD speech followed by silence re-arms it, and stop/page-unload reset clears any pending prompt timer
 - status copy changes to live-specific text:
   - `Listening for speech...`
   - `Speech detected. Building live chunk...`

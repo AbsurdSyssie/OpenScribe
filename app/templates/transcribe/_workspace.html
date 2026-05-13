@@ -119,6 +119,16 @@ Try transcription again
 </div>
 </div>
 
+<div
+class="vad-silence-prompt"
+data-vad-silence-prompt
+role="status"
+aria-live="polite"
+hidden>
+<span>Are you still there?</span>
+<button type="button" data-vad-silence-prompt-dismiss>Still here</button>
+</div>
+
 <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink" data-active-ingestion-mode>
 {% if active_transcript %}
 {{ 'Uploaded recording' if active_transcript.ingestion_mode.value == 'whole_file' else 'Live capture' }}

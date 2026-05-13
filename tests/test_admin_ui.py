@@ -3854,10 +3854,21 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "captureController?.syncDisplayedDuration?.();" in app_js
     assert "Listening for speech..." in media_js
     assert "const micVisualizer = document.querySelector('[data-mic-visualizer]');" in app_js
+    assert "const silencePrompt = document.querySelector('[data-vad-silence-prompt]');" in app_js
+    assert "const VAD_SILENCE_PROMPT_MS = 30000;" in media_js
+    assert "const armSilencePromptTimer = () => {" in media_js
+    assert "markVadSpeechStarted();" in media_js
+    assert "markVadSpeechEndedOrIdle();" in media_js
+    assert "silencePromptDismissedForCurrentSilentInterval = true;" in media_js
+    assert "resetSilencePromptState();" in media_js
     assert "batchVadInstance = await buildBatchVadInstance();" in media_js
     assert "Speech detected. Voice-only batch capture is running..." in media_js
     assert "microphone-batch.wav" in media_js
     assert 'data-mic-visualizer' in workspace_html
+    assert 'data-vad-silence-prompt' in workspace_html
+    assert 'Are you still there?' in workspace_html
+    assert 'data-vad-silence-prompt-dismiss' in workspace_html
+    assert ".vad-silence-prompt" in head_assets
     assert "const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';" in media_js
     assert "const beginAccumulatedTimer = () => {" in media_js
     assert "const finalizeAccumulatedTimer = () => {" in media_js
@@ -4086,7 +4097,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260513-quick-action-context-audio" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260513-vad-inactivity-prompt" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

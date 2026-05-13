@@ -26,6 +26,7 @@ export function createAudioCaptureController({
 }) {
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   const MIC_VISUALIZER_BAR_COUNT = 12;
+  const VAD_SILENCE_PROMPT_MS = 30000;
   let mediaStream = null;
   let captureMode = 'batch';
   let liveVadInstance = null;
@@ -52,6 +53,9 @@ export function createAudioCaptureController({
   let accumulatedBeforeCurrentSegmentMs = 0;
   let micVisualizerBars = [];
   let micVisualizerLevels = Array(MIC_VISUALIZER_BAR_COUNT).fill(0.14);
+  let silencePromptTimeoutId = null;
+  let silencePromptDismissedForCurrentSilentInterval = false;
+  let vadSpeechCurrentlyActive = false;
 
   const readStoredDurations = () => {
     try {
@@ -164,6 +168,69 @@ export function createAudioCaptureController({
     renderMicVisualizer();
   };
 
+  const isRecordingOngoing = () => (
+    (
+      captureMode === 'live'
+      && !liveStopRequested
+      && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+    )
+    || (
+      captureMode === 'batch'
+      && !batchStopRequested
+      && (Boolean(batchVadInstance) || batchRestartPending)
+    )
+  );
+
+  const showSilencePrompt = () => {
+    if (!dom.silencePrompt) return;
+    dom.silencePrompt.hidden = false;
+  };
+
+  const hideSilencePrompt = () => {
+    if (dom.silencePrompt) {
+      dom.silencePrompt.hidden = true;
+    }
+  };
+
+  const clearSilencePromptTimer = () => {
+    if (silencePromptTimeoutId) {
+      window.clearTimeout(silencePromptTimeoutId);
+      silencePromptTimeoutId = null;
+    }
+  };
+
+  const armSilencePromptTimer = () => {
+    clearSilencePromptTimer();
+    if (!isRecordingOngoing() || vadSpeechCurrentlyActive || silencePromptDismissedForCurrentSilentInterval) return;
+    silencePromptTimeoutId = window.setTimeout(() => {
+      silencePromptTimeoutId = null;
+      if (!isRecordingOngoing() || vadSpeechCurrentlyActive || silencePromptDismissedForCurrentSilentInterval) return;
+      showSilencePrompt();
+    }, Number(config.vadSilencePromptMs || VAD_SILENCE_PROMPT_MS));
+  };
+
+  const markVadSpeechStarted = () => {
+    vadSpeechCurrentlyActive = true;
+    silencePromptDismissedForCurrentSilentInterval = false;
+    clearSilencePromptTimer();
+    hideSilencePrompt();
+  };
+
+  const markVadSpeechEndedOrIdle = () => {
+    vadSpeechCurrentlyActive = false;
+    if (!silencePromptDismissedForCurrentSilentInterval) {
+      hideSilencePrompt();
+    }
+    armSilencePromptTimer();
+  };
+
+  const resetSilencePromptState = () => {
+    clearSilencePromptTimer();
+    hideSilencePrompt();
+    silencePromptDismissedForCurrentSilentInterval = false;
+    vadSpeechCurrentlyActive = false;
+  };
+
   const buildMicVisualizerLevelsFromVadFrame = (frame) => {
     if (!(frame instanceof Float32Array) || frame.length === 0) {
       return Array(MIC_VISUALIZER_BAR_COUNT).fill(0.14);
@@ -233,6 +300,7 @@ export function createAudioCaptureController({
     }
     clearLiveChunkTimeout();
     clearBatchRolloverTimeout();
+    resetSilencePromptState();
     startedAt = null;
     recordingTranscriptId = null;
     accumulatedBeforeCurrentSegmentMs = 0;
@@ -404,15 +472,18 @@ export function createAudioCaptureController({
     },
     onSpeechStart: () => {
       setMicVisualizerVadActive(true);
+      markVadSpeechStarted();
       onSpeechStart?.();
     },
     onSpeechEnd: (audio) => {
       setMicVisualizerVadActive(false);
       onSpeechEnd?.(audio);
+      markVadSpeechEndedOrIdle();
     },
     onVADMisfire: () => {
       setMicVisualizerVadActive(false);
       onVADMisfire?.();
+      markVadSpeechEndedOrIdle();
     },
   });
 
@@ -478,6 +549,8 @@ export function createAudioCaptureController({
   };
 
   const uploadLiveChunk = async (blob, durationSeconds) => {
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     const { transcriptId, nextLiveChunkSequenceNo } = getState();
     if (!transcriptId) {
       throw new Error('Select a live session before sending audio.');
@@ -520,6 +593,8 @@ export function createAudioCaptureController({
   };
 
   const finalizeLiveCaptureIfNeeded = async ({ keepalive = false } = {}) => {
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     const { transcriptId } = getState();
     if (!transcriptId || typeof finalizeLiveCapture !== 'function') {
       if (transcriptId) {
@@ -604,6 +679,7 @@ export function createAudioCaptureController({
     setVisibleStatus('listening');
     setSessionProgress('Listening for speech. The Silero browser VAD will queue live chunks after 2 seconds of silence.');
     setMicStatus('Listening for speech...');
+    markVadSpeechEndedOrIdle();
   };
 
   const resumeLiveListeningAfterForcedFlush = async () => {
@@ -668,6 +744,7 @@ export function createAudioCaptureController({
       setMicStatus('Listening for speech...');
       setVisibleStatus('listening');
       setSessionProgress('Live chunk queued. Listening for the next utterance...');
+      markVadSpeechEndedOrIdle();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not send this live audio part.';
       setMicStatus(message, 'error');
@@ -685,6 +762,8 @@ export function createAudioCaptureController({
   const activeBatchTranscriptId = () => recordingTranscriptId || getState().transcriptId || null;
 
   const uploadMicrophoneBatch = async (blob, { rollover = false, transcriptId = null } = {}) => {
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     const uploadLabel = rollover ? 'recording part' : 'microphone recording';
     setMicStatus(`Uploading your ${uploadLabel}...`);
     setVisibleStatus('uploading');
@@ -814,6 +893,7 @@ export function createAudioCaptureController({
       setVisibleStatus('recording');
       setSessionProgress('New recording part started. Previous part is being uploaded for transcription.');
       setMicStatus('Recording restarted. Listening for speech...');
+      markVadSpeechEndedOrIdle();
     } catch (_) {
       batchRestartPending = false;
       if (batchStopRequested || batchCaptureGeneration !== restartGeneration) {
@@ -833,6 +913,8 @@ export function createAudioCaptureController({
     const rolloverGeneration = batchCaptureGeneration;
     batchRestartPending = true;
     batchRolloverUploadPending = true;
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     cleanupBatchVad();
     setMicStatus('Recording part ready. Uploading before capture continues...');
     setVisibleStatus('uploading');
@@ -847,6 +929,7 @@ export function createAudioCaptureController({
       batchRestartPending = false;
       batchStopRequested = true;
       clearBatchRolloverTimeout();
+      resetSilencePromptState();
       stopStreamTracks();
       resetMicVisualizer();
       finalizeAccumulatedTimer();
@@ -922,6 +1005,8 @@ export function createAudioCaptureController({
     liveStopRequested = true;
     liveForceContinueRequested = false;
     clearLiveChunkTimeout();
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     setMicStatus('Stopping live recording...');
     setSessionProgress('Finishing the current speech segment...');
       if (liveRestartPending && !liveSpeechActive) {
@@ -975,6 +1060,7 @@ export function createAudioCaptureController({
       setMicStatus('Listening for speech. Voice-only capture keeps buffered speech until you stop.');
       setVisibleStatus('recording');
       setSessionProgress('Listening on this device. Silence is skipped; voiced audio with buffer stays local until upload.');
+      markVadSpeechEndedOrIdle();
     } catch (error) {
       resetRecordingState();
       reportMicIssue?.(error);
@@ -986,6 +1072,8 @@ export function createAudioCaptureController({
     if (!batchVadInstance && !batchRestartPending) return;
     batchStopRequested = true;
     clearBatchRolloverTimeout();
+    clearSilencePromptTimer();
+    hideSilencePrompt();
     setMicStatus('Stopping voice-only microphone recording...');
     setVisibleStatus('uploading');
     setSessionProgress('Finishing your last speech segment...');
@@ -1044,6 +1132,14 @@ export function createAudioCaptureController({
       dom.recordToggleButton.addEventListener('click', handleRecordToggle);
     }
 
+    if (dom.silencePromptDismiss) {
+      dom.silencePromptDismiss.addEventListener('click', () => {
+        silencePromptDismissedForCurrentSilentInterval = true;
+        clearSilencePromptTimer();
+        hideSilencePrompt();
+      });
+    }
+
     if (dom.fileInput && dom.uploadForm) {
       dom.fileInput.addEventListener('change', () => {
         if (!dom.fileInput.files || dom.fileInput.files.length === 0) {
@@ -1059,6 +1155,8 @@ export function createAudioCaptureController({
         return;
       }
       liveForceContinueRequested = true;
+      clearSilencePromptTimer();
+      hideSilencePrompt();
       setSessionProgress('Tab moved to background. Flushing live capture before browser throttling can delay it...');
       try {
         liveVadInstance.pause();
@@ -1083,6 +1181,7 @@ export function createAudioCaptureController({
     liveStopRequested = true;
     liveForceContinueRequested = false;
     clearLiveChunkTimeout();
+    resetSilencePromptState();
     finalizeAccumulatedTimer();
     if (timerId) {
       window.clearInterval(timerId);

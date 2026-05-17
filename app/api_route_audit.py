@@ -158,6 +158,30 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("POST", f"/api/v1/stt-configs/{PLACEHOLDER_UUID}/inspect", AccessTier.system_admin),
     AuditCase(
         "POST",
+        "/api/v1/stt-configs/drafts",
+        AccessTier.system_admin,
+        json_body=_json(
+            team_id=PLACEHOLDER_UUID,
+            provider_preset="openai",
+            label="Audit STT Draft",
+            base_url="https://api.openai.com/v1",
+            bearer_token="secret",
+        ),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/stt-configs/{PLACEHOLDER_UUID}/finalize",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, label="Audit STT", model_name="whisper-1", is_active=True),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/stt-configs/{PLACEHOLDER_UUID}/replace-credential",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, bearer_token="secret"),
+    ),
+    AuditCase(
+        "POST",
         "/api/v1/stt-configs",
         AccessTier.system_admin,
         json_body=_json(
@@ -183,6 +207,30 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         json_body=_json(team_id=PLACEHOLDER_UUID, adapter_kind="ollama_chat", base_url="http://127.0.0.1:11434"),
     ),
     AuditCase("POST", f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/inspect", AccessTier.system_admin),
+    AuditCase(
+        "POST",
+        "/api/v1/llm-configs/drafts",
+        AccessTier.system_admin,
+        json_body=_json(
+            team_id=PLACEHOLDER_UUID,
+            provider_preset="openai",
+            label="Audit LLM Draft",
+            base_url="https://api.openai.com/v1",
+            bearer_token="secret",
+        ),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/finalize",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, config_id=PLACEHOLDER_UUID, label="Audit LLM", model_name="gpt-4o-mini", is_active=True),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/replace-credential",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, config_id=PLACEHOLDER_UUID, bearer_token="secret"),
+    ),
     AuditCase(
         "POST",
         "/api/v1/llm-configs",
@@ -365,7 +413,14 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("dictation.wav"),
     ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/quick-action-context/preview-audio-file",
+        AccessTier.full,
+        files=_file("context.wav"),
+    ),
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
+    AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generated-documents", AccessTier.full),
     AuditCase("GET", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/redaction-debug", AccessTier.local_debug),

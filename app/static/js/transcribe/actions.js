@@ -26,13 +26,36 @@ export function attachTranscribeActions({
   setTab,
   structuredEditor,
 }) {
+  let quickActionContextOverride = null;
+
   const syncQuickActionQuickPickState = () => {
     const selectedId = dom.runQuickActionSelect?.value || '';
+    let selectedCard = null;
     dom.quickActionQuickPicks?.forEach((button) => {
       const isSelected = (button.dataset.quickActionId || '') === selectedId;
+      if (isSelected) selectedCard = button;
       button.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
       button.classList.toggle('is-selected', isSelected);
+      button.closest('[data-quick-action-card-shell]')?.classList.toggle('is-selected', isSelected);
     });
+    dom.quickActionCardRunButtons?.forEach((button) => {
+      const isSelected = (button.dataset.quickActionId || '') === selectedId;
+      button.hidden = !isSelected;
+    });
+    dom.followupSelectedActionPanel?.classList.toggle('has-selected-action', Boolean(selectedCard));
+    dom.followupSelectedActionPanel?.setAttribute('data-selected-quick-action-id', selectedId);
+    if (dom.followupSelectedActionEmpty) {
+      dom.followupSelectedActionEmpty.hidden = Boolean(selectedCard);
+    }
+    if (dom.followupSelectedActionSelected) {
+      dom.followupSelectedActionSelected.hidden = !selectedCard;
+    }
+    if (dom.followupSelectedActionName) {
+      dom.followupSelectedActionName.textContent = selectedCard?.dataset.quickActionName || '';
+    }
+    if (dom.followupSelectedActionDescription) {
+      dom.followupSelectedActionDescription.textContent = selectedCard?.dataset.quickActionDescription || 'Saved quick-action format selected.';
+    }
     const hiddenIdInput = dom.runQuickActionForm?.querySelector('[data-quick-action-id-input]');
     if (hiddenIdInput) {
       hiddenIdInput.value = selectedId;
@@ -282,7 +305,7 @@ export function attachTranscribeActions({
 
   dom.followupLlmRequestToggle?.addEventListener('click', () => {
     const panel = window.document.querySelector('[data-followup-llm-request-slot] [data-llm-request-panel]');
-    if (panel) panel.open = !panel.open;
+    if (panel) panel.hidden = !panel.hidden;
   });
 
   if (dom.copyTranscriptButton) {
@@ -675,20 +698,53 @@ export function attachTranscribeActions({
 
   const bindCharacterCounter = (input, counter, max) => {
     if (!input || !counter) return;
+    const limit = Number(input.getAttribute('maxlength')) || max;
     const update = () => {
-      counter.textContent = `${input.value.length} / ${max}`;
+      counter.textContent = `${input.value.length} / ${limit}`;
     };
     input.addEventListener('input', update);
     update();
   };
   bindCharacterCounter(dom.quickActionContextInput, dom.contextCharCount, 4000);
-  bindCharacterCounter(dom.generateFollowupPromptInput, dom.customPromptCharCount, 1000);
+  if (dom.generateFollowupPromptInput !== dom.quickActionContextInput) {
+    bindCharacterCounter(dom.generateFollowupPromptInput, dom.customPromptCharCount, 1000);
+  }
 
   dom.followupClearButton?.addEventListener('click', () => {
     if (dom.quickActionContextInput) dom.quickActionContextInput.value = '';
     if (dom.generateFollowupPromptInput) dom.generateFollowupPromptInput.value = '';
+    if (dom.runQuickActionSelect) dom.runQuickActionSelect.value = '';
     dom.quickActionContextInput?.dispatchEvent(new Event('input', { bubbles: true }));
     dom.generateFollowupPromptInput?.dispatchEvent(new Event('input', { bubbles: true }));
+    syncQuickActionQuickPickState();
+  });
+
+  dom.clearQuickActionButton?.addEventListener('click', () => {
+    if (dom.runQuickActionSelect) dom.runQuickActionSelect.value = '';
+    syncQuickActionQuickPickState();
+    dom.quickActionContextInput?.focus();
+  });
+
+  dom.focusQuickActionsButton?.addEventListener('click', () => {
+    dom.quickActionSearchInput?.focus();
+    dom.quickActionQuickPicks?.find((button) => !button.hidden && !button.disabled)?.focus();
+  });
+
+  dom.selectedQuickActionRunButton?.addEventListener('click', () => {
+    quickActionContextOverride = '';
+    dom.runQuickActionForm?.requestSubmit?.();
+  });
+
+  dom.quickActionCardRunButtons?.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled || !dom.runQuickActionSelect) return;
+      dom.runQuickActionSelect.value = button.dataset.quickActionId || '';
+      syncQuickActionQuickPickState();
+      quickActionContextOverride = '';
+      dom.runQuickActionForm?.requestSubmit?.();
+    });
   });
 
   dom.quickActionContextInput?.addEventListener('keydown', (event) => {
@@ -697,10 +753,24 @@ export function attachTranscribeActions({
     dom.runQuickActionTrigger?.click();
   });
 
-  dom.generateFollowupPromptInput?.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey) return;
-    event.preventDefault();
-    dom.generateFollowupTrigger?.click();
+  if (dom.generateFollowupPromptInput !== dom.quickActionContextInput) {
+    dom.generateFollowupPromptInput?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      event.preventDefault();
+      dom.generateFollowupTrigger?.click();
+    });
+  }
+
+  dom.generateFollowupTrigger?.addEventListener('click', () => {
+    dom.generateFollowupForm?.requestSubmit?.();
+  });
+
+  dom.runQuickActionTrigger?.addEventListener('click', () => {
+    if (dom.runQuickActionSelect?.value) {
+      dom.runQuickActionForm?.requestSubmit?.();
+      return;
+    }
+    dom.generateFollowupForm?.requestSubmit?.();
   });
 
   if (dom.runQuickActionForm) {
@@ -715,6 +785,8 @@ export function attachTranscribeActions({
       const quickActionContextText = dom.quickActionContextInput?.value?.trim()
         || dom.runQuickActionForm.querySelector('[data-quick-action-context-hidden]')?.value?.trim()
         || '';
+      const contextText = quickActionContextOverride === null ? quickActionContextText : quickActionContextOverride;
+      quickActionContextOverride = null;
       if (!quickActionId) {
         showFlash('Select a quick action first.', 'warning');
         return;
@@ -725,14 +797,14 @@ export function attachTranscribeActions({
       }
       const hiddenContextInput = dom.runQuickActionForm.querySelector('[data-quick-action-context-hidden]');
       if (hiddenContextInput) {
-        hiddenContextInput.value = quickActionContextText;
+        hiddenContextInput.value = contextText;
       }
       try {
         const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quick_action_id: quickActionId, context_text: quickActionContextText || null }),
+          body: JSON.stringify({ quick_action_id: quickActionId, context_text: contextText || null }),
         });
         if (!response.ok) {
           throw new Error(await parseErrorMessage(response, 'Could not run the quick action.'));

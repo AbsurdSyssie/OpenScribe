@@ -8581,7 +8581,11 @@ def test_generate_output_is_rate_limited_per_authenticated_user(
     template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="My note", prompt_text="Write a concise note.")
 
     class FakeTaskResult:
-        id = "generated-task-rate"
+        next_id = 0
+
+        def __init__(self):
+            type(self).next_id += 1
+            self.id = f"generated-task-rate-{type(self).next_id}"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
 
@@ -8592,11 +8596,13 @@ def test_generate_output_is_rate_limited_per_authenticated_user(
     )
     transcript_id = started.json()["id"]
 
-    first = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
-    second = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    responses = [
+        client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+        for _ in range(21)
+    ]
 
-    assert first.status_code == 202
-    assert_error(second, status_code=429, code="rate_limited", message="Too many requests")
+    assert [response.status_code for response in responses[:20]] == [202] * 20
+    assert_error(responses[20], status_code=429, code="rate_limited", message="Too many requests")
 
 
 def test_process_generated_document_logs_usage_metadata(

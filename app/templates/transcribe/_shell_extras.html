@@ -118,19 +118,6 @@ return;
 var runQuickActionButton = e.target.closest('[data-run-quick-action-trigger]');
 if (runQuickActionButton) {
 e.preventDefault();
-var quickActionSelect = document.querySelector('[data-quick-action-select]');
-var quickActionIdInput = document.querySelector('[data-quick-action-id-input]');
-var quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
-var quickActionContextHidden = document.querySelector('[data-quick-action-context-hidden]');
-var runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
-if (quickActionSelect && quickActionIdInput && quickActionContextHidden && runQuickActionForm) {
-var selectedId = quickActionSelect.value;
-if (selectedId) {
-quickActionIdInput.value = selectedId;
-quickActionContextHidden.value = quickActionContextInput ? quickActionContextInput.value.trim() : '';
-runQuickActionForm.submit();
-}
-}
 return;
 }
 

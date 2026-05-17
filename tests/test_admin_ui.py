@@ -4057,7 +4057,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const hasNoteInputContent = () => {" in structured_js
     assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
-    assert "if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {" in documents_js
+    assert "const preserveCurrentEditorRender = Boolean(" in documents_js
+    assert "preserveEditor || shouldPreserveNoteEditorRender?.(selectedNoteId)" in documents_js
+    assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "const previousPanel = slot.querySelector('[data-llm-request-panel]');" in documents_js
     assert "previousDocumentId === document.id" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js

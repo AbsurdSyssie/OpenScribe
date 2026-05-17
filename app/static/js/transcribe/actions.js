@@ -28,6 +28,14 @@ export function attachTranscribeActions({
 }) {
   let quickActionContextOverride = null;
 
+  const followupCopyText = () => {
+    const node = dom.latestFollowupOutput?.querySelector('[data-followup-copy-body]');
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+      return node.value.trim();
+    }
+    return node?.textContent?.trim() || '';
+  };
+
   const syncQuickActionQuickPickState = () => {
     const selectedId = dom.runQuickActionSelect?.value || '';
     let selectedCard = null;
@@ -42,20 +50,6 @@ export function attachTranscribeActions({
       const isSelected = (button.dataset.quickActionId || '') === selectedId;
       button.hidden = !isSelected;
     });
-    dom.followupSelectedActionPanel?.classList.toggle('has-selected-action', Boolean(selectedCard));
-    dom.followupSelectedActionPanel?.setAttribute('data-selected-quick-action-id', selectedId);
-    if (dom.followupSelectedActionEmpty) {
-      dom.followupSelectedActionEmpty.hidden = Boolean(selectedCard);
-    }
-    if (dom.followupSelectedActionSelected) {
-      dom.followupSelectedActionSelected.hidden = !selectedCard;
-    }
-    if (dom.followupSelectedActionName) {
-      dom.followupSelectedActionName.textContent = selectedCard?.dataset.quickActionName || '';
-    }
-    if (dom.followupSelectedActionDescription) {
-      dom.followupSelectedActionDescription.textContent = selectedCard?.dataset.quickActionDescription || 'Saved quick-action format selected.';
-    }
     const hiddenIdInput = dom.runQuickActionForm?.querySelector('[data-quick-action-id-input]');
     if (hiddenIdInput) {
       hiddenIdInput.value = selectedId;
@@ -274,7 +268,7 @@ export function attachTranscribeActions({
   });
 
   dom.copyLatestFollowupButton?.addEventListener('click', async () => {
-    const text = dom.latestFollowupOutput?.querySelector('[data-followup-copy-body]')?.textContent?.trim() || '';
+    const text = followupCopyText();
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -303,10 +297,25 @@ export function attachTranscribeActions({
     }
   });
 
-  dom.followupLlmRequestToggle?.addEventListener('click', () => {
+  const syncFollowupLlmRequestToggleLabels = (isOpen = false) => {
+    dom.followupLlmRequestToggles?.forEach((button) => {
+      button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      const label = button.querySelector('[data-followup-llm-request-toggle-label]');
+      if (label) {
+        label.textContent = isOpen ? 'Hide request' : 'Show request';
+      } else {
+        button.textContent = isOpen ? 'Hide request' : 'Show request';
+      }
+    });
+  };
+
+  dom.followupLlmRequestToggles?.forEach((button) => button.addEventListener('click', () => {
     const panel = window.document.querySelector('[data-followup-llm-request-slot] [data-llm-request-panel]');
-    if (panel) panel.hidden = !panel.hidden;
-  });
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    syncFollowupLlmRequestToggleLabels(!panel.hidden);
+  }));
+  syncFollowupLlmRequestToggleLabels(false);
 
   if (dom.copyTranscriptButton) {
     dom.copyTranscriptButton.addEventListener('click', async () => {
@@ -723,16 +732,6 @@ export function attachTranscribeActions({
     if (dom.runQuickActionSelect) dom.runQuickActionSelect.value = '';
     syncQuickActionQuickPickState();
     dom.quickActionContextInput?.focus();
-  });
-
-  dom.focusQuickActionsButton?.addEventListener('click', () => {
-    dom.quickActionSearchInput?.focus();
-    dom.quickActionQuickPicks?.find((button) => !button.hidden && !button.disabled)?.focus();
-  });
-
-  dom.selectedQuickActionRunButton?.addEventListener('click', () => {
-    quickActionContextOverride = '';
-    dom.runQuickActionForm?.requestSubmit?.();
   });
 
   dom.quickActionCardRunButtons?.forEach((button) => {

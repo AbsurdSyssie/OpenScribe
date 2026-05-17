@@ -48,6 +48,13 @@ import { csrfFetch } from '../csrf.js';
       let noteSaveInFlight = null;
       let noteSaveQueued = false;
       let noteSaveConflictShown = false;
+      let followupEditorDirty = false;
+      let dirtyFollowupDocumentId = null;
+      let followupEditVersion = 0;
+      let followupSaveTimer = null;
+      let followupSaveInFlight = null;
+      let followupSaveQueued = false;
+      let followupSaveConflictShown = false;
       let userAppPreferences = (bootstrap.userAppPreferences && typeof bootstrap.userAppPreferences === 'object') ? { ...bootstrap.userAppPreferences } : {};
       let dictationDirty = false;
       let dictationSaveInFlight = null;
@@ -193,20 +200,13 @@ import { csrfFetch } from '../csrf.js';
       const customPromptCharCount = document.querySelector('[data-custom-prompt-char-count]');
       const recordCustomPromptButton = document.querySelector('[data-record-custom-prompt]');
       const recordCustomPromptLabel = document.querySelector('[data-record-custom-prompt-label]');
-      const followupSelectedActionPanel = document.querySelector('[data-followup-selected-action-panel]');
-      const followupSelectedActionEmpty = document.querySelector('[data-followup-selected-action-empty]');
-      const followupSelectedActionSelected = document.querySelector('[data-followup-selected-action-selected]');
-      const followupSelectedActionName = document.querySelector('[data-followup-selected-action-name]');
-      const followupSelectedActionDescription = document.querySelector('[data-followup-selected-action-description]');
       const followupPromptPreviewTitle = document.querySelector('[data-followup-prompt-preview-title]');
       const followupPromptPreviewBody = document.querySelector('[data-followup-prompt-preview-body]');
       const followupPromptPreviewNote = document.querySelector('[data-followup-prompt-preview-note]');
-      const focusQuickActionsButton = document.querySelector('[data-focus-quick-actions]');
       const clearQuickActionButton = document.querySelector('[data-clear-quick-action]');
-      const selectedQuickActionRunButton = document.querySelector('[data-selected-quick-action-run]');
       const copyLatestFollowupButton = document.querySelector('[data-copy-latest-followup]');
       const deleteLatestFollowupButton = document.querySelector('[data-followup-delete-latest]');
-      const followupLlmRequestToggle = document.querySelector('[data-followup-llm-request-toggle]');
+      const followupLlmRequestToggles = [...document.querySelectorAll('[data-followup-llm-request-toggle]')];
       const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
       const quickActionCardRunButtons = [...document.querySelectorAll('[data-quick-action-card-run]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
@@ -301,6 +301,19 @@ let statusDetailsHideTimer = null;
         noteSaveConflictShown = false;
       };
 
+      const markFollowupEditorDirty = () => {
+        followupEditorDirty = true;
+        dirtyFollowupDocumentId = latestFollowupOutput?.dataset.latestFollowupId || selectedFollowupDocumentId || '';
+        followupEditVersion += 1;
+        scheduleFollowupAutosave();
+      };
+
+      const clearFollowupEditorDirty = () => {
+        followupEditorDirty = false;
+        dirtyFollowupDocumentId = null;
+        followupSaveConflictShown = false;
+      };
+
       const currentRenderedNoteDocumentId = () => latestGeneratedOutput?.dataset?.latestGeneratedId || '';
 
       const isNoteEditorFocused = () => {
@@ -323,6 +336,22 @@ let statusDetailsHideTimer = null;
         return Boolean(isNoteEditorFocused() && currentDocumentId === targetDocumentId);
       };
       const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
+
+      const currentRenderedFollowupDocumentId = () => latestFollowupOutput?.dataset?.latestFollowupId || '';
+
+      const hasPendingGeneratedFollowupEdits = () => {
+        const currentDocumentId = currentRenderedFollowupDocumentId();
+        return Boolean(followupEditorDirty && currentDocumentId && dirtyFollowupDocumentId === currentDocumentId);
+      };
+
+      const shouldPreserveFollowupEditorRender = (nextSelectedFollowupDocumentId = currentRenderedFollowupDocumentId()) => {
+        const currentDocumentId = currentRenderedFollowupDocumentId();
+        const targetDocumentId = nextSelectedFollowupDocumentId || '';
+        if (followupEditorDirty) {
+          return dirtyFollowupDocumentId === targetDocumentId;
+        }
+        return Boolean(currentDocumentId === targetDocumentId && document.activeElement?.closest?.('[data-latest-followup-output], [data-followup-output-title]'));
+      };
 
       const buildNoteSavePayload = () => {
         const generatedDocumentId = latestGeneratedOutput?.dataset?.latestGeneratedId || selectedNoteDocumentId || '';
@@ -357,6 +386,27 @@ let statusDetailsHideTimer = null;
               .map((input) => String(input.value || '').trim())
               .filter((value) => value.length > 0)
               .join('\n'),
+            sections: [],
+          },
+        };
+      };
+
+      const currentFollowupUpdatedAt = () => latestFollowupOutput?.dataset?.latestFollowupUpdatedAt || '';
+
+      const buildFollowupSavePayload = () => {
+        const generatedDocumentId = latestFollowupOutput?.dataset?.latestFollowupId || selectedFollowupDocumentId || '';
+        const expectedUpdatedAt = currentFollowupUpdatedAt();
+        const titleInput = document.querySelector('[data-followup-title-input]');
+        const bodyInput = document.querySelector('[data-followup-body-input]');
+        if (!generatedDocumentId || !expectedUpdatedAt || !bodyInput) {
+          return null;
+        }
+        return {
+          generatedDocumentId,
+          payload: {
+            expected_updated_at: expectedUpdatedAt,
+            title: titleInput?.value || '',
+            edited_output_text: bodyInput.value || '',
             sections: [],
           },
         };
@@ -546,6 +596,64 @@ let statusDetailsHideTimer = null;
         return noteSaveInFlight;
       };
 
+      const persistFollowupEditsSilently = async ({ keepalive = false } = {}) => {
+        if (followupSaveInFlight) {
+          followupSaveQueued = true;
+          return followupSaveInFlight;
+        }
+        const saveRequest = buildFollowupSavePayload();
+        if (!saveRequest) {
+          return null;
+        }
+        const requestVersion = followupEditVersion;
+        followupSaveInFlight = (async () => {
+          try {
+            const response = await csrfFetch(`/api/v1/generated-documents/${saveRequest.generatedDocumentId}`, {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              keepalive,
+              body: JSON.stringify(saveRequest.payload),
+            });
+            if (response.status === 409) {
+              followupSaveQueued = false;
+              if (!followupSaveConflictShown) {
+                followupSaveConflictShown = true;
+                showFlash('Follow-up changed elsewhere. Reload before saving again.', 'error');
+              }
+              return null;
+            }
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not save follow-up edits.'));
+            }
+            const savedDocument = await response.json();
+            workspaceFollowupDocuments = workspaceFollowupDocuments.map((document) => (
+              document.id === savedDocument.id ? savedDocument : document
+            ));
+            if (latestFollowupOutput && savedDocument.id === (selectedFollowupDocumentId || latestFollowupOutput.dataset.latestFollowupId || '')) {
+              latestFollowupOutput.dataset.latestFollowupUpdatedAt = savedDocument.updated_at || '';
+              latestFollowupOutput.dataset.latestFollowupStatus = savedDocument.status || '';
+              latestFollowupOutput.dataset.latestFollowupId = savedDocument.id || '';
+            }
+            followupSaveConflictShown = false;
+            if (requestVersion === followupEditVersion) {
+              clearFollowupEditorDirty();
+            }
+            return savedDocument;
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not save follow-up edits.', 'error');
+            return null;
+          } finally {
+            followupSaveInFlight = null;
+            if (followupSaveQueued) {
+              followupSaveQueued = false;
+              scheduleFollowupAutosave({ immediate: true });
+            }
+          }
+        })();
+        return followupSaveInFlight;
+      };
+
       function scheduleNoteAutosave({ immediate = false } = {}) {
         if (noteSaveTimer) {
           window.clearTimeout(noteSaveTimer);
@@ -557,6 +665,20 @@ let statusDetailsHideTimer = null;
         noteSaveTimer = window.setTimeout(() => {
           noteSaveTimer = null;
           void persistNoteEditsSilently();
+        }, immediate ? 0 : 700);
+      }
+
+      function scheduleFollowupAutosave({ immediate = false } = {}) {
+        if (followupSaveTimer) {
+          window.clearTimeout(followupSaveTimer);
+          followupSaveTimer = null;
+        }
+        if (!followupEditorDirty) {
+          return;
+        }
+        followupSaveTimer = window.setTimeout(() => {
+          followupSaveTimer = null;
+          void persistFollowupEditsSilently();
         }, immediate ? 0 : 700);
       }
 
@@ -1773,9 +1895,6 @@ let statusDetailsHideTimer = null;
         if (runQuickActionTrigger) {
           runQuickActionTrigger.disabled = !canGenerateFollowup;
         }
-        if (selectedQuickActionRunButton) {
-          selectedQuickActionRunButton.disabled = !canGenerateFollowup;
-        }
         if (quickActionContextInput) {
           quickActionContextInput.disabled = !canRunQuickAction;
         }
@@ -2016,6 +2135,22 @@ let statusDetailsHideTimer = null;
           scheduleNoteAutosave({ immediate: true });
         }
       });
+      if (followupOutputTitle instanceof HTMLInputElement || followupOutputTitle instanceof HTMLTextAreaElement) {
+        followupOutputTitle.addEventListener('input', markFollowupEditorDirty);
+        followupOutputTitle.addEventListener('focusout', () => {
+          scheduleFollowupAutosave({ immediate: true });
+        });
+      }
+      latestFollowupOutput?.addEventListener('input', (event) => {
+        if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute('data-followup-body-input')) {
+          markFollowupEditorDirty();
+        }
+      });
+      latestFollowupOutput?.addEventListener('focusout', (event) => {
+        if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute('data-followup-body-input')) {
+          scheduleFollowupAutosave({ immediate: true });
+        }
+      });
 
       if (templatePickerButton) {
         templatePickerButton.addEventListener('click', () => {
@@ -2044,26 +2179,36 @@ let statusDetailsHideTimer = null;
 
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
+        const setTitleInput = (value, disabled = false) => {
+          if (!followupOutputTitle) return;
+          if (followupOutputTitle instanceof HTMLInputElement || followupOutputTitle instanceof HTMLTextAreaElement) {
+            followupOutputTitle.value = value;
+            followupOutputTitle.disabled = disabled;
+          } else {
+            followupOutputTitle.textContent = value;
+          }
+        };
         if (!document) {
           latestFollowupOutput.dataset.latestFollowupStatus = '';
           latestFollowupOutput.dataset.latestFollowupId = '';
-          if (followupOutputTitle) followupOutputTitle.textContent = 'Generated follow-up';
+          latestFollowupOutput.dataset.latestFollowupUpdatedAt = '';
+          setTitleInput('Generated follow-up', true);
           if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'Select or generate a follow-up';
           latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Select a quick action and generate a follow-up.</div></div>';
           return;
         }
-        if (followupOutputTitle) {
-          followupOutputTitle.textContent = document.generator_type === 'quick_action'
-            ? (document.source_quick_action_name || document.title || 'Quick action')
-            : (document.title || 'Follow-up');
-        }
+        latestFollowupOutput.dataset.latestFollowupUpdatedAt = document.updated_at || '';
+        setTitleInput(
+          document.title || document.source_quick_action_name || (document.generator_type === 'quick_action' ? 'Quick action' : 'Follow-up'),
+          document.status !== 'ready'
+        );
         if (followupOutputSubtitle) {
           const kind = document.generator_type === 'quick_action' ? 'Quick action' : 'Follow-up';
           followupOutputSubtitle.textContent = [kind, document.created_at || ''].filter(Boolean).join(', ');
         }
-        if (document.status === 'ready' && document.edited_output_text) {
+        if (document.status === 'ready') {
           latestFollowupOutput.innerHTML = `
-            <div class="followup-output-card-v2__content" data-followup-copy-body>${escapeHtml(document.edited_output_text)}</div>
+            <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>${escapeHtml(document.edited_output_text || '')}</textarea>
           `;
           return;
         }
@@ -2338,6 +2483,10 @@ let statusDetailsHideTimer = null;
         persistNoteEditsSilently,
         hasPendingGeneratedNoteEdits,
         shouldPreserveNoteEditorRender,
+        clearFollowupEditorDirty,
+        persistFollowupEditsSilently,
+        hasPendingGeneratedFollowupEdits,
+        shouldPreserveFollowupEditorRender,
       });
 
       const saveStructuredContext = async ({ silent = false } = {}) => {
@@ -2554,8 +2703,9 @@ let statusDetailsHideTimer = null;
         selectedNoteDocumentId = selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || null;
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
         const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');
+        const preserveDirtyFollowupEditor = shouldPreserveFollowupEditorRender(selectedFollowupDocumentId || '');
         renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });
-        renderSelectedFollowup();
+        renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
         structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));
         structuredEditor.syncStructuredContextHiddenInputs();
         structuredEditor.syncStructuredEditorAvailability();
@@ -2765,20 +2915,13 @@ let statusDetailsHideTimer = null;
           customPromptCharCount,
           recordCustomPromptButton,
           recordCustomPromptLabel,
-          followupSelectedActionPanel,
-          followupSelectedActionEmpty,
-          followupSelectedActionSelected,
-          followupSelectedActionName,
-          followupSelectedActionDescription,
           followupPromptPreviewTitle,
           followupPromptPreviewBody,
           followupPromptPreviewNote,
-          focusQuickActionsButton,
           clearQuickActionButton,
-          selectedQuickActionRunButton,
           copyLatestFollowupButton,
           deleteLatestFollowupButton,
-          followupLlmRequestToggle,
+          followupLlmRequestToggles,
           recordingModeSelect,
           renameTitleInput,
           runQuickActionForm,
@@ -2868,8 +3011,13 @@ let statusDetailsHideTimer = null;
           window.clearTimeout(noteSaveTimer);
           noteSaveTimer = null;
         }
+        if (followupSaveTimer) {
+          window.clearTimeout(followupSaveTimer);
+          followupSaveTimer = null;
+        }
         stopDictationRecording({ keepAudio: false });
         void persistNoteEditsSilently({ keepalive: true });
+        void persistFollowupEditsSilently({ keepalive: true });
       });
 
       window.setTimeout(fetchWorkspace, 250);

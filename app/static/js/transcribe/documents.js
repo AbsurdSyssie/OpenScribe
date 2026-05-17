@@ -7,6 +7,10 @@ export function createDocumentNavigator({
   hasPendingGeneratedNoteEdits,
   persistNoteEditsSilently,
   shouldPreserveNoteEditorRender,
+  clearFollowupEditorDirty,
+  hasPendingGeneratedFollowupEdits,
+  persistFollowupEditsSilently,
+  shouldPreserveFollowupEditorRender,
 }) {
   const {
     noteSelectorWrap,
@@ -48,9 +52,9 @@ export function createDocumentNavigator({
   const noteDocumentLabel = (document) => document?.title || document?.source_template_name || "Untitled note";
 
   const followupDocumentLabel = (document) => (
-    document?.generator_type === "quick_action"
-      ? (document?.source_quick_action_name || document?.title || "Quick action")
-      : (document?.follow_up_prompt_text || document?.title || "Follow-up")
+    document?.title || document?.source_quick_action_name || document?.follow_up_prompt_text || (
+      document?.generator_type === "quick_action" ? "Quick action" : "Follow-up"
+    )
   );
 
   const truncateSwitcherLabel = (value, maxWords = 4) => {
@@ -101,22 +105,13 @@ export function createDocumentNavigator({
 
   const renderLlmRequestPanel = (slot, document) => {
     if (!slot) return;
-    const previousPanel = slot.querySelector('[data-llm-request-panel]');
-    const previousDocumentId = previousPanel?.dataset?.generatedDocumentId || '';
-    const shouldRestoreOpen = Boolean(
-      previousPanel &&
-      !previousPanel.hidden &&
-      document?.id &&
-      previousDocumentId === document.id
-    );
-
     slot.innerHTML = '';
     if (!document) return;
     const wrapper = window.document.createElement('section');
     wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';
     wrapper.dataset.llmRequestPanel = 'true';
     wrapper.dataset.generatedDocumentId = document.id || '';
-    wrapper.hidden = !shouldRestoreOpen;
+    wrapper.hidden = true;
 
     const payload = document.llm_request_payload_json || null;
     const body = payload
@@ -169,9 +164,7 @@ export function createDocumentNavigator({
       card.className = `followup-recent-item-v2${item.id === selectedId ? " is-selected" : ""}`;
       card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
-      const title = item.generator_type === "quick_action"
-        ? (item.source_quick_action_name || item.title || "Quick action")
-        : followupDocumentLabel(item);
+      const title = followupDocumentLabel(item);
       card.innerHTML = `
         <span>${escapeHtml(title)}</span>
         <span>${escapeHtml(item.created_at || "")} <i data-lucide="chevron-right"></i></span>
@@ -213,19 +206,26 @@ export function createDocumentNavigator({
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };
 
-  const renderSelectedFollowup = () => {
+  const renderSelectedFollowup = ({ preserveEditor = false } = {}) => {
     const state = getState();
     const selectedFollowup = selectedDocumentFromList(state.workspaceFollowupDocuments, state.selectedFollowupDocumentId);
     setState({ selectedFollowupDocumentId: selectedFollowup?.id || null });
     if (latestFollowupOutput) {
       latestFollowupOutput.dataset.latestFollowupStatus = selectedFollowup?.status || "";
       latestFollowupOutput.dataset.latestFollowupId = selectedFollowup?.id || "";
-      renderFollowupOutput(selectedFollowup);
+      latestFollowupOutput.dataset.latestFollowupUpdatedAt = selectedFollowup?.updated_at || "";
+      if (!preserveEditor && !shouldPreserveFollowupEditorRender?.(selectedFollowup?.id || '')) {
+        renderFollowupOutput(selectedFollowup);
+      }
     }
-    if (followupOutputTitle) {
-      followupOutputTitle.textContent = selectedFollowup
-        ? followupDocumentLabel(selectedFollowup)
-        : "Generated follow-up";
+    if (followupOutputTitle && !preserveEditor) {
+      const title = selectedFollowup ? followupDocumentLabel(selectedFollowup) : "Generated follow-up";
+      if (followupOutputTitle instanceof window.HTMLInputElement || followupOutputTitle instanceof window.HTMLTextAreaElement) {
+        followupOutputTitle.value = title;
+        followupOutputTitle.disabled = selectedFollowup?.status !== "ready";
+      } else {
+        followupOutputTitle.textContent = title;
+      }
     }
     if (followupOutputSubtitle) {
       const kind = selectedFollowup?.generator_type === "quick_action" ? "Quick action" : "Follow-up";
@@ -271,6 +271,17 @@ export function createDocumentNavigator({
       setTab("output");
       return;
     }
+    const state = getState();
+    if (state.selectedFollowupDocumentId === documentId) {
+      return;
+    }
+    if (hasPendingGeneratedFollowupEdits?.()) {
+      const savedDocument = await persistFollowupEditsSilently?.();
+      if (!savedDocument) {
+        return;
+      }
+    }
+    clearFollowupEditorDirty?.();
     setState({ selectedFollowupDocumentId: documentId });
     renderSelectedFollowup();
     setTab("followups");

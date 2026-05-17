@@ -653,3 +653,9 @@ Also need to add regex for UK phone numbers and NHS numbers. ideally we would be
 - Prompt user that no speech heard within 30 secs
 - if recording gets up to size / length limit, send record for transcription and start recording again. Obeys normal rate limit
 - Prompt user to confirm deletion of note.
+
+# Follow ups
+Make the quick action and context a system message
+
+# Refactors
+CSS is currently in line, this should be fixed with css files and reusing that code in the html 

@@ -7791,6 +7791,113 @@ def test_generated_document_update_saves_note_content_and_detects_revision_confl
     assert_error(forbidden, status_code=403, code="forbidden", message="Generated document access is restricted to the owning user")
 
 
+def test_generated_document_update_saves_followup_title_and_body_for_owner(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Followup Save API")
+    owner = make_user(email="owner-followup-save@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-followup-save@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        current_draft_text_encrypted="Patient improving.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    transcript_version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=transcript_version.id,
+        plaintext="Patient improving.",
+    )
+    document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.followup,
+        source_template_name="Follow-up",
+        follow_up_prompt_text="Write a patient message.",
+        status=GeneratedDocumentStatus.ready,
+        title="Original follow-up",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(document)
+    db_session.flush()
+    document.original_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="original_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Old body",
+    )
+    document.edited_output_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="edited_output_text_encrypted",
+        record_id=document.id,
+        plaintext="Old body",
+    )
+    db_session.add_all([transcript_version, document])
+    db_session.commit()
+
+    login(client, email="owner-followup-save@example.com", password="password-1")
+    saved = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "title": "Edited patient message",
+            "edited_output_text": "Line one\n\nLine two",
+            "sections": [],
+        },
+    )
+
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["title"] == "Edited patient message"
+    assert body["edited_output_text"] == "Line one\n\nLine two"
+    db_session.refresh(document)
+    assert document.title == "Edited patient message"
+    assert decrypt_generated_document_field(db_session, document, "edited_output_text_encrypted") == "Line one\n\nLine two"
+    assert document.is_edited is True
+    assert document.last_edited_at is not None
+
+    login(client, email="other-followup-save@example.com", password="password-2")
+    forbidden = client.patch(
+        f"/api/v1/generated-documents/{document.id}",
+        json={
+            "expected_updated_at": document.updated_at.isoformat(),
+            "title": "Wrong owner edit",
+            "edited_output_text": "Nope",
+            "sections": [],
+        },
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="Generated document access is restricted to the owning user")
+
+
 def test_generated_document_update_rejects_duplicate_structured_section_keys(
     client,
     db_session,

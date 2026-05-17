@@ -928,6 +928,17 @@ def _normalize_note_text(value: str | None) -> str:
     ).strip()
 
 
+def _normalize_generated_document_title(value: str | None, *, fallback: str) -> str:
+    title = " ".join(str(value or "").split()).strip()
+    if not title:
+        return fallback[:255] or "Generated document"
+    return title[:255]
+
+
+def _normalize_freeform_generated_text(value: str | None) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def update_generated_document_content(
     db: Session,
     actor: User,
@@ -941,8 +952,6 @@ def update_generated_document_content(
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
-    if document.generator_type is not GeneratedDocumentGeneratorType.template:
-        raise AppError(422, "business_rule_violation", "Only note documents support direct editing")
     if document.status is not GeneratedDocumentStatus.ready:
         raise AppError(409, "conflict", "Generated document is not ready for editing")
 
@@ -952,7 +961,9 @@ def update_generated_document_content(
     if document.updated_at != expected_updated_at:
         raise AppError(409, "conflict", "Generated document has changed. Reload note before saving again.")
 
-    if document.document_mode is TemplateMode.structured:
+    title_changed = False
+
+    if document.generator_type is GeneratedDocumentGeneratorType.template and document.document_mode is TemplateMode.structured:
         incoming_sections = sorted(payload.sections, key=lambda section: section.section_order)
         existing_sections = {section.section_key: section for section in document.sections}
         allowed_section_keys = _allowed_structured_section_keys(document, db)
@@ -1008,15 +1019,27 @@ def update_generated_document_content(
             if section_key not in seen_keys:
                 db.delete(section_record)
         edited_output_text = _render_structured_sections_text(rendered_sections)
-    else:
+    elif document.generator_type is GeneratedDocumentGeneratorType.template:
         edited_output_text = _normalize_note_text(payload.edited_output_text)
+    elif document.generator_type in {GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action} and document.document_mode is TemplateMode.freeform:
+        edited_output_text = _normalize_freeform_generated_text(payload.edited_output_text)
+        if payload.title is not None:
+            normalized_title = _normalize_generated_document_title(payload.title, fallback=document.title)
+            title_changed = normalized_title != document.title
+            document.title = normalized_title
+    else:
+        raise AppError(422, "business_rule_violation", "Generated document does not support direct editing")
 
-    original_output_text = _normalize_note_text(generated_document_text(db, document=document, field="original_output_text_encrypted"))
+    original_output_text = (
+        _normalize_note_text(generated_document_text(db, document=document, field="original_output_text_encrypted"))
+        if document.generator_type is GeneratedDocumentGeneratorType.template
+        else _normalize_freeform_generated_text(generated_document_text(db, document=document, field="original_output_text_encrypted"))
+    )
     set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=edited_output_text)
-    if document.document_mode is TemplateMode.structured:
+    if document.generator_type is GeneratedDocumentGeneratorType.template and document.document_mode is TemplateMode.structured:
         document.is_edited = any_section_edited or edited_output_text != original_output_text
     else:
-        document.is_edited = edited_output_text != original_output_text
+        document.is_edited = title_changed or edited_output_text != original_output_text
     document.last_edited_at = utcnow()
     db.add(document)
     db.commit()

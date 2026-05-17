@@ -51,44 +51,62 @@ def test_followup_redesign_preserves_required_hooks():
     ]:
         assert hook in workspace_template
 
+    assert workspace_template.index("followup-output-v2") < workspace_template.index("followup-request-v2")
     assert workspace_template.index("followup-output-footer-v2") < workspace_template.index("data-followup-history")
     assert workspace_template.index("followup-output-v2") < workspace_template.index("data-followup-history")
-    assert "data-followup-selected-action-panel" in workspace_template
+    assert workspace_template.index("followup-step-v2--actions") < workspace_template.index("data-quick-action-card-list")
+    assert workspace_template.index("data-quick-action-card-list") < workspace_template.index("data-followup-llm-request-slot")
+    assert "data-followup-selected-action-panel" not in workspace_template
     assert "data-followup-output-title" in workspace_template
+    assert "data-followup-title-input" in workspace_template
+    assert "data-followup-body-input" in workspace_template
+    assert "data-latest-followup-updated-at" in workspace_template
+    assert "data-followup-llm-request-toggle-label" in workspace_template
+    assert workspace_template.index("data-followup-llm-request-toggle") < workspace_template.index("data-followup-llm-request-slot")
     assert "data-followup-output-subtitle" in workspace_template
     assert "data-followup-prompt-preview" not in workspace_template
     assert "Prompt preview" not in workspace_template
     assert workspace_template.index("data-followup-llm-request-slot") < workspace_template.index("followup-primary-actions-v2")
     assert "maxlength=\"2000\"" in workspace_template
     assert "data-quick-action-context-input data-followup-prompt-input" in workspace_template
-    assert "data-followup-selected-action-name" in workspace_template
-    assert "data-selected-quick-action-run" in workspace_template
+    assert "data-followup-selected-action-name" not in workspace_template
+    assert "data-selected-quick-action-run" not in workspace_template
     assert "data-quick-action-card-run" in workspace_template
     assert "aria-label=\"Generate {{ quick_action.name }} without context\"" in workspace_template
-    assert "data-lucide=\"arrow-left\"" in workspace_template
+    assert "data-lucide=\"arrow-left\"" not in workspace_template
     assert "followup-action-button-v2--primary" in workspace_template
-    assert "dom.followupSelectedActionPanel?.classList.toggle('has-selected-action'" in actions_js
-    assert "dom.selectedQuickActionRunButton?.addEventListener('click'" in actions_js
+    assert "dom.followupSelectedActionPanel" not in actions_js
+    assert "dom.selectedQuickActionRunButton" not in actions_js
     assert "dom.quickActionCardRunButtons?.forEach" in actions_js
+    assert "dirtyFollowupDocumentId" in Path("app/static/js/transcribe/app.js").read_text()
+    assert "hasPendingGeneratedFollowupEdits" in documents_js
+    assert "const savedDocument = await persistFollowupEditsSilently?.();" in documents_js
+    assert "renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });" in Path("app/static/js/transcribe/app.js").read_text()
     assert "quickActionContextOverride = '';" in actions_js
     assert "runQuickActionForm.submit();" not in Path("app/templates/transcribe/_shell_extras.html").read_text()
-    assert ".followup-selected-action-v2.has-selected-action" in head_assets
-    assert ".followup-selected-action-v2__empty[hidden]" in head_assets
-    assert ".followup-selected-action-v2__arrow" in head_assets
-    assert ".followup-selected-action-v2__actions" in head_assets
+    assert ".followup-selected-action-v2" not in head_assets
     assert ".followup-action-card-shell-v2" in head_assets
     assert ".followup-action-card-run-v2" in head_assets
     assert ".followup-output-header-v2" in head_assets
     assert ".followup-output-title-v2" in head_assets
+    assert ".followup-output-title-input-v2" in head_assets
+    assert ".followup-output-body-input-v2" in head_assets
     assert "font-size: 1.05rem;" in head_assets
     assert ".followup-selected-action-v2__generate" not in head_assets
     assert ".followup-action-button-v2--primary" in head_assets
     assert "followup-llm-request-pre-v2" in documents_js
     assert "followupOutputTitle.textContent" in documents_js
+    assert "followupOutputTitle.value = title" in documents_js
+    assert "wrapper.hidden = true" in documents_js
+    assert "shouldRestoreOpen" not in documents_js
     assert "[data-followup-llm-request-slot]" in head_assets
     assert "followup-output-card-v2 followup-llm-request-card-v2" in documents_js
     assert "panel.hidden = !panel.hidden" in actions_js
-    assert "flex: 0 1 min(16rem, 30vh);" in head_assets
+    assert "Hide request" in actions_js
+    assert "Show request" in actions_js
+    assert "flex: 0 0 auto;" in head_assets
+    assert ".followup-llm-request-card-v2[hidden]" in head_assets
+    assert "display: none;" in head_assets
     assert ".followup-llm-request-card-v2" in head_assets
 
 

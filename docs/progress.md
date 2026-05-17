@@ -1,5 +1,148 @@
 # Progress
 
+## 2026-05-17 Follow Up Autosave Switch Guard
+
+### Scope
+
+- Fixed follow-up selection and workspace refresh so pending editable follow-up title/body changes are saved or preserved before another follow-up is rendered.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser race check still useful if broader UI QA is run.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: tracks dirty follow-up document identity and preserves dirty render during refresh.
+- `app/static/js/transcribe/documents.js`: saves pending follow-up edits before switching selected follow-up.
+- `tests/test_web_refactor.py`: adds static regression hooks for the follow-up pending-save guard.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document the follow-up autosave guard.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k followup_redesign_preserves_required_hooks`: passed, 1 test.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- Mirrors existing note editor pending-save behavior; failed/conflicted save blocks selection change so unsaved text remains visible.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: same owner-only generated-document PATCH endpoint.
+- Ownership rules preserved: no access model changes.
+- Deletion semantics preserved: no deletion or retention behavior changed.
+- Provider rules preserved: no provider resolution or credential path changed.
+- Structured-note contract preserved: no structured note schema/output changes.
+
+## 2026-05-17 Follow Ups Editable Output
+
+### Scope
+
+- Made ready follow-up and quick-action outputs editable in the Follow Ups tab, including generated document title and body text.
+- Extended the owner-only generated-document PATCH path to save freeform follow-up/quick-action title and body edits with encrypted body storage.
+- Kept the LLM request hidden by default, moved its `Show request` / `Hide request` toggle into step 3, and fixed the request card CSS so `[hidden]` wins over the flex display rule.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check recommended for textarea sizing and right-panel flow.
+
+### Files changed
+
+- `app/schemas/templates.py`: adds optional generated-document title to update payloads.
+- `app/services/templates.py`: allows owner edits for ready freeform follow-up/quick-action generated documents.
+- `app/templates/transcribe/_workspace.html`: renders editable follow-up title/body controls and update timestamp hook.
+- `app/templates/transcribe/_head_assets.html`: styles editable title/body and lets hidden LLM request stop consuming layout space.
+- `app/static/js/transcribe/app.js`: adds follow-up autosave, conflict handling, and editable rendering.
+- `app/static/js/transcribe/actions.js`: copies follow-up text from textarea values.
+- `app/static/js/transcribe/documents.js`: keeps editable title/body/history labels in sync and always renders LLM request closed.
+- `tests/test_api.py`: verifies owner-only encrypted follow-up title/body edits.
+- `tests/test_admin_ui.py`, `tests/test_web_refactor.py`: cover UI hooks and hidden LLM request behavior.
+- `docs/transcribe_brief.md`: documents editable follow-up behavior.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "generated_document_update_saves_followup_title_and_body_for_owner"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "generated_document_update_saves_note_content_and_detects_revision_conflicts or generated_document_update_rejects_duplicate_structured_section_keys"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_transcribe_page_renders_generated_document_switchers"`: passed, 1 test.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- Title is treated as generated-document metadata, but edit permission remains owner-only because it belongs to transcript-derived output in this UI.
+- Autosave uses the same optimistic `updated_at` conflict check as note editing; quick switching shortly after typing relies on browser focusout/debounce.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: only owning user can patch generated follow-up body/title; body remains encrypted at rest.
+- Ownership rules preserved: update service keeps `owner_user_id == actor.id` enforcement.
+- Deletion semantics preserved: no delete, retention, or cascade behavior changed.
+- Provider rules preserved: no provider resolution, request generation, or credential handling changed.
+- Structured-note contract preserved: structured EMIS update path remains unchanged and was regression-tested.
+
+## 2026-05-17 Follow Ups Two Pane Builder
+
+### Scope
+
+- Changed the Follow Ups tab from three columns to two panes: selected generated document output/history on the left, and context plus visible quick-action selection on the right.
+- Moved the quick-action list into right-side step 2 so available actions stay visible beside the context and Generate controls.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check recommended for exact responsive spacing.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: reorders Follow Ups markup into output-left and controls-right panes, with quick actions inside step 2.
+- `app/templates/transcribe/_head_assets.html`: switches Follow Ups layout to two columns and bounds the right-side quick-action list.
+- `tests/test_web_refactor.py`: updates static layout assertions for the two-pane workflow and moved quick-action list.
+- `docs/transcribe_brief.md`: documents the two-pane follow-up flow.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_transcribe_page_renders_generated_document_switchers or user_transcribe_page_enables_followups_from_structured_note_content"`: passed, 2 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- UI-only layout change; generated-document data, provider calls, copy/delete paths, and prompt construction are unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content surface beyond existing owner-only workspace data.
+- Ownership rules preserved: selected follow-up and quick actions still come from existing scoped workspace context.
+- Deletion semantics preserved: no lifecycle or cascade behavior changed.
+- Provider rules preserved: no provider resolution or credential behavior changed.
+- Structured-note contract preserved: no EMIS structured-note JSON behavior changed.
+
 ## 2026-05-17 Follow Ups Output Card Redesign
 
 ### Scope

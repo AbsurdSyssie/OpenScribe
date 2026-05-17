@@ -220,26 +220,29 @@ Contained information:
 User can change:
 - enter a custom follow-up request
 - generate follow-up output
+- edit the selected ready follow-up title and body
 - select a recent output for the current consultation
 
 How:
 - select a quick action and optionally add context
 - type secondary free-text request text
 - trigger follow-up generation
+- type directly into the selected generated follow-up title/body; autosave uses the owner-only generated-document edit route
 - click current-transcript recents to load the selected output
+- if a ready follow-up has unsaved edits, switching or workspace refresh saves/preserves the current follow-up before another output is rendered
 
 Access:
 - owner only
 
 Notes:
-- the Follow Ups tab is a three-panel workspace: quick actions, context/request, selected generated follow-up
-- quick actions are the primary flow; free-text generation is kept as a smaller secondary flow
-- current-transcript recents sit under the selected follow-up in the right panel
-- the generated follow-up panel shows the selected follow-up name/details in the top header, with generated text emphasized inside the scrollable output card
-- the middle builder uses one follow-up context textarea; if no quick action is selected, Generate creates a free-text follow-up, and if a quick action is selected, Generate applies that saved format to the same context
-- selecting a quick-action card populates the optional quick-action box before generation; it does not auto-run
-- the optional quick-action card can run the selected action from its normal Generate button or remove it; the selected quick-action card in the left column also shows a small circular Generate button to run that action without extra context
-- the middle builder shows the LLM request card instead of the old prompt preview, keeping more vertical space for the generated follow-up output
+- the Follow Ups tab is a two-panel workspace: selected generated follow-up on the left, context/quick-action controls on the right
+- current-transcript recents sit under the selected follow-up in the left output panel
+- the generated follow-up panel title is the selected generated document name, with generated text emphasized inside the scrollable output card
+- ready follow-up and quick-action outputs expose editable title and body fields; queued, processing, failed, and empty states remain read-only
+- the right builder uses one follow-up context textarea; if no quick action is selected, Generate creates a free-text follow-up, and if a quick action is selected, Generate applies that saved format to the same context
+- all available quick actions are visible in the right builder step 2, with search, selected-card highlight, and a remove control
+- selecting a quick-action card changes selection before generation; it does not auto-run
+- the right builder keeps the LLM request hidden until the step 3 `Show request` toggle is used; the same toggle changes to `Hide request` while open
 
 ### Quick actions
 

@@ -197,6 +197,7 @@ class GeneratedDocumentSectionUpdate(BaseModel):
 
 class GeneratedDocumentUpdateRequest(BaseModel):
     expected_updated_at: datetime
+    title: str | None = Field(default=None, max_length=255)
     edited_output_text: str = ""
     sections: list[GeneratedDocumentSectionUpdate] = Field(default_factory=list)
 

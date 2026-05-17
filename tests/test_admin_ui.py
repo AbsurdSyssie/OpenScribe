@@ -3760,7 +3760,8 @@ def test_user_transcribe_page_enables_followups_from_structured_note_content(
     assert 'data-quick-action-context-stop' not in page.text
     assert 'data-followup-prompt-input' in page.text
     assert 'data-run-quick-action-trigger\ndisabled' not in page.text
-    assert 'data-quick-action-select\nclass="followup-select"\n>' in page.text
+    assert 'data-quick-action-select\nclass="sr-only"\n>' in page.text
+    assert 'data-quick-action-card-list' in page.text
 
 
 def test_user_transcribe_page_enables_followups_from_freeform_note_content(
@@ -4954,14 +4955,16 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
     assert 'data-document-kind="followup"' in page.text
-    assert 'data-followup-document-select' in page.text
+    assert 'data-followup-recent-list' in page.text
     assert 'data-run-quick-action-form' in page.text
     assert f'value="{quick_action.id}"' in page.text
-    assert 'data-followup-copy' in page.text
-    assert 'data-followup-delete' in page.text
+    assert 'data-copy-latest-followup' in page.text
+    assert 'data-followup-delete-latest' in page.text
+    assert 'data-followup-title-input' in page.text
+    assert 'data-followup-body-input' in page.text
     assert 'data-followup-copy-body' in page.text
-    assert "Send patient-facing review advice." in page.text
-    assert "Send SMS" in page.text
+    assert "Follow-up v2" in page.text
+    assert "Quick action v1" in page.text
 
 
 def test_user_transcribe_page_can_run_quick_action(

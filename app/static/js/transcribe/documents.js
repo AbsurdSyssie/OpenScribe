@@ -177,13 +177,17 @@ export function createDocumentNavigator({
   const renderSelectedNote = ({ preserveEditor = false } = {}) => {
     const state = getState();
     const selectedNote = selectedDocumentFromList(state.workspaceNoteDocuments, state.selectedNoteDocumentId);
-    setState({ selectedNoteDocumentId: selectedNote?.id || null });
+    const selectedNoteId = selectedNote?.id || '';
+    const preserveCurrentEditorRender = Boolean(
+      preserveEditor || shouldPreserveNoteEditorRender?.(selectedNoteId)
+    );
+    setState({ selectedNoteDocumentId: selectedNoteId || null });
     if (latestGeneratedOutput) {
       latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
-      latestGeneratedOutput.dataset.latestGeneratedId = selectedNote?.id || "";
+      latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
       latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
       latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
-      if (!preserveEditor && !shouldPreserveNoteEditorRender?.(selectedNote?.id || '')) {
+      if (!preserveCurrentEditorRender) {
         renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
       }
     }

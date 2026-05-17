@@ -8,13 +8,13 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
     runner = tmp_path / "document_navigator_runner.mjs"
     runner.write_text(
         textwrap.dedent(
-            f"""
+            """
             import assert from 'node:assert/strict';
             import fs from 'node:fs';
             import vm from 'node:vm';
 
-            const root = {str(root)!r};
-            const documentsPath = `${{root}}/app/static/js/transcribe/documents.js`;
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
 
@@ -119,7 +119,7 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             assert.equal(latestGeneratedOutput.dataset.latestGeneratedId, '');
             assert.equal(state.selectedNoteDocumentId, null);
             """
-        ),
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
         encoding="utf-8",
     )
 

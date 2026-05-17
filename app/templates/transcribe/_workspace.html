@@ -386,7 +386,7 @@ class="structured-sections-panel"
 data-generated-structured-panel
 {% set selected_template_version = (latest_template.versions|sort(attribute='version_no')|last) if latest_template else none %}
 {% if not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-structured-note-empty-state>
+<div class="note-editor-empty-state" data-structured-note-empty-state {% if structured_editor_has_text %}hidden{% endif %}>
 <div class="note-editor-empty-state__title">No note lines yet</div>
 <div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
 </div>
@@ -420,7 +420,7 @@ data-generated-structured-panel
 class="freeform-note-panel"
 data-generated-freeform-panel
 {% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-freeform-note-empty-state>
+<div class="note-editor-empty-state" data-freeform-note-empty-state {% if freeform_editor_has_text %}hidden{% endif %}>
 <div class="note-editor-empty-state__title">No note lines yet</div>
 <div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
 </div>
@@ -492,6 +492,7 @@ data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value 
 {% else %}
 {% set quick_action_kind = "general" %}
 {% endif %}
+<div class="followup-action-card-shell-v2" data-quick-action-card-shell>
 <button
 type="button"
 class="followup-action-card-v2"
@@ -511,56 +512,96 @@ aria-pressed="false"
 </span>
 <span class="followup-action-card-v2__check" aria-hidden="true"><i data-lucide="check"></i></span>
 </button>
+<button
+type="button"
+class="followup-action-card-run-v2"
+data-quick-action-card-run
+data-quick-action-id="{{ quick_action.id }}"
+aria-label="Generate {{ quick_action.name }} without context"
+hidden
+{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+<i data-lucide="sparkles"></i>
+</button>
+</div>
 {% endfor %}
 {% else %}
 <div class="followup-empty-v2">No quick actions available.</div>
 {% endif %}
 </div>
+<div class="followup-sidebar-tip-v2">
+<i data-lucide="info" aria-hidden="true"></i>
+<span>Add a quick action if you want to apply a saved format.</span>
+</div>
 </aside>
 
 <section class="followup-panel-v2 followup-request-v2">
-<div class="followup-panel-v2__heading-row">
-<div class="followup-panel-v2__heading">Context & Request</div>
-<button type="button" class="btn-ghost-sm" data-quick-action-context-record {% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+
+<div class="followup-step-v2">
+<div class="followup-step-v2__heading-row">
+<div class="followup-step-v2__heading"><span>1</span> Write your follow-up context</div>
+<button type="button" class="btn-ghost-sm" data-quick-action-context-record {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
 <i data-lucide="mic"></i>
 <span data-quick-action-context-record-label>Record context</span>
 </button>
 </div>
 <label class="followup-field-v2">
-<span>Add context to the quick action</span>
-<small>Include key clinical details that should be reflected in the output.</small>
-<textarea name="quick_action_context_text" maxlength="4000" placeholder="Add context for the selected quick action..." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %} data-quick-action-context-input></textarea>
+<small>Describe what you want the follow-up to say, include, or achieve.</small>
+<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %} data-quick-action-context-input data-followup-prompt-input></textarea>
 </label>
 <div class="followup-count-row-v2">
-<span data-context-char-count>0 / 4000</span>
+<span data-context-char-count data-custom-prompt-char-count>0 / 2000</span>
 <span class="text-xs text-slate" data-quick-action-context-status></span>
 </div>
-<div class="followup-primary-actions-v2">
-<button type="button" class="btn-primary-sm" data-run-quick-action-trigger {% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>Generate (Enter)</button>
-<button type="button" class="btn-ghost-sm" data-followup-clear>Clear</button>
 </div>
-<div class="followup-custom-request-v2">
-<div class="followup-custom-request-v2__header">
-<div>
-<strong>Anything else?</strong>
-<p>Use free text to generate anything about this note.</p>
-</div>
-<button type="button" class="btn-ghost-sm" data-record-custom-prompt {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
-<i data-lucide="mic"></i>
-<span data-record-custom-prompt-label>Record description</span>
+<div class="followup-step-v2">
+<div class="followup-step-v2__heading"><span>2</span> Optional quick action</div>
+<p class="followup-step-v2__helper">Apply a saved format or pathway to shape the output.</p>
+<div class="followup-selected-action-v2" data-followup-selected-action-panel>
+<div class="followup-selected-action-v2__empty" data-followup-selected-action-empty>
+<button type="button" class="followup-selected-action-v2__arrow" data-focus-quick-actions aria-label="Choose quick action">
+<i data-lucide="arrow-left"></i>
 </button>
+<strong>No quick action selected</strong>
+<p>Generate from your context alone, or choose a quick action to apply a saved structure.</p>
 </div>
-<div class="followup-custom-request-v2__row">
-<textarea name="prompt_text" rows="2" maxlength="1000" placeholder="Describe what you need..." class="followup-textarea-v2" {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %} data-followup-prompt-input></textarea>
-<button type="button" class="btn-primary-sm" data-generate-followup-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>Generate</button>
+<div class="followup-selected-action-v2__selected" data-followup-selected-action-selected hidden>
+<span class="followup-selected-action-v2__icon"><i data-lucide="sparkles"></i></span>
+<div>
+<span class="followup-selected-action-v2__eyebrow">Selected quick action</span>
+<strong data-followup-selected-action-name></strong>
+<p data-followup-selected-action-description></p>
 </div>
-<div class="followup-count-row-v2"><span data-custom-prompt-char-count>0 / 1000</span></div>
+<div class="followup-selected-action-v2__actions">
+<button type="button" class="btn-primary-sm" data-selected-quick-action-run {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}><i data-lucide="sparkles"></i> Generate</button>
+<button type="button" class="btn-ghost-sm" data-clear-quick-action>Remove</button>
 </div>
+</div>
+</div>
+</div>
+<div class="followup-step-v2">
+<div class="followup-step-v2__heading-row">
+<div class="followup-step-v2__heading"><span>3</span> LLM request</div>
+<span class="followup-step-v2__helper">What was sent for the selected follow-up.</span>
+</div>
+<div data-followup-llm-request-slot></div>
+</div>
+<div class="followup-primary-actions-v2">
+<button type="button" class="followup-action-button-v2 followup-action-button-v2--primary" data-run-quick-action-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}><i data-lucide="sparkles"></i> Generate</button>
+<button type="button" class="followup-action-button-v2 followup-action-button-v2--secondary" data-followup-clear><i data-lucide="rotate-ccw"></i> Clear</button>
+</div>
+<button type="button" hidden data-generate-followup-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}></button>
 </section>
 
 <section class="followup-panel-v2 followup-output-v2">
-<div class="followup-panel-v2__heading-row">
-<div class="followup-panel-v2__heading">Generated Follow Up</div>
+{% set initial_followup_title = latest_followup_document.source_quick_action_name or latest_followup_document.title or 'Generated follow-up' if latest_followup_document else 'Generated follow-up' %}
+<div class="followup-output-header-v2">
+<div class="followup-output-title-wrap-v2">
+<span class="followup-output-icon-v2"><i data-lucide="message-square-text"></i></span>
+<div>
+<div class="followup-output-title-v2" data-followup-output-title>{{ initial_followup_title }}</div>
+<div class="followup-output-subtitle-v2" data-followup-output-subtitle>{% if latest_followup_document %}{{ latest_followup_document.generator_type.value|replace('_', ' ') if latest_followup_document.generator_type else 'Follow-up' }}{% if latest_followup_document.created_at %}, {{ latest_followup_document.created_at }}{% endif %}{% else %}Select or generate a follow-up{% endif %}</div>
+</div>
+</div>
 <div class="followup-output-actions-v2">
 <button type="button" class="btn-ghost-sm" data-copy-latest-followup>Copy</button>
 <button type="button" class="btn-ghost-sm" data-followup-llm-request-toggle>LLM request</button>
@@ -573,7 +614,6 @@ data-latest-followup-output
 data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
 data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}">
 {% if latest_followup_document and latest_followup_document.status.value == "ready" and latest_followup_document.edited_output_text %}
-<div class="followup-output-card-v2__meta"><span class="followup-status followup-status--ready">ready</span><span>{{ latest_followup_document.created_at }}</span></div>
 <div class="followup-output-card-v2__content" data-followup-copy-body>{{ latest_followup_document.edited_output_text }}</div>
 {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
 <span class="text-slate">Your follow-up is waiting to be written.</span>
@@ -600,7 +640,6 @@ data-latest-followup-id="{{ latest_followup_document.id if latest_followup_docum
 {% endif %}
 </div>
 </div>
-<div data-followup-llm-request-slot></div>
 <div data-followup-redaction-debug-slot>
 {% if show_redaction_debug and latest_followup_document %}
 <details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_followup_document.id }}">

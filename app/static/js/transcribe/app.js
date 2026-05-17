@@ -130,6 +130,8 @@ import { csrfFetch } from '../csrf.js';
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
+      const followupOutputTitle = document.querySelector('[data-followup-output-title]');
+      const followupOutputSubtitle = document.querySelector('[data-followup-output-subtitle]');
       const noteSelectorWrap = document.querySelector('[data-note-selector-wrap]');
       const noteSelector = document.querySelector('[data-note-selector]');
       const noteDeleteButton = document.querySelector('[data-note-delete]');
@@ -191,10 +193,22 @@ import { csrfFetch } from '../csrf.js';
       const customPromptCharCount = document.querySelector('[data-custom-prompt-char-count]');
       const recordCustomPromptButton = document.querySelector('[data-record-custom-prompt]');
       const recordCustomPromptLabel = document.querySelector('[data-record-custom-prompt-label]');
+      const followupSelectedActionPanel = document.querySelector('[data-followup-selected-action-panel]');
+      const followupSelectedActionEmpty = document.querySelector('[data-followup-selected-action-empty]');
+      const followupSelectedActionSelected = document.querySelector('[data-followup-selected-action-selected]');
+      const followupSelectedActionName = document.querySelector('[data-followup-selected-action-name]');
+      const followupSelectedActionDescription = document.querySelector('[data-followup-selected-action-description]');
+      const followupPromptPreviewTitle = document.querySelector('[data-followup-prompt-preview-title]');
+      const followupPromptPreviewBody = document.querySelector('[data-followup-prompt-preview-body]');
+      const followupPromptPreviewNote = document.querySelector('[data-followup-prompt-preview-note]');
+      const focusQuickActionsButton = document.querySelector('[data-focus-quick-actions]');
+      const clearQuickActionButton = document.querySelector('[data-clear-quick-action]');
+      const selectedQuickActionRunButton = document.querySelector('[data-selected-quick-action-run]');
       const copyLatestFollowupButton = document.querySelector('[data-copy-latest-followup]');
       const deleteLatestFollowupButton = document.querySelector('[data-followup-delete-latest]');
       const followupLlmRequestToggle = document.querySelector('[data-followup-llm-request-toggle]');
       const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
+      const quickActionCardRunButtons = [...document.querySelectorAll('[data-quick-action-card-run]')];
       const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
       const dictationAudioActionTrigger = document.querySelector('[data-dictation-audio-action-trigger]');
@@ -1757,18 +1771,24 @@ let statusDetailsHideTimer = null;
           runQuickActionSelect.disabled = !canRunQuickAction;
         }
         if (runQuickActionTrigger) {
-          runQuickActionTrigger.disabled = !canRunQuickAction;
+          runQuickActionTrigger.disabled = !canGenerateFollowup;
+        }
+        if (selectedQuickActionRunButton) {
+          selectedQuickActionRunButton.disabled = !canGenerateFollowup;
         }
         if (quickActionContextInput) {
           quickActionContextInput.disabled = !canRunQuickAction;
         }
         if (quickActionContextRecordButton) {
-          quickActionContextRecordButton.disabled = !canRunQuickAction;
+          quickActionContextRecordButton.disabled = !canGenerateFollowup;
         }
         if (recordCustomPromptButton) {
           recordCustomPromptButton.disabled = !canGenerateFollowup;
         }
         quickActionQuickPicks.forEach((button) => {
+          button.disabled = !canRunQuickAction;
+        });
+        quickActionCardRunButtons.forEach((button) => {
           button.disabled = !canRunQuickAction;
         });
 
@@ -2027,15 +2047,22 @@ let statusDetailsHideTimer = null;
         if (!document) {
           latestFollowupOutput.dataset.latestFollowupStatus = '';
           latestFollowupOutput.dataset.latestFollowupId = '';
+          if (followupOutputTitle) followupOutputTitle.textContent = 'Generated follow-up';
+          if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'Select or generate a follow-up';
           latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Select a quick action and generate a follow-up.</div></div>';
           return;
         }
+        if (followupOutputTitle) {
+          followupOutputTitle.textContent = document.generator_type === 'quick_action'
+            ? (document.source_quick_action_name || document.title || 'Quick action')
+            : (document.title || 'Follow-up');
+        }
+        if (followupOutputSubtitle) {
+          const kind = document.generator_type === 'quick_action' ? 'Quick action' : 'Follow-up';
+          followupOutputSubtitle.textContent = [kind, document.created_at || ''].filter(Boolean).join(', ');
+        }
         if (document.status === 'ready' && document.edited_output_text) {
           latestFollowupOutput.innerHTML = `
-            <div class="followup-output-card-v2__meta">
-              <span class="followup-status followup-status--ready">ready</span>
-              <span>${escapeHtml(document.created_at || '')}</span>
-            </div>
             <div class="followup-output-card-v2__content" data-followup-copy-body>${escapeHtml(document.edited_output_text)}</div>
           `;
           return;
@@ -2713,6 +2740,8 @@ let statusDetailsHideTimer = null;
           fileInput,
           followupSelector,
           followupHistory,
+          followupOutputTitle,
+          followupOutputSubtitle,
           latestFollowupOutput,
           generateFollowupForm,
           generateFollowupPromptInput,
@@ -2729,12 +2758,24 @@ let statusDetailsHideTimer = null;
           quickActionContextInput,
           quickActionSearchInput,
           quickActionQuickPicks,
+          quickActionCardRunButtons,
           quickActionContextStatus,
           followupClearButton,
           contextCharCount,
           customPromptCharCount,
           recordCustomPromptButton,
           recordCustomPromptLabel,
+          followupSelectedActionPanel,
+          followupSelectedActionEmpty,
+          followupSelectedActionSelected,
+          followupSelectedActionName,
+          followupSelectedActionDescription,
+          followupPromptPreviewTitle,
+          followupPromptPreviewBody,
+          followupPromptPreviewNote,
+          focusQuickActionsButton,
+          clearQuickActionButton,
+          selectedQuickActionRunButton,
           copyLatestFollowupButton,
           deleteLatestFollowupButton,
           followupLlmRequestToggle,

@@ -642,6 +642,25 @@ def resolve_transcribe_workspace(
         if active_transcript is not None and not current_user.is_system_admin
         else None
     )
+    structured_editor_sections = _structured_editor_sections(
+        db,
+        generated_document=latest_generated_document,
+        active_structured_context=active_structured_context,
+        section_definitions=structured_section_definitions,
+    )
+    freeform_editor_rows = _freeform_editor_rows(
+        db,
+        generated_document=latest_generated_document,
+    )
+    structured_editor_has_text = any(
+        isinstance(row.get("text"), str) and row["text"].strip()
+        for section in structured_editor_sections
+        for row in section.get("rows", [])
+    )
+    freeform_editor_has_text = any(
+        isinstance(row.get("text"), str) and row["text"].strip()
+        for row in freeform_editor_rows
+    )
     return {
         "recent_transcripts": recent_transcripts,
         "active_transcript": active_transcript,
@@ -678,16 +697,10 @@ def resolve_transcribe_workspace(
         "followup_documents": followup_documents,
         "latest_generated_document": latest_generated_document,
         "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
-        "structured_editor_sections": _structured_editor_sections(
-            db,
-            generated_document=latest_generated_document,
-            active_structured_context=active_structured_context,
-            section_definitions=structured_section_definitions,
-        ),
-        "freeform_editor_rows": _freeform_editor_rows(
-            db,
-            generated_document=latest_generated_document,
-        ),
+        "structured_editor_sections": structured_editor_sections,
+        "structured_editor_has_text": structured_editor_has_text,
+        "freeform_editor_rows": freeform_editor_rows,
+        "freeform_editor_has_text": freeform_editor_has_text,
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
         "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=True),

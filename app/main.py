@@ -612,12 +612,12 @@ WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT = limiter.shared_limit(
     key_func=whole_file_upload_rate_limit_key,
 )
 LLM_GENERATION_BURST_RATE_LIMIT = limiter.shared_limit(
-    "1/5 seconds",
+    "20/3 minutes",
     scope="llm_generation_burst",
     key_func=whole_file_upload_rate_limit_key,
 )
 LLM_GENERATION_DAILY_RATE_LIMIT = limiter.shared_limit(
-    "100/day",
+    "200/day",
     scope="llm_generation_daily",
     key_func=whole_file_upload_rate_limit_key,
 )

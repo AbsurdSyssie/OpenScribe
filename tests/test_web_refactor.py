@@ -35,6 +35,9 @@ def test_followup_redesign_orders_default_then_favorites_then_name():
 
 def test_followup_redesign_preserves_required_hooks():
     workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
+    actions_js = Path("app/static/js/transcribe/actions.js").read_text()
+    documents_js = Path("app/static/js/transcribe/documents.js").read_text()
 
     for hook in [
         "data-quick-action-select",
@@ -48,6 +51,56 @@ def test_followup_redesign_preserves_required_hooks():
     ]:
         assert hook in workspace_template
 
+    assert workspace_template.index("followup-output-footer-v2") < workspace_template.index("data-followup-history")
+    assert workspace_template.index("followup-output-v2") < workspace_template.index("data-followup-history")
+    assert "data-followup-selected-action-panel" in workspace_template
+    assert "data-followup-output-title" in workspace_template
+    assert "data-followup-output-subtitle" in workspace_template
+    assert "data-followup-prompt-preview" not in workspace_template
+    assert "Prompt preview" not in workspace_template
+    assert workspace_template.index("data-followup-llm-request-slot") < workspace_template.index("followup-primary-actions-v2")
+    assert "maxlength=\"2000\"" in workspace_template
+    assert "data-quick-action-context-input data-followup-prompt-input" in workspace_template
+    assert "data-followup-selected-action-name" in workspace_template
+    assert "data-selected-quick-action-run" in workspace_template
+    assert "data-quick-action-card-run" in workspace_template
+    assert "aria-label=\"Generate {{ quick_action.name }} without context\"" in workspace_template
+    assert "data-lucide=\"arrow-left\"" in workspace_template
+    assert "followup-action-button-v2--primary" in workspace_template
+    assert "dom.followupSelectedActionPanel?.classList.toggle('has-selected-action'" in actions_js
+    assert "dom.selectedQuickActionRunButton?.addEventListener('click'" in actions_js
+    assert "dom.quickActionCardRunButtons?.forEach" in actions_js
+    assert "quickActionContextOverride = '';" in actions_js
+    assert "runQuickActionForm.submit();" not in Path("app/templates/transcribe/_shell_extras.html").read_text()
+    assert ".followup-selected-action-v2.has-selected-action" in head_assets
+    assert ".followup-selected-action-v2__empty[hidden]" in head_assets
+    assert ".followup-selected-action-v2__arrow" in head_assets
+    assert ".followup-selected-action-v2__actions" in head_assets
+    assert ".followup-action-card-shell-v2" in head_assets
+    assert ".followup-action-card-run-v2" in head_assets
+    assert ".followup-output-header-v2" in head_assets
+    assert ".followup-output-title-v2" in head_assets
+    assert "font-size: 1.05rem;" in head_assets
+    assert ".followup-selected-action-v2__generate" not in head_assets
+    assert ".followup-action-button-v2--primary" in head_assets
+    assert "followup-llm-request-pre-v2" in documents_js
+    assert "followupOutputTitle.textContent" in documents_js
+    assert "[data-followup-llm-request-slot]" in head_assets
+    assert "followup-output-card-v2 followup-llm-request-card-v2" in documents_js
+    assert "panel.hidden = !panel.hidden" in actions_js
+    assert "flex: 0 1 min(16rem, 30vh);" in head_assets
+    assert ".followup-llm-request-card-v2" in head_assets
+
+
+def test_followup_llm_request_wraps_without_horizontal_scroll():
+    head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
+
+    assert ".followup-llm-request-pre-v2" in head_assets
+    assert "overflow-x: hidden;" in head_assets
+    assert "overflow-y: auto;" in head_assets
+    assert "white-space: pre-wrap;" in head_assets
+    assert "overflow-wrap: anywhere;" in head_assets
+
 
 def test_clinical_note_empty_state_uses_compact_spacing():
     workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
@@ -57,3 +110,19 @@ def test_clinical_note_empty_state_uses_compact_spacing():
     assert "assistant-flat-output--empty" in workspace_template
     assert ".empty-state--clinical-note" in head_assets
     assert ".assistant-flat-output--empty" in head_assets
+
+
+def test_note_editor_empty_state_tracks_existing_note_content():
+    workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
+    transcribe_workspace = Path("app/web/transcribe_workspace.py").read_text()
+    structured_js = Path("app/static/js/transcribe/structured.js").read_text()
+
+    assert "structured_editor_has_text" in transcribe_workspace
+    assert "freeform_editor_has_text" in transcribe_workspace
+    assert 'data-structured-note-empty-state {% if structured_editor_has_text %}hidden{% endif %}' in workspace_template
+    assert 'data-freeform-note-empty-state {% if freeform_editor_has_text %}hidden{% endif %}' in workspace_template
+    assert ".note-editor-empty-state[hidden]" in head_assets
+    assert "display: none;" in head_assets
+    assert "dom.generatedStructuredPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js
+    assert "dom.generatedFreeformPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js

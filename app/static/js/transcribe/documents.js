@@ -15,6 +15,8 @@ export function createDocumentNavigator({
     followupSelectorWrap,
     followupSelector,
     followupSelectorCount,
+    followupOutputTitle,
+    followupOutputSubtitle,
     noteMeta,
     followupMeta,
     noteHistory,
@@ -102,28 +104,27 @@ export function createDocumentNavigator({
     const previousPanel = slot.querySelector('[data-llm-request-panel]');
     const previousDocumentId = previousPanel?.dataset?.generatedDocumentId || '';
     const shouldRestoreOpen = Boolean(
-      previousPanel?.open &&
+      previousPanel &&
+      !previousPanel.hidden &&
       document?.id &&
       previousDocumentId === document.id
     );
 
     slot.innerHTML = '';
     if (!document) return;
-    const wrapper = window.document.createElement('details');
-    wrapper.className = 'border border-stone bg-white p-3 mt-4 rounded-lg';
+    const wrapper = window.document.createElement('section');
+    wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';
     wrapper.dataset.llmRequestPanel = 'true';
     wrapper.dataset.generatedDocumentId = document.id || '';
-    if (shouldRestoreOpen) {
-      wrapper.open = true;
-    }
+    wrapper.hidden = !shouldRestoreOpen;
 
     const payload = document.llm_request_payload_json || null;
     const body = payload
       ? escapeHtml(JSON.stringify(payload, null, 2))
       : 'LLM request not available for this document.';
     wrapper.innerHTML = `
-      <summary class="cursor-pointer text-sm font-medium text-ink">LLM request</summary>
-      <pre class="mt-3 max-h-80 overflow-auto rounded bg-parchment p-3 text-xs whitespace-pre-wrap text-slate">${body}</pre>
+      <div class="followup-output-card-v2__meta"><span class="followup-status">LLM request</span><span>${escapeHtml(document.created_at || '')}</span></div>
+      <pre class="followup-llm-request-pre-v2">${body}</pre>
     `;
     slot.appendChild(wrapper);
   };
@@ -220,6 +221,17 @@ export function createDocumentNavigator({
       latestFollowupOutput.dataset.latestFollowupStatus = selectedFollowup?.status || "";
       latestFollowupOutput.dataset.latestFollowupId = selectedFollowup?.id || "";
       renderFollowupOutput(selectedFollowup);
+    }
+    if (followupOutputTitle) {
+      followupOutputTitle.textContent = selectedFollowup
+        ? followupDocumentLabel(selectedFollowup)
+        : "Generated follow-up";
+    }
+    if (followupOutputSubtitle) {
+      const kind = selectedFollowup?.generator_type === "quick_action" ? "Quick action" : "Follow-up";
+      followupOutputSubtitle.textContent = selectedFollowup
+        ? [kind, selectedFollowup.created_at || ""].filter(Boolean).join(", ")
+        : "Select or generate a follow-up";
     }
     if (followupMeta) {
       followupMeta.textContent = selectedFollowup

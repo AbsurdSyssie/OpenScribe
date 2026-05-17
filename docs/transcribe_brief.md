@@ -145,6 +145,7 @@ User can change:
 How:
 - edit note lines in place
 - autosave on debounce/blur
+- hide the editable-note empty guidance as soon as structured or freeform note rows contain text
 - blank placeholder lines cannot be moved; blocked keyboard reorder shortcuts are still consumed so browser history navigation does not fire
 - explicit note switching changes which note is being edited
 
@@ -233,7 +234,12 @@ Access:
 Notes:
 - the Follow Ups tab is a three-panel workspace: quick actions, context/request, selected generated follow-up
 - quick actions are the primary flow; free-text generation is kept as a smaller secondary flow
-- the right panel renders only the selected follow-up, with current-transcript recents directly below it for selection
+- current-transcript recents sit under the selected follow-up in the right panel
+- the generated follow-up panel shows the selected follow-up name/details in the top header, with generated text emphasized inside the scrollable output card
+- the middle builder uses one follow-up context textarea; if no quick action is selected, Generate creates a free-text follow-up, and if a quick action is selected, Generate applies that saved format to the same context
+- selecting a quick-action card populates the optional quick-action box before generation; it does not auto-run
+- the optional quick-action card can run the selected action from its normal Generate button or remove it; the selected quick-action card in the left column also shows a small circular Generate button to run that action without extra context
+- the middle builder shows the LLM request card instead of the old prompt preview, keeping more vertical space for the generated follow-up output
 
 ### Quick actions
 
@@ -254,7 +260,7 @@ User can change:
 How:
 - select a quick-action card
 - search visible quick actions
-- add optional guidance
+- add optional follow-up context in the combined builder
 - run generation
 
 Access:

@@ -337,6 +337,7 @@ What it does:
 - leader home AI-services UI exposing clinical NLP enable/disable separately from PII redaction selection
 - home tabs initializing after the navigation moved above the tab shell
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
+- transcribe editable-note empty guidance hiding on initial render and generated-output refresh once structured/freeform note rows contain content
 - transcribe structured/freeform line reordering blocking blank placeholder rows by mouse drag and consuming blocked keyboard shortcuts so browser history navigation does not fire
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace
 - transcribe session delete confirmation marking only meaningful transcript draft/version text as content

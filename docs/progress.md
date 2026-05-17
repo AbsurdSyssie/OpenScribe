@@ -1,5 +1,415 @@
 # Progress
 
+## 2026-05-17 Follow Ups Output Card Redesign
+
+### Scope
+
+- Redesigned the generated follow-up panel so the selected follow-up name/details live in the top header and the generated text is larger and more prominent inside the output card.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check recommended for exact typography/spacing.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: adds generated follow-up title/subtitle header and removes status/date metadata from the output text card.
+- `app/templates/transcribe/_head_assets.html`: styles the output header, icon, title, subtitle, and larger body typography.
+- `app/static/js/transcribe/app.js`: updates output title/subtitle during client-side follow-up rendering.
+- `app/static/js/transcribe/documents.js`: keeps output header title/subtitle in sync when selecting follow-up recents.
+- `tests/test_web_refactor.py`: covers output header hooks and prominent text styling.
+- `docs/transcribe_brief.md`: documents generated follow-up panel hierarchy.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "quick_action_context or transcribe_workspace"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- UI-only hierarchy/typography change; generated follow-up content and copy/delete paths are unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content exposure.
+- Ownership rules preserved: selected follow-up still comes from existing owner-scoped workspace/generated-document state.
+- Deletion semantics preserved: no lifecycle change.
+- Provider rules preserved: no provider resolution or credential handling change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-17 Follow Ups Column Quick Action Generate
+
+### Scope
+
+- Restored the normal Generate button inside the optional quick-action card.
+- Added the small circular no-context Generate button to the selected quick-action card in the left Quick Actions column.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check recommended for exact card spacing.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: wraps quick-action cards so the selected card can show a sibling circular Generate button; restores normal Step 2 Generate button.
+- `app/templates/transcribe/_head_assets.html`: styles selected quick-action card shell and column Generate button.
+- `app/static/js/transcribe/app.js`: tracks quick-action column Generate buttons and disables them with the rest of quick-action controls.
+- `app/static/js/transcribe/actions.js`: shows the column Generate button for the selected card and runs selected quick action with blank context.
+- `tests/test_web_refactor.py`: covers column Generate button hooks and restored Step 2 button behavior.
+- `docs/transcribe_brief.md`: documents column Generate button behavior.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "quick_action_context or transcribe_workspace"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- The left-column circular Generate intentionally ignores context; main/Step 2 Generate still uses current context when selected quick action is active.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content path; existing owner-scoped quick-action endpoint reused.
+- Ownership rules preserved: no user/team scope change.
+- Deletion semantics preserved: no lifecycle change.
+- Provider rules preserved: no provider resolution or credential handling change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-17 Follow Ups Quick Action Generate And LLM Placement
+
+### Scope
+
+- Added a small highlighted circular Generate button inside the selected quick-action card to run that quick action without context.
+- Removed the Prompt Preview step and replaced it with the LLM request card in the middle builder, leaving the right generated-follow-up panel focused on output and recents.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: visual browser check recommended for exact button spacing.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: replaces Prompt Preview with LLM request slot and changes selected quick-action Generate to circular icon button.
+- `app/templates/transcribe/_head_assets.html`: styles the circular quick-action Generate button.
+- `app/static/js/transcribe/actions.js`: lets the selected quick-action button run the existing quick-action endpoint with blank context.
+- `tests/test_web_refactor.py`: verifies prompt preview removal, middle LLM request placement, and blank-context quick-action trigger.
+- `docs/transcribe_brief.md`: documents quick-action card generate and LLM request placement.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "quick_action_context or transcribe_workspace"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- The circular quick-action button intentionally ignores current context text; main Generate still uses context/free-text behavior.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content source; quick-action request still uses existing owner-scoped endpoint.
+- Ownership rules preserved: no user/team scope change.
+- Deletion semantics preserved: no lifecycle change.
+- Provider rules preserved: no provider resolution or credential handling change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-17 Follow Ups Selected Quick Action Visibility
+
+### Scope
+
+- Fixed selected quick-action state so the empty “No quick action selected” panel is hidden when a quick-action card is selected.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/transcribe/_head_assets.html`: adds explicit hidden-state CSS for the empty selected quick-action panel.
+- `tests/test_web_refactor.py`: verifies hidden-state CSS remains present.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 7 tests.
+
+### Documentation
+
+- Updated this progress record.
+
+### Risks / assumptions
+
+- CSS-only visibility fix; no endpoint, persistence, or prompt behavior changed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no content access change.
+- Ownership rules preserved: no owner/team scope change.
+- Deletion semantics preserved: no lifecycle change.
+- Provider rules preserved: no provider resolution change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-17 Pentest Source Validation
+
+### Scope
+
+- Validated pentest auth/token/session/setup findings against source and focused tests.
+- Fixed stale API route-audit coverage for newly added STT/LLM provider setup routes, STT health recheck, and quick-action context audio preview.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no runtime vulnerability confirmed in validated source paths; external authenticated stored-XSS testing still requires real authenticated test account/data flow.
+
+### Files changed
+
+- `app/api_route_audit.py`: adds missing API routes to authorization audit manifest with valid probe payloads.
+- `pentest-findings-openscribe.md`: records source-validation results and focused test evidence.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_auth_email.py tests/test_auth_service.py`: passed, 30 tests.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 14 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py`: passed, 2 tests.
+
+### Documentation
+
+- Updated pentest findings with source-validation outcomes and test evidence.
+- Updated this progress record.
+
+### Risks / assumptions
+
+- Route-audit update verifies negative access control only; it does not exercise successful provider setup behavior.
+- Stored XSS remains best validated with authenticated browser-level payload testing, although source review shows Jinja escaping and explicit transcript escaping on known render paths.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note/prompt/audio content access rules changed; quick-action context preview remains full-auth owner path.
+- Ownership rules preserved: no owner/team scoping behavior changed; route audit now covers missing full/system-admin access tiers.
+- Deletion semantics preserved: no persistence, cascade, retention, or hard-delete path changed.
+- Provider rules preserved: STT/LLM credential setup routes remain system-admin-only; raw secrets only appear as synthetic test payload values in the audit manifest.
+- Structured-note contract preserved: no generated-document JSON, EMIS section keys, or structured-output validation changed.
+
+## 2026-05-14 Follow Ups LLM Request Wrapping
+
+- Changed Follow Ups LLM request payload to wrap text and allow vertical scrolling only.
+- Kept request source/rendering unchanged; CSS now uses `pre-wrap`, hides horizontal overflow, and breaks long tokens.
+- Added focused static regression coverage.
+- Architecture checkpoint: UI-only display fix; no transcript visibility, ownership, deletion, encryption-key, provider-resolution, or structured-note JSON contract changes.
+
+## 2026-05-13 Follow Ups LLM Request Card
+
+### Scope
+
+- Replaced the Follow Ups LLM request `<details>` panel with the same scroll-card pattern used by the generated follow-up output.
+- The LLM request toolbar button now toggles card visibility, and the card body owns the scroll area.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check recommended to tune exact card height.
+
+### Files changed
+
+- `app/static/js/transcribe/documents.js`: renders LLM request as `followup-output-card-v2 followup-llm-request-card-v2` instead of `<details>`.
+- `app/static/js/transcribe/actions.js`: toggles the LLM request card with `hidden`.
+- `app/templates/transcribe/_head_assets.html`: bounds the LLM request card and makes its payload scroll.
+- `tests/test_web_refactor.py`: verifies card renderer, toggle, and sizing hooks.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 5 tests.
+
+### Documentation
+
+- Updated this progress record.
+
+### Risks / assumptions
+
+- UI-only renderer change; payload source and content are unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: same owner-scoped LLM request payload, no new exposure/logging.
+- Ownership rules preserved: generated-document payload still comes through existing workspace/document paths.
+- Deletion semantics preserved: no generated-document lifecycle changes.
+- Provider rules preserved: no provider resolution or credential handling change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-13 Follow Ups Builder Polish
+
+### Scope
+
+- Populates the step 2 optional quick-action box and prompt preview whenever a quick-action card is selected.
+- Replaced the rough Generate/Clear buttons with dedicated Follow Ups action button styling.
+- Constrained the LLM request panel so its payload scrolls inside the Follow Ups right panel instead of overflowing.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: visual polish still should be browser-reviewed against the screenshot.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: adds selected quick-action eyebrow and new action button classes.
+- `app/templates/transcribe/_head_assets.html`: styles selected quick-action state, action buttons, and bounded LLM request scroll area.
+- `app/static/js/transcribe/app.js`: passes the selected quick-action panel to action wiring.
+- `app/static/js/transcribe/actions.js`: toggles selected quick-action state and fills step 2/preview copy from the selected card.
+- `app/static/js/transcribe/documents.js`: gives the rendered LLM request panel/payload stable classes for bounded scrolling.
+- `tests/test_web_refactor.py`: covers selected action population hooks, button classes, and LLM request scroll hooks.
+- `docs/transcribe_brief.md`: documents selected quick-action population behavior.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 5 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace or quick_action_context"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- UI-only change; selected quick-action context still reuses existing quick-action endpoint and free-text follow-up still reuses existing follow-up endpoint.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content reads, logs, or sharing paths added.
+- Ownership rules preserved: existing owner-scoped workspace/generated-document APIs remain the only data source and mutation path.
+- Deletion semantics preserved: selected follow-up delete behavior unchanged.
+- Provider rules preserved: no LLM/STT/de-identification provider resolution change.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-13 Follow Ups LLM Request Bounds
+
+### Scope
+
+- Fixed the Follow Ups LLM request panel sizing so opening it gives the payload a real bounded scroll area instead of letting the panel extend below the right-side card.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser visual check still recommended for exact height comfort.
+
+### Files changed
+
+- `app/templates/transcribe/_head_assets.html`: makes the LLM request slot flex-bounded and renders the open details panel as fixed-summary plus scrollable payload grid.
+- `tests/test_web_refactor.py`: covers bounded flex/grid sizing hooks for the LLM request panel.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 5 tests.
+
+### Documentation
+
+- Updated this progress record.
+
+### Risks / assumptions
+
+- CSS-only containment change; no request payload content, storage, or API behavior changed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new payload exposure; existing LLM request dev/user display remains same content in a bounded container.
+- Ownership rules preserved: generated-document payload still comes from existing owner-scoped workspace response.
+- Deletion semantics preserved: no lifecycle/cascade/retention path changed.
+- Provider rules preserved: no provider resolution or credential handling changed.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
+## 2026-05-13 Follow Ups Screenshot Match
+
+### Scope
+
+- Updated the Follow Ups tab to match the supplied screenshot: quick-action cards on the left, a combined follow-up builder with numbered context/optional quick-action/preview steps in the middle, and selected follow-up output plus recents/LLM request on the right.
+- The middle Generate button now submits a custom follow-up when no quick action is selected, or runs the selected quick action with the same context when one is selected.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: visual similarity is CSS/template based; no browser screenshot diff was run.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: reshapes Follow Ups middle panel into the screenshot-style combined builder and keeps existing generation hooks.
+- `app/templates/transcribe/_head_assets.html`: adds screenshot-style builder, preview, selected quick-action, and sidebar tip styles.
+- `app/static/js/transcribe/app.js`: adds DOM refs and enables the combined Generate button when free-text follow-up generation is available.
+- `app/static/js/transcribe/actions.js`: syncs selected quick action into the optional action/preview panels and routes Generate to the correct existing endpoint.
+- `tests/test_web_refactor.py`: covers screenshot-specific builder hooks, right-panel recents, and combined textarea hook preservation.
+- `docs/transcribe_brief.md`: documents combined builder behavior.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 5 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace or quick_action_context"`: passed, 12 tests.
+
+### Documentation
+
+- Updated transcribe brief and this progress record.
+
+### Risks / assumptions
+
+- Combined builder deliberately reuses existing generated-document endpoints; no new prompt schema or quick-action usage metadata was added.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: transcript-derived context still sent only through existing owner-scoped follow-up/quick-action endpoints.
+- Ownership rules preserved: workspace load, generated document selection, and delete still use existing owner checks.
+- Deletion semantics preserved: no lifecycle/cascade/retention behavior changed.
+- Provider rules preserved: existing LLM/STT resolution and credential boundaries unchanged.
+- Structured-note contract preserved: no EMIS structured-note JSON, keys, validation, or editor behavior changed.
+
 ## 2026-05-13 Clinical Note Empty State Spacing
 
 ### Scope
@@ -5436,6 +5846,15 @@
 - Provider rules preserved: existing dictation STT selection and upload limits reused.
 - Structured-note contract preserved: no EMIS/template JSON contract changes.
 
+# 2026-05-14 Transcribe Note Empty-State Fix
+
+- Fixed `/transcribe` editable-note empty guidance so "No note lines yet" hides when structured or freeform note rows already contain content.
+- Server render now passes note-row content flags to hide the placeholder before JS runs.
+- Generated-output refresh now calls the empty-state sync after structured/freeform rows render or hide.
+- Added an explicit `.note-editor-empty-state[hidden]` rule because the component display rule was overriding Tailwind/browser hidden styling.
+- Added focused static regression coverage and updated transcribe/testing notes.
+- Architecture checkpoint: UI-only owner workspace fix; no transcript visibility, ownership, deletion, encryption-key, provider-resolution, or structured-note JSON contract changes.
+
 ## 2026-05-01 Transcribe Copy Review Marker Fix
 
 ### Scope
@@ -5516,3 +5935,11 @@
 - Runtime STT credential reads now use the persisted Vault ref, preserving old deterministic refs and new replacement refs.
 - Added focused API regression coverage for draft replacement commit failure preserving the old Vault secret.
 - Architecture checkpoint: provider secret integrity improved; system-admin provisioning scope unchanged; no transcript visibility, ownership, deletion cascade, encryption-key, or structured-note contract changes.
+
+# 2026-05-14 Follow-up Quick Action Selection UX
+
+- Changed Follow Ups quick-action cards to select/fill the optional quick-action card without auto-running generation.
+- Replaced the empty selected-action card's `Choose quick action` button with a left-arrow focus control pointing back to the quick-action list.
+- Added Generate and Remove controls inside the selected quick-action card; bottom Generate remains and still runs the selected quick action when present, or context-only follow-up when no action is selected.
+- Updated static web regression coverage and `docs/transcribe_brief.md`.
+- Architecture checkpoint: privacy boundaries, ownership, deletion semantics, provider rules, and structured-note contract unchanged; existing owner-only generation endpoints remain the only execution path.

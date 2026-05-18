@@ -17,7 +17,22 @@ Add a first transcript capture flow with:
 - backend forwarding of audio chunks to the team transcription endpoint
 - backend-owned draft text updates into `transcripts.current_draft_text_encrypted`
 - transcript draft text, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document section text, follow-up prompt text, redaction output text, detected redaction entity values, and owner-entered manual PII values encrypted at rest before Postgres persistence
+- working-note freeform text and generated-document working-note snapshots encrypted at rest before Postgres persistence
 - existing commit/version behavior preserved
+
+## Consultation working notes
+
+Working note is clinician-authored source content captured during a consultation. It is separate from transcript text and generated note output.
+
+Rules:
+
+- one working-note mode per transcript: `freeform` or `structured`
+- mode locks on first non-empty save
+- clearing working note removes content and unlocks mode
+- clearing working note does not delete transcript text or generated outputs
+- working note follows transcript-root retention and deletion
+- generated notes snapshot the working-note input used for generation
+- working note is redacted before any LLM request; generation fails closed if redaction fails
 
 Longer-term capture modes to support on the same foundation:
 

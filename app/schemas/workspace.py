@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from .dictation import PostConsultationDictationDetail
 from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
-from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail
+from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail, WorkingNoteDetail
 
 
 class TranscribeWorkspaceDetail(BaseModel):
@@ -13,6 +13,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     active_transcript_redaction_status: dict | None = None
     active_transcript_clinical_nlp_status: dict | None = None
     post_consultation_dictation: PostConsultationDictationDetail | None = None
+    active_working_note: WorkingNoteDetail | None = None
     generated_documents: list[GeneratedDocumentDetail]
     available_templates: list[PromptTemplateDetail]
     available_quick_actions: list[QuickActionDetail]

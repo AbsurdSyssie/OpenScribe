@@ -18,6 +18,7 @@ from ..schemas import (
     SttConfigDraftReplaceCredentialBody,
     SttConfigFinalizeBody,
 )
+from ..schemas.transcripts import WorkingNoteDetail, WorkingNoteUpdate
 from ..services.smart_phrases import (
     create_personal_smart_phrase as create_personal_smart_phrase_service,
     delete_personal_smart_phrase as delete_personal_smart_phrase_service,
@@ -27,6 +28,11 @@ from ..services.smart_phrases import (
     update_personal_smart_phrase as update_personal_smart_phrase_service,
 )
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
+from ..services.transcripts import (
+    clear_working_note as clear_working_note_service,
+    save_working_note as save_working_note_service,
+    working_note_detail as working_note_detail_service,
+)
 from ..web.presentation import smart_phrase_response
 
 
@@ -904,6 +910,36 @@ def delete_transcript(
     db: Session = Depends(get_db),
 ):
     delete_transcripts_service(db, context.user, transcript_ids=[transcript_id])
+
+
+@api.get("/transcripts/{transcript_id}/working-note", response_model=WorkingNoteDetail, responses=error_responses)
+def get_transcript_working_note(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return WorkingNoteDetail.model_validate(working_note_detail_service(db, context.user, transcript_id=transcript_id))
+
+
+@api.patch("/transcripts/{transcript_id}/working-note", response_model=WorkingNoteDetail, responses=error_responses)
+def update_transcript_working_note(
+    transcript_id: UUID,
+    payload: WorkingNoteUpdate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    save_working_note_service(db, context.user, transcript_id=transcript_id, payload=payload)
+    return WorkingNoteDetail.model_validate(working_note_detail_service(db, context.user, transcript_id=transcript_id))
+
+
+@api.delete("/transcripts/{transcript_id}/working-note", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def delete_transcript_working_note(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    clear_working_note_service(db, context.user, transcript_id=transcript_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @api.post("/transcripts/{transcript_id}/finalize-live-capture", response_model=TranscriptDetail, responses=error_responses)

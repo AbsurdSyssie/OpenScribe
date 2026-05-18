@@ -632,11 +632,7 @@ export function attachTranscribeActions({
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-            structuredEditor.selectedOutputTemplateMode() === 'structured'
-              ? { template_id: templateId, structured_context: structuredEditor.collectStructuredContext() }
-              : { template_id: templateId }
-          ),
+          body: JSON.stringify({ template_id: templateId }),
         });
         if (!response.ok) {
           throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));

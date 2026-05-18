@@ -1,5 +1,59 @@
 # Progress
 
+## 2026-05-17 Working Notes
+
+### Scope
+
+- Added owner-only working-note storage and API for transcript-scoped clinician-authored context.
+- Added generation snapshots and prompt integration so note generation can use working notes without overwriting them.
+- Added redaction fail-closed behavior for working-note content before LLM requests.
+- Added dedicated workspace Working note panel with freeform/EMIS inputs, copy, and clear actions.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: broader browser QA recommended for exact copy/clear ergonomics across mobile and generated-output states.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/r7s8t9u0v1w2_add_working_notes.py`: add working-note mode/content/snapshot fields.
+- `app/schemas/transcripts.py`, `app/services/transcripts.py`, `app/routes/api_routes.py`: add owner-only working-note read/save/clear contract.
+- `app/services/templates.py`: snapshots working notes, redacts them, and labels them in generation prompts.
+- `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_head_assets.html`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/actions.js`: adds dedicated working-note panel, save/copy/clear behavior, and sends generation by template id.
+- `app/api_route_audit.py`, `tests/test_api.py`: cover route auth, mode lock, clear, generation snapshots, and fail-closed redaction.
+- `CONTEXT.md`, `docs/working_note_implementation.md`, `docs/api.md`, `docs/transcript-capture.md`, `docs/progress.md`: document domain and API behavior.
+
+### Tests
+
+- `.venv/bin/python -m compileall app`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note or team_and_personal_template_routes_enforce_scope_and_allow_generation"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "structured_context or structured_template or generation_uses_structured or working_note"`: passed, 5 tests.
+- `.venv/bin/pytest -q tests/test_api_route_audit.py`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py`: passed, 19 tests.
+- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "workspace_shell or exposes_home_and_context_settings_controls or working_note"`: passed, 2 tests.
+
+### Documentation
+
+- Added temporary working-note implementation plan.
+- Updated API and transcript-capture docs.
+- Tutorials deferred until implementation UX is final.
+
+### Risks / assumptions
+
+- Existing `structured_context_json` remains supported for compatibility and is treated as structured working-note content.
+- UI separation between generated output and working-note editing is now present in the workspace; detailed mobile QA remains useful.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: working-note content is owner-only transcript-derived content and not exposed to leaders/admins.
+- Ownership rules preserved: all working-note routes use owner transcript lookup.
+- Deletion semantics preserved: living notes live under transcript root; generated snapshots cascade with generated documents/transcript.
+- Provider rules preserved: no provider selection/credential changes; working-note content is redacted before LLM calls.
+- Structured-note contract preserved: EMIS allowed keys remain enforced; structured output schema still comes from selected template.
+
 ## 2026-05-17 Follow Up Autosave Switch Guard
 
 ### Scope

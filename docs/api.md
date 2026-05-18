@@ -81,6 +81,9 @@ Browser navigation behavior:
 - `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file`
+- `GET /api/v1/transcripts/{transcript_id}/working-note`
+- `PATCH /api/v1/transcripts/{transcript_id}/working-note`
+- `DELETE /api/v1/transcripts/{transcript_id}/working-note`
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`

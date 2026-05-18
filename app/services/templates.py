@@ -34,6 +34,7 @@ from app.models import (
     TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
+    TranscriptWorkingNoteMode,
     User,
     utcnow,
 )
@@ -58,6 +59,8 @@ from app.services.redaction import (
 )
 from app.services.transcripts import (
     manual_pii_entity_value,
+    freeform_working_note_text,
+    normalize_structured_working_note,
     set_transcript_structured_context,
     transcript_structured_context,
     transcript_version_text,
@@ -1448,6 +1451,72 @@ def set_generated_document_structured_context(db: Session, *, document: Generate
     )
 
 
+def generated_document_structured_working_note_snapshot(db: Session, *, document: GeneratedDocument) -> dict | None:
+    value = decrypt_json_for_owner(
+        db,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="structured_working_note_snapshot_json",
+        record_id=document.id,
+        stored_value=document.structured_working_note_snapshot_json,
+    )
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AppError(500, "content_crypto_invalid", "Generated document working note snapshot is invalid")
+    return value
+
+
+def set_generated_document_structured_working_note_snapshot(db: Session, *, document: GeneratedDocument, plaintext: dict | None) -> None:
+    document.structured_working_note_snapshot_json = (
+        encrypt_json_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field="structured_working_note_snapshot_json",
+            record_id=document.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
+def _working_note_snapshot_for_transcript(db: Session, *, transcript: Transcript) -> tuple[TranscriptWorkingNoteMode | None, str, dict | None]:
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
+        freeform_text = freeform_working_note_text(db, transcript=transcript).strip()
+        return (TranscriptWorkingNoteMode.freeform, freeform_text, None) if freeform_text else (None, "", None)
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
+        structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
+        return (TranscriptWorkingNoteMode.structured, "", structured_note) if structured_note is not None else (None, "", None)
+    structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
+    if structured_note is not None:
+        return TranscriptWorkingNoteMode.structured, "", structured_note
+    return None, "", None
+
+
+def _format_working_note_for_prompt(*, mode: TranscriptWorkingNoteMode | None, freeform_text: str = "", structured_note: dict | None = None) -> str:
+    if mode is TranscriptWorkingNoteMode.freeform and freeform_text.strip():
+        return f"Freeform working note:\n{freeform_text.strip()}"
+    if mode is TranscriptWorkingNoteMode.structured and isinstance(structured_note, dict):
+        sections = structured_note.get("sections")
+        if isinstance(sections, dict):
+            lines: list[str] = []
+            for section_key in EMIS_SECTION_KEYS:
+                raw_lines = sections.get(section_key)
+                if isinstance(raw_lines, list):
+                    values = [str(item).strip() for item in raw_lines if isinstance(item, str) and item.strip()]
+                elif isinstance(raw_lines, str) and raw_lines.strip():
+                    values = [raw_lines.strip()]
+                else:
+                    values = []
+                if values:
+                    lines.append(f"{EMIS_SECTION_LABELS.get(section_key, section_key)}:\n" + "\n".join(values))
+            if lines:
+                return "Structured EMIS working note:\n" + "\n\n".join(lines)
+    return ""
+
+
 def generated_document_llm_request_payload(db: Session, *, document: GeneratedDocument) -> dict | None:
     value = decrypt_json_for_owner(
         db,
@@ -1655,6 +1724,7 @@ def _build_template_generation_messages(
     prompt_text: str,
     transcript_text: str,
     dictation_text: str = "",
+    working_note_text: str = "",
 ) -> tuple[str, str]:
     return (
         "You generate concise note output from consultation source material using the provided template instructions. "
@@ -1663,14 +1733,15 @@ def _build_template_generation_messages(
         "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
         "The \"content\" field must contain the full note text. "
         "Do not include markdown fences, commentary, or any text outside the JSON object. "
-        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
-        "Do not invent facts absent from both sources. "
+        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "Do not invent facts absent from the provided sources. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
             f"Template name: {template_name}\n\n"
             f"Template instructions:\n{prompt_text}\n\n"
             f"Consultation transcript:\n{transcript_text}"
+            + (f"\n\nConsultation working note:\n{working_note_text}" if working_note_text.strip() else "")
             + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         ),
     )
@@ -1683,6 +1754,7 @@ def _build_structured_template_generation_messages(
     transcript_text: str,
     dictation_text: str,
     template_config: StructuredTemplateConfig,
+    working_note_text: str = "",
 ) -> tuple[str, str]:
     section_lines = [
         f'- "{section.section_key}": {section.instruction}'
@@ -1698,8 +1770,8 @@ def _build_structured_template_generation_messages(
         f"{', '.join(section.section_key for section in sorted(template_config.sections, key=lambda item: item.section_order))}. "
         "Each included section value must be a string. Omit sections that have no relevant content. "
         "Do not include markdown fences, commentary, or any text outside the JSON object. "
-        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
-        "Do not invent facts absent from both sources. "
+        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "Do not invent facts absent from the provided sources. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         (
@@ -1708,6 +1780,7 @@ def _build_structured_template_generation_messages(
             "EMIS sections to fill:\n"
             f"{chr(10).join(section_lines)}\n\n"
             f"Consultation transcript:\n{transcript_text}"
+            + (f"\n\nConsultation working note:\n{working_note_text}" if working_note_text.strip() else "")
             + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         ),
     )
@@ -2100,23 +2173,26 @@ def queue_document_generation_from_template(
     template = _resolve_available_template_for_user(db, actor, template_id=template_id)
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
-    raw_structured_context = structured_context
-    transcript_context = transcript_structured_context(db, transcript=transcript)
-    if raw_structured_context is None and isinstance(transcript_context, dict):
-        transcript_profile = transcript_context.get("profile")
-        transcript_sections = transcript_context.get("sections")
-        if transcript_profile == "emis" and isinstance(transcript_sections, dict):
+    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    raw_structured_context = None
+    if isinstance(structured_working_note_snapshot, dict):
+        transcript_sections = structured_working_note_snapshot.get("sections")
+        if isinstance(transcript_sections, dict):
             raw_structured_context = {
                 str(section_key): value
                 for section_key, value in transcript_sections.items()
                 if isinstance(section_key, str)
             }
+    elif structured_context is not None and working_note_mode is None:
+        raw_structured_context = structured_context
+        structured_working_note_snapshot = {"profile": "emis", "sections": structured_context}
+        working_note_mode = TranscriptWorkingNoteMode.structured
     serialized_structured_context = _serialize_structured_context(
         raw_context=raw_structured_context,
         template_config=template_config,
-        ignore_unsupported_sections=structured_context is None,
+        ignore_unsupported_sections=True,
     )
-    if template_config is not None:
+    if structured_context is not None and template_config is not None and transcript.working_note_mode in {None, TranscriptWorkingNoteMode.structured}:
         set_transcript_structured_context(
             db,
             transcript=transcript,
@@ -2125,12 +2201,16 @@ def queue_document_generation_from_template(
                 "sections": dict(serialized_structured_context or {}),
             },
         )
+        if serialized_structured_context:
+            transcript.working_note_mode = TranscriptWorkingNoteMode.structured
+            transcript.working_note_updated_at = utcnow()
         db.add(transcript)
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
         allow_empty=(
-            (latest_version.mode is TemplateMode.structured and bool(serialized_structured_context))
+            bool(freeform_working_note_snapshot.strip())
+            or bool(serialized_structured_context)
             or bool(_effective_dictation_text(db, transcript=transcript))
         ),
     )
@@ -2152,6 +2232,9 @@ def queue_document_generation_from_template(
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
         structured_context_json=None,
+        working_note_mode_snapshot=working_note_mode,
+        freeform_working_note_snapshot_encrypted=None,
+        structured_working_note_snapshot_json=None,
         structured_section_definitions_json=_structured_section_definitions_snapshot(template_config),
         status=GeneratedDocumentStatus.queued,
         title=f"{template.name} output",
@@ -2165,6 +2248,17 @@ def queue_document_generation_from_template(
         llm_base_url=config.base_url,
     )
     set_generated_document_structured_context(db, document=generated_document, plaintext=serialized_structured_context)
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="freeform_working_note_snapshot_encrypted",
+        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
+    )
+    set_generated_document_structured_working_note_snapshot(
+        db,
+        document=generated_document,
+        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
+    )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     db.add(generated_document)
@@ -2351,6 +2445,56 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     extra_phi_index.extend(manual_phi_index)
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
+        working_note_text = ""
+        if document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform:
+            freeform_working_note = generated_document_text(db, document=document, field="freeform_working_note_snapshot_encrypted").strip()
+            if freeform_working_note:
+                redacted_working_note, working_note_phi_index = _redact_dynamic_prompt_text(
+                    db,
+                    freeform_working_note,
+                    team_id=document.team_id,
+                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+                )
+                extra_phi_index.extend(working_note_phi_index)
+                redacted_working_note, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
+                    db,
+                    transcript_id=document.transcript_id,
+                    owner_user_id=document.owner_user_id,
+                    transcript_text=redacted_working_note or "",
+                    dictation_text="",
+                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+                )
+                extra_phi_index.extend(manual_working_note_phi_index)
+                working_note_text = _format_working_note_for_prompt(
+                    mode=TranscriptWorkingNoteMode.freeform,
+                    freeform_text=redacted_working_note or "",
+                )
+        elif document.working_note_mode_snapshot is TranscriptWorkingNoteMode.structured:
+            structured_working_note = generated_document_structured_working_note_snapshot(db, document=document)
+            if structured_working_note:
+                redacted_structured_working_note, structured_working_note_phi_index = _redact_dynamic_prompt_value(
+                    db,
+                    structured_working_note,
+                    team_id=document.team_id,
+                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+                )
+                extra_phi_index.extend(structured_working_note_phi_index)
+                if not isinstance(redacted_structured_working_note, dict):
+                    raise AppError(500, "redaction_failed", "Working note redaction changed shape")
+                working_note_text = _format_working_note_for_prompt(
+                    mode=TranscriptWorkingNoteMode.structured,
+                    structured_note=redacted_structured_working_note,
+                )
+                if working_note_text.strip():
+                    working_note_text, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
+                        db,
+                        transcript_id=document.transcript_id,
+                        owner_user_id=document.owner_user_id,
+                        transcript_text=working_note_text,
+                        dictation_text="",
+                        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+                    )
+                    extra_phi_index.extend(manual_working_note_phi_index)
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
@@ -2403,6 +2547,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 transcript_text=transcript_text,
                 dictation_text=dictation_text,
                 template_config=template_config,
+                working_note_text=working_note_text,
             )
         else:
             system_message, user_message = _build_template_generation_messages(
@@ -2410,6 +2555,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 prompt_text=prompt_text,
                 transcript_text=transcript_text,
                 dictation_text=dictation_text,
+                working_note_text=working_note_text,
             )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
         follow_up_prompt_text = generated_document_text(db, document=document, field="follow_up_prompt_text").strip()

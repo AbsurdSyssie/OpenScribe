@@ -71,6 +71,7 @@ from app.models import (
     TranscriptIngestionMode,
     TranscriptManualPiiEntity,
     TranscriptVersion,
+    TranscriptWorkingNoteMode,
     TemplateMode,
     User,
     UserEncryptionKey,
@@ -5972,6 +5973,174 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert_error(forbidden_read, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
     forbidden_delete = client.delete(f"/api/v1/templates/personal/{personal_template_id}")
     assert_error(forbidden_delete, status_code=404, code="not_found", message="Personal template not found")
+
+
+def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_session, make_team, make_user):
+    team = make_team(name="Working Note Clinic")
+    owner = make_user(email="working-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="working-other@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    login(client, email="working-owner@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Working note visit", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+
+    empty = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert empty.status_code == 200
+    assert empty.json()["mode"] is None
+    assert empty.json()["freeform_text"] == ""
+
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "  Clinician plan: review BP next week.  "},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["mode"] == "freeform"
+    assert saved.json()["freeform_text"] == "Clinician plan: review BP next week."
+    assert saved.json()["updated_at"] is not None
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript.working_note_mode is TranscriptWorkingNoteMode.freeform
+    assert transcript.freeform_working_note_encrypted != "Clinician plan: review BP next week."
+
+    mode_switch = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "structured", "structured_note": {"profile": "emis", "sections": {"problem": ["Hypertension"]}}},
+    )
+    assert_error(mode_switch, status_code=409, code="business_rule_violation", message="Clear the working note before switching mode.")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="working-other@example.com", password="password-2")
+    forbidden = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="working-owner@example.com", password="password-1")
+    cleared = client.delete(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert cleared.status_code == 204
+    cleared_read = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert cleared_read.status_code == 200
+    assert cleared_read.json()["mode"] is None
+    assert cleared_read.json()["freeform_text"] == ""
+    db_session.refresh(transcript)
+    assert transcript.working_note_mode is None
+    assert transcript.freeform_working_note_encrypted is None
+
+
+def test_template_generation_uses_saved_working_note_when_transcript_empty(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Working Note Generation")
+    admin = make_user(email="working-gen-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-gen-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Working note template", prompt_text="Write note.")
+
+    class FakeTaskResult:
+        id = "working-note-generated-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    captured_provider_request = {}
+
+    def fake_generate_openai(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return '{"title":"Working note","content":"Generated from working note"}', {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "duration_ms": 5}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    login(client, email="working-gen-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Patient prefers conservative management."},
+    )
+    assert saved.status_code == 200
+
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert document is not None
+    assert document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform
+    assert decrypt_generated_document_field(db_session, document, "freeform_working_note_snapshot_encrypted") == "Patient prefers conservative management."
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    user_message = captured_provider_request["messages"][1]["content"]
+    assert "Consultation transcript:\n" in user_message
+    assert "Consultation working note:\nFreeform working note:\nPatient prefers conservative management." in user_message
+    versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
+    assert len(versions) == 1
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=versions[0].id,
+        stored_value=versions[0].text_encrypted,
+    ) == ""
+
+
+def test_template_generation_fails_closed_when_working_note_redaction_fails(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Working Note Redaction")
+    admin = make_user(email="working-redact-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-redact-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Fail closed template", prompt_text="Write note.")
+
+    class FakeTaskResult:
+        id = "working-note-redaction-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    provider_called = False
+
+    def fake_generate_openai(**kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return '{"title":"Unsafe","content":"Should not run"}', {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "duration_ms": 1}
+
+    def fail_redaction(*args, **kwargs):
+        raise AppError(502, "redaction_failed", "Working note could not be redacted")
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fail_redaction)
+    login(client, email="working-redact-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Patient name is Jane Smith."},
+    )
+    assert saved.status_code == 200
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert document is not None
+
+    with pytest.raises(AppError) as exc_info:
+        process_generated_document(db_session, document_id=document.id)
+    assert exc_info.value.code == "redaction_failed"
+    assert provider_called is False
+    db_session.refresh(document)
+    assert document.llm_request_payload_json_encrypted is None
 
 
 def test_template_generation_supports_ollama_adapter(

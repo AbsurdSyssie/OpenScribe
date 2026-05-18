@@ -66,8 +66,10 @@ from ..services.transcripts import (
     reconcile_transcript_status as reconcile_transcript_status_service,
     manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_draft_text as transcript_draft_text_service,
+    transcript_has_working_note as transcript_has_working_note_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
+    working_note_detail as working_note_detail_service,
 )
 from ..services.redaction import redaction_entity_original_value as redaction_entity_original_value_service
 from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
@@ -308,6 +310,7 @@ def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
 def transcript_list_item_response(db: Session, transcript: Transcript) -> TranscriptListItem:
     payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
     payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+    payload["has_working_note"] = transcript_has_working_note_service(db, transcript=transcript)
     return TranscriptListItem.model_validate(payload)
 
 
@@ -628,6 +631,11 @@ def resolve_transcribe_workspace(
         and request_is_localhost_only(request)
     )
     active_structured_context = _active_structured_context_map(db, active_transcript)
+    active_working_note = (
+        working_note_detail_service(db, current_user, transcript_id=active_transcript.id)
+        if active_transcript is not None and not current_user.is_system_admin
+        else None
+    )
     active_draft_text = transcript_draft_text_service(db, transcript=active_transcript) if active_transcript is not None else ""
     active_note_input_available = bool(
         active_transcript
@@ -703,6 +711,7 @@ def resolve_transcribe_workspace(
         "freeform_editor_has_text": freeform_editor_has_text,
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
+        "active_working_note": active_working_note,
         "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=True),
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
@@ -759,6 +768,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
             if post_consultation_dictation is not None
             else None
         ),
+        active_working_note=workspace.get("active_working_note"),
         generated_documents=[generated_document_response(db, document) for document in generated_documents],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
@@ -831,6 +841,7 @@ def render_transcribe(
     workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"
     active_transcript = workspace.get("active_transcript")
     if isinstance(active_transcript, Transcript):
+        workspace["active_working_note"] = working_note_detail_service(db, current_user, transcript_id=active_transcript.id)
         workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"

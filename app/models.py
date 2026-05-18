@@ -46,6 +46,11 @@ class TranscriptIngestionMode(str, enum.Enum):
     live_chunked = "live_chunked"
 
 
+class TranscriptWorkingNoteMode(str, enum.Enum):
+    freeform = "freeform"
+    structured = "structured"
+
+
 class TranscriptIngestionJobKind(str, enum.Enum):
     live_chunk = "live_chunk"
     audio_file = "audio_file"
@@ -1010,6 +1015,9 @@ class Transcript(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
+    freeform_working_note_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    working_note_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingestion_mode: Mapped[TranscriptIngestionMode] = mapped_column(
         Enum(TranscriptIngestionMode),
         default=TranscriptIngestionMode.whole_file,
@@ -1286,6 +1294,9 @@ class GeneratedDocument(Base):
     follow_up_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    working_note_mode_snapshot: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
+    freeform_working_note_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_working_note_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     structured_section_definitions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[GeneratedDocumentStatus] = mapped_column(
         Enum(GeneratedDocumentStatus),

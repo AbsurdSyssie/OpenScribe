@@ -422,6 +422,14 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note", AccessTier.full),
+    AuditCase(
+        "PATCH",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note",
+        AccessTier.full,
+        json_body=_json(mode="freeform", freeform_text="Working note"),
+    ),
+    AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generated-documents", AccessTier.full),
     AuditCase("GET", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/redaction-debug", AccessTier.local_debug),
     AuditCase(

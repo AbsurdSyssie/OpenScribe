@@ -17,11 +17,12 @@ from app.models import (
     TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
+    TranscriptWorkingNoteMode,
     User,
     transcript_expiry,
     utcnow,
 )
-from app.schemas.transcripts import TranscriptCreate, TranscriptStart
+from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS, TranscriptCreate, TranscriptStart, WorkingNoteUpdate
 from app.services.audio import (
     enforce_whole_file_duration_limit,
     inspect_audio_duration_seconds,
@@ -166,6 +167,7 @@ def _create_transcript_row(
 
     retention_days = owner.team.default_retention_days
     transcript_id = uuid4()
+    normalized_structured_context = normalize_structured_working_note(structured_context_json)
     transcript = Transcript(
         id=transcript_id,
         owner_user_id=owner.id,
@@ -190,11 +192,13 @@ def _create_transcript_row(
                 table="transcripts",
                 field="structured_context_json",
                 record_id=transcript_id,
-                plaintext=structured_context_json,
+                plaintext=normalized_structured_context,
             )
-            if structured_context_json is not None
+            if normalized_structured_context is not None
             else None
         ),
+        working_note_mode=TranscriptWorkingNoteMode.structured if normalized_structured_context is not None else None,
+        working_note_updated_at=utcnow() if normalized_structured_context is not None else None,
         ingestion_mode=ingestion_mode,
         status=TranscriptStatus.ready,
         next_live_chunk_sequence_no_applied=1,
@@ -384,6 +388,131 @@ def transcript_structured_context(db: Session, *, transcript: Transcript) -> dic
     if not isinstance(value, dict):
         raise AppError(500, "content_crypto_invalid", "Transcript structured context is invalid")
     return value
+
+
+def freeform_working_note_text(db: Session, *, transcript: Transcript) -> str:
+    return (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="freeform_working_note_encrypted",
+            record_id=transcript.id,
+            stored_value=transcript.freeform_working_note_encrypted,
+        )
+        or ""
+    )
+
+
+def set_freeform_working_note_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
+    transcript.freeform_working_note_encrypted = (
+        encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="freeform_working_note_encrypted",
+            record_id=transcript.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
+def _normalize_working_note_line(value: object) -> str:
+    return str(value).strip() if isinstance(value, str) else ""
+
+
+def normalize_structured_working_note(raw_value: dict | None) -> dict | None:
+    if not isinstance(raw_value, dict):
+        return None
+    profile = raw_value.get("profile")
+    sections = raw_value.get("sections")
+    if profile != "emis" or not isinstance(sections, dict):
+        return None
+    normalized_sections: dict[str, list[str]] = {}
+    total_chars = 0
+    for section_key in EMIS_WORKING_NOTE_SECTION_KEYS:
+        raw_section_value = sections.get(section_key)
+        if isinstance(raw_section_value, list):
+            lines = [_normalize_working_note_line(item) for item in raw_section_value]
+        elif isinstance(raw_section_value, str):
+            lines = [_normalize_working_note_line(raw_section_value)]
+        else:
+            lines = []
+        clean_lines = [line for line in lines if line]
+        section_chars = sum(len(line) for line in clean_lines)
+        if section_chars > 4000:
+            raise AppError(422, "validation_error", "Structured working note section is too long", {"section_key": section_key})
+        total_chars += section_chars
+        if clean_lines:
+            normalized_sections[section_key] = clean_lines
+    if total_chars > 20000:
+        raise AppError(422, "validation_error", "Structured working note is too long")
+    if not normalized_sections:
+        return None
+    return {"profile": "emis", "sections": normalized_sections}
+
+
+def transcript_has_working_note(db: Session, *, transcript: Transcript) -> bool:
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
+        return bool(freeform_working_note_text(db, transcript=transcript).strip())
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
+        return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+    return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+
+
+def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dict:
+    transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
+    mode = transcript.working_note_mode or (TranscriptWorkingNoteMode.structured if structured_note is not None else None)
+    return {
+        "transcript_id": transcript.id,
+        "mode": mode,
+        "freeform_text": freeform_working_note_text(db, transcript=transcript) if mode is TranscriptWorkingNoteMode.freeform else "",
+        "structured_note": structured_note if mode is TranscriptWorkingNoteMode.structured else None,
+        "updated_at": transcript.working_note_updated_at,
+    }
+
+
+def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
+        raise AppError(
+            409,
+            "business_rule_violation",
+            "Clear the working note before switching mode.",
+            {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value},
+        )
+    if payload.mode is TranscriptWorkingNoteMode.freeform:
+        clean_text = (payload.freeform_text or "").strip()
+        if not clean_text:
+            raise AppError(422, "validation_error", "Clear the working note instead of saving empty text")
+        transcript.working_note_mode = TranscriptWorkingNoteMode.freeform
+        set_freeform_working_note_text(db, transcript=transcript, plaintext=clean_text)
+        set_transcript_structured_context(db, transcript=transcript, plaintext=None)
+    else:
+        structured_note = normalize_structured_working_note(payload.structured_note.model_dump() if payload.structured_note else None)
+        if structured_note is None:
+            raise AppError(422, "validation_error", "Clear the working note instead of saving empty sections")
+        transcript.working_note_mode = TranscriptWorkingNoteMode.structured
+        set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
+        set_transcript_structured_context(db, transcript=transcript, plaintext=structured_note)
+    transcript.working_note_updated_at = utcnow()
+    db.add(transcript)
+    db.commit()
+    db.refresh(transcript)
+    return transcript
+
+
+def clear_working_note(db: Session, actor: User, *, transcript_id: UUID) -> None:
+    transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    transcript.working_note_mode = None
+    set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
+    set_transcript_structured_context(db, transcript=transcript, plaintext=None)
+    transcript.working_note_updated_at = None
+    db.add(transcript)
+    db.commit()
 
 
 def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
@@ -823,7 +952,14 @@ def update_transcript(
             raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
         transcript.ingestion_mode = ingestion_mode
     if structured_context_json is not None:
-        set_transcript_structured_context(db, transcript=transcript, plaintext=structured_context_json)
+        normalized_structured_context = normalize_structured_working_note(structured_context_json)
+        if normalized_structured_context is not None:
+            if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform and transcript_has_working_note(db, transcript=transcript):
+                raise AppError(409, "business_rule_violation", "Clear the working note before switching mode.", {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value})
+            transcript.working_note_mode = TranscriptWorkingNoteMode.structured
+            transcript.working_note_updated_at = utcnow()
+            set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
+        set_transcript_structured_context(db, transcript=transcript, plaintext=normalized_structured_context)
     db.add(transcript)
     db.commit()
     db.refresh(transcript)

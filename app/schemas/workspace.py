@@ -19,6 +19,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     available_quick_actions: list[QuickActionDetail]
     smart_phrases: list[SmartPhraseDetail] = []
     active_structured_context: dict[str, list[str]]
+    active_template_generation_input_available: bool = False
     stt_selected: bool
     stt_available: bool
     stt_status_message: str | None = None

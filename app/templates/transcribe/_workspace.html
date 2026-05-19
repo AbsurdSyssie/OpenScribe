@@ -251,7 +251,7 @@ data-note-editor-header-toolbar
 <button
 type="submit"
 class="btn-primary btn-primary--compact"
-{% if not active_transcript or not available_templates or not llm_selection or (not active_transcript.current_draft_text and not active_structured_context) %}disabled{% endif %}>
+{% if not active_transcript or not available_templates or not llm_selection or not active_template_generation_input_available %}disabled{% endif %}>
 <i class="w-4 h-4" data-lucide="zap"></i>
 Create
 </button>

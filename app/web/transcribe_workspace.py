@@ -49,7 +49,7 @@ from ..services.llm import (
     resolve_user_llm as resolve_user_llm_service,
 )
 from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
-from ..services.dictations import dictation_detail_response, get_post_consultation_dictation
+from ..services.dictations import dictation_detail_response, dictation_effective_text, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.templates import (
@@ -644,6 +644,32 @@ def resolve_transcribe_workspace(
         else None
     )
     active_draft_text = transcript_draft_text_service(db, transcript=active_transcript) if active_transcript is not None else ""
+    post_consultation_dictation = (
+        get_post_consultation_dictation(db, current_user, transcript_id=active_transcript.id)
+        if active_transcript is not None and not current_user.is_system_admin
+        else None
+    )
+    active_working_note_has_text = bool(active_working_note and (
+        str(active_working_note.get("freeform_text") or "").strip()
+        or any(
+            isinstance(lines, list) and any(str(line).strip() for line in lines)
+            for lines in (active_working_note.get("structured_note") or {}).get("sections", {}).values()
+        )
+    ))
+    active_dictation_text = (
+        dictation_effective_text(db, dictation=post_consultation_dictation)
+        if post_consultation_dictation is not None
+        else ""
+    )
+    active_template_generation_input_available = bool(
+        active_transcript
+        and (
+            bool((active_draft_text or "").strip())
+            or bool(active_structured_context)
+            or active_working_note_has_text
+            or bool(active_dictation_text.strip())
+        )
+    )
     active_note_input_available = bool(
         active_transcript
         and (
@@ -651,11 +677,6 @@ def resolve_transcribe_workspace(
             or bool(active_structured_context)
             or _generated_note_has_content(db, latest_generated_document)
         )
-    )
-    post_consultation_dictation = (
-        get_post_consultation_dictation(db, current_user, transcript_id=active_transcript.id)
-        if active_transcript is not None and not current_user.is_system_admin
-        else None
     )
     structured_editor_sections = _structured_editor_sections(
         db,
@@ -723,6 +744,7 @@ def resolve_transcribe_workspace(
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
+        "active_template_generation_input_available": active_template_generation_input_available,
         "show_redaction_debug": show_redaction_debug,
         "emis_sections": _default_emis_section_definitions(),
         "structured_section_definitions": structured_section_definitions,
@@ -781,6 +803,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         smart_phrases=[smart_phrase_response(phrase) for phrase in available_smart_phrases],
         active_structured_context=dict(workspace.get("active_structured_context") or {}),
+        active_template_generation_input_available=bool(workspace.get("active_template_generation_input_available")),
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
         stt_status_message=workspace.get("stt_status_message"),

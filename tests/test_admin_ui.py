@@ -4001,6 +4001,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "endpoint: `/api/v1/transcripts/${transcriptId}/working-note`" in app_js
     assert "serializeCurrentNoteEditor" in structured_js
     assert "saveWorkingNoteBeforeGeneration" in app_js
+    assert "Clear the working note before generating." in app_js
+    assert "includeUncheckedStructuredLines: false" not in app_js
     assert "await saveWorkingNoteBeforeGeneration?.({ silent: true });" in actions_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js

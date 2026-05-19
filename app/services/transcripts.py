@@ -476,8 +476,10 @@ def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dic
 
 
 def _assert_working_note_update_current(transcript: Transcript, expected_updated_at: datetime | None) -> None:
-    if transcript.working_note_updated_at is None or expected_updated_at is None:
+    if transcript.working_note_updated_at is None:
         return
+    if expected_updated_at is None:
+        raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
     normalized_expected = expected_updated_at
     if normalized_expected.tzinfo is None:
         normalized_expected = normalized_expected.replace(tzinfo=timezone.utc)

@@ -25,6 +25,8 @@ export function attachTranscribeActions({
   setMicButtons,
   setTab,
   structuredEditor,
+  onNoteGenerationQueued,
+  clearWorkingNote,
 }) {
   let quickActionContextOverride = null;
 
@@ -201,6 +203,10 @@ export function attachTranscribeActions({
   dom.noteDeleteButton?.addEventListener('click', async (event) => {
     event.preventDefault();
     const generatedDocumentId = dom.latestGeneratedOutput?.dataset.latestGeneratedId || '';
+    if (!generatedDocumentId && structuredEditor?.getActiveEditorSource?.() === 'working_note') {
+      await clearWorkingNote?.();
+      return;
+    }
     if (!generatedDocumentId) return;
     if (!window.confirm('Delete this note permanently?')) {
       return;
@@ -637,6 +643,7 @@ export function attachTranscribeActions({
         if (!response.ok) {
           throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
         }
+        onNoteGenerationQueued?.();
         setTab('output');
         showFlash('Queued note generation.', 'success');
         await fetchWorkspace();

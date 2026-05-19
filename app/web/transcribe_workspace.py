@@ -41,6 +41,7 @@ from ..schemas import (
     TranscriptPiiEntitySummary,
     TranscribeWorkspaceDetail,
 )
+from ..schemas.transcripts import WorkingNoteDetail
 from ..services.auth import determine_auth_level, resolve_authenticated_session, revoke_session_by_token, session_token_hash
 from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
@@ -110,6 +111,12 @@ def _active_structured_context_map(db: Session, transcript: Transcript | None) -
         if lines:
             normalized[section_key] = lines
     return normalized
+
+
+def _working_note_json_payload(working_note: object | None) -> dict | None:
+    if working_note is None:
+        return None
+    return WorkingNoteDetail.model_validate(working_note).model_dump(mode="json")
 
 
 def _document_section_lines(db: Session, document: GeneratedDocument | None) -> dict[str, list[str]]:
@@ -841,7 +848,9 @@ def render_transcribe(
     workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"
     active_transcript = workspace.get("active_transcript")
     if isinstance(active_transcript, Transcript):
-        workspace["active_working_note"] = working_note_detail_service(db, current_user, transcript_id=active_transcript.id)
+        workspace["active_working_note"] = _working_note_json_payload(
+            working_note_detail_service(db, current_user, transcript_id=active_transcript.id)
+        )
         workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"

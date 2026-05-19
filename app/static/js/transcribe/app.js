@@ -61,6 +61,7 @@ import { csrfFetch } from '../csrf.js';
       let dictationUiBusy = false;
       let lastSavedDictationText = '';
       let lastSavedWorkingNoteSerialized = '';
+      let activeWorkingNote = bootstrap.activeWorkingNote || null;
       let workingNoteDirty = false;
       let dictationPendingAudioBlob = null;
       let dictationPendingAudioFilename = 'dictation.webm';
@@ -138,14 +139,6 @@ import { csrfFetch } from '../csrf.js';
       const freeformNoteEmptyState = document.querySelector('[data-freeform-note-empty-state]');
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
-      const workingNotePanel = document.querySelector('[data-working-note-panel]');
-      const workingNoteStatus = document.querySelector('[data-working-note-status]');
-      const workingNoteFreeformWrap = document.querySelector('[data-working-note-freeform-wrap]');
-      const workingNoteFreeformInput = document.querySelector('[data-working-note-freeform-input]');
-      const workingNoteStructuredWrap = document.querySelector('[data-working-note-structured-wrap]');
-      const workingNoteStructuredInputs = [...document.querySelectorAll('[data-working-note-structured-input]')];
-      const copyWorkingNoteButton = document.querySelector('[data-copy-working-note]');
-      const clearWorkingNoteButton = document.querySelector('[data-clear-working-note]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
       const followupOutputTitle = document.querySelector('[data-followup-output-title]');
       const followupOutputSubtitle = document.querySelector('[data-followup-output-subtitle]');
@@ -300,7 +293,10 @@ let statusDetailsHideTimer = null;
 
       const markNoteEditorDirty = () => {
         noteEditorDirty = true;
-        dirtyNoteDocumentId = latestGeneratedOutput?.dataset.latestGeneratedId || selectedNoteDocumentId || '';
+        dirtyNoteDocumentId = structuredEditor?.getActiveEditorSource?.() === 'working_note'
+          ? 'working_note'
+          : (latestGeneratedOutput?.dataset.latestGeneratedId || selectedNoteDocumentId || '');
+        workingNoteDirty = dirtyNoteDocumentId === 'working_note' && serializeWorkingNote() !== lastSavedWorkingNoteSerialized;
         noteEditVersion += 1;
         scheduleNoteAutosave();
       };
@@ -324,7 +320,11 @@ let statusDetailsHideTimer = null;
         followupSaveConflictShown = false;
       };
 
-      const currentRenderedNoteDocumentId = () => latestGeneratedOutput?.dataset?.latestGeneratedId || '';
+      const currentRenderedNoteDocumentId = () => (
+        structuredEditor?.getActiveEditorSource?.() === 'working_note'
+          ? 'working_note'
+          : (latestGeneratedOutput?.dataset?.latestGeneratedId || '')
+      );
 
       const isNoteEditorFocused = () => {
         const activeElement = document.activeElement;
@@ -332,7 +332,15 @@ let statusDetailsHideTimer = null;
           && Boolean(activeElement.closest('[data-generated-structured-panel], [data-generated-freeform-panel]'));
       };
 
+      const hasProtectedWorkingNoteEditor = () => (
+        structuredEditor?.getActiveEditorSource?.() === 'working_note'
+        && Boolean(noteEditorDirty || noteSaveInFlight || noteSaveQueued || isNoteEditorFocused())
+      );
+
       const hasPendingGeneratedNoteEdits = () => {
+        if (structuredEditor?.getActiveEditorSource?.() === 'working_note') {
+          return Boolean(noteEditorDirty);
+        }
         const currentDocumentId = currentRenderedNoteDocumentId();
         return Boolean(noteEditorDirty && currentDocumentId && dirtyNoteDocumentId === currentDocumentId);
       };
@@ -340,6 +348,9 @@ let statusDetailsHideTimer = null;
       const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteDocumentId()) => {
         const currentDocumentId = currentRenderedNoteDocumentId();
         const targetDocumentId = nextSelectedNoteDocumentId || '';
+        if (targetDocumentId === 'working_note' && hasProtectedWorkingNoteEditor()) {
+          return true;
+        }
         if (noteEditorDirty) {
           return dirtyNoteDocumentId === targetDocumentId;
         }
@@ -364,6 +375,12 @@ let statusDetailsHideTimer = null;
       };
 
       const buildNoteSavePayload = () => {
+        if (structuredEditor?.getActiveEditorSource?.() === 'working_note') {
+          return {
+            kind: 'working_note',
+            payload: collectWorkingNote(),
+          };
+        }
         const generatedDocumentId = latestGeneratedOutput?.dataset?.latestGeneratedId || selectedNoteDocumentId || '';
         const mode = latestGeneratedOutput?.dataset?.latestGeneratedMode || '';
         const expectedUpdatedAt = currentNoteUpdatedAt();
@@ -372,6 +389,7 @@ let statusDetailsHideTimer = null;
         }
         if (mode === 'structured') {
           return {
+            kind: 'generated_note',
             generatedDocumentId,
             payload: {
               expected_updated_at: expectedUpdatedAt,
@@ -389,6 +407,7 @@ let statusDetailsHideTimer = null;
           };
         }
         return {
+          kind: 'generated_note',
           generatedDocumentId,
           payload: {
             expected_updated_at: expectedUpdatedAt,
@@ -556,16 +575,27 @@ let statusDetailsHideTimer = null;
         if (!saveRequest) {
           return null;
         }
+        if (saveRequest.kind === 'working_note' && !noteEditorDirty) {
+          return activeWorkingNote;
+        }
         const requestVersion = noteEditVersion;
         noteSaveInFlight = (async () => {
           try {
-            const response = await csrfFetch(`/api/v1/generated-documents/${saveRequest.generatedDocumentId}`, {
+            if (saveRequest.kind === 'working_note' && !transcriptId) {
+              return null;
+            }
+            const response = await csrfFetch(
+              saveRequest.kind === 'working_note'
+                ? `/api/v1/transcripts/${transcriptId}/working-note`
+                : `/api/v1/generated-documents/${saveRequest.generatedDocumentId}`,
+              {
               method: 'PATCH',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               keepalive,
               body: JSON.stringify(saveRequest.payload),
-            });
+              }
+            );
             if (response.status === 409) {
               noteSaveQueued = false;
               if (!noteSaveConflictShown) {
@@ -578,6 +608,19 @@ let statusDetailsHideTimer = null;
               throw new Error(await parseErrorMessage(response, 'Could not save note edits.'));
             }
             const savedDocument = await response.json();
+            if (saveRequest.kind === 'working_note') {
+              activeWorkingNote = savedDocument;
+              noteSaveConflictShown = false;
+              if (requestVersion === noteEditVersion) {
+                lastSavedWorkingNoteSerialized = serializeWorkingNotePayload(savedDocument);
+                clearNoteEditorDirty();
+                workingNoteDirty = false;
+              } else {
+                workingNoteDirty = serializeWorkingNote() !== serializeWorkingNotePayload(savedDocument);
+              }
+              setWorkingNoteStatus(`Saved ${savedDocument.mode || selectedWorkingNoteMode()} working note`);
+              return savedDocument;
+            }
             workspaceNoteDocuments = workspaceNoteDocuments.map((document) => (
               document.id === savedDocument.id ? savedDocument : document
             ));
@@ -1780,7 +1823,6 @@ let statusDetailsHideTimer = null;
         templatePickerOptions.forEach((button) => {
           button.classList.toggle('active', button.dataset.templateId === option?.value);
         });
-        syncWorkingNoteModeUi();
         syncDictationTemplateSelect();
       };
 
@@ -1878,7 +1920,7 @@ let statusDetailsHideTimer = null;
       };
 
       const selectedWorkingNoteMode = () => {
-        const lockedMode = workingNotePanel?.dataset?.workingNoteMode || '';
+        const lockedMode = activeWorkingNote?.mode || '';
         if (lockedMode) return lockedMode;
         return selectedTemplateOption()?.dataset?.templateMode === 'structured' ? 'structured' : 'freeform';
       };
@@ -1886,18 +1928,25 @@ let statusDetailsHideTimer = null;
       const collectWorkingNote = () => {
         const mode = selectedWorkingNoteMode();
         if (mode === 'structured') {
-          const sections = {};
-          workingNoteStructuredInputs.forEach((input) => {
-            const key = input.dataset.sectionKey || '';
-            const lines = String(input.value || '').split('\n').map((line) => line.trim()).filter(Boolean);
-            if (key && lines.length) sections[key] = lines;
-          });
+          const sections = structuredEditor?.collectStructuredContext?.() || {};
           return { mode, structured_note: { profile: 'emis', sections } };
         }
-        return { mode: 'freeform', freeform_text: String(workingNoteFreeformInput?.value || '').trim() };
+        return {
+          mode: 'freeform',
+          freeform_text: structuredEditor?.collectSelectedNoteLines?.({ includeUnselected: true, mode: 'freeform' })
+            .map((line) => String(line.text || '').trim())
+            .filter(Boolean)
+            .join('\n') || '',
+        };
       };
 
       const workingNoteHasContent = () => {
+        if (structuredEditor?.getActiveEditorSource?.() !== 'working_note') {
+          if (activeWorkingNote?.mode === 'structured') {
+            return Object.values(activeWorkingNote.structured_note?.sections || {}).some((lines) => Array.isArray(lines) && lines.length > 0);
+          }
+          return Boolean(activeWorkingNote?.freeform_text && activeWorkingNote.freeform_text.trim());
+        }
         const note = collectWorkingNote();
         if (note.mode === 'structured') {
           return Object.values(note.structured_note?.sections || {}).some((lines) => Array.isArray(lines) && lines.length > 0);
@@ -1907,36 +1956,32 @@ let statusDetailsHideTimer = null;
 
       const serializeWorkingNote = () => JSON.stringify(collectWorkingNote());
 
-      const setWorkingNoteStatus = (message = '') => {
-        if (workingNoteStatus) workingNoteStatus.textContent = message;
+      const serializeWorkingNotePayload = (workingNote) => {
+        if (!workingNote?.mode) return '';
+        if (workingNote.mode === 'structured') {
+          return JSON.stringify({
+            mode: 'structured',
+            structured_note: workingNote.structured_note || { profile: 'emis', sections: {} },
+          });
+        }
+        return JSON.stringify({
+          mode: 'freeform',
+          freeform_text: workingNote.freeform_text || '',
+        });
       };
 
-      const syncWorkingNoteModeUi = () => {
-        const mode = selectedWorkingNoteMode();
-        if (workingNoteFreeformWrap) workingNoteFreeformWrap.hidden = mode === 'structured';
-        if (workingNoteStructuredWrap) workingNoteStructuredWrap.hidden = mode !== 'structured';
+      const setWorkingNoteStatus = (message = '') => {
+        if (structuredCopyStatus && structuredEditor?.getActiveEditorSource?.() === 'working_note') {
+          structuredCopyStatus.textContent = message || 'Working note. Your own notes used as context for generation.';
+        }
       };
 
       const renderWorkingNote = (workingNote) => {
-        if (!workingNotePanel) return;
-        const mode = workingNote?.mode || '';
-        workingNotePanel.dataset.workingNoteMode = mode;
-        workingNotePanel.dataset.workingNoteUpdatedAt = workingNote?.updated_at || '';
-        if (workingNoteFreeformInput && document.activeElement !== workingNoteFreeformInput) {
-          workingNoteFreeformInput.value = workingNote?.freeform_text || '';
-        }
-        const sections = workingNote?.structured_note?.sections || {};
-        workingNoteStructuredInputs.forEach((input) => {
-          if (document.activeElement === input) return;
-          const key = input.dataset.sectionKey || '';
-          input.value = Array.isArray(sections[key]) ? sections[key].join('\n') : '';
-        });
+        activeWorkingNote = workingNote || null;
+        structuredEditor?.renderWorkingNote?.(activeWorkingNote);
         lastSavedWorkingNoteSerialized = serializeWorkingNote();
         workingNoteDirty = false;
-        copyWorkingNoteButton?.toggleAttribute('disabled', !workingNoteHasContent());
-        clearWorkingNoteButton?.toggleAttribute('disabled', !mode && !workingNoteHasContent());
-        setWorkingNoteStatus(mode ? `Saved ${mode} working note` : 'Not saved yet');
-        syncWorkingNoteModeUi();
+        setWorkingNoteStatus(activeWorkingNote?.mode ? `Saved ${activeWorkingNote.mode} working note` : 'Working note. Your own notes used as context for generation.');
       };
 
       const syncGenerationAvailability = (draftText = '') => {
@@ -2181,6 +2226,9 @@ let statusDetailsHideTimer = null;
         persistStructuredContextSilently: async () => saveStructuredContext({ silent: true }),
       });
       structuredEditor.bootstrapFromDom();
+      if (transcriptId && !latestGeneratedOutput?.dataset?.latestGeneratedId) {
+        renderWorkingNote(activeWorkingNote);
+      }
       attachSmartPhraseExpander({
         smartPhrases: bootstrap.smartPhrases || [],
         onExpanded: ({ phrase }) => {
@@ -2528,6 +2576,7 @@ let statusDetailsHideTimer = null;
         helpers: {
           escapeHtml,
           renderGeneratedOutput: (...args) => structuredEditor.renderGeneratedOutput(...args),
+          renderWorkingNote: (...args) => renderWorkingNote(...args),
           renderFollowupOutput,
           renderPiiEntities,
           renderRedactionDebugPanel,
@@ -2538,6 +2587,8 @@ let statusDetailsHideTimer = null;
           workspaceNoteDocuments,
           workspaceFollowupDocuments,
           workspaceStructuredContext,
+          activeWorkingNote,
+          hasActiveTranscript: Boolean(transcriptId),
           selectedNoteDocumentId,
           selectedFollowupDocumentId,
         }),
@@ -2561,6 +2612,9 @@ let statusDetailsHideTimer = null;
 
       const saveStructuredContext = async ({ silent = false } = {}) => {
         if (!transcriptId) return null;
+        if (structuredEditor?.getActiveEditorSource?.() !== 'working_note') {
+          return activeWorkingNote;
+        }
         if (!workingNoteHasContent()) {
           return null;
         }
@@ -2759,7 +2813,7 @@ let statusDetailsHideTimer = null;
           setSessionProgress('Create or open a consultation to begin.');
         }
         renderDictation(dictation);
-        renderWorkingNote(workingNote);
+        activeWorkingNote = workingNote || null;
         maybeShowDictationNudge({
           previousStatus: previousTranscriptStatus,
           transcript,
@@ -2778,7 +2832,9 @@ let statusDetailsHideTimer = null;
         workspaceNoteDocuments = noteDocuments;
         workspaceFollowupDocuments = followupDocuments;
         workspaceStructuredContext = structuredContext;
-        selectedNoteDocumentId = selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || null;
+        selectedNoteDocumentId = selectedNoteDocumentId === 'working_note'
+          ? (hasProtectedWorkingNoteEditor() ? 'working_note' : (selectedDocumentFromList(noteDocuments, null)?.id || 'working_note'))
+          : (selectedDocumentFromList(noteDocuments, selectedNoteDocumentId)?.id || 'working_note');
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
         const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');
         const preserveDirtyFollowupEditor = shouldPreserveFollowupEditorRender(selectedFollowupDocumentId || '');
@@ -2866,52 +2922,6 @@ let statusDetailsHideTimer = null;
         const nextValue = dictationCombinedInput.value;
         dictationDirty = nextValue !== lastSavedDictationText;
         syncDictationControls();
-      });
-      const markWorkingNoteDirty = () => {
-        workingNoteDirty = serializeWorkingNote() !== lastSavedWorkingNoteSerialized;
-        setWorkingNoteStatus(workingNoteDirty ? 'Unsaved working note' : (workingNotePanel?.dataset?.workingNoteMode ? `Saved ${workingNotePanel.dataset.workingNoteMode} working note` : 'Not saved yet'));
-        copyWorkingNoteButton?.toggleAttribute('disabled', !workingNoteHasContent());
-        clearWorkingNoteButton?.toggleAttribute('disabled', !workingNoteHasContent() && !workingNotePanel?.dataset?.workingNoteMode);
-        syncGenerationAvailability(readActiveDraftText().trim());
-      };
-      workingNoteFreeformInput?.addEventListener('input', markWorkingNoteDirty);
-      workingNoteFreeformInput?.addEventListener('blur', () => {
-        if (workingNoteDirty && workingNoteHasContent()) void saveStructuredContext({ silent: true }).catch((error) => showFlash(error instanceof Error ? error.message : 'Could not save working note.', 'error'));
-      });
-      workingNoteStructuredInputs.forEach((input) => {
-        input.addEventListener('input', markWorkingNoteDirty);
-        input.addEventListener('blur', () => {
-          if (workingNoteDirty && workingNoteHasContent()) void saveStructuredContext({ silent: true }).catch((error) => showFlash(error instanceof Error ? error.message : 'Could not save working note.', 'error'));
-        });
-      });
-      copyWorkingNoteButton?.addEventListener('click', async () => {
-        const note = collectWorkingNote();
-        const text = note.mode === 'structured'
-          ? Object.entries(note.structured_note?.sections || {}).map(([key, lines]) => `${key}\n${Array.isArray(lines) ? lines.join('\n') : ''}`).join('\n\n').trim()
-          : (note.freeform_text || '').trim();
-        if (!text) return;
-        try {
-          await navigator.clipboard.writeText(text);
-          showCopyToast();
-          setWorkingNoteStatus('Working note copied');
-        } catch (_) {
-          showFlash('Could not copy working note.', 'error');
-        }
-      });
-      clearWorkingNoteButton?.addEventListener('click', async () => {
-        if (!transcriptId || (!workingNoteHasContent() && !workingNotePanel?.dataset?.workingNoteMode)) return;
-        if (!window.confirm('Clear this working note? This cannot be undone.')) return;
-        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
-          method: 'DELETE',
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');
-          return;
-        }
-        renderWorkingNote(null);
-        showFlash('Working note cleared.', 'success');
-        void fetchWorkspace();
       });
       dictationCta?.addEventListener('click', () => {
         if (isConsultationCaptureActive()) {
@@ -3080,8 +3090,28 @@ let statusDetailsHideTimer = null;
         persistUserAppPreferences,
         setMicButtons,
         setTab,
-        structuredEditor,
-      });
+          structuredEditor,
+          onNoteGenerationQueued: () => {
+            selectedNoteDocumentId = null;
+          },
+          clearWorkingNote: async () => {
+            if (!transcriptId || (!workingNoteHasContent() && !activeWorkingNote?.mode)) return;
+            if (!window.confirm('Clear this working note? This cannot be undone.')) return;
+            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
+              method: 'DELETE',
+              credentials: 'include',
+            });
+            if (!response.ok) {
+              showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');
+              return;
+            }
+            activeWorkingNote = null;
+            clearNoteEditorDirty();
+            renderWorkingNote(null);
+            showFlash('Working note cleared.', 'success');
+            void fetchWorkspace();
+          },
+        });
 
       createGuidedTour({
         dom: {

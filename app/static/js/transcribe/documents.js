@@ -35,12 +35,15 @@ export function createDocumentNavigator({
   const {
     escapeHtml,
     renderGeneratedOutput,
+    renderWorkingNote,
     renderFollowupOutput,
     renderPiiEntities,
     renderRedactionDebugPanel,
     refreshIcons,
     setTab,
   } = helpers;
+
+  const workingNoteDocumentId = 'working_note';
 
   const selectedDocumentFromList = (documents, selectedId) => {
     if (!Array.isArray(documents) || documents.length === 0) {
@@ -80,13 +83,27 @@ export function createDocumentNavigator({
     }));
   };
 
-  const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind }) => {
+  const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind, includeWorkingNote = false }) => {
     if (!wrap || !container) return;
-    wrap.hidden = !documents.length;
+    wrap.hidden = !documents.length && !includeWorkingNote;
     if (countNode) {
-      countNode.textContent = `${documents.length} item${documents.length === 1 ? "" : "s"}`;
+      const count = documents.length + (includeWorkingNote ? 1 : 0);
+      countNode.textContent = `${count} item${count === 1 ? "" : "s"}`;
     }
     container.innerHTML = "";
+    if (includeWorkingNote) {
+      const button = window.document.createElement("button");
+      button.type = "button";
+      button.className = `document-switcher-button${selectedId === workingNoteDocumentId ? " active" : ""}`;
+      button.dataset.documentId = workingNoteDocumentId;
+      button.dataset.documentKind = kind;
+      button.title = "Working note";
+      button.innerHTML = `
+        <span class="document-switcher-label">Working note</span>
+        <span class="document-switcher-meta">Your own notes used as context</span>
+      `;
+      container.appendChild(button);
+    }
     documents.forEach((item) => {
       const button = window.document.createElement("button");
       button.type = "button";
@@ -176,33 +193,41 @@ export function createDocumentNavigator({
 
   const renderSelectedNote = ({ preserveEditor = false } = {}) => {
     const state = getState();
-    const selectedNote = selectedDocumentFromList(state.workspaceNoteDocuments, state.selectedNoteDocumentId);
+    const selectedNote = state.selectedNoteDocumentId === workingNoteDocumentId
+      ? null
+      : selectedDocumentFromList(state.workspaceNoteDocuments, state.selectedNoteDocumentId);
     const selectedNoteId = selectedNote?.id || '';
+    const selectedEditorId = selectedNoteId || workingNoteDocumentId;
     const preserveCurrentEditorRender = Boolean(
-      preserveEditor || shouldPreserveNoteEditorRender?.(selectedNoteId)
+      preserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)
     );
-    setState({ selectedNoteDocumentId: selectedNoteId || null });
+    setState({ selectedNoteDocumentId: selectedEditorId });
     if (latestGeneratedOutput) {
       latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
       latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
       latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
       latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
       if (!preserveCurrentEditorRender) {
-        renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
+        if (selectedNote) {
+          renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
+        } else {
+          renderWorkingNote?.(state.activeWorkingNote || null);
+        }
       }
     }
     if (noteMeta) {
       noteMeta.textContent = selectedNote
-        ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.created_at}`
-        : "No note generated yet";
+          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.created_at}`
+          : "Working note · Your own notes used as context for generation.";
     }
     renderDocumentSelector({
       wrap: noteSelectorWrap,
       container: noteSelector,
       countNode: noteSelectorCount,
       documents: state.workspaceNoteDocuments,
-      selectedId: selectedNote?.id || null,
+      selectedId: selectedNote?.id || workingNoteDocumentId,
       kind: "note",
+      includeWorkingNote: Boolean(state.hasActiveTranscript),
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
     renderLlmRequestPanel(outputLlmRequestSlot, selectedNote);

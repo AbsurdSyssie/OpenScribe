@@ -1,4 +1,4 @@
-<form id="new-session-form" method="post" action="/transcribe/sessions/start" hidden>
+<form id="new-session-form" method="post" action="/transcribe/sessions" hidden>
 <input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}">
 </form>
 
@@ -216,6 +216,7 @@ syncRecordButtonLabel();
       "activeTranscriptPiiEntities": active_transcript_pii_entities,
       "activeTranscriptRedactionStatus": active_transcript_redaction_status,
       "activeTranscriptClinicalNlpStatus": active_transcript_clinical_nlp_status,
+      "activeWorkingNote": active_working_note,
       "activeTab": 'followups' if active_tab == 'followups' else 'output',
       "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user',
       "userAppPreferences": user_app_preferences_json,
@@ -223,5 +224,5 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-  <script type="module" src="/static/js/transcribe/app.js?v=20260517-working-note-ui"></script>
+  <script type="module" src="/static/js/transcribe/app.js?v=20260518-working-note-default-generated"></script>
   {% include "_csrf_script.html" %}

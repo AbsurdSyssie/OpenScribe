@@ -135,6 +135,8 @@ def test_login_page_exposes_bootstrap_when_database_is_empty(client):
     page = client.get("/login")
 
     assert page.status_code == 200
+    assert 'action="/transcribe/sessions"' in page.text
+    assert 'action="/transcribe/sessions/start"' not in page.text
     assert "Create the first system admin" in page.text
 
 
@@ -2179,11 +2181,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-copy-transcript' in page.text
     assert 'data-template-picker-button' in page.text
     assert 'data-template-picker-modal' in page.text
-    assert 'data-working-note-panel' in page.text
-    assert 'data-working-note-freeform-input' in page.text
-    assert 'data-copy-working-note' in page.text
-    assert 'data-clear-working-note' in page.text
-    assert 'Your own notes used as context for generation.' in page.text
+    assert 'data-note-selector' in page.text
     assert 'Copy transcript' in page.text
     assert 'data-select-structured-selection' in page.text
     assert "Record" in page.text
@@ -2203,8 +2201,32 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260517-working-note-ui"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260518-working-note-default-generated"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_user):
+    team = make_team(name="Clinic Working Note")
+    make_user(email="working-note@example.com", password="password-3", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "working-note@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Working note refresh", "ingestion_mode": "whole_file"},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    note_response = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Refresh keeps this working note."},
+    )
+    assert note_response.status_code == 200
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}")
+
+    assert page.status_code == 200
+    assert '"activeWorkingNote"' in page.text
+    assert "Refresh keeps this working note." in page.text
 
 
 def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_user):
@@ -2625,7 +2647,8 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260517-working-note-ui" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260518-working-note-default-generated" in shell_extras
+    assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
 
@@ -3918,6 +3941,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);" in structured_js
     assert "const templatePickerButton = document.querySelector('[data-template-picker-button]');" in app_js
     assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
+    assert "syncWorkingNoteModeUi" not in app_js
     assert "const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');" in app_js
     assert "const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');" in app_js
     assert "const dictationCta = document.querySelector('[data-dictation-cta]');" in app_js
@@ -3942,8 +3966,19 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Stop recording before switching consultations." in actions_js
     assert "Stop recording before creating a new consultation." in actions_js
     assert "let noteEditorDirty = false;" in app_js
+    assert "let activeWorkingNote = bootstrap.activeWorkingNote || null;" in app_js
+    assert "if (saveRequest.kind === 'working_note' && !noteEditorDirty)" in app_js
+    assert "serializeWorkingNotePayload(savedDocument)" in app_js
+    assert "requestVersion === noteEditVersion" in app_js
+    assert "renderWorkingNote(activeWorkingNote);" in app_js
     assert "const markNoteEditorDirty = () => {" in app_js
     assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteDocumentId()) => {" in app_js
+    assert "? 'working_note'" in app_js
+    assert "const hasProtectedWorkingNoteEditor = () => (" in app_js
+    assert "targetDocumentId === 'working_note' && hasProtectedWorkingNoteEditor()" in app_js
+    assert "? (hasProtectedWorkingNoteEditor() ? 'working_note' : (selectedDocumentFromList(noteDocuments, null)?.id || 'working_note'))" in app_js
+    assert "const selectedEditorId = selectedNoteId || workingNoteDocumentId;" in documents_js
+    assert "shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
     assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
     assert "const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');" in app_js
     assert "renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });" in app_js
@@ -4064,7 +4099,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "preserveEditor || shouldPreserveNoteEditorRender?.(selectedNoteId)" in documents_js
+    assert "preserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "const previousPanel = slot.querySelector('[data-llm-request-panel]');" in documents_js
     assert "previousDocumentId === document.id" in documents_js
@@ -4105,7 +4140,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260517-working-note-ui" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260518-working-note-default-generated" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

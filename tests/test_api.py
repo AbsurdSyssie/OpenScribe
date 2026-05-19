@@ -6012,6 +6012,15 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     )
     assert_error(stale_save, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
 
+    omitted_expected_save = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "freeform",
+            "freeform_text": "Do not overwrite existing working note without a version token.",
+        },
+    )
+    assert_error(omitted_expected_save, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
     current_save = client.patch(
         f"/api/v1/transcripts/{transcript_id}/working-note",
         json={
@@ -6025,7 +6034,11 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
 
     mode_switch = client.patch(
         f"/api/v1/transcripts/{transcript_id}/working-note",
-        json={"mode": "structured", "structured_note": {"profile": "emis", "sections": {"problem": ["Hypertension"]}}},
+        json={
+            "mode": "structured",
+            "expected_updated_at": current_save.json()["updated_at"],
+            "structured_note": {"profile": "emis", "sections": {"problem": ["Hypertension"]}},
+        },
     )
     assert_error(mode_switch, status_code=409, code="business_rule_violation", message="Clear the working note before switching mode.")
 

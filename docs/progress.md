@@ -9,6 +9,9 @@
 - Kept Working note differences limited to target construction, save payload/endpoint, clear action, and mode-lock display.
 - Added optimistic `expected_updated_at` conflict handling to `PATCH /working-note`.
 - Fixed structured Working note re-rendering after switching to a generated note and back.
+- Critiqued the remaining `working_note_corrections.md` items and kept all three fixes, with unchecked visible structured lines treated as persisted Working note text.
+- Blocked generation when an active dirty Working note has been emptied, preventing stale saved Working note snapshots from feeding generation before the user explicitly clears.
+- Tightened `PATCH /working-note` so timestamped notes reject omitted `expected_updated_at`; first-save behavior remains unchanged.
 
 ### Checklist
 
@@ -21,9 +24,9 @@
 
 - `app/static/js/transcribe/app.js`, `documents.js`, `structured.js`, `actions.js`: target-based note editor flow, no `activeEditorSource`/`renderWorkingNote` split.
 - `app/templates/transcribe/_workspace.html`: server-rendered Working note selector id now matches `working:<transcript_id>`.
-- `app/schemas/transcripts.py`, `app/services/transcripts.py`: working-note optimistic conflict field and check.
-- `tests/test_api.py`, `tests/test_admin_ui.py`: conflict coverage and static regression expectations for virtual-note target reuse.
-- `docs/working_note_implementation.md`, `docs/progress.md`: updated implementation notes.
+- `app/schemas/transcripts.py`, `app/services/transcripts.py`: working-note optimistic conflict field and stricter missing-version check.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: conflict coverage and static regression expectations for virtual-note target reuse, dirty-empty generation blocking, and unchecked-line persistence.
+- `docs/working_note_implementation.md`, `docs/progress.md`, `working_note_corrections.md`: updated implementation notes and correction critique.
 
 ### Tests
 
@@ -33,11 +36,15 @@
 - `node --check app/static/js/transcribe/structured.js`: passed.
 - `.venv/bin/pytest -q tests/test_api.py -k working_note`: passed, 3 tests.
 - `.venv/bin/pytest -q tests/test_admin_ui.py -k working_note`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note_routes_enforce_owner_mode_lock_and_clear"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 1 test.
+- `node --check app/static/js/transcribe/app.js`: passed after correction follow-up.
 - Browser MCP on local `/transcribe`: reproduced saved structured Working note content disappearing after switching to a generated note and back, then verified it re-renders and PATCHes both existing and newly added lines.
 
 ### Documentation
 
 - Updated working-note implementation notes with target-id and conflict contract.
+- Added correction critique and follow-up status to `working_note_corrections.md` and this progress log.
 
 ### Risks / assumptions
 
@@ -46,10 +53,10 @@
 ### Architecture checkpoint summary
 
 - Privacy boundaries preserved: no new content visibility; routes still owner-only.
-- Ownership rules preserved: save/read/clear still use transcript owner lookup.
-- Deletion semantics preserved: clear remains `DELETE /working-note`; transcript cascade unchanged.
+- Ownership rules preserved: save/read/clear still use transcript owner lookup; timestamped saves now require the caller's version token.
+- Deletion semantics preserved: clear remains `DELETE /working-note`; transcript cascade unchanged; dirty-empty generation now instructs explicit clear.
 - Provider rules preserved: no provider resolution or credential change.
-- Structured-note contract preserved: EMIS validation remains server-side.
+- Structured-note contract preserved: EMIS validation remains server-side; checkbox state remains UI selection state, not persistence state.
 
 ## 2026-05-17 Working Notes
 

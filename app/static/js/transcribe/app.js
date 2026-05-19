@@ -361,7 +361,6 @@ let statusDetailsHideTimer = null;
           const mode = selectedWorkingNoteMode();
           const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
             mode,
-            includeUncheckedStructuredLines: false,
           }) || { mode };
           const expectedUpdatedAt = currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
           return {
@@ -1933,7 +1932,6 @@ let statusDetailsHideTimer = null;
         const expectedUpdatedAt = currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
         const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
           mode,
-          includeUncheckedStructuredLines: false,
         }) || { mode };
         return buildWorkingNotePayload(serializedEditor, expectedUpdatedAt);
       };
@@ -2589,11 +2587,11 @@ let statusDetailsHideTimer = null;
         if (!isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           return activeWorkingNote;
         }
-        if (!workingNoteHasContent()) {
-          return null;
-        }
         if (!noteEditorDirty) {
           return activeWorkingNote;
+        }
+        if (!workingNoteHasContent()) {
+          throw new Error('Clear the working note before generating.');
         }
         setWorkingNoteStatus('Saving working note...');
         const saved = await persistNoteEditsSilently({ keepalive: false });

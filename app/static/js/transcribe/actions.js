@@ -203,7 +203,8 @@ export function attachTranscribeActions({
   dom.noteDeleteButton?.addEventListener('click', async (event) => {
     event.preventDefault();
     const generatedDocumentId = dom.latestGeneratedOutput?.dataset.latestGeneratedId || '';
-    if (!generatedDocumentId && structuredEditor?.getActiveEditorSource?.() === 'working_note') {
+    const selectedKind = dom.latestGeneratedOutput?.dataset.latestGeneratedKind || '';
+    if (selectedKind === 'working_note') {
       await clearWorkingNote?.();
       return;
     }

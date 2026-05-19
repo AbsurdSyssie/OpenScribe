@@ -3939,6 +3939,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "showFlash(copyReviewBlocker, 'error');" in actions_js
     assert "data-copy-review-status" in workspace_html
     assert "const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);" in structured_js
+    assert "section.text || section.edited_text || section.original_text || section.edited_text_encrypted" in structured_js
     assert "const templatePickerButton = document.querySelector('[data-template-picker-button]');" in app_js
     assert "const templatePickerModal = document.querySelector('[data-template-picker-modal]');" in app_js
     assert "syncWorkingNoteModeUi" not in app_js
@@ -3967,18 +3968,19 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Stop recording before creating a new consultation." in actions_js
     assert "let noteEditorDirty = false;" in app_js
     assert "let activeWorkingNote = bootstrap.activeWorkingNote || null;" in app_js
-    assert "if (saveRequest.kind === 'working_note' && !noteEditorDirty)" in app_js
-    assert "serializeWorkingNotePayload(savedDocument)" in app_js
+    assert "const workingNoteTargetId = () => transcriptId ? `working:${transcriptId}` : 'working:';" in app_js
+    assert "const isWorkingNoteTargetId = (targetId = '') => String(targetId || '').startsWith('working:');" in app_js
     assert "requestVersion === noteEditVersion" in app_js
-    assert "renderWorkingNote(activeWorkingNote);" in app_js
+    assert "renderWorkingNote(" not in app_js
     assert "const markNoteEditorDirty = () => {" in app_js
-    assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteDocumentId()) => {" in app_js
-    assert "? 'working_note'" in app_js
-    assert "const hasProtectedWorkingNoteEditor = () => (" in app_js
-    assert "targetDocumentId === 'working_note' && hasProtectedWorkingNoteEditor()" in app_js
-    assert "? (hasProtectedWorkingNoteEditor() ? 'working_note' : (selectedDocumentFromList(noteDocuments, null)?.id || 'working_note'))" in app_js
-    assert "const selectedEditorId = selectedNoteId || workingNoteDocumentId;" in documents_js
+    assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteTargetId()) => {" in app_js
+    assert "dirtyNoteDocumentId" not in app_js
+    assert "const hasProtectedWorkingNoteEditor = () => (" not in app_js
+    assert "const validNoteTargets = [{ id: workingNoteTargetId() }, ...noteDocuments];" in app_js
+    assert "const selectedEditorId = selectedNoteId || workingNoteDocumentId(state.activeTranscriptId || '');" in documents_js
     assert "shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
+    assert "const workingNoteDocument = (state) => {" in documents_js
+    assert "id: workingNoteDocumentId(state.activeTranscriptId || '')," in documents_js
     assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
     assert "const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');" in app_js
     assert "renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });" in app_js
@@ -3994,7 +3996,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "One or more selected consultations have transcript text. Delete them permanently?" in actions_js
     assert "checkbox.dataset.hasTranscriptContent" in app_js
     assert "Could not delete the note." in actions_js
-    assert "const buildNoteSavePayload = () => {" in app_js
+    assert "const buildNoteSaveRequest = () => {" in app_js
+    assert "endpoint: `/api/v1/transcripts/${transcriptId}/working-note`" in app_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
     assert "void persistNoteEditsSilently();" in app_js

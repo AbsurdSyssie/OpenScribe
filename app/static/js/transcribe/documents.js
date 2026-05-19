@@ -35,7 +35,6 @@ export function createDocumentNavigator({
   const {
     escapeHtml,
     renderGeneratedOutput,
-    renderWorkingNote,
     renderFollowupOutput,
     renderPiiEntities,
     renderRedactionDebugPanel,
@@ -43,7 +42,7 @@ export function createDocumentNavigator({
     setTab,
   } = helpers;
 
-  const workingNoteDocumentId = 'working_note';
+  const workingNoteDocumentId = (transcriptId = '') => `working:${transcriptId || ''}`;
 
   const selectedDocumentFromList = (documents, selectedId) => {
     if (!Array.isArray(documents) || documents.length === 0) {
@@ -83,38 +82,54 @@ export function createDocumentNavigator({
     }));
   };
 
-  const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind, includeWorkingNote = false }) => {
+  const workingNoteDocument = (state) => {
+    if (!state.hasActiveTranscript) return null;
+    const workingNote = state.activeWorkingNote || {};
+    const mode = workingNote.mode || state.selectedTemplateMode || 'freeform';
+    const sections = workingNote.structured_note?.sections || {};
+    return {
+      id: workingNoteDocumentId(state.activeTranscriptId || ''),
+      kind: 'working_note',
+      title: 'Working note',
+      status: 'ready',
+      document_mode: mode === 'structured' ? 'structured' : 'freeform',
+      mode_locked: Boolean(workingNote.mode),
+      edited_output_text: workingNote.freeform_text || '',
+      updated_at: workingNote.updated_at || '',
+      sections: Object.entries(sections).map(([sectionKey, lines], index) => ({
+        section_key: sectionKey,
+        section_label: sectionKey.replaceAll('_', ' '),
+        section_order: index,
+        text: Array.isArray(lines) ? lines.join('\n') : '',
+      })),
+    };
+  };
+
+  const noteTargets = (state) => [
+    workingNoteDocument(state),
+    ...(Array.isArray(state.workspaceNoteDocuments) ? state.workspaceNoteDocuments : []),
+  ].filter(Boolean);
+
+  const renderDocumentSelector = ({ wrap, container, countNode, documents, selectedId, kind }) => {
     if (!wrap || !container) return;
-    wrap.hidden = !documents.length && !includeWorkingNote;
+    wrap.hidden = !documents.length;
     if (countNode) {
-      const count = documents.length + (includeWorkingNote ? 1 : 0);
+      const count = documents.length;
       countNode.textContent = `${count} item${count === 1 ? "" : "s"}`;
     }
     container.innerHTML = "";
-    if (includeWorkingNote) {
-      const button = window.document.createElement("button");
-      button.type = "button";
-      button.className = `document-switcher-button${selectedId === workingNoteDocumentId ? " active" : ""}`;
-      button.dataset.documentId = workingNoteDocumentId;
-      button.dataset.documentKind = kind;
-      button.title = "Working note";
-      button.innerHTML = `
-        <span class="document-switcher-label">Working note</span>
-        <span class="document-switcher-meta">Your own notes used as context</span>
-      `;
-      container.appendChild(button);
-    }
     documents.forEach((item) => {
       const button = window.document.createElement("button");
       button.type = "button";
       button.className = `document-switcher-button${item.id === selectedId ? " active" : ""}`;
       button.dataset.documentId = item.id;
       button.dataset.documentKind = kind;
-      const label = kind === "note" ? noteDocumentLabel(item) : followupDocumentLabel(item);
+      const label = item.kind === "working_note" ? "Working note" : (kind === "note" ? noteDocumentLabel(item) : followupDocumentLabel(item));
       button.title = label;
+      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(item.created_at || "")}`;
       button.innerHTML = `
         <span class="document-switcher-label">${escapeHtml(truncateSwitcherLabel(label))}</span>
-        <span class="document-switcher-meta">${escapeHtml(item.status || "")} · ${escapeHtml(item.created_at || "")}</span>
+        <span class="document-switcher-meta">${meta}</span>
       `;
       container.appendChild(button);
     });
@@ -193,11 +208,10 @@ export function createDocumentNavigator({
 
   const renderSelectedNote = ({ preserveEditor = false } = {}) => {
     const state = getState();
-    const selectedNote = state.selectedNoteDocumentId === workingNoteDocumentId
-      ? null
-      : selectedDocumentFromList(state.workspaceNoteDocuments, state.selectedNoteDocumentId);
+    const documents = noteTargets(state);
+    const selectedNote = selectedDocumentFromList(documents, state.selectedNoteDocumentId);
     const selectedNoteId = selectedNote?.id || '';
-    const selectedEditorId = selectedNoteId || workingNoteDocumentId;
+    const selectedEditorId = selectedNoteId || workingNoteDocumentId(state.activeTranscriptId || '');
     const preserveCurrentEditorRender = Boolean(
       preserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)
     );
@@ -207,31 +221,30 @@ export function createDocumentNavigator({
       latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
       latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
       latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
+      latestGeneratedOutput.dataset.latestGeneratedKind = selectedNote?.kind || "generated_note";
       if (!preserveCurrentEditorRender) {
-        if (selectedNote) {
-          renderGeneratedOutput(selectedNote, state.workspaceStructuredContext || {});
-        } else {
-          renderWorkingNote?.(state.activeWorkingNote || null);
-        }
+        renderGeneratedOutput(selectedNote, selectedNote?.kind === "working_note" ? {} : (state.workspaceStructuredContext || {}));
       }
     }
     if (noteMeta) {
-      noteMeta.textContent = selectedNote
+      noteMeta.textContent = selectedNote?.kind === "working_note"
+        ? "Working note · Your own notes used as context for generation."
+        : (selectedNote
           ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.created_at}`
-          : "Working note · Your own notes used as context for generation.";
+          : "No note yet.");
     }
     renderDocumentSelector({
       wrap: noteSelectorWrap,
       container: noteSelector,
       countNode: noteSelectorCount,
-      documents: state.workspaceNoteDocuments,
-      selectedId: selectedNote?.id || workingNoteDocumentId,
+      documents,
+      selectedId: selectedNote?.id || workingNoteDocumentId(state.activeTranscriptId || ''),
       kind: "note",
-      includeWorkingNote: Boolean(state.hasActiveTranscript),
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
-    renderLlmRequestPanel(outputLlmRequestSlot, selectedNote);
-    renderRedactionDebugPanel(outputRedactionSlot, selectedNote);
+    const selectedGeneratedNote = selectedNote?.kind === "working_note" ? null : selectedNote;
+    renderLlmRequestPanel(outputLlmRequestSlot, selectedGeneratedNote);
+    renderRedactionDebugPanel(outputRedactionSlot, selectedGeneratedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
   };
 

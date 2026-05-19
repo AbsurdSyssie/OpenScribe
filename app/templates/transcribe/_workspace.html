@@ -307,7 +307,7 @@ data-settings-url="/home/templates/editor?scope={% if template.scope.value == 't
 type="button"
 class="document-switcher-button{% if not latest_generated_document %} active{% endif %}"
 data-note-document-select
-data-document-id="working_note"
+data-document-id="working:{{ active_transcript.id }}"
 data-document-kind="note"
 title="Working note">
 <span class="document-switcher-label">Working note</span>

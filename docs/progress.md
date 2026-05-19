@@ -1,5 +1,56 @@
 # Progress
 
+## 2026-05-19 Working Note Corrections
+
+### Scope
+
+- Removed the parallel Working note editor mode from the transcribe frontend.
+- Recast Working note as a synthetic note target (`working:<transcript_id>`) rendered through the generated-note editor path.
+- Kept Working note differences limited to target construction, save payload/endpoint, clear action, and mode-lock display.
+- Added optimistic `expected_updated_at` conflict handling to `PATCH /working-note`.
+- Fixed structured Working note re-rendering after switching to a generated note and back.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser QA still useful for exact focus restoration and autosave timing.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`, `documents.js`, `structured.js`, `actions.js`: target-based note editor flow, no `activeEditorSource`/`renderWorkingNote` split.
+- `app/templates/transcribe/_workspace.html`: server-rendered Working note selector id now matches `working:<transcript_id>`.
+- `app/schemas/transcripts.py`, `app/services/transcripts.py`: working-note optimistic conflict field and check.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: conflict coverage and static regression expectations for virtual-note target reuse.
+- `docs/working_note_implementation.md`, `docs/progress.md`: updated implementation notes.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `node --check app/static/js/transcribe/structured.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k working_note`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k working_note`: passed, 1 test.
+- Browser MCP on local `/transcribe`: reproduced saved structured Working note content disappearing after switching to a generated note and back, then verified it re-renders and PATCHes both existing and newly added lines.
+
+### Documentation
+
+- Updated working-note implementation notes with target-id and conflict contract.
+
+### Risks / assumptions
+
+- Existing generated-note editor behavior remains source of truth; Working note should not regain editor-specific dirty/focus/save branches.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content visibility; routes still owner-only.
+- Ownership rules preserved: save/read/clear still use transcript owner lookup.
+- Deletion semantics preserved: clear remains `DELETE /working-note`; transcript cascade unchanged.
+- Provider rules preserved: no provider resolution or credential change.
+- Structured-note contract preserved: EMIS validation remains server-side.
+
 ## 2026-05-17 Working Notes
 
 ### Scope

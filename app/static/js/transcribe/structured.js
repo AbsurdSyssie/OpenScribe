@@ -1386,6 +1386,42 @@ export function createStructuredEditor({
     return rows;
   };
 
+  const serializeCurrentNoteEditor = ({ mode = activeGeneratedDocumentMode() || selectedOutputTemplateMode(), includeUncheckedStructuredLines = true } = {}) => {
+    if (mode === 'structured') {
+      if (!generatedStructuredDraft) {
+        generatedStructuredDraft = buildGeneratedStructuredDraftFromDom();
+      }
+      syncGeneratedStructuredDraftFromDom();
+      const draft = generatedStructuredDraft || buildGeneratedStructuredDraftFromDom();
+      return {
+        mode: 'structured',
+        sections: (draft?.sections || []).map((section, index) => ({
+          section_key: section.sectionKey || '',
+          section_label: section.sectionLabel || 'Section',
+          section_order: index,
+          text: (section.lines || [])
+            .filter((line) => includeUncheckedStructuredLines || line.checked !== false)
+            .map((line) => String(line.text || '').trim())
+            .filter((value) => value.length > 0)
+            .join('\n'),
+        })),
+      };
+    }
+
+    if (!generatedFreeformDraft) {
+      generatedFreeformDraft = buildFreeformDraftFromDom();
+    }
+    syncGeneratedFreeformDraftFromDom();
+    const draft = generatedFreeformDraft || buildFreeformDraftFromDom();
+    return {
+      mode: 'freeform',
+      edited_output_text: (draft?.lines || [])
+        .map((line) => String(line.text || '').trim())
+        .filter((value) => value.length > 0)
+        .join('\n'),
+    };
+  };
+
   const collectStructuredSectionLines = (section) => {
     if (!(section instanceof HTMLElement)) {
       return [];
@@ -1422,6 +1458,7 @@ export function createStructuredEditor({
     noteCopyReviewBlocker,
     selectedOutputTemplateMode,
     selectStructuredSelection,
+    serializeCurrentNoteEditor,
     setGeneratedStructuredDraft: (draft) => {
       generatedStructuredDraft = draft;
     },

@@ -475,14 +475,19 @@ def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dic
     }
 
 
+def _assert_working_note_update_current(transcript: Transcript, expected_updated_at: datetime | None) -> None:
+    if transcript.working_note_updated_at is None or expected_updated_at is None:
+        return
+    normalized_expected = expected_updated_at
+    if normalized_expected.tzinfo is None:
+        normalized_expected = normalized_expected.replace(tzinfo=timezone.utc)
+    if transcript.working_note_updated_at != normalized_expected:
+        raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
+
+
 def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
-    if transcript.working_note_updated_at is not None and payload.expected_updated_at is not None:
-        expected_updated_at = payload.expected_updated_at
-        if expected_updated_at.tzinfo is None:
-            expected_updated_at = expected_updated_at.replace(tzinfo=timezone.utc)
-        if transcript.working_note_updated_at != expected_updated_at:
-            raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
+    _assert_working_note_update_current(transcript, payload.expected_updated_at)
     if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
         raise AppError(
             409,

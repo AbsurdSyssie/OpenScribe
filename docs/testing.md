@@ -339,6 +339,7 @@ What it does:
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe editable-note empty guidance hiding on initial render and generated-output refresh once structured/freeform note rows contain content
 - transcribe structured/freeform line reordering blocking blank placeholder rows by mouse drag and consuming blocked keyboard shortcuts so browser history navigation does not fire
+- transcribe working-note debt coverage checking shared target IDs, virtual working-note document shaping, serializer ownership in `structured.js`, and generation blocking on failed dirty working-note saves
 - transcribe history tab keeping the transcript pane independently scrollable inside the split workspace
 - transcribe session delete confirmation marking only meaningful transcript draft/version text as content
 - MFA challenge page and remember-browser option for completed users

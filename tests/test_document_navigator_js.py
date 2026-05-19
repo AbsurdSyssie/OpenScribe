@@ -15,7 +15,12 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
 
             const root = __OPENSCRIBE_ROOT__;
             const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8')
+              .replaceAll('export const ', 'var ');
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';", '')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
 
             const makeElement = () => ({
@@ -64,6 +69,7 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             sandbox.window.CustomEvent = sandbox.CustomEvent;
             sandbox.globalThis = sandbox;
             vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
             vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
 
             const latestGeneratedOutput = makeElement();
@@ -118,6 +124,71 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             assert.equal(renderCalls[0].document, null);
             assert.equal(latestGeneratedOutput.dataset.latestGeneratedId, '');
             assert.equal(state.selectedNoteDocumentId, null);
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
+def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "working_note_document_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8')
+              .replaceAll('export const ', 'var ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';", '')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const sandbox = { Array, Boolean, Object, String, console };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+
+            const document = sandbox.workingNoteToEditorDocument({
+              transcriptId: 'transcript-1',
+              selectedTemplateMode: 'structured',
+              workingNote: {
+                mode: 'structured',
+                updated_at: '2026-05-19T10:00:00+00:00',
+                structured_note: {
+                  sections: {
+                    problem: ['Headache', 'Nausea'],
+                    tasks: ['Safety net'],
+                  },
+                },
+              },
+            });
+
+            assert.equal(document.id, 'working:transcript-1');
+            assert.equal(document.kind, 'working_note');
+            assert.equal(document.document_mode, 'structured');
+            assert.equal(document.mode_locked, true);
+            assert.deepEqual(document.sections.map((section) => [section.section_key, section.text]), [
+              ['problem', 'Headache\\nNausea'],
+              ['tasks', 'Safety net'],
+            ]);
+
+            const unlocked = sandbox.workingNoteToEditorDocument({
+              transcriptId: 'transcript-2',
+              selectedTemplateMode: 'freeform',
+              workingNote: {},
+            });
+            assert.equal(unlocked.id, 'working:transcript-2');
+            assert.equal(unlocked.document_mode, 'freeform');
+            assert.equal(unlocked.mode_locked, false);
             """
         ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
         encoding="utf-8",

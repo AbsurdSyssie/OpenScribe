@@ -1,3 +1,28 @@
+import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';
+
+export function workingNoteToEditorDocument({ transcriptId, workingNote, selectedTemplateMode }) {
+  if (!transcriptId) return null;
+  const note = workingNote || {};
+  const mode = note.mode || selectedTemplateMode || 'freeform';
+  const sections = note.structured_note?.sections || {};
+  return {
+    id: workingNoteTargetId(transcriptId || ''),
+    kind: 'working_note',
+    title: 'Working note',
+    status: 'ready',
+    document_mode: mode === 'structured' ? 'structured' : 'freeform',
+    mode_locked: Boolean(note.mode),
+    edited_output_text: note.freeform_text || '',
+    updated_at: note.updated_at || '',
+    sections: Object.entries(sections).map(([sectionKey, lines], index) => ({
+      section_key: sectionKey,
+      section_label: sectionKey.replaceAll('_', ' '),
+      section_order: index,
+      text: Array.isArray(lines) ? lines.join('\n') : '',
+    })),
+  };
+}
+
 export function createDocumentNavigator({
   dom,
   helpers,
@@ -42,8 +67,6 @@ export function createDocumentNavigator({
     setTab,
   } = helpers;
 
-  const workingNoteDocumentId = (transcriptId = '') => `working:${transcriptId || ''}`;
-
   const selectedDocumentFromList = (documents, selectedId) => {
     if (!Array.isArray(documents) || documents.length === 0) {
       return null;
@@ -84,25 +107,11 @@ export function createDocumentNavigator({
 
   const workingNoteDocument = (state) => {
     if (!state.hasActiveTranscript) return null;
-    const workingNote = state.activeWorkingNote || {};
-    const mode = workingNote.mode || state.selectedTemplateMode || 'freeform';
-    const sections = workingNote.structured_note?.sections || {};
-    return {
-      id: workingNoteDocumentId(state.activeTranscriptId || ''),
-      kind: 'working_note',
-      title: 'Working note',
-      status: 'ready',
-      document_mode: mode === 'structured' ? 'structured' : 'freeform',
-      mode_locked: Boolean(workingNote.mode),
-      edited_output_text: workingNote.freeform_text || '',
-      updated_at: workingNote.updated_at || '',
-      sections: Object.entries(sections).map(([sectionKey, lines], index) => ({
-        section_key: sectionKey,
-        section_label: sectionKey.replaceAll('_', ' '),
-        section_order: index,
-        text: Array.isArray(lines) ? lines.join('\n') : '',
-      })),
-    };
+    return workingNoteToEditorDocument({
+      transcriptId: state.activeTranscriptId || '',
+      workingNote: state.activeWorkingNote || {},
+      selectedTemplateMode: state.selectedTemplateMode,
+    });
   };
 
   const noteTargets = (state) => [
@@ -206,14 +215,14 @@ export function createDocumentNavigator({
     refreshIcons?.(followupHistory);
   };
 
-  const renderSelectedNote = ({ preserveEditor = false } = {}) => {
+  const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {
     const state = getState();
     const documents = noteTargets(state);
     const selectedNote = selectedDocumentFromList(documents, state.selectedNoteDocumentId);
     const selectedNoteId = selectedNote?.id || '';
-    const selectedEditorId = selectedNoteId || workingNoteDocumentId(state.activeTranscriptId || '');
+    const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);
     const preserveCurrentEditorRender = Boolean(
-      preserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)
+      forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)
     );
     setState({ selectedNoteDocumentId: selectedEditorId });
     if (latestGeneratedOutput) {
@@ -238,7 +247,7 @@ export function createDocumentNavigator({
       container: noteSelector,
       countNode: noteSelectorCount,
       documents,
-      selectedId: selectedNote?.id || workingNoteDocumentId(state.activeTranscriptId || ''),
+      selectedId: selectedNote?.id || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null),
       kind: "note",
     });
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
@@ -246,6 +255,7 @@ export function createDocumentNavigator({
     renderLlmRequestPanel(outputLlmRequestSlot, selectedGeneratedNote);
     renderRedactionDebugPanel(outputRedactionSlot, selectedGeneratedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
+    return { preservedEditor: preserveCurrentEditorRender, selectedNote };
   };
 
   const renderSelectedFollowup = ({ preserveEditor = false } = {}) => {

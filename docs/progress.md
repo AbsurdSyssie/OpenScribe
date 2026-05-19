@@ -6209,3 +6209,23 @@
 - Added Generate and Remove controls inside the selected quick-action card; bottom Generate remains and still runs the selected quick action when present, or context-only follow-up when no action is selected.
 - Updated static web regression coverage and `docs/transcribe_brief.md`.
 - Architecture checkpoint: privacy boundaries, ownership, deletion semantics, provider rules, and structured-note contract unchanged; existing owner-only generation endpoints remain the only execution path.
+
+# 2026-05-19 Working Note Correction Plan Critique
+
+- Reviewed `working_note_corrections.md` against current Working note UI/backend code and `docs/working_note_implementation.md`.
+- Kept all three proposed regressions, but narrowed fixes to avoid stale saved Working-note generation, accidental mode switching, and over-broad availability flags.
+- Deleted already-fixed earlier-review items from the active plan: omitted `expected_updated_at` conflict protection and unchecked structured-line persistence.
+- Tests not run; docs-only planning update.
+- Architecture checkpoint: privacy boundaries unchanged; owner-only Working-note content remains the only source for generation; deletion semantics preserved by requiring explicit Clear/DELETE for saved Working notes; provider rules unchanged; structured-note contract unchanged.
+
+# 2026-05-19 Working Note Correction Implementation
+
+- Fixed dirty-empty never-saved Working-note drafts so they clear local dirty state instead of trapping generation or note switching.
+- Kept dirty-empty saved Working-note edits blocked until explicit Clear/DELETE, preventing stale saved content from silently feeding generation.
+- Added guarded template-change handling so dirty Working notes save before template UI sync, failed saves revert the template selection, and locked Working notes skip destructive editor re-render.
+- Added `active_template_generation_input_available` for server-rendered Create availability, including transcript text, structured/freeform Working note, and saved dictation while keeping follow-up/quick-action availability separate.
+- Added focused admin UI regressions for saved Working note, saved dictation, generated-note-only Create state, and static JS guard wiring.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or create_button or transcribe_workspace_static"` passed, 4 tests.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility"` passed, 1 test.
+- Tests: `.venv/bin/pytest -q tests/test_api.py -k "working_note or dictation_only_session_before_provider_call"` passed, 4 tests.
+- Architecture checkpoint: privacy boundaries preserved; Working note/dictation remain owner-only generation inputs; deletion semantics preserved by using explicit DELETE only for saved content; provider resolution unchanged; structured-note contract unchanged.

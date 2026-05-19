@@ -22,6 +22,7 @@ export function attachTranscribeActions({
   setRetryAvailability,
   reflectBackendStatus,
   persistUserAppPreferences,
+  handleOutputTemplateChange,
   setMicButtons,
   setTab,
   structuredEditor,
@@ -435,7 +436,10 @@ export function attachTranscribeActions({
 
   if (dom.generateOutputTemplateSelect) {
     dom.generateOutputTemplateSelect.addEventListener('change', async () => {
-      structuredEditor.syncStructuredTemplateUi();
+      const canContinue = await handleOutputTemplateChange?.();
+      if (canContinue === false) {
+        return;
+      }
       const templateId = dom.generateOutputTemplateSelect.value || '';
       if (!templateId || !persistUserAppPreferences) {
         return;

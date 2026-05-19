@@ -284,6 +284,7 @@ let statusDetailsHideTimer = null;
       const dictationNudgeStoragePrefix = 'openscribe:dictation-nudge:';
       const initialPaneState = window.localStorage.getItem(paneStorageKey) || shell?.dataset.layoutState || 'normal';
       const initialSplitRatio = Number.parseFloat(window.localStorage.getItem(splitRatioStorageKey) || '');
+      let lastSelectedOutputTemplateId = generateOutputTemplateSelect?.value || '';
 
       const friendlyModeLabel = (mode) => mode === 'live_chunked' ? 'live capture' : 'recorded upload';
       const refreshIcons = (root) => {
@@ -557,6 +558,9 @@ let statusDetailsHideTimer = null;
         }
         if (!noteEditorDirty) {
           return null;
+        }
+        if (discardEmptyWorkingNoteDraft()) {
+          return { kind: 'working_note_empty_draft_discarded' };
         }
         const saveRequest = buildNoteSaveRequest();
         if (!saveRequest) {
@@ -1845,6 +1849,44 @@ let statusDetailsHideTimer = null;
         syncTemplatePickerUi();
       };
 
+      const revertOutputTemplateSelection = () => {
+        if (!generateOutputTemplateSelect) return;
+        generateOutputTemplateSelect.value = lastSelectedOutputTemplateId || '';
+        syncTemplatePickerUi();
+        structuredEditor.syncTemplateModeBadge?.();
+      };
+
+      const handleOutputTemplateChange = async () => {
+        if (!generateOutputTemplateSelect) return true;
+        const currentTemplateId = generateOutputTemplateSelect.value || '';
+        if (isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
+          if (discardEmptyWorkingNoteDraft()) {
+            structuredEditor.syncStructuredTemplateUi();
+            syncTemplatePickerUi();
+            lastSelectedOutputTemplateId = currentTemplateId;
+            return true;
+          }
+          if (noteEditorDirty) {
+            const saved = await persistNoteEditsSilently({ keepalive: false });
+            if (!saved) {
+              showFlash('Save or clear the working note before changing template.', 'error');
+              revertOutputTemplateSelection();
+              return false;
+            }
+          }
+          if (activeWorkingNote?.mode) {
+            structuredEditor.syncTemplateModeBadge?.();
+            syncTemplatePickerUi();
+            lastSelectedOutputTemplateId = currentTemplateId;
+            return true;
+          }
+        }
+        structuredEditor.syncStructuredTemplateUi();
+        syncTemplatePickerUi();
+        lastSelectedOutputTemplateId = currentTemplateId;
+        return true;
+      };
+
       const setRetryAvailability = (canRetry) => {
         if (retryIngestionForm) {
           retryIngestionForm.hidden = !canRetry;
@@ -1950,10 +1992,24 @@ let statusDetailsHideTimer = null;
         return Boolean(note.freeform_text && note.freeform_text.trim());
       };
 
+      const isDiscardableEmptyWorkingNoteDraft = () => (
+        isWorkingNoteTargetId(currentRenderedNoteTargetId())
+        && noteEditorDirty
+        && !workingNoteHasContent()
+        && !activeWorkingNote?.mode
+      );
+
       const setWorkingNoteStatus = (message = '') => {
         if (structuredCopyStatus && isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           structuredCopyStatus.textContent = message || 'Working note. Your own notes used as context for generation.';
         }
+      };
+
+      const discardEmptyWorkingNoteDraft = () => {
+        if (!isDiscardableEmptyWorkingNoteDraft()) return false;
+        clearNoteEditorDirty();
+        setWorkingNoteStatus();
+        return true;
       };
 
       const syncGenerationAvailability = (draftText = '') => {
@@ -2591,6 +2647,9 @@ let statusDetailsHideTimer = null;
           return activeWorkingNote;
         }
         if (!workingNoteHasContent()) {
+          if (discardEmptyWorkingNoteDraft()) {
+            return { kind: 'working_note_empty_draft_discarded' };
+          }
           throw new Error('Clear the working note before generating.');
         }
         setWorkingNoteStatus('Saving working note...');
@@ -3052,6 +3111,7 @@ let statusDetailsHideTimer = null;
         setRetryAvailability,
         reflectBackendStatus,
         persistUserAppPreferences,
+        handleOutputTemplateChange,
         setMicButtons,
         setTab,
           structuredEditor,
@@ -3059,7 +3119,13 @@ let statusDetailsHideTimer = null;
             selectedNoteDocumentId = null;
           },
           clearWorkingNote: async () => {
-            if (!transcriptId || (!workingNoteHasContent() && !activeWorkingNote?.mode)) return;
+            if (!transcriptId) return;
+            if (!workingNoteHasContent() && !activeWorkingNote?.mode) {
+              if (discardEmptyWorkingNoteDraft()) {
+                showFlash('Working note draft cleared.', 'success');
+              }
+              return;
+            }
             if (!window.confirm('Clear this working note? This cannot be undone.')) return;
             const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
               method: 'DELETE',

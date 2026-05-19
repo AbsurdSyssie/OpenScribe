@@ -1264,13 +1264,18 @@ export function createStructuredEditor({
     syncNoteEditorToolbar();
   };
 
+  const syncTemplateModeBadge = () => {
+    const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
+    if (dom.templateModeBadge) {
+      dom.templateModeBadge.textContent = isStructuredTemplate ? 'Sectioned note' : 'Free text note';
+    }
+  };
+
   const syncStructuredTemplateUi = () => {
     const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
     const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);
     const generatedMode = activeGeneratedDocumentMode();
-    if (dom.templateModeBadge) {
-      dom.templateModeBadge.textContent = isStructuredTemplate ? 'Sectioned note' : 'Free text note';
-    }
+    syncTemplateModeBadge();
     if (currentRenderedDocument?.kind === 'working_note') {
       const nextDocument = currentRenderedDocument.mode_locked
         ? currentRenderedDocument
@@ -1468,6 +1473,7 @@ export function createStructuredEditor({
     syncStatementRowVisualState,
     syncStructuredContextHiddenInputs,
     syncStructuredEditorAvailability,
+    syncTemplateModeBadge,
     syncStructuredTemplateUi,
   };
 }

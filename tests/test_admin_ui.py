@@ -58,6 +58,7 @@ from app.models import (
     utcnow,
 )
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
+from app.services.dictations import update_post_consultation_dictation
 from app.schemas.llm import LlmConfigInspectResult
 from app.schemas.stt import SttInspectResult
 from app.web.presentation import llm_form_defaults, stt_form_defaults
@@ -2229,6 +2230,134 @@ def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_u
     assert "Refresh keeps this working note." in page.text
 
 
+def _generate_create_form_block(html: str) -> str:
+    return html.split("data-generate-output-form", 1)[1].split("</form>", 1)[0]
+
+
+def test_transcribe_create_button_enabled_for_saved_working_note(
+    client,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Working Note Create")
+    admin = make_user(email="working-note-create-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="working-note-create-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="working-note-create-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(scope=TemplateScope.user, owner=member, actor=member, name="Working note template")
+
+    client.post("/login", data={"email": "working-note-create-member@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Working note only", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    note_response = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Use conservative management."},
+    )
+    assert note_response.status_code == 200
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}")
+
+    assert page.status_code == 200
+    assert "disabled" not in _generate_create_form_block(page.text)
+
+
+def test_transcribe_create_button_enabled_for_saved_dictation(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Dictation Create")
+    admin = make_user(email="dictation-create-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="dictation-create-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="dictation-create-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_template(scope=TemplateScope.user, owner=member, actor=member, name="Dictation template")
+
+    client.post("/login", data={"email": "dictation-create-member@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Dictation only", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    update_post_consultation_dictation(db_session, member, transcript_id=UUID(transcript_id), combined_text="Book blood tests.")
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}")
+
+    assert page.status_code == 200
+    assert "disabled" not in _generate_create_form_block(page.text)
+
+
+def test_transcribe_create_button_ignores_existing_generated_note_without_source(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Old Generated Note")
+    admin = make_user(email="old-note-create-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="old-note-create-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="old-note-create-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Old note template")
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Old generated note only",
+        current_draft_text_encrypted="",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=member.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=member.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=version.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            template_version_id=template.versions[-1].id,
+            source_template_name=template.name,
+            status=GeneratedDocumentStatus.ready,
+            title="Old note",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="Existing generated text",
+            edited_output_text_encrypted="Existing generated text",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": "old-note-create-member@example.com", "password": "password-3"}, follow_redirects=False)
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
+
+    assert page.status_code == 200
+    assert "disabled" in _generate_create_form_block(page.text)
+
+
 def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_user):
     team = make_team(name="Clinic Mobile")
     make_user(
@@ -3989,6 +4118,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
+    assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
+    assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
+    assert "const handleOutputTemplateChange = async () => {" in app_js
+    assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
+    assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
+    assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
     assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
     assert "const noteDeleteButton = document.querySelector('[data-note-delete]');" in app_js
     assert "dom.noteDeleteButton?.addEventListener('click'" in actions_js
@@ -4126,6 +4261,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "refreshIcons?.(followupHistory);" in documents_js
     assert 'data-lucide="trash-2"' in workspace_html
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
+    assert "not active_template_generation_input_available" in workspace_html
     assert "not active_note_input_available" in workspace_html
 
 

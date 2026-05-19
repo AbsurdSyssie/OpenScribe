@@ -291,17 +291,29 @@ data-settings-url="/home/templates/editor?scope={% if template.scope.value == 't
 </div>
 </div>
 <div class="structured-workspace__body">
-<div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not note_documents %} hidden{% endif %}>
+<div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not active_transcript %} hidden{% endif %}>
 <div class="flex items-center justify-between gap-4">
 <div>
 <span class="text-xs font-medium uppercase tracking-[0.12em] text-slate">Note versions</span>
-<span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length }}</span>
+<span class="text-xs text-slate" data-note-selector-count>{{ note_documents|length + 1 if active_transcript else note_documents|length }}</span>
 </div>
 <button type="button" class="btn-icon" data-note-delete title="Delete selected note permanently" aria-label="Delete selected note permanently">
 <i class="w-4 h-4" data-lucide="trash-2"></i>
 </button>
 </div>
 <div class="document-switcher" data-note-selector>
+{% if active_transcript %}
+<button
+type="button"
+class="document-switcher-button{% if not latest_generated_document %} active{% endif %}"
+data-note-document-select
+data-document-id="working_note"
+data-document-kind="note"
+title="Working note">
+<span class="document-switcher-label">Working note</span>
+<span class="document-switcher-meta">Your own notes used as context</span>
+</button>
+{% endif %}
 {% for document in note_documents %}
 <button
 type="button"
@@ -317,40 +329,6 @@ title="{{ document.title }}">
 {% endfor %}
 </div>
 </div>
-
-{% set working_note_mode = active_working_note.mode.value if active_working_note and active_working_note.mode else '' %}
-{% set working_note_structured_sections = active_working_note.structured_note.sections if active_working_note and active_working_note.structured_note and active_working_note.structured_note.sections else {} %}
-<section
-class="working-note-panel"
-data-working-note-panel
-data-working-note-mode="{{ working_note_mode }}"
-data-working-note-updated-at="{{ active_working_note.updated_at.isoformat() if active_working_note and active_working_note.updated_at else '' }}">
-<div class="working-note-panel__header">
-<div>
-<div class="section-kicker">Working note</div>
-<p class="working-note-panel__hint">Your own notes used as context for generation.</p>
-</div>
-<div class="working-note-panel__actions">
-<span class="working-note-panel__status" data-working-note-status>{% if working_note_mode %}Saved {{ working_note_mode }} working note{% else %}Not saved yet{% endif %}</span>
-<button type="button" class="btn-ghost-sm" data-copy-working-note {% if not active_working_note or not active_working_note.mode %}disabled{% endif %}>Copy working note</button>
-<button type="button" class="btn-ghost-sm" data-clear-working-note {% if not active_working_note or not active_working_note.mode %}disabled{% endif %}>Clear</button>
-</div>
-</div>
-<div class="working-note-panel__body">
-<div data-working-note-freeform-wrap {% if working_note_mode == 'structured' or (not working_note_mode and selected_template_version and selected_template_version.mode.value == 'structured') %}hidden{% endif %}>
-<label class="sr-only" for="working-note-freeform">Working note</label>
-<textarea id="working-note-freeform" class="working-note-textarea" rows="5" data-working-note-freeform-input placeholder="Write your own notes here as the consultation unfolds.">{{ active_working_note.freeform_text if active_working_note and active_working_note.freeform_text else '' }}</textarea>
-</div>
-<div class="working-note-structured" data-working-note-structured-wrap {% if working_note_mode == 'freeform' or (not working_note_mode and (not selected_template_version or selected_template_version.mode.value != 'structured')) %}hidden{% endif %}>
-{% for section in emis_sections %}
-<label class="working-note-section">
-<span>{{ section.label }}</span>
-<textarea class="working-note-textarea working-note-textarea--section" rows="2" data-working-note-structured-input data-section-key="{{ section.key }}" placeholder="Add {{ section.label|lower }} context">{{ (working_note_structured_sections.get(section.key) or [])|join('\n') }}</textarea>
-</label>
-{% endfor %}
-</div>
-</div>
-</section>
 
 <div
 class="assistant-flat-output{% if not latest_generated_document %} assistant-flat-output--empty{% endif %}"

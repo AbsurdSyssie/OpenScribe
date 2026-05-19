@@ -7,21 +7,28 @@
 - Added owner-only working-note storage and API for transcript-scoped clinician-authored context.
 - Added generation snapshots and prompt integration so note generation can use working notes without overwriting them.
 - Added redaction fail-closed behavior for working-note content before LLM requests.
-- Added dedicated workspace Working note panel with freeform/EMIS inputs, copy, and clear actions.
+- Reworked workspace UI so Working note uses the existing note-builder editor as a virtual note version.
+- Fixed a boot-time transcribe JS error from a stale `syncWorkingNoteModeUi` call, which had disabled tab switching, new-session interception, and Working note selection.
+- Changed new-session form fallback from stale `/transcribe/sessions/start` to existing `/transcribe/sessions`.
+- Fixed Working note refresh behavior by bootstrapping saved working-note content into the initial page payload and skipping unload saves when the working-note editor is not dirty.
+- Fixed the in-progress Working note preserve path so workspace refresh uses the virtual `working_note` editor id, matching generated-note dirty-editor preservation.
+- Fixed Working note autosave version tracking so an in-flight save cannot mark newer unsaved typing as saved, matching generated-note save-version behavior.
+- Fixed Working note focus loss by preserving the active Working note editor on every workspace refresh while it remains selected.
+- Updated Working note selection rules so generated notes become the default selection once any generated note exists, while focused/dirty/in-flight Working note edits remain protected.
 
 ### Checklist
 
 - Code complete: yes
 - Tests added/updated: yes
 - Docs added/updated: yes
-- Open issues: broader browser QA recommended for exact copy/clear ergonomics across mobile and generated-output states.
+- Open issues: broader browser QA recommended for exact switch/autosave ergonomics across mobile and generated-output states.
 
 ### Files changed
 
 - `app/models.py`, `alembic/versions/r7s8t9u0v1w2_add_working_notes.py`: add working-note mode/content/snapshot fields.
 - `app/schemas/transcripts.py`, `app/services/transcripts.py`, `app/routes/api_routes.py`: add owner-only working-note read/save/clear contract.
 - `app/services/templates.py`: snapshots working notes, redacts them, and labels them in generation prompts.
-- `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_head_assets.html`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/actions.js`: adds dedicated working-note panel, save/copy/clear behavior, and sends generation by template id.
+- `app/templates/transcribe/_workspace.html`, `app/templates/transcribe/_head_assets.html`, `app/templates/transcribe/_shell_extras.html`, `app/templates/glm-3.html`, `app/web/transcribe_workspace.py`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/actions.js`, `app/static/js/transcribe/documents.js`, `app/static/js/transcribe/structured.js`: render Working note in the existing note-builder editor, route saves by active source, clear through `/working-note`, bootstrap saved working notes on refresh, preserve focused/dirty/in-flight Working note edits across workspace refreshes, keep save-version guards for in-flight Working note saves, auto-select newest generated note after generation/default refresh, and keep new-session fallback valid if JS fails.
 - `app/api_route_audit.py`, `tests/test_api.py`: cover route auth, mode lock, clear, generation snapshots, and fail-closed redaction.
 - `CONTEXT.md`, `docs/working_note_implementation.md`, `docs/api.md`, `docs/transcript-capture.md`, `docs/progress.md`: document domain and API behavior.
 
@@ -32,8 +39,12 @@
 - `.venv/bin/pytest -q tests/test_api.py -k "structured_context or structured_template or generation_uses_structured or working_note"`: passed, 5 tests.
 - `.venv/bin/pytest -q tests/test_api_route_audit.py`: passed, 2 tests.
 - `.venv/bin/pytest -q tests/test_migrations.py`: passed, 19 tests.
-- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/actions.js && node --check app/static/js/transcribe/documents.js && node --check app/static/js/transcribe/structured.js`: passed.
 - `.venv/bin/pytest -q tests/test_admin_ui.py -k "workspace_shell or exposes_home_and_context_settings_controls or working_note"`: passed, 2 tests.
+- Browser MCP on local `/transcribe`: reproduced stale `syncWorkingNoteModeUi` console error, then verified no console errors, new-session creation, tab switching, Working note selection, and `/working-note` save after fix.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or workspace_shell or transcribe_page_exposes_home_and_context_settings_controls or transcribe_reorder_blocks_blank_note_lines"`: passed, 4 tests.
+- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/documents.js && .venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or transcribe_page_exposes_home_and_context_settings_controls or transcribe_reorder_blocks_blank_note_lines"`: passed, 3 tests.
+- `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/documents.js && .venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or transcribe_page_exposes_home_and_context_settings_controls or transcribe_reorder_blocks_blank_note_lines"`: passed after save-version guard update, 3 tests.
 
 ### Documentation
 
@@ -44,7 +55,7 @@
 ### Risks / assumptions
 
 - Existing `structured_context_json` remains supported for compatibility and is treated as structured working-note content.
-- UI separation between generated output and working-note editing is now present in the workspace; detailed mobile QA remains useful.
+- UI source separation now depends on active editor source routing; detailed mobile/browser QA remains useful.
 
 ### Architecture checkpoint summary
 

@@ -33,6 +33,8 @@ Rules:
 - working note follows transcript-root retention and deletion
 - generated notes snapshot the working-note input used for generation
 - working note is redacted before any LLM request; generation fails closed if redaction fails
+- the transcribe workspace shows Working note in the note switcher and reuses the same freeform/sectioned note-builder editor as generated notes
+- generated-note edits never save back into Working note; active editor source controls the save endpoint
 
 Longer-term capture modes to support on the same foundation:
 

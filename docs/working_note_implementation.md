@@ -156,8 +156,11 @@ Preserve clinician-authored note content separately from generated note output. 
 - Generated-note edits never feed back into working note automatically.
 - No explicit copy-back flow from generated note to working note in MVP.
 - Working-note UI may provide explicit copy working note action when user is viewing working note.
-- Workspace UI renders a dedicated Working note panel with freeform or EMIS section inputs, copy, and clear actions.
-- The panel saves through `/working-note`; generated-note output remains separate.
+- Workspace UI renders Working note as a virtual note version in the existing note-builder editor.
+- Selecting Working note uses the same freeform/sectioned line editor as generated notes, but saves through `/working-note`.
+- Selecting a generated note version uses the same editor surface but saves generated-document edits only.
+- After generation is queued/completed, UI auto-selects the newest generated note; Working note remains available in the note switcher.
+- When reopening or refreshing a consultation with generated notes, the UI defaults to a generated note instead of Working note unless a focused/dirty/in-flight Working note edit must be protected.
 - Default clinical copy/export actions use generated note output, not working note.
 - Freeform working note should support smart phrases if existing editor infrastructure can be reused.
 - Generated outputs do not need stale/out-of-date indicators when working note changes.

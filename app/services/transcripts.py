@@ -1,7 +1,7 @@
 import logging
 import os
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -477,6 +477,12 @@ def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dic
 
 def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    if transcript.working_note_updated_at is not None and payload.expected_updated_at is not None:
+        expected_updated_at = payload.expected_updated_at
+        if expected_updated_at.tzinfo is None:
+            expected_updated_at = expected_updated_at.replace(tzinfo=timezone.utc)
+        if transcript.working_note_updated_at != expected_updated_at:
+            raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
     if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
         raise AppError(
             409,

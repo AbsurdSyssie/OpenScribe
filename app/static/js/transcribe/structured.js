@@ -9,8 +9,8 @@ export function createStructuredEditor({
 }) {
   let generatedStructuredDraft = null;
   let generatedFreeformDraft = null;
-  let activeEditorSource = 'generated_note';
-  let currentWorkingNote = null;
+  let currentRenderedDocument = null;
+  let currentRenderRequiresCopyReview = false;
   let emisSaveTimer = null;
   let lastSavedStructuredContext = null;
   const rowSelectionState = new Map();
@@ -150,7 +150,7 @@ export function createStructuredEditor({
     || generatedFreeformDraft?.documentId
     || ''
   );
-  const generatedCopyReviewRequired = () => activeEditorSource === 'generated_note' && Boolean(activeRenderedGeneratedDocumentId());
+  const generatedCopyReviewRequired = () => currentRenderRequiresCopyReview && Boolean(activeRenderedGeneratedDocumentId());
 
   const setCopyReviewStatus = (message = '') => {
     if (dom.structuredCopyStatus) {
@@ -752,25 +752,6 @@ export function createStructuredEditor({
     };
   };
 
-  const buildWorkingFreeformDraft = (workingNote = null) => {
-    const lines = collectFreeformLinesFromText(workingNote?.freeform_text || '');
-    return {
-      documentId: '',
-      templateId: dom.generateOutputTemplateSelect?.value || '',
-      lines: lines.length > 0
-        ? lines.map((line) => ({ text: line, checked: true }))
-        : [{ text: '', checked: true }],
-    };
-  };
-
-  const workingStructuredSections = (workingNote = null) => {
-    const sections = workingNote?.structured_note?.sections || {};
-    return Object.fromEntries(Object.entries(sections).map(([key, lines]) => [
-      key,
-      Array.isArray(lines) ? lines.filter((line) => typeof line === 'string' && line.trim().length > 0) : [],
-    ]));
-  };
-
   const buildFreeformDraftFromDom = () => {
     if (!dom.generatedFreeformRows) return null;
     const rows = [...dom.generatedFreeformRows.querySelectorAll('[data-freeform-note-row]')].map((row) => {
@@ -790,7 +771,7 @@ export function createStructuredEditor({
   };
 
   const serializeStructuredTextLines = (section) => {
-    const lineText = String(section.edited_text_encrypted || section.original_text_encrypted || '');
+    const lineText = String(section.text || section.edited_text || section.original_text || section.edited_text_encrypted || section.original_text_encrypted || '');
     return lineText
       .split('\n')
       .map((line) => line.trim())
@@ -1219,7 +1200,8 @@ export function createStructuredEditor({
 
   const renderGeneratedOutput = (generatedDocument, structuredContext = {}) => {
     if (!dom.latestGeneratedOutput || !dom.generatedStructuredPanel || !dom.generatedFreeformPanel) return;
-    activeEditorSource = 'generated_note';
+    currentRenderedDocument = generatedDocument || null;
+    currentRenderRequiresCopyReview = Boolean(generatedDocument?.id && generatedDocument?.kind !== 'working_note');
     resetCopyReviewStateForDocument();
     setCopyReviewStatus();
     dom.latestGeneratedOutput.hidden = false;
@@ -1282,37 +1264,6 @@ export function createStructuredEditor({
     syncNoteEditorToolbar();
   };
 
-  const renderWorkingNote = (workingNote = null) => {
-    if (!dom.latestGeneratedOutput || !dom.generatedStructuredPanel || !dom.generatedFreeformPanel) return;
-    activeEditorSource = 'working_note';
-    currentWorkingNote = workingNote;
-    resetCopyReviewStateForDocument();
-    setCopyReviewStatus('Working note. Your own notes used as context for generation.');
-    dom.latestGeneratedOutput.hidden = true;
-    renderStructuredSections(null);
-    renderFreeformLines(null);
-    const mode = workingNote?.mode || selectedOutputTemplateMode();
-    if (dom.latestGeneratedOutput) {
-      dom.latestGeneratedOutput.dataset.latestGeneratedStatus = '';
-      dom.latestGeneratedOutput.dataset.latestGeneratedId = '';
-      dom.latestGeneratedOutput.dataset.latestGeneratedMode = '';
-      dom.latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = workingNote?.updated_at || '';
-    }
-    if (mode === 'structured') {
-      generatedStructuredDraft = buildGeneratedStructuredDraft(null, workingStructuredSections(workingNote));
-      generatedFreeformDraft = null;
-      renderStructuredSections(generatedStructuredDraft);
-      dom.generatedFreeformPanel.hidden = true;
-    } else {
-      generatedStructuredDraft = null;
-      generatedFreeformDraft = buildWorkingFreeformDraft(workingNote);
-      renderFreeformLines(generatedFreeformDraft);
-      dom.generatedStructuredPanel.hidden = true;
-    }
-    syncNoteEditorToolbar();
-    syncGenerationAvailability(getDraftText() || '');
-  };
-
   const syncStructuredTemplateUi = () => {
     const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
     const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);
@@ -1320,8 +1271,11 @@ export function createStructuredEditor({
     if (dom.templateModeBadge) {
       dom.templateModeBadge.textContent = isStructuredTemplate ? 'Sectioned note' : 'Free text note';
     }
-    if (activeEditorSource === 'working_note') {
-      renderWorkingNote(currentWorkingNote);
+    if (currentRenderedDocument?.kind === 'working_note') {
+      const nextDocument = currentRenderedDocument.mode_locked
+        ? currentRenderedDocument
+        : { ...currentRenderedDocument, document_mode: selectedOutputTemplateMode() };
+      renderGeneratedOutput(nextDocument, {});
     } else if (isStructuredTemplate) {
       if (hasGeneratedNote && generatedMode === 'structured' && !generatedStructuredDraft) {
         generatedStructuredDraft = buildGeneratedStructuredDraftFromDom() || generatedStructuredDraft;
@@ -1461,11 +1415,9 @@ export function createStructuredEditor({
     clearStructuredSelection,
     collectStructuredContext,
     getGeneratedStructuredDraft: () => generatedStructuredDraft,
-    getActiveEditorSource: () => activeEditorSource,
     getLastSavedStructuredContext: () => lastSavedStructuredContext,
     hasNoteInputContent,
     renderGeneratedOutput,
-    renderWorkingNote,
     renderStructuredSections,
     noteCopyReviewBlocker,
     selectedOutputTemplateMode,

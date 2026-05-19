@@ -6002,6 +6002,27 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     assert transcript.working_note_mode is TranscriptWorkingNoteMode.freeform
     assert transcript.freeform_working_note_encrypted != "Clinician plan: review BP next week."
 
+    stale_save = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "freeform",
+            "expected_updated_at": "2000-01-01T00:00:00+00:00",
+            "freeform_text": "Do not overwrite newer working note.",
+        },
+    )
+    assert_error(stale_save, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    current_save = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "freeform",
+            "expected_updated_at": saved.json()["updated_at"],
+            "freeform_text": "Clinician plan: review BP in two weeks.",
+        },
+    )
+    assert current_save.status_code == 200
+    assert current_save.json()["freeform_text"] == "Clinician plan: review BP in two weeks."
+
     mode_switch = client.patch(
         f"/api/v1/transcripts/{transcript_id}/working-note",
         json={"mode": "structured", "structured_note": {"profile": "emis", "sections": {"problem": ["Hypertension"]}}},

@@ -85,6 +85,7 @@ class StructuredWorkingNotePayload(BaseModel):
 
 class WorkingNoteUpdate(BaseModel):
     mode: TranscriptWorkingNoteMode
+    expected_updated_at: datetime | None = None
     freeform_text: str | None = Field(default=None, max_length=20000)
     structured_note: StructuredWorkingNotePayload | None = None
 

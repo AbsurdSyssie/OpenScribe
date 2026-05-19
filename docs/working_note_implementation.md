@@ -151,6 +151,9 @@ Preserve clinician-authored note content separately from generated note output. 
 - Mode lock is final only after server confirms save.
 - Generation first saves current editor content, then queues generation.
 - Generation blocks while working-note editor has unsaved or failed-save state.
+- Working-note saves use the same note-editor dirty/save/queued/conflict machinery as generated-note edits; only the save endpoint/payload differs.
+- Working-note PATCH may include `expected_updated_at`; stale values return `409 conflict` instead of overwriting newer content.
+- Structured Working note virtual sections provide plaintext line content through `section.text`; the shared structured editor must parse that alongside generated-note section text fields.
 - After generation, workspace may focus generated output, but working note must remain visible or easy to reopen.
 - Unsaved working-note edits must be protected from accidental loss.
 - Generated-note edits never feed back into working note automatically.
@@ -158,6 +161,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Working-note UI may provide explicit copy working note action when user is viewing working note.
 - Workspace UI renders Working note as a virtual note version in the existing note-builder editor.
 - Selecting Working note uses the same freeform/sectioned line editor as generated notes, but saves through `/working-note`.
+- The virtual note id uses `working:<transcript_id>` so focus preservation, switch guards, and autosave target checks stay target-based.
 - Selecting a generated note version uses the same editor surface but saves generated-document edits only.
 - After generation is queued/completed, UI auto-selects the newest generated note; Working note remains available in the note switcher.
 - When reopening or refreshing a consultation with generated notes, the UI defaults to a generated note instead of Working note unless a focused/dirty/in-flight Working note edit must be protected.

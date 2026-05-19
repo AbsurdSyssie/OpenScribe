@@ -16,7 +16,7 @@ export function attachTranscribeActions({
   pollWorkspace,
   scheduleWorkspaceRefreshBurst,
   syncTranscriptTitleIfNeeded,
-  saveStructuredContext,
+  saveWorkingNoteBeforeGeneration,
   setVisibleStatus,
   setSessionProgress,
   setRetryAvailability,
@@ -634,7 +634,7 @@ export function attachTranscribeActions({
       const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';
       if (!templateId) return;
       try {
-        await saveStructuredContext({ silent: true });
+        await saveWorkingNoteBeforeGeneration?.({ silent: true });
         const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
           method: 'POST',
           credentials: 'include',

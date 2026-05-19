@@ -2201,7 +2201,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260518-working-note-default-generated"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260519-working-note-debt"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2647,7 +2647,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260518-working-note-default-generated" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260519-working-note-debt" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -3968,22 +3968,23 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Stop recording before creating a new consultation." in actions_js
     assert "let noteEditorDirty = false;" in app_js
     assert "let activeWorkingNote = bootstrap.activeWorkingNote || null;" in app_js
-    assert "const workingNoteTargetId = () => transcriptId ? `working:${transcriptId}` : 'working:';" in app_js
-    assert "const isWorkingNoteTargetId = (targetId = '') => String(targetId || '').startsWith('working:');" in app_js
+    assert "import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';" in app_js
+    assert "export const workingNoteTargetId = (transcriptId = '') => `working:${transcriptId || ''}`;" in (root / "app" / "static" / "js" / "transcribe" / "noteTargets.js").read_text(encoding="utf-8")
     assert "requestVersion === noteEditVersion" in app_js
     assert "renderWorkingNote(" not in app_js
     assert "const markNoteEditorDirty = () => {" in app_js
     assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteTargetId()) => {" in app_js
     assert "dirtyNoteDocumentId" not in app_js
     assert "const hasProtectedWorkingNoteEditor = () => (" not in app_js
-    assert "const validNoteTargets = [{ id: workingNoteTargetId() }, ...noteDocuments];" in app_js
-    assert "const selectedEditorId = selectedNoteId || workingNoteDocumentId(state.activeTranscriptId || '');" in documents_js
+    assert "const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...noteDocuments];" in app_js
+    assert "const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);" in documents_js
     assert "shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
     assert "const workingNoteDocument = (state) => {" in documents_js
-    assert "id: workingNoteDocumentId(state.activeTranscriptId || '')," in documents_js
+    assert "export function workingNoteToEditorDocument" in documents_js
+    assert "id: workingNoteTargetId(transcriptId || '')," in documents_js
     assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
-    assert "const preserveDirtyNoteEditor = shouldPreserveNoteEditorRender(selectedNoteDocumentId || '');" in app_js
-    assert "renderSelectedNote({ preserveEditor: preserveDirtyNoteEditor });" in app_js
+    assert "const noteRenderState = renderSelectedNote();" in app_js
+    assert "const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);" in app_js
     assert "if (!preserveDirtyNoteEditor) {" in app_js
     assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
@@ -3998,6 +3999,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Could not delete the note." in actions_js
     assert "const buildNoteSaveRequest = () => {" in app_js
     assert "endpoint: `/api/v1/transcripts/${transcriptId}/working-note`" in app_js
+    assert "serializeCurrentNoteEditor" in structured_js
+    assert "saveWorkingNoteBeforeGeneration" in app_js
+    assert "await saveWorkingNoteBeforeGeneration?.({ silent: true });" in actions_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
     assert "void persistNoteEditsSilently();" in app_js
@@ -4041,7 +4045,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "data-generated-structured-sections" in workspace_html
     assert "data-followup-history" in workspace_html
     assert 'data-lucide="settings"' in workspace_html
-    assert 'data-lucide="message-square-more"' in workspace_html
+    assert 'data-lucide="message-square-text"' in workspace_html
     assert 'data-lucide="sparkles"' in workspace_html
     assert '<div class="transcript-review-grid' in workspace_html
     assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>' in workspace_html
@@ -4099,27 +4103,26 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ preserveEditor = false } = {}) => {" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "preserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
+    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
-    assert "const previousPanel = slot.querySelector('[data-llm-request-panel]');" in documents_js
-    assert "previousDocumentId === document.id" in documents_js
+    assert "wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js
-    assert "wrapper.open = true;" in documents_js
+    assert "wrapper.hidden = true;" in documents_js
     assert "const selectDocumentFromUi = async (kind, documentId) => {" in documents_js
     assert "const savedDocument = await persistNoteEditsSilently?.();" in documents_js
     assert "if (!savedDocument) {" in documents_js
     assert "clearNoteEditorDirty?.();" in documents_js
-    assert "card.className = `followup-card${item.id === selectedId ? \" followup-card--active\" : \"\"}`;" in documents_js
-    assert "followupHistory.innerHTML = `\n        <div class=\"empty-state\">" in documents_js
+    assert "card.className = `followup-recent-item-v2${item.id === selectedId ? \" is-selected\" : \"\"}`;" in documents_js
+    assert "followupHistory.innerHTML = '<div class=\"followup-empty-v2\">No follow-ups for this transcript yet.</div>';" in documents_js
     assert "window.refreshLucideIcons?.(root);" in app_js
     assert "const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');" in app_js
     assert "const recordToggleIcon = getRecordToggleIcon();" in app_js
     assert "recordToggleIcon.dataset.lucide = isRecording" in app_js
     assert "refreshIcons?.(followupHistory);" in documents_js
-    assert 'data-lucide="trash-2"' in documents_js
+    assert 'data-lucide="trash-2"' in workspace_html
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
     assert "not active_note_input_available" in workspace_html
 
@@ -4143,7 +4146,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260518-working-note-default-generated" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260519-working-note-debt" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

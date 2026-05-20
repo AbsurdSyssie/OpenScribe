@@ -1,31 +1,27 @@
 ## Working-note correction critique
 
-Status: reviewed and applied where useful.
+### 1. Template-change protection path
 
-### 1. Template switch can save dirty Working note in wrong mode
+Verdict: keep, but modify.
 
-Decision: keep.
+`handleOutputTemplateChange()` is wired through `attachTranscribeActions()` and is called from `actions.js`. The original critique that the handler is never invoked is stale.
 
-Critique: correct blocker. `selectedWorkingNoteMode()` follows locked Working-note mode or current template mode. During template `change`, select value has already moved, so dirty unlocked content could be serialized through wrong editor mode.
+The real problem is narrower: `app.js` still had an eager `generateOutputTemplateSelect` listener that called `syncTemplatePickerUi` before the guarded async handler. Picker helpers also dispatched `change` and then called `syncTemplatePickerUi` directly. Those eager syncs could update template UI before a dirty Working note save succeeded or failed.
 
-Change: record rendered editor mode when note becomes dirty. Dirty Working-note saves now serialize with `dirtyNoteMode || currentRenderedNoteMode()`.
+Fix kept:
 
-### 2. Structured Working note appears twice in structured prompts
+- Remove direct `generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi)` from `app.js`.
+- Remove direct picker/dictation-modal `syncTemplatePickerUi()` calls after dispatching `change`.
+- Keep `actions.js` as the single owner of template-change policy: save dirty Working note, discard never-saved empty draft, revert on failed save, avoid mode-changing locked Working note.
 
-Decision: keep, but narrow fix.
+Regression kept:
 
-Critique: correct high-value debt. Working-note snapshot and generated-document structured context are two different prompt channels. Copying saved structured Working note into both over-weights clinician-authored context and diverges from freeform Working-note behavior.
+- Assert no eager `syncTemplatePickerUi` listener remains in `app.js`.
+- Assert picker helpers dispatch `change` without immediate direct sync.
+- Keep existing static assertions that guarded handler is present and `actions.js` calls it.
 
-Change: generated-document structured context is now populated only from legacy explicit `structured_context` request payloads. Saved Working notes are stored only in Working-note snapshot fields.
+### 2. Dictation-only note generation
 
-### 3. Empty new Working-note draft during generation
+Verdict: already implemented, keep.
 
-Decision: modify, not fully block.
-
-Critique: brand-new empty unsaved draft can be safely discarded because no content exists. Saved Working note emptied in editor still blocks generation and asks user to clear first. Main debt was silent UX.
-
-Change: empty unsaved Working-note draft discard now updates status with `Empty working-note draft ignored.` Regression hook added.
-
-### Rejected changes
-
-None. All suggestions were valid; third was reduced to explicit UX instead of stricter blocking to avoid needless friction for blank never-saved drafts.
+Server-side generation already allows an empty transcript snapshot when saved dictation exists. Workspace Create button availability also counts saved dictation. Existing focused tests cover both API generation and UI Create enablement.

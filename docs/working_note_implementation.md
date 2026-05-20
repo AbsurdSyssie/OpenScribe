@@ -164,6 +164,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Workspace UI renders Working note as a virtual note version in the existing note-builder editor.
 - Selecting Working note uses the same freeform/sectioned line editor as generated notes, but saves through `/working-note`.
 - The virtual note id uses `working:<transcript_id>` so focus preservation, switch guards, and autosave target checks stay target-based.
+- Template selection changes are owned by the guarded action handler. Picker helpers dispatch `change` only; they must not sync template UI directly before dirty Working-note saves complete.
 - Selecting a generated note version uses the same editor surface but saves generated-document edits only.
 - After generation is queued/completed, UI auto-selects the newest generated note; Working note remains available in the note switcher.
 - When reopening or refreshing a consultation with generated notes, the UI defaults to a generated note instead of Working note unless a focused/dirty/in-flight Working note edit must be protected.

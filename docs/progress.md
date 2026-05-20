@@ -6276,3 +6276,14 @@
 - Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility"` passed, 1 test.
 - Tests: `.venv/bin/pytest -q tests/test_api.py -k "working_note or dictation_only_session_before_provider_call"` passed, 4 tests.
 - Architecture checkpoint: privacy boundaries preserved; Working note/dictation remain owner-only generation inputs; deletion semantics preserved by using explicit DELETE only for saved content; provider resolution unchanged; structured-note contract unchanged.
+
+# 2026-05-20 Working Note Template Guard Cleanup
+
+- Critiqued `working_note_corrections.md`: handler wiring exists in `actions.js`; remaining debt was eager template UI sync in `app.js` and picker helpers.
+- Removed eager template sync paths so `handleOutputTemplateChange()` remains the single guarded template-change policy.
+- Confirmed dictation-only note generation path already allows empty transcript snapshots when saved dictation exists; kept existing UI/API coverage.
+- Updated static asset version for changed transcribe JS.
+- Tests: `node --check app/static/js/transcribe/app.js && node --check app/static/js/transcribe/documents.js` passed.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or create_button or transcribe_workspace_static"` passed, 4 tests.
+- Tests: `.venv/bin/pytest -q tests/test_api.py -k "working_note or dictation_only_session_before_provider_call"` passed, 5 tests.
+- Architecture checkpoint: privacy boundaries preserved; Working note and dictation remain owner-only generation inputs; deletion semantics unchanged; provider resolution unchanged; structured-note contract unchanged.

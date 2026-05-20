@@ -19,7 +19,7 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8')
               .replaceAll('export const ', 'var ');
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
-              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';", '')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
 
@@ -148,7 +148,7 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
             const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8')
               .replaceAll('export const ', 'var ');
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
-              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';", '')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const sandbox = { Array, Boolean, Object, String, console };

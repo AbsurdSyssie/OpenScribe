@@ -130,9 +130,10 @@ from app.services.transcripts import (
     create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
+    save_working_note,
     start_transcript as start_transcript_service,
 )
-from app.schemas.transcripts import TranscriptStart
+from app.schemas.transcripts import TranscriptStart, WorkingNoteUpdate
 from app.services import vault as vault_service
 from app.services.auth import SESSION_COOKIE_NAME, rotate_session
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
@@ -6133,6 +6134,75 @@ def test_template_generation_uses_saved_working_note_when_transcript_empty(
     ) == ""
 
 
+def test_template_generation_excludes_existing_generated_note_context(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Working Note Context Boundary")
+    admin = make_user(email="working-context-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-context-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Boundary template", prompt_text="Write note.")
+
+    class FakeTaskResult:
+        id = "working-note-context-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    provider_requests = []
+
+    def fake_generate_openai(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return '{"title":"Generated sentinel","content":"Generated note sentinel"}', {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "duration_ms": 5}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    login(client, email="working-context-owner@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Context consult", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript anchor."},
+    )
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="Dictation anchor.")
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Working note anchor."},
+    )
+    assert saved.status_code == 200
+
+    first_response = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert first_response.status_code == 202
+    first_document = process_generated_document(db_session, document_id=UUID(first_response.json()["id"]))
+    edited = client.patch(
+        f"/api/v1/generated-documents/{first_document.id}",
+        json={
+            "expected_updated_at": first_document.updated_at.isoformat(),
+            "edited_output_text": "Edited generated note sentinel",
+            "sections": [],
+        },
+    )
+    assert edited.status_code == 200
+
+    second_response = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert second_response.status_code == 202
+    process_generated_document(db_session, document_id=UUID(second_response.json()["id"]))
+
+    assert len(provider_requests) == 2
+    second_user_message = provider_requests[1]["messages"][1]["content"]
+    assert "Consultation transcript:\nTranscript anchor." in second_user_message
+    assert "Post-consultation dictation:\nDictation anchor." in second_user_message
+    assert "Consultation working note:\nFreeform working note:\nWorking note anchor." in second_user_message
+    assert "Generated note sentinel" not in second_user_message
+    assert "Edited generated note sentinel" not in second_user_message
+
+
 def test_template_generation_fails_closed_when_working_note_redaction_fails(
     client,
     db_session,
@@ -6355,10 +6425,21 @@ def test_structured_emis_template_generation_persists_sections(
         json={"title": "Structured visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript draft."},
     )
     transcript_id = started.json()["id"]
+    saved_context = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "structured",
+            "structured_note": {
+                "profile": "emis",
+                "sections": {"problem": ["Known asthma"], "tasks": ["Need safety netting"]},
+            },
+        },
+    )
+    assert saved_context.status_code == 200
 
     generated = client.post(
         f"/api/v1/transcripts/{transcript_id}/generate-output",
-        json={"template_id": str(template.id), "structured_context": {"problem": "Known asthma", "tasks": "Need safety netting"}},
+        json={"template_id": str(template.id)},
     )
     assert generated.status_code == 202
 
@@ -6440,10 +6521,21 @@ def test_structured_emis_generation_allows_blank_transcript_when_structured_cont
         json={"title": "Blank structured visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
     )
     transcript_id = started.json()["id"]
+    saved_context = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "structured",
+            "structured_note": {
+                "profile": "emis",
+                "sections": {"problem": ["Patient reports headache"]},
+            },
+        },
+    )
+    assert saved_context.status_code == 200
 
     generated = client.post(
         f"/api/v1/transcripts/{transcript_id}/generate-output",
-        json={"template_id": str(template.id), "structured_context": {"problem": "Patient reports headache"}},
+        json={"template_id": str(template.id)},
     )
     assert generated.status_code == 202
 
@@ -6534,7 +6626,7 @@ def test_structured_emis_generation_snapshots_working_note_without_structured_co
     }
 
 
-def test_structured_emis_generation_filters_transcript_context_sections_removed_by_template(
+def test_generate_output_rejects_transient_structured_context_payload(
     client,
     monkeypatch,
     make_team,
@@ -6544,7 +6636,7 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
     make_template,
     db_session,
 ):
-    team = make_team(name="Clinic Structured Filter")
+    team = make_team(name="Clinic Structured Payload Rejection")
     admin = make_user(email="admin-structured-filter@example.com", password="password-1", is_system_admin=True)
     owner = make_user(email="owner-structured-filter@example.com", password="password-2", team=team, team_role=TeamRole.user)
     config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
@@ -6577,11 +6669,6 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
     db_session.add(transcript)
     db_session.commit()
 
-    class FakeTaskResult:
-        id = "generated-task-structured-filter"
-
-    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
-
     login(client, email="owner-structured-filter@example.com", password="password-2")
     generated = client.post(
         f"/api/v1/transcripts/{transcript.id}/generate-output",
@@ -6593,17 +6680,15 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
             },
         },
     )
-    assert generated.status_code == 202
+    assert generated.status_code == 422
+    assert "structured_context" in generated.text
+    assert "extra_forbidden" in generated.text
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
-    assert persisted_document is not None
-    assert decrypt_generated_document_structured_context(db_session, persisted_document) == {"problem": ["Known asthma"]}
+    assert persisted_document is None
     persisted_transcript = db_session.get(Transcript, transcript.id)
     assert persisted_transcript is not None
-    assert decrypt_transcript_structured_context(db_session, persisted_transcript) == {
-        "profile": "emis",
-        "sections": {"problem": ["Known asthma"]},
-    }
+    assert decrypt_transcript_structured_context(db_session, persisted_transcript) is None
 
 
 def test_template_api_returns_structured_config_json(
@@ -7238,15 +7323,26 @@ def test_process_generated_document_redaction_boundary_for_static_and_structured
     db_session.add(transcript)
     db_session.commit()
     update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="John Smith dictated additional context.")
+    save_working_note(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        payload=WorkingNoteUpdate(
+            mode=TranscriptWorkingNoteMode.structured,
+            structured_note={
+                "profile": "emis",
+                "sections": {
+                    "history": ["John Smith has poor sleep."],
+                    "social_history": ["John Smith lives alone."],
+                },
+            },
+        ),
+    )
     document = queue_document_generation_from_template_service(
         db_session,
         owner,
         transcript_id=transcript.id,
         template_id=template.id,
-        structured_context={
-            "history": ["John Smith has poor sleep."],
-            "social_history": ["John Smith lives alone."],
-        },
     )
     transcript_version = db_session.get(TranscriptVersion, document.transcript_version_id)
     run = make_redaction_run(
@@ -7266,6 +7362,15 @@ def test_process_generated_document_redaction_boundary_for_static_and_structured
             "John Smith has poor sleep.": "[PHI-3] has poor sleep.",
             "John Smith lives alone.": "[PHI-4] lives alone.",
         }
+        if text not in mapping:
+            return {
+                "redacted_text": text,
+                "phi_mapping": {},
+                "phi_index": [],
+                "phi_count": 0,
+                "api_provider": "native_presidio",
+                "api_model_or_version": "en_core_web_sm",
+            }
         redacted = mapping[text]
         return {
             "redacted_text": redacted,

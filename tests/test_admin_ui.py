@@ -4131,6 +4131,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
     assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
     assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
+    assert "let dirtyNoteExpectedUpdatedAt = null;" in app_js
+    assert "dirtyNoteExpectedUpdatedAt = currentNoteUpdatedAt() || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || '' : '');" in app_js
+    assert "const expectedUpdatedAt = dirtyNoteExpectedUpdatedAt || currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;" in app_js
+    assert "dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';" in app_js
     assert "const noteDeleteButton = document.querySelector('[data-note-delete]');" in app_js
     assert "dom.noteDeleteButton?.addEventListener('click'" in actions_js
     assert "Delete this note permanently?" in actions_js
@@ -4145,6 +4149,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Clear the working note before generating." in app_js
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "await saveWorkingNoteBeforeGeneration?.({ silent: true });" in actions_js
+    assert "body: JSON.stringify({ template_id: templateId })," in actions_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
     assert "void persistNoteEditsSilently();" in app_js

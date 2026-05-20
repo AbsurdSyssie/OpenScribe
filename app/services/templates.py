@@ -61,7 +61,6 @@ from app.services.transcripts import (
     manual_pii_entity_value,
     freeform_working_note_text,
     normalize_structured_working_note,
-    set_transcript_structured_context,
     transcript_structured_context,
     transcript_version_text,
 )
@@ -460,35 +459,6 @@ def _template_version_config(version: PromptTemplateVersion) -> StructuredTempla
     if not version.config_json:
         return None
     return StructuredTemplateConfig.model_validate(version.config_json)
-
-
-def _serialize_structured_context(
-    *,
-    raw_context: dict[str, object] | None,
-    template_config: StructuredTemplateConfig | None,
-    ignore_unsupported_sections: bool = False,
-) -> dict | None:
-    if not raw_context:
-        return None
-    if template_config is None:
-        raise AppError(422, "business_rule_violation", "Structured context is only supported for structured templates", {"field": "structured_context"})
-    allowed_section_keys = {section.section_key for section in template_config.sections}
-    clean: dict[str, list[str]] = {}
-    for section_key, value in raw_context.items():
-        normalized_key = section_key.strip()
-        if normalized_key not in allowed_section_keys:
-            if ignore_unsupported_sections:
-                continue
-            raise AppError(422, "business_rule_violation", "Structured context uses an unsupported section", {"field": "structured_context", "section_key": normalized_key})
-        if isinstance(value, list):
-            normalized_value = [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
-        elif isinstance(value, str) and value.strip():
-            normalized_value = [value.strip()]
-        else:
-            normalized_value = []
-        if normalized_value:
-            clean[normalized_key] = normalized_value
-    return clean or None
 
 
 def list_team_templates(db: Session, actor: User) -> list[PromptTemplate]:
@@ -1436,21 +1406,6 @@ def generated_document_structured_context(db: Session, *, document: GeneratedDoc
     return value
 
 
-def set_generated_document_structured_context(db: Session, *, document: GeneratedDocument, plaintext: dict | None) -> None:
-    document.structured_context_json = (
-        encrypt_json_for_owner(
-            db,
-            owner_user_id=document.owner_user_id,
-            table="generated_documents",
-            field="structured_context_json",
-            record_id=document.id,
-            plaintext=plaintext,
-        )
-        if plaintext is not None
-        else None
-    )
-
-
 def generated_document_structured_working_note_snapshot(db: Session, *, document: GeneratedDocument) -> dict | None:
     value = decrypt_json_for_owner(
         db,
@@ -2161,7 +2116,6 @@ def queue_document_generation_from_template(
     *,
     transcript_id: UUID,
     template_id: UUID,
-    structured_context: dict[str, str] | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -2174,32 +2128,12 @@ def queue_document_generation_from_template(
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
     working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
-    raw_structured_context = structured_context
-    serialized_structured_context = _serialize_structured_context(
-        raw_context=raw_structured_context,
-        template_config=template_config,
-        ignore_unsupported_sections=True,
-    )
-    if structured_context is not None and template_config is not None and transcript.working_note_mode in {None, TranscriptWorkingNoteMode.structured}:
-        set_transcript_structured_context(
-            db,
-            transcript=transcript,
-            plaintext={
-                "profile": template_config.profile,
-                "sections": dict(serialized_structured_context or {}),
-            },
-        )
-        if serialized_structured_context:
-            transcript.working_note_mode = TranscriptWorkingNoteMode.structured
-            transcript.working_note_updated_at = utcnow()
-        db.add(transcript)
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
         allow_empty=(
             bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
-            or bool(serialized_structured_context)
             or bool(_effective_dictation_text(db, transcript=transcript))
         ),
     )
@@ -2236,7 +2170,6 @@ def queue_document_generation_from_template(
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
     )
-    set_generated_document_structured_context(db, document=generated_document, plaintext=serialized_structured_context)
     set_generated_document_text(
         db,
         document=generated_document,

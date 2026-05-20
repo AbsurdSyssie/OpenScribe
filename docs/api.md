@@ -484,15 +484,13 @@ Current generation behavior:
   - `tasks`
   - `investigations`
 - structured template versions store per-section instructions in `template_versions.config_json`
-- structured generation may also include optional owner-provided `structured_context` keyed by selected EMIS sections so existing section text can be sent into the LLM as context
-- the current transcript session now also stores EMIS working context in `transcripts.structured_context_json`
+- structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
+- the current transcript session stores structured Working note content in `transcripts.structured_context_json`
 - `/transcribe` reloads EMIS context fields from that transcript-backed state
-- when a structured note is queued, the current EMIS context is:
-  - saved back onto the transcript root
-  - snapshotted onto `generated_documents.structured_context_json`
+- when a structured note is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
 - for structured notes, backend validation:
   - rejects user-submitted section keys outside the configured EMIS subset
-  - filters transcript-persisted EMIS sections that are not present in the selected template
+  - validates saved Working note EMIS sections through the Working-note API
   - drops empty sections
   - preserves configured section order
   - renders full note text into `generated_documents`

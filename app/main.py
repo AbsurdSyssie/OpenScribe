@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -937,27 +936,6 @@ def _template_config_from_form(*, mode: TemplateMode, section_values: dict[str, 
     if mode is not TemplateMode.structured:
         return None
     return _structured_template_config_from_form(section_values=section_values)
-
-
-def _structured_context_from_form(*, section_values: dict[str, str]) -> dict[str, list[str]] | None:
-    clean: dict[str, list[str]] = {}
-    for section_key, raw_value in section_values.items():
-        value = (raw_value or "").strip()
-        if not value:
-            continue
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            parsed = [value]
-        if isinstance(parsed, list):
-            lines = [str(item).strip() for item in parsed if isinstance(item, str) and item.strip()]
-        elif isinstance(parsed, str) and parsed.strip():
-            lines = [parsed.strip()]
-        else:
-            lines = []
-        if lines:
-            clean[section_key] = lines
-    return clean or None
 
 
 @app.get("/health")

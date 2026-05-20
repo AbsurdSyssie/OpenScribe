@@ -45,6 +45,7 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       let noteEditorDirty = false;
       let dirtyNoteTargetId = null;
       let dirtyNoteMode = null;
+      let dirtyNoteExpectedUpdatedAt = null;
       let noteEditVersion = 0;
       let noteSaveTimer = null;
       let noteSaveInFlight = null;
@@ -293,8 +294,12 @@ let statusDetailsHideTimer = null;
       };
 
       const markNoteEditorDirty = () => {
+        const targetId = currentRenderedNoteTargetId();
+        if (!noteEditorDirty || dirtyNoteTargetId !== targetId) {
+          dirtyNoteExpectedUpdatedAt = currentNoteUpdatedAt() || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || '' : '');
+        }
         noteEditorDirty = true;
-        dirtyNoteTargetId = currentRenderedNoteTargetId();
+        dirtyNoteTargetId = targetId;
         dirtyNoteMode = currentRenderedNoteMode();
         noteEditVersion += 1;
         scheduleNoteAutosave();
@@ -304,6 +309,7 @@ let statusDetailsHideTimer = null;
         noteEditorDirty = false;
         dirtyNoteTargetId = null;
         dirtyNoteMode = null;
+        dirtyNoteExpectedUpdatedAt = null;
         noteSaveConflictShown = false;
       };
 
@@ -368,7 +374,7 @@ let statusDetailsHideTimer = null;
           const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
             mode,
           }) || { mode };
-          const expectedUpdatedAt = currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
+          const expectedUpdatedAt = dirtyNoteExpectedUpdatedAt || currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
           return {
             targetId,
             kind: 'working_note',
@@ -378,7 +384,7 @@ let statusDetailsHideTimer = null;
         }
         const generatedDocumentId = latestGeneratedOutput?.dataset?.latestGeneratedId || selectedNoteDocumentId || '';
         const mode = latestGeneratedOutput?.dataset?.latestGeneratedMode || '';
-        const expectedUpdatedAt = currentNoteUpdatedAt();
+        const expectedUpdatedAt = dirtyNoteExpectedUpdatedAt || currentNoteUpdatedAt();
         if (!generatedDocumentId || !expectedUpdatedAt || (mode !== 'structured' && mode !== 'freeform')) {
           return null;
         }
@@ -601,6 +607,8 @@ let statusDetailsHideTimer = null;
               noteSaveConflictShown = false;
               if (requestVersion === noteEditVersion) {
                 clearNoteEditorDirty();
+              } else if (saveRequest.targetId === dirtyNoteTargetId) {
+                dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';
               }
               setWorkingNoteStatus(`Saved ${savedDocument.mode || selectedWorkingNoteMode()} working note`);
               if (latestGeneratedOutput && saveRequest.targetId === currentRenderedNoteTargetId()) {
@@ -620,6 +628,8 @@ let statusDetailsHideTimer = null;
             noteSaveConflictShown = false;
             if (requestVersion === noteEditVersion) {
               clearNoteEditorDirty();
+            } else if (saveRequest.targetId === dirtyNoteTargetId) {
+              dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';
             }
             return savedDocument;
           } catch (error) {

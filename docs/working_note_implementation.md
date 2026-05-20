@@ -122,7 +122,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Generated note must not invent facts absent from transcript, working note, or saved dictation.
 - Template generation may proceed when at least one source has content: transcript text, working note, or saved dictation.
 - Generation blocks when all sources are empty.
-- Saved structured Working notes are represented only through generated-document Working-note snapshots, not generated-document structured context. `structured_context` on generation requests is legacy explicit section context.
+- Saved structured Working notes are represented only through generated-document Working-note snapshots, not generated-document structured context. Generation requests reject transient `structured_context`; callers must save Working note content first.
 - Quick actions and follow-ups do not automatically include working note unless user explicitly supplies context.
 
 ## Redaction And Privacy

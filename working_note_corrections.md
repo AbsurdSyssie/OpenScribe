@@ -1,27 +1,37 @@
 ## Working-note correction critique
 
-### 1. Template-change protection path
+### 1. Structured context on generation requests
 
-Verdict: keep, but modify.
+Verdict: keep, with narrower scope.
 
-`handleOutputTemplateChange()` is wired through `attachTranscribeActions()` and is called from `actions.js`. The original critique that the handler is never invoked is stale.
-
-The real problem is narrower: `app.js` still had an eager `generateOutputTemplateSelect` listener that called `syncTemplatePickerUi` before the guarded async handler. Picker helpers also dispatched `change` and then called `syncTemplatePickerUi` directly. Those eager syncs could update template UI before a dirty Working note save succeeded or failed.
+The design is now explicit: generation accepts `template_id` only. Server loads transcript text, saved dictation, and saved Working note from the DB. Transient generated-note/editor context is not an input.
 
 Fix kept:
 
-- Remove direct `generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi)` from `app.js`.
-- Remove direct picker/dictation-modal `syncTemplatePickerUi()` calls after dispatching `change`.
-- Keep `actions.js` as the single owner of template-change policy: save dirty Working note, discard never-saved empty draft, revert on failed save, avoid mode-changing locked Working note.
+- Remove `structured_context` from `GenerateTemplateOutputRequest`.
+- Reject extra generation request fields with Pydantic `extra=forbid`.
+- Remove API/web/service plumbing that saved request `structured_context` into transcript Working-note storage.
 
-Regression kept:
+Fix narrowed:
 
-- Assert no eager `syncTemplatePickerUi` listener remains in `app.js`.
-- Assert picker helpers dispatch `change` without immediate direct sync.
-- Keep existing static assertions that guarded handler is present and `actions.js` calls it.
+- Do not rename/remove DB fields such as `structured_context_json` yet. They still store structured Working note data and may exist on old generated documents.
 
-### 2. Dictation-only note generation
+### 2. Rename old structured context concepts
 
-Verdict: already implemented, keep.
+Verdict: partial, mostly defer.
 
-Server-side generation already allows an empty transcript snapshot when saved dictation exists. Workspace Create button availability also counts saved dictation. Existing focused tests cover both API generation and UI Create enablement.
+Broad rename would churn schemas, workspace payloads, encrypted DB columns, and tests without changing behavior. Keep names where they are storage/API compatibility seams. Prefer clearer docs and no new transient request path.
+
+### 3. Generated notes are never context
+
+Verdict: keep.
+
+Added regression coverage for transcript + dictation + saved Working note + existing edited generated note. Provider request must include transcript/dictation/Working note and exclude generated-note content.
+
+Existing/static coverage still checks dirty Working note save before generation, failed save blocking, Working-note-only generation, and empty-source blocking.
+
+### 4. Dirty Working note concurrency baseline
+
+Verdict: keep.
+
+Workspace refresh can update rendered `updated_at` while dirty editor DOM is preserved. Save must use timestamp from when editing started, not latest refreshed timestamp. Store dirty edit baseline and refresh it only after this tab's own in-flight save succeeds with newer unsaved edits still pending.

@@ -1330,7 +1330,6 @@ def generate_transcript_output(
             context.user,
             transcript_id=transcript_id,
             template_id=payload.template_id,
-            structured_context=payload.structured_context,
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))

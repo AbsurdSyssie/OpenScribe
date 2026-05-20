@@ -6,7 +6,6 @@ from ..main import (
     _local_only_dev_emails,
     _page_context_or_redirect,
     _request_is_localhost_only,
-    _structured_context_from_form,
     _transcribe_redirect,
 )
 from ..web.transcribe_workspace import _missing_stt_selection_message
@@ -409,14 +408,6 @@ def transcribe_generate_output(
     request: Request,
     transcript_id: UUID = Form(...),
     template_id: UUID = Form(...),
-    context_problem: str = Form(""),
-    context_history: str = Form(""),
-    context_family_history: str = Form(""),
-    context_social_history: str = Form(""),
-    context_examination: str = Form(""),
-    context_comment: str = Form(""),
-    context_tasks: str = Form(""),
-    context_investigations: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -430,18 +421,6 @@ def transcribe_generate_output(
             context.user,
             transcript_id=transcript_id,
             template_id=template_id,
-            structured_context=_structured_context_from_form(
-                section_values={
-                    "problem": context_problem,
-                    "history": context_history,
-                    "family_history": context_family_history,
-                    "social_history": context_social_history,
-                    "examination": context_examination,
-                    "comment": context_comment,
-                    "tasks": context_tasks,
-                    "investigations": context_investigations,
-                }
-            ),
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))

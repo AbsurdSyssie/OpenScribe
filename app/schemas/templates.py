@@ -224,8 +224,9 @@ class GeneratedDocumentRedactionDebugDetail(BaseModel):
 
 
 class GenerateTemplateOutputRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     template_id: UUID
-    structured_context: dict[str, list[str] | str] | None = None
 
 
 class GenerateFollowupRequest(BaseModel):

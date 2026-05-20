@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-20 Working Note Generation Contract Tightening
+
+### Scope
+
+- Critiqued `working_note_corrections.md` and kept the contract/concurrency fixes, while deferring broad legacy field renames.
+- Tightened template generation so `POST /generate-output` accepts only `template_id`; saved transcript text, dictation, and Working note are the only generation sources.
+- Fixed dirty note optimistic-save baseline so workspace refresh cannot silently advance the `expected_updated_at` used by an unsaved Working-note edit.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser timing QA still useful for multi-tab autosave conflict behavior.
+
+### Files changed
+
+- `app/schemas/templates.py`, `app/routes/api_routes.py`, `app/routes/web_transcribe.py`, `app/services/templates.py`, `app/main.py`: removed transient structured-context generation request path and dead serializer/form plumbing.
+- `app/static/js/transcribe/app.js`: stores dirty edit baseline timestamp and updates it only after this tab's own save succeeds with newer edits still pending.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: added/updated generation-source and optimistic-baseline regressions.
+- `docs/api.md`, `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: documented final contract and critique decisions.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k transcribe_frontend_uses_global_template_selector_for_generation_controls`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note or structured_emis_generation or generate_output_rejects_transient_structured_context_payload or generated_note_context or redaction_boundary_for_static_and_structured_dynamic_inputs"`: passed, 8 tests.
+- One parallel API pytest attempt exited because the shared OpenScribe test database was already in use; rerun passed alone.
+
+### Documentation
+
+- Updated API and Working-note docs to state generation rejects transient `structured_context` and uses saved sources only.
+- Rewrote correction critique with kept/modified/deferred decisions.
+
+### Risks / assumptions
+
+- Existing DB field names (`structured_context_json`, `active_structured_context`) remain until a deliberate migration/compatibility cleanup.
+- Old generated documents with `generated_documents.structured_context_json` can still be processed; new generation does not populate that field.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no generated-note content becomes generation input; Working note remains owner-only transcript-derived content.
+- Ownership rules preserved: generation and Working-note save still require transcript owner.
+- Deletion semantics preserved: no schema/lifecycle change; transcript cascade and Working-note clear behavior unchanged.
+- Provider rules preserved: no provider selection/credential changes; saved Working note still redacts before LLM calls.
+- Structured-note contract preserved: EMIS keys/validation unchanged; source contract is stricter.
+
 ## 2026-05-19 Working Note Correction Critique Follow-up
 
 ### Scope

@@ -1,14 +1,14 @@
-import { attachTranscribeActions } from './actions.js?v=20260519-working-note-debt';
+import { attachTranscribeActions } from './actions.js?v=20260520-working-note-template-guard';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260519-working-note-debt';
+import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
-import { createStructuredEditor } from './structured.js?v=20260519-working-note-debt';
+import { createStructuredEditor } from './structured.js?v=20260520-working-note-template-guard';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
-import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';
+import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -1835,7 +1835,6 @@ let statusDetailsHideTimer = null;
         }
         generateOutputTemplateSelect.value = templateId;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
-        syncTemplatePickerUi();
         closeTemplatePicker();
       };
 
@@ -1851,7 +1850,6 @@ let statusDetailsHideTimer = null;
         if (generateOutputTemplateSelect.value === dictationTemplateSelect.value) return;
         generateOutputTemplateSelect.value = dictationTemplateSelect.value;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
-        syncTemplatePickerUi();
       };
 
       const revertOutputTemplateSelection = () => {
@@ -3040,7 +3038,6 @@ let statusDetailsHideTimer = null;
       }
 
       syncRecordingModeControl(activeIngestionMode || userAppPreferences.preferred_recording_mode || 'whole_file');
-      generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi);
 
       captureController.attachDomListeners();
       attachTranscribeActions({

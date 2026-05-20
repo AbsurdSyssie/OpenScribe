@@ -1,4 +1,4 @@
-import { workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';
+import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 
 export function workingNoteToEditorDocument({ transcriptId, workingNote, selectedTemplateMode }) {
   if (!transcriptId) return null;

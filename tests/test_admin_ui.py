@@ -4097,6 +4097,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "Stop recording before creating a new consultation." in actions_js
     assert "let noteEditorDirty = false;" in app_js
     assert "let activeWorkingNote = bootstrap.activeWorkingNote || null;" in app_js
+    assert "let dirtyNoteMode = null;" in app_js
+    assert "dirtyNoteMode = currentRenderedNoteMode();" in app_js
+    assert "const currentRenderedNoteMode = () => latestGeneratedOutput?.dataset?.latestGeneratedMode || selectedWorkingNoteMode();" in app_js
     assert "import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260519-working-note-debt';" in app_js
     assert "export const workingNoteTargetId = (transcriptId = '') => `working:${transcriptId || ''}`;" in (root / "app" / "static" / "js" / "transcribe" / "noteTargets.js").read_text(encoding="utf-8")
     assert "requestVersion === noteEditVersion" in app_js
@@ -4120,6 +4123,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
+    assert "Empty working-note draft ignored." in app_js
     assert "const handleOutputTemplateChange = async () => {" in app_js
     assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js

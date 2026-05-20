@@ -44,6 +44,7 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       let selectedFollowupDocumentId = null;
       let noteEditorDirty = false;
       let dirtyNoteTargetId = null;
+      let dirtyNoteMode = null;
       let noteEditVersion = 0;
       let noteSaveTimer = null;
       let noteSaveInFlight = null;
@@ -294,6 +295,7 @@ let statusDetailsHideTimer = null;
       const markNoteEditorDirty = () => {
         noteEditorDirty = true;
         dirtyNoteTargetId = currentRenderedNoteTargetId();
+        dirtyNoteMode = currentRenderedNoteMode();
         noteEditVersion += 1;
         scheduleNoteAutosave();
       };
@@ -301,6 +303,7 @@ let statusDetailsHideTimer = null;
       const clearNoteEditorDirty = () => {
         noteEditorDirty = false;
         dirtyNoteTargetId = null;
+        dirtyNoteMode = null;
         noteSaveConflictShown = false;
       };
 
@@ -318,6 +321,8 @@ let statusDetailsHideTimer = null;
       };
 
       const currentRenderedNoteTargetId = () => latestGeneratedOutput?.dataset?.latestGeneratedId || '';
+
+      const currentRenderedNoteMode = () => latestGeneratedOutput?.dataset?.latestGeneratedMode || selectedWorkingNoteMode();
 
       const isNoteEditorFocused = () => {
         const activeElement = document.activeElement;
@@ -359,7 +364,7 @@ let statusDetailsHideTimer = null;
       const buildNoteSaveRequest = () => {
         const targetId = currentRenderedNoteTargetId();
         if (isWorkingNoteTargetId(targetId)) {
-          const mode = selectedWorkingNoteMode();
+          const mode = dirtyNoteMode || currentRenderedNoteMode();
           const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
             mode,
           }) || { mode };
@@ -1970,7 +1975,7 @@ let statusDetailsHideTimer = null;
       };
 
       const collectWorkingNote = () => {
-        const mode = selectedWorkingNoteMode();
+        const mode = dirtyNoteMode || currentRenderedNoteMode();
         const expectedUpdatedAt = currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
         const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
           mode,
@@ -2648,6 +2653,7 @@ let statusDetailsHideTimer = null;
         }
         if (!workingNoteHasContent()) {
           if (discardEmptyWorkingNoteDraft()) {
+            setWorkingNoteStatus('Empty working-note draft ignored.');
             return { kind: 'working_note_empty_draft_discarded' };
           }
           throw new Error('Clear the working note before generating.');

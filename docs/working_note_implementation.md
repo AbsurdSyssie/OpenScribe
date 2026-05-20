@@ -114,6 +114,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Working note is clinician-authored context and carries stronger signal for assessment, phrasing, and plan.
 - Selected template controls output shape.
 - Working-note mode controls source shape.
+- Dirty Working-note saves use the rendered editor mode, not the current template selector mode, so template switching cannot serialize visible content through the wrong shape.
 - Structured working note may feed freeform output.
 - Freeform working note may feed structured output.
 - Structured output generation receives structured working note as labelled sectioned context; prompt/model decides how to use it.
@@ -121,6 +122,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Generated note must not invent facts absent from transcript, working note, or saved dictation.
 - Template generation may proceed when at least one source has content: transcript text, working note, or saved dictation.
 - Generation blocks when all sources are empty.
+- Saved structured Working notes are represented only through generated-document Working-note snapshots, not generated-document structured context. `structured_context` on generation requests is legacy explicit section context.
 - Quick actions and follow-ups do not automatically include working note unless user explicitly supplies context.
 
 ## Redaction And Privacy

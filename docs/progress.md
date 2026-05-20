@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-19 Working Note Correction Critique Follow-up
+
+### Scope
+
+- Reviewed `working_note_corrections.md` and kept all three items, with the empty-draft item narrowed to explicit status feedback instead of blocking never-saved blank drafts.
+- Fixed dirty unlocked Working-note saves so template switching cannot make structured content serialize as freeform, or vice versa.
+- Stopped saved structured Working notes from also populating generated-document structured context; legacy explicit `structured_context` payloads still use that path.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: browser timing QA still useful for template switch/autosave race confidence.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: tracks dirty rendered note mode and shows explicit empty draft status.
+- `app/services/templates.py`: separates Working-note snapshots from legacy generated-document structured context.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover no duplicate structured context and JS regression hooks.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: document critique and finalized behavior.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js && node --check app/static/js/transcribe/documents.js && node --check app/static/js/transcribe/structured.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "structured_emis_generation_snapshots_working_note_without_structured_context_duplication or structured_emis_generation_filters_transcript_context_sections_removed_by_template"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k working_note`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k transcribe_frontend_uses_global_template_selector_for_generation_controls`: passed, 1 test.
+- One earlier parallel API pytest attempt exited because the shared OpenScribe test database was already in use; rerun passed alone.
+
+### Documentation
+
+- Updated Working-note implementation notes and correction critique.
+
+### Risks / assumptions
+
+- Legacy explicit `structured_context` is still supported for API/web compatibility; frontend generation does not send it.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: Working-note content remains owner-only and is not newly exposed.
+- Ownership rules preserved: generation still requires transcript owner; no route auth change.
+- Deletion semantics preserved: Working-note clear/delete behavior and transcript cascade unchanged.
+- Provider rules preserved: no provider selection, credential, or redaction boundary change.
+- Structured-note contract preserved: EMIS validation and section keys unchanged; source channels are now less duplicative.
+
 ## 2026-05-19 Working Note Corrections
 
 ### Scope

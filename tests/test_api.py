@@ -408,6 +408,17 @@ def decrypt_generated_document_structured_context(db_session, document: Generate
     )
 
 
+def decrypt_generated_document_structured_working_note_snapshot(db_session, document: GeneratedDocument) -> dict | None:
+    return decrypt_json_for_owner(
+        db_session,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="structured_working_note_snapshot_json",
+        record_id=document.id,
+        stored_value=document.structured_working_note_snapshot_json,
+    )
+
+
 def decrypt_generated_document_section_field(db_session, *, owner_user_id, section: GeneratedDocumentSection, field: str) -> str | None:
     return decrypt_text_for_owner(
         db_session,
@@ -6457,7 +6468,7 @@ def test_structured_emis_generation_allows_blank_transcript_when_structured_cont
     }
 
 
-def test_structured_emis_generation_reuses_transcript_persisted_context_when_request_omits_it(
+def test_structured_emis_generation_snapshots_working_note_without_structured_context_duplication(
     client,
     monkeypatch,
     make_team,
@@ -6491,6 +6502,7 @@ def test_structured_emis_generation_reuses_transcript_persisted_context_when_req
         team_id=team.id,
         title="Structured visit",
         current_draft_text_encrypted="Transcript draft.",
+        working_note_mode=TranscriptWorkingNoteMode.structured,
         structured_context_json={"profile": "emis", "sections": {"problem": ["Known asthma"]}},
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
@@ -6514,7 +6526,12 @@ def test_structured_emis_generation_reuses_transcript_persisted_context_when_req
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
     assert persisted_document is not None
-    assert decrypt_generated_document_structured_context(db_session, persisted_document) == {"problem": ["Known asthma"]}
+    assert persisted_document.working_note_mode_snapshot is TranscriptWorkingNoteMode.structured
+    assert decrypt_generated_document_structured_context(db_session, persisted_document) is None
+    assert decrypt_generated_document_structured_working_note_snapshot(db_session, persisted_document) == {
+        "profile": "emis",
+        "sections": {"problem": ["Known asthma"]},
+    }
 
 
 def test_structured_emis_generation_filters_transcript_context_sections_removed_by_template(
@@ -6552,13 +6569,6 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
         team_id=team.id,
         title="Structured visit",
         current_draft_text_encrypted="Transcript draft.",
-        structured_context_json={
-            "profile": "emis",
-            "sections": {
-                "problem": ["Known asthma"],
-                "tasks": ["Peak flow diary"],
-            },
-        },
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
@@ -6575,7 +6585,13 @@ def test_structured_emis_generation_filters_transcript_context_sections_removed_
     login(client, email="owner-structured-filter@example.com", password="password-2")
     generated = client.post(
         f"/api/v1/transcripts/{transcript.id}/generate-output",
-        json={"template_id": str(template.id)},
+        json={
+            "template_id": str(template.id),
+            "structured_context": {
+                "problem": "Known asthma",
+                "tasks": "Peak flow diary",
+            },
+        },
     )
     assert generated.status_code == 202
 

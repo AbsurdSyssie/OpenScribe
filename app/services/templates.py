@@ -2174,19 +2174,7 @@ def queue_document_generation_from_template(
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
     working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
-    raw_structured_context = None
-    if isinstance(structured_working_note_snapshot, dict):
-        transcript_sections = structured_working_note_snapshot.get("sections")
-        if isinstance(transcript_sections, dict):
-            raw_structured_context = {
-                str(section_key): value
-                for section_key, value in transcript_sections.items()
-                if isinstance(section_key, str)
-            }
-    elif structured_context is not None and working_note_mode is None:
-        raw_structured_context = structured_context
-        structured_working_note_snapshot = {"profile": "emis", "sections": structured_context}
-        working_note_mode = TranscriptWorkingNoteMode.structured
+    raw_structured_context = structured_context
     serialized_structured_context = _serialize_structured_context(
         raw_context=raw_structured_context,
         template_config=template_config,
@@ -2210,6 +2198,7 @@ def queue_document_generation_from_template(
         transcript=transcript,
         allow_empty=(
             bool(freeform_working_note_snapshot.strip())
+            or bool(structured_working_note_snapshot)
             or bool(serialized_structured_context)
             or bool(_effective_dictation_text(db, transcript=transcript))
         ),

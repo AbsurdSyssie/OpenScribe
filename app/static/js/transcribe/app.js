@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20260521-working-note-generate-guard';
+import { attachTranscribeActions } from './actions.js?v=20260521-working-note-inflight-generation';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
-import { createStructuredEditor } from './structured.js?v=20260521-working-note-generate-guard';
+import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -51,6 +51,8 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       let noteSaveInFlight = null;
       let noteSaveQueued = false;
       let noteSaveConflictShown = false;
+      let noteGenerationInFlight = null;
+      let noteGenerationBusy = false;
       let followupEditorDirty = false;
       let dirtyFollowupDocumentId = null;
       let followupEditVersion = 0;
@@ -1342,7 +1344,7 @@ let statusDetailsHideTimer = null;
         const isPaused = dictationRecordingState === 'paused';
         const isStopped = dictationRecordingState === 'stopped';
         const isTranscribing = dictationRecordingState === 'transcribing';
-        const isBusy = dictationUiBusy || dictationSaveInFlight !== null;
+        const isBusy = dictationUiBusy || dictationSaveInFlight !== null || noteGenerationBusy;
         const activeCapture = isRecording || isPaused;
         const hasRetryableAudio = Boolean(dictationPendingAudioBlob) && !activeCapture && !isTranscribing;
         const canRecord = canUseDictationInput() && !isBusy && !isTranscribing && !hasRetryableAudio;
@@ -1604,16 +1606,8 @@ let statusDetailsHideTimer = null;
           return saved;
         }
         try {
-          await saveWorkingNoteBeforeGeneration({ silent: true });
-          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ template_id: templateId }),
-          });
-          if (!response.ok) {
-            throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
-          }
+          const queued = await enqueueTemplateGeneration({ templateId });
+          if (!queued) return saved;
           setTab('output');
           showFlash('Queued note generation.', 'success');
           await fetchWorkspace();
@@ -2035,7 +2029,7 @@ let statusDetailsHideTimer = null;
         }
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = !canGenerateNote || generateOutputButton.dataset.noteGenerationGuarded === 'true';
+          generateOutputButton.disabled = noteGenerationBusy || !canGenerateNote;
         }
 
         if (runQuickActionSelect) {
@@ -2256,7 +2250,6 @@ let statusDetailsHideTimer = null;
         getDraftText: () => readActiveDraftText().trim(),
         syncGenerationAvailability,
         onNoteEditorChanged: markNoteEditorDirty,
-        persistStructuredContextSilently: async () => persistStructuredContextSilently(),
       });
       structuredEditor.bootstrapFromDom();
       attachSmartPhraseExpander({
@@ -2641,8 +2634,6 @@ let statusDetailsHideTimer = null;
         shouldPreserveFollowupEditorRender,
       });
 
-      const persistStructuredContextSilently = async () => activeWorkingNote;
-
       const saveWorkingNoteBeforeGeneration = async ({ silent = false } = {}) => {
         if (!transcriptId) return null;
         if (!isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
@@ -2665,6 +2656,37 @@ let statusDetailsHideTimer = null;
           throw new Error('Save the working note before generating.');
         }
         return saved;
+      };
+
+      const enqueueTemplateGeneration = ({ templateId } = {}) => {
+        if (!transcriptId || !templateId) return Promise.resolve(false);
+        if (noteGenerationInFlight) return Promise.resolve(false);
+
+        noteGenerationInFlight = (async () => {
+          noteGenerationBusy = true;
+          syncGenerationAvailability(readActiveDraftText());
+          syncDictationControls();
+          try {
+            await saveWorkingNoteBeforeGeneration({ silent: true });
+            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ template_id: templateId }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
+            }
+            return true;
+          } finally {
+            noteGenerationInFlight = null;
+            noteGenerationBusy = false;
+            syncGenerationAvailability(readActiveDraftText());
+            syncDictationControls();
+          }
+        })();
+
+        return noteGenerationInFlight;
       };
 
       const workspaceEndpointForTranscript = (nextTranscriptId) => {
@@ -2869,7 +2891,6 @@ let statusDetailsHideTimer = null;
         const noteRenderState = renderSelectedNote();
         const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);
         renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
-        structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isCaptureUiActive());
         setDictationMicButtons(false);
@@ -3109,7 +3130,7 @@ let statusDetailsHideTimer = null;
         pollWorkspace,
         scheduleWorkspaceRefreshBurst,
         syncTranscriptTitleIfNeeded,
-        saveWorkingNoteBeforeGeneration,
+        enqueueTemplateGeneration,
         setVisibleStatus,
         setSessionProgress,
         setRetryAvailability,

@@ -5,14 +5,11 @@ export function createStructuredEditor({
   getDraftText,
   syncGenerationAvailability,
   onNoteEditorChanged,
-  persistStructuredContextSilently,
 }) {
   let generatedStructuredDraft = null;
   let generatedFreeformDraft = null;
   let currentRenderedDocument = null;
   let currentRenderRequiresCopyReview = false;
-  let emisSaveTimer = null;
-  let lastSavedStructuredContext = null;
   const rowSelectionState = new Map();
   let copyReviewDocumentId = null;
   let copyReviewObserver = null;
@@ -545,24 +542,9 @@ export function createStructuredEditor({
     }
   };
 
-  const scheduleStructuredContextSave = () => {
-    if (selectedOutputTemplateMode() !== 'structured' || activeGeneratedDocumentId()) {
-      return;
-    }
-    if (emisSaveTimer) {
-      window.clearTimeout(emisSaveTimer);
-    }
-    emisSaveTimer = window.setTimeout(async () => {
-      try {
-        await persistStructuredContextSilently?.();
-      } catch (_) {}
-    }, 500);
-  };
-
   const handleStructuredContextChanged = () => {
     onNoteEditorChanged?.();
     syncGenerationAvailability(getDraftText() || '');
-    scheduleStructuredContextSave();
   };
 
   const getAdjacentStatementRow = (row, direction) => {
@@ -1443,7 +1425,6 @@ export function createStructuredEditor({
     clearStructuredSelection,
     collectStructuredContext,
     getGeneratedStructuredDraft: () => generatedStructuredDraft,
-    getLastSavedStructuredContext: () => lastSavedStructuredContext,
     hasNoteInputContent,
     renderGeneratedOutput,
     renderStructuredSections,
@@ -1453,9 +1434,6 @@ export function createStructuredEditor({
     serializeCurrentNoteEditor,
     setGeneratedStructuredDraft: (draft) => {
       generatedStructuredDraft = draft;
-    },
-    setLastSavedStructuredContext: (value) => {
-      lastSavedStructuredContext = value;
     },
     syncStatementRowVisualState,
     syncStructuredEditorAvailability,

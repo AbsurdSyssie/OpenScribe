@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-05-21 Working Note In-Flight Generation Guard
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept all suggested fixes, but removed timer/debounce entirely instead of layering it over in-flight state.
+- Centralized template generation enqueue in `app.js` and shared it between normal Generate and dictation Save & generate.
+- Removed dead structured-context autosave/no-op state from `structured.js` and app wiring.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: backend idempotency remains future hardening for cross-tab/malicious duplicate enqueue attempts.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: adds shared `enqueueTemplateGeneration`, request-scoped busy state, and central generation request body.
+- `app/static/js/transcribe/actions.js`: normal Generate now delegates enqueue to app helper.
+- `app/static/js/transcribe/structured.js`: removes obsolete structured-context autosave state.
+- `app/templates/transcribe/_shell_extras.html`: bumps frontend asset key.
+- `tests/test_admin_ui.py`: updates static regression checks for shared helper, in-flight state, and removed dead paths.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: document critique and final behavior.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/structured.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_reorder_blocks_blank_note_lines or user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_generation"`: passed, 4 tests.
+
+### Documentation
+
+- Updated Working-note implementation notes to describe request-lifetime guard shared by both generation entry points.
+- Rewrote correction critique with kept/modified decisions and architecture checkpoints.
+
+### Risks / assumptions
+
+- Guard is still client-side. It prevents UI duplicate submits but is not a server idempotency guarantee.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content exposure added; request body remains `template_id` only.
+- Ownership rules preserved: no API/auth change; server still resolves transcript owner and saved sources.
+- Deletion semantics preserved: no lifecycle/cascade/retention path changed.
+- Provider rules preserved: no provider selection, credential, redaction, or LLM request schema change.
+- Structured-note contract preserved: EMIS keys/validation unchanged; removed only dead autosave plumbing.
+
 ## 2026-05-21 Working Note Generate Guard Cleanup
 
 ### Scope

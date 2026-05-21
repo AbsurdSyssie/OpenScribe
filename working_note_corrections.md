@@ -1,37 +1,59 @@
 ## Working-note correction critique
 
-### 1. Structured context on generation requests
+Status: reviewed and pruned on 2026-05-21.
 
-Verdict: keep, with narrower scope.
+### Kept
 
-The design is now explicit: generation accepts `template_id` only. Server loads transcript text, saved dictation, and saved Working note from the DB. Transient generated-note/editor context is not an input.
+1. Generate availability must ignore generated-note-only content.
 
-Fix kept:
+Reason: generated-note editor rows are output, not generation source context. Generation now uses saved transcript text, saved dictation, and saved/dirty Working note only.
 
-- Remove `structured_context` from `GenerateTemplateOutputRequest`.
-- Reject extra generation request fields with Pydantic `extra=forbid`.
-- Remove API/web/service plumbing that saved request `structured_context` into transcript Working-note storage.
+Applied rule:
 
-Fix narrowed:
+```js
+const canGenerateNote = Boolean(
+  transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasWorkingNote || hasDictation)
+);
+```
 
-- Do not rename/remove DB fields such as `structured_context_json` yet. They still store structured Working note data and may exist on old generated documents.
+2. Remove stale hidden `context_*` form fields and sync plumbing.
 
-### 2. Rename old structured context concepts
+Reason: web/API generation accepts `template_id` only. Hidden EMIS fields can mislead future work and add dead DOM churn.
 
-Verdict: partial, mostly defer.
+Removed:
 
-Broad rename would churn schemas, workspace payloads, encrypted DB columns, and tests without changing behavior. Keep names where they are storage/API compatibility seams. Prefer clearer docs and no new transient request path.
+```html
+<input type="hidden" name="context_..." data-structured-context-hidden>
+```
 
-### 3. Generated notes are never context
+Removed JS surface:
 
-Verdict: keep.
+```js
+structuredContextHiddenInputs
+syncStructuredContextHiddenInputs()
+```
 
-Added regression coverage for transcript + dictation + saved Working note + existing edited generated note. Provider request must include transcript/dictation/Working note and exclude generated-note content.
+3. Add 3 second Generate click guard.
 
-Existing/static coverage still checks dirty Working note save before generation, failed save blocking, Working-note-only generation, and empty-source blocking.
+Reason: frontend should block accidental double submission before queued document state returns.
 
-### 4. Dirty Working note concurrency baseline
+### Modified
 
-Verdict: keep.
+1. Keep `collectStructuredContext()` for now.
 
-Workspace refresh can update rendered `updated_at` while dirty editor DOM is preserved. Save must use timestamp from when editing started, not latest refreshed timestamp. Store dirty edit baseline and refresh it only after this tab's own in-flight save succeeds with newer unsaved edits still pending.
+Reason: despite bad name, editor code still uses it to seed visible structured drafts from current rows when no generated note is active. Removing now would be broader refactor.
+
+2. Keep legacy generated-document structured context reader for now.
+
+Reason: old queued/failed/generated documents may still carry `generated_documents.structured_context_json`. Removing reader needs deliberate migration/compatibility decision.
+
+### Deferred
+
+1. Replace static JS substring assertions with behavioral JS runner tests.
+
+Reason: worthwhile, but this slice keeps current repo test style and adds only focused regression checks. Future behavioral tests should cover:
+
+- Generate button ignores generated-note-only content.
+- Working-note dirty baseline does not advance on workspace refresh.
+- Generate request body contains only `template_id`.
+- Duplicate Generate submits within 3 seconds are ignored.

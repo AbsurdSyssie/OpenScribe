@@ -245,9 +245,6 @@ data-note-editor-header-toolbar
 {% if active_transcript %}
 <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
 {% endif %}
-{% for section in emis_sections %}
-<input type="hidden" name="context_{{ section.key }}" data-structured-context-hidden data-section-key="{{ section.key }}">
-{% endfor %}
 <button
 type="submit"
 class="btn-primary btn-primary--compact"

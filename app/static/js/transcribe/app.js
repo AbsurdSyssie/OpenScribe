@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20260520-working-note-template-guard';
+import { attachTranscribeActions } from './actions.js?v=20260521-working-note-generate-guard';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
-import { createStructuredEditor } from './structured.js?v=20260520-working-note-template-guard';
+import { createStructuredEditor } from './structured.js?v=20260521-working-note-generate-guard';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -165,7 +165,6 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
       const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
-      const structuredContextHiddenInputs = [...document.querySelectorAll('[data-structured-context-hidden]')];
       const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
       const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
       const deleteButton = document.querySelector('[data-delete-selected]');
@@ -1945,11 +1944,6 @@ let statusDetailsHideTimer = null;
         return [...select.options].some((option) => option.value);
       };
 
-      const hasStructuredContextContent = () => {
-        const structuredContext = structuredEditor?.collectStructuredContext() || {};
-        return Object.values(structuredContext).some((lines) => Array.isArray(lines) && lines.length > 0);
-      };
-
       const selectedWorkingNoteMode = () => {
         const lockedMode = activeWorkingNote?.mode || '';
         if (lockedMode) return lockedMode;
@@ -2028,12 +2022,11 @@ let statusDetailsHideTimer = null;
       const syncGenerationAvailability = (draftText = '') => {
         const hasDraft = Boolean(draftText && draftText.trim());
         const hasDictation = Boolean(lastSavedDictationText && lastSavedDictationText.trim());
-        const hasStructuredInput = structuredEditor?.selectedOutputTemplateMode() === 'structured' && hasStructuredContextContent();
         const hasWorkingNote = workingNoteHasContent();
         const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
-        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasStructuredInput || hasWorkingNote || hasDictation));
+        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasWorkingNote || hasDictation));
         const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));
         const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));
 
@@ -2042,7 +2035,7 @@ let statusDetailsHideTimer = null;
         }
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = !canGenerateNote;
+          generateOutputButton.disabled = !canGenerateNote || generateOutputButton.dataset.noteGenerationGuarded === 'true';
         }
 
         if (runQuickActionSelect) {
@@ -2255,7 +2248,6 @@ let statusDetailsHideTimer = null;
           copyStructuredLinesButton,
           latestGeneratedOutput,
           noteEditorToolbar,
-          structuredContextHiddenInputs,
           structuredCopyStatus,
           templateModeBadge,
         },
@@ -2878,7 +2870,6 @@ let statusDetailsHideTimer = null;
         const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);
         renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
         structuredEditor.setLastSavedStructuredContext(JSON.stringify(structuredContext));
-        structuredEditor.syncStructuredContextHiddenInputs();
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isCaptureUiActive());
         setDictationMicButtons(false);
@@ -3125,6 +3116,7 @@ let statusDetailsHideTimer = null;
         reflectBackendStatus,
         persistUserAppPreferences,
         handleOutputTemplateChange,
+        syncGenerationAvailability: () => syncGenerationAvailability(readActiveDraftText()),
         setMicButtons,
         setTab,
           structuredEditor,

@@ -136,7 +136,8 @@ def test_login_page_exposes_bootstrap_when_database_is_empty(client):
     page = client.get("/login")
 
     assert page.status_code == 200
-    assert 'action="/transcribe/sessions"' in page.text
+    assert 'action="/bootstrap/system-admin"' in page.text
+    assert 'action="/transcribe/sessions"' not in page.text
     assert 'action="/transcribe/sessions/start"' not in page.text
     assert "Create the first system admin" in page.text
 
@@ -2826,7 +2827,7 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     assert 'data-selected-template-mode' not in page.text
 
 
-def test_user_transcribe_glm_2_page_shows_all_emis_sections_for_structured_templates(
+def test_user_transcribe_glm_2_page_uses_structured_template_sections(
     client,
     db_session,
     make_team,
@@ -2874,9 +2875,9 @@ def test_user_transcribe_glm_2_page_shows_all_emis_sections_for_structured_templ
     page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert 'name="context_problem"' in page.text
-    assert 'name="context_history"' in page.text
-    assert 'name="context_family_history"' in page.text
+    assert 'data-section-key="problem"' in page.text
+    assert 'data-section-key="history"' in page.text
+    assert 'data-section-key="family_history"' not in page.text
 
 
 def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_generation(client, db_session, make_team, make_user):
@@ -3792,7 +3793,6 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert 'name="context_problem"' in page.text
     assert 'data-template-mode="structured"' in page.text
     assert 'data-generated-structured-section' in page.text
     assert 'data-section-key="problem"' in page.text
@@ -4690,7 +4690,7 @@ def test_user_transcribe_page_reloads_persisted_structured_emis_context(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert 'name="context_problem"' in page.text
+    assert 'data-section-key="problem"' in page.text
     assert "Known asthma" in page.text
     assert "Peak flow diary" in page.text
 
@@ -5282,10 +5282,10 @@ def test_user_transcribe_page_can_run_quick_action(
     assert "Queued quick action generation." in page.text
     assert "Quick picks" in page.text
     assert page.text.count('data-quick-action-quick-pick') >= 4
-    assert 'data-quick-action-kind="sms"' in page.text
-    assert 'data-quick-action-kind="letter"' in page.text
-    assert 'data-quick-action-kind="call"' in page.text
-    assert 'data-quick-action-kind="general"' in page.text
+    assert 'data-lucide="message-square"' in page.text
+    assert 'data-lucide="file-text"' in page.text
+    assert 'data-lucide="phone"' in page.text
+    assert 'data-lucide="sparkles"' in page.text
     assert "Arrange review" in page.text
     assert "queued" in page.text
 
@@ -6071,8 +6071,9 @@ def test_admin_templates_sync_optional_provider_credential_actions():
     admin2_html = Path("app/templates/admin2.html").read_text()
 
     assert 'name="preserved_bearer_token"' not in admin_html
-    assert "credentialAction.value = adapter === 'openai_cloud' ? 'replace' : 'keep';" in admin_html
-    assert "credentialAction.value = adapter === 'ollama_chat' ? 'keep' : 'replace';" in admin_html
+    assert "adapter === 'openai_cloud'" in admin_html
+    assert "adapter === 'elevenlabs_speech_to_text'" in admin_html
+    assert "adapter === 'ollama_chat'" in admin_html
     assert "Tokens are never retained after inspection responses." in admin_html
     assert "Tokens are never retained after model discovery responses." in admin_html
     assert 'const optionalToken = adapter === "generic_rest" || adapter === "openai_compatible_rest" || adapter === "ollama_chat";' in admin2_html

@@ -487,13 +487,13 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
 {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
-<span class="text-slate">Your follow-up is waiting to be written.</span>
+<span class="text-slate">Waiting to be written...</span>
 {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
 <span class="text-slate">Your follow-up is being written.</span>
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
 <span class="text-slate">The latest follow-up could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
 {% else %}
-<div class="empty-state"><div class="empty-state__text">Select a quick action and generate a follow-up.</div></div>
+<div class="empty-state"><div class="empty-state__text">No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation.</div></div>
 {% endif %}
 </div>
 <div class="followup-output-footer-v2">
@@ -502,7 +502,7 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if followup_documents %}
 {% for document in followup_documents %}
 <button type="button" class="followup-recent-item-v2{% if latest_followup_document and document.id == latest_followup_document.id %} is-selected{% endif %}" data-document-id="{{ document.id }}" data-document-kind="followup">
-<span>{{ document.title or document.source_quick_action_name or document.follow_up_prompt_text }}</span>
+<span>{{ document.follow_up_prompt_text or document.source_quick_action_name or document.title }}</span>
 <span>{{ document.created_at }} <i data-lucide="chevron-right"></i></span>
 </button>
 {% endfor %}
@@ -533,7 +533,7 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 </div>
 <label class="followup-field-v2">
 <small>Describe what you want the follow-up to say, include, or achieve.</small>
-<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %} data-quick-action-context-input data-followup-prompt-input></textarea>
+<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %} data-quick-action-context-input></textarea>
 </label>
 <div class="followup-count-row-v2">
 <span data-context-char-count data-custom-prompt-char-count>0 / 2000</span>
@@ -568,6 +568,7 @@ data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value 
 {% endfor %}
 {% endif %}
 </select>
+<div class="followup-panel-v2__heading">Quick picks</div>
 <div class="followup-action-list-v2" data-quick-action-card-list data-quick-action-quick-picks>
 {% if available_quick_actions %}
 {% for quick_action in available_quick_actions %}

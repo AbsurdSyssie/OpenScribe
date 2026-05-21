@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-21 Pytest Failure Cleanup
+
+### Scope
+
+- Fixed the listed pytest failures while trimming legacy hook expectations instead of keeping compatibility-only markup.
+- Removed compatibility-only hooks restored during first pass: login-page transcribe form, `name="context_*"` editor aliases, `data-quick-action-kind`, and GLM-2 all-EMIS special-case rendering.
+- Reworked brittle UI assertions to target current behavior: bootstrap form on login, template-defined structured sections, quick-pick icons, and provider adapter support without exact JS source-line pinning.
+- Made LLM config save fall back to manual model metadata when live discovery rejects a key, while draft/inspect still reject invalid credentials.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: focused regressions rerun; no new tests needed because failures were existing coverage.
+- Docs added/updated: yes.
+- Open issues: full suite not rerun after focused fix.
+
+### Files changed
+
+- `errors.md`: listed provided failures and verification runs.
+- `app/templates/transcribe/_workspace.html`: keeps runtime hooks and user-facing follow-up copy; removes dead structured input names and quick-action kind metadata.
+- `app/templates/transcribe/_shell_extras.html`: points follow-up prompt JS at existing quick-action context textarea hook.
+- `app/web/transcribe_workspace.py`: uses one template-section selection path for `/transcribe` and `/transcribe-glm-2`.
+- `app/services/llm.py`: treats save-time live discovery credential rejection as manual-required metadata instead of blocking config save.
+- `tests/test_admin_ui.py`: removes legacy hook/source-line assertions and checks current behavior instead.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_login_page_exposes_bootstrap_when_database_is_empty tests/test_admin_ui.py::test_user_transcribe_glm_2_page_uses_structured_template_sections tests/test_admin_ui.py::test_user_transcribe_page_truncates_document_switcher_labels tests/test_admin_ui.py::test_user_transcribe_page_shows_structured_emis_context_inputs tests/test_admin_ui.py::test_user_transcribe_page_enables_followups_from_freeform_note_content tests/test_admin_ui.py::test_user_transcribe_page_shows_transcript_and_followup_empty_states tests/test_admin_ui.py::test_user_transcribe_page_reloads_persisted_structured_emis_context tests/test_admin_ui.py::test_user_transcribe_page_can_queue_followup_generation tests/test_admin_ui.py::test_user_transcribe_page_can_run_quick_action tests/test_admin_ui.py::test_admin_templates_sync_optional_provider_credential_actions tests/test_api.py::test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal`: passed, 11 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_draft_invalid_key_creates_no_config_or_vault_secret or llm_provider_preset_saves_and_reclassifies_base_url_override or llm_save_validates_model_against_successful_live_discovery or llm_zero_model_discovery_requires_manual_model or llm_endpoint_change_with_failed_rediscovery_clears_stale_models"`: passed, 5 tests.
+
+### Documentation
+
+- Added `errors.md` failure log and this progress note.
+
+### Risks / assumptions
+
+- Save-time LLM config upsert now permits manual model save even if live discovery rejects supplied credential; draft/inspect remain the stricter validation path.
+- Legacy hook assertions were removed where runtime code did not need the hook.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new transcript/note content exposure; only owner-rendered transcribe fields changed.
+- Ownership rules preserved: no route ownership lookup changed.
+- Deletion semantics preserved: no transcript/generated document lifecycle change.
+- Provider rules preserved: credentials remain Vault-backed and unrevealed; save path records manual-required discovery metadata when live discovery cannot validate.
+- Structured-note contract preserved: EMIS allowed section keys remain the only rendered structured sections; template-specific section rendering now uses one shared path across transcribe routes.
+
 ## 2026-05-21 Quick Action Working Note Context
 
 ### Scope

@@ -449,7 +449,7 @@ Current generation behavior:
   - generated-document rows keep the `redaction_run_id` used for that run
   - transcript text is sent to the external LLM only in redacted form
   - static template and quick-action asset instructions are sent as configured, without PHI redaction
-  - dynamic clinician/user/patient-originated prompt inputs such as dictation, follow-up requests, quick-action additional context, and structured context strings are redacted transiently before the provider call
+  - dynamic clinician/user/patient-originated prompt inputs such as dictation, Working note, follow-up requests, quick-action additional context, and structured context strings are redacted transiently before the provider call
   - quick-action context audio preview uses the post-consultation dictation STT selection, returns `{ "text": "..." }`, and does not persist a separate transcript-derived row before the client submits the existing quick-action context field
   - generated output is validated so only well-formed known placeholders survive to re-identification
   - final stored output is re-identified before being written back into `generated_documents`
@@ -485,9 +485,10 @@ Current generation behavior:
   - `investigations`
 - structured template versions store per-section instructions in `template_versions.config_json`
 - structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
+- quick action generation uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context
 - the current transcript session stores structured Working note content in `transcripts.structured_context_json`
 - `/transcribe` reloads EMIS context fields from that transcript-backed state
-- when a structured note is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
+- when template or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
 - for structured notes, backend validation:
   - rejects user-submitted section keys outside the configured EMIS subset
   - validates saved Working note EMIS sections through the Working-note API

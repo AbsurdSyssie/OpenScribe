@@ -6258,6 +6258,106 @@ def test_template_generation_fails_closed_when_working_note_redaction_fails(
     assert document.llm_request_payload_json_encrypted is None
 
 
+def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Working Note Quick Action")
+    admin = make_user(email="working-quick-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-quick-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="Patient message", prompt_text="Write a patient SMS.")
+
+    class FakeTaskResult:
+        id = "working-note-quick-action-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    captured_provider_request = {}
+
+    def fake_generate_openai(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "Generated quick action body", {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "duration_ms": 5}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    login(client, email="working-quick-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Patient prefers a text update after blood results."},
+    )
+    assert saved.status_code == 200
+
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/run-quick-action", json={"quick_action_id": str(quick_action.id)})
+    assert generated.status_code == 202
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert document is not None
+    assert document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform
+    assert decrypt_generated_document_field(db_session, document, "freeform_working_note_snapshot_encrypted") == "Patient prefers a text update after blood results."
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    user_message = captured_provider_request["messages"][1]["content"]
+    assert "Consultation transcript:\n" in user_message
+    assert "Consultation working note:\nFreeform working note:\nPatient prefers a text update after blood results." in user_message
+    assert "Quick action instructions:\nWrite a patient SMS." in user_message
+
+
+def test_quick_action_generation_fails_closed_when_working_note_redaction_fails(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Working Note Quick Redaction")
+    admin = make_user(email="working-quick-redact-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-quick-redact-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="Patient message", prompt_text="Write a patient SMS.")
+    provider_called = False
+
+    def fake_generate_openai(**kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return "Unsafe output", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "duration_ms": 1}
+
+    def fail_redaction(*args, **kwargs):
+        raise AppError(502, "redaction_failed", "Working note could not be redacted")
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fail_redaction)
+    login(client, email="working-quick-redact-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Patient name is Jane Smith."},
+    )
+    assert saved.status_code == 200
+    document = queue_quick_action_generation(db_session, owner, transcript_id=UUID(transcript_id), quick_action_id=quick_action.id)
+
+    with pytest.raises(AppError) as exc_info:
+        process_generated_document(db_session, document_id=document.id)
+    assert exc_info.value.code == "redaction_failed"
+    assert provider_called is False
+    db_session.refresh(document)
+    assert document.llm_request_payload_json_encrypted is None
+
+
 def test_template_generation_supports_ollama_adapter(
     client,
     monkeypatch,

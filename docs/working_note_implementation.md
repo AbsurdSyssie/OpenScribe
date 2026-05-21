@@ -124,7 +124,8 @@ Preserve clinician-authored note content separately from generated note output. 
 - Template generation may proceed when at least one source has content: transcript text, working note, or saved dictation.
 - Generation blocks when all sources are empty.
 - Saved structured Working notes are represented only through generated-document Working-note snapshots, not generated-document structured context. Generation requests reject transient `structured_context`; callers must save Working note content first.
-- Quick actions and follow-ups do not automatically include working note unless user explicitly supplies context.
+- Quick actions include the saved Working note as labelled clinician-authored context, using the same encrypted generated-document Working-note snapshot/redaction path as template generation.
+- Follow-ups do not automatically include Working note unless user explicitly supplies context.
 
 ## Redaction And Privacy
 

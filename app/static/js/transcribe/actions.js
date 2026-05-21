@@ -23,7 +23,6 @@ export function attachTranscribeActions({
   reflectBackendStatus,
   persistUserAppPreferences,
   handleOutputTemplateChange,
-  syncGenerationAvailability,
   setMicButtons,
   setTab,
   structuredEditor,

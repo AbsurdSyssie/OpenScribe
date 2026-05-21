@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260521-working-note-queue-cleanup';
+import { attachTranscribeActions } from './actions.js?v=20260521-working-note-final-hardening';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -53,6 +53,7 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       let noteSaveConflictShown = false;
       let noteGenerationInFlight = null;
       let noteGenerationBusy = false;
+      let noteGenerationShouldCloseDictationModal = false;
       let followupEditorDirty = false;
       let dirtyFollowupDocumentId = null;
       let followupEditVersion = 0;
@@ -352,6 +353,18 @@ let statusDetailsHideTimer = null;
       };
       const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
 
+      const noteSaveExpectedUpdatedAtForTarget = (targetId) => {
+        if (
+          noteEditorDirty
+          && dirtyNoteTargetId === targetId
+          && dirtyNoteExpectedUpdatedAt !== null
+        ) {
+          return dirtyNoteExpectedUpdatedAt || null;
+        }
+        return currentNoteUpdatedAt()
+          || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || null : '');
+      };
+
       const currentRenderedFollowupDocumentId = () => latestFollowupOutput?.dataset?.latestFollowupId || '';
 
       const hasPendingGeneratedFollowupEdits = () => {
@@ -375,11 +388,7 @@ let statusDetailsHideTimer = null;
           const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
             mode,
           }) || { mode };
-          const expectedUpdatedAt = (
-            noteEditorDirty && dirtyNoteTargetId === targetId && dirtyNoteExpectedUpdatedAt !== null
-          )
-            ? (dirtyNoteExpectedUpdatedAt || null)
-            : (currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null);
+          const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);
           return {
             targetId,
             kind: 'working_note',
@@ -389,7 +398,7 @@ let statusDetailsHideTimer = null;
         }
         const generatedDocumentId = latestGeneratedOutput?.dataset?.latestGeneratedId || selectedNoteDocumentId || '';
         const mode = latestGeneratedOutput?.dataset?.latestGeneratedMode || '';
-        const expectedUpdatedAt = dirtyNoteExpectedUpdatedAt || currentNoteUpdatedAt();
+        const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);
         if (!generatedDocumentId || !expectedUpdatedAt || (mode !== 'structured' && mode !== 'freeform')) {
           return null;
         }
@@ -1798,7 +1807,7 @@ let statusDetailsHideTimer = null;
         const option = selectedTemplateOption();
         const isEnabled = templatePickerOptions.length > 0;
         if (templatePickerButton) {
-          templatePickerButton.disabled = !isEnabled;
+          templatePickerButton.disabled = noteGenerationBusy || !isEnabled;
           templatePickerButton.title = !isEnabled ? 'Choose a template for this consultation.' : '';
         }
         if (templatePickerLabel) {
@@ -1830,7 +1839,7 @@ let statusDetailsHideTimer = null;
       };
 
       const chooseTemplateFromPicker = (templateId) => {
-        if (!generateOutputTemplateSelect || !templateId) return;
+        if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;
         if (generateOutputTemplateSelect.value === templateId) {
           closeTemplatePicker();
           return;
@@ -1848,7 +1857,7 @@ let statusDetailsHideTimer = null;
       };
 
       const chooseTemplateFromDictationModal = () => {
-        if (!dictationTemplateSelect || !generateOutputTemplateSelect) return;
+        if (noteGenerationBusy || !dictationTemplateSelect || !generateOutputTemplateSelect) return;
         if (generateOutputTemplateSelect.value === dictationTemplateSelect.value) return;
         generateOutputTemplateSelect.value = dictationTemplateSelect.value;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2024,8 +2033,15 @@ let statusDetailsHideTimer = null;
         const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));
 
         if (generateOutputTemplateSelect) {
-          generateOutputTemplateSelect.disabled = !canChooseTemplate;
+          generateOutputTemplateSelect.disabled = noteGenerationBusy || !canChooseTemplate;
         }
+        if (templatePickerButton) {
+          templatePickerButton.disabled = noteGenerationBusy || !canChooseTemplate;
+        }
+        templatePickerOptions.forEach((button) => {
+          button.disabled = noteGenerationBusy || !canChooseTemplate;
+        });
+        if (noteGenerationBusy) closeTemplatePicker();
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
           generateOutputButton.disabled = noteGenerationBusy || !canGenerateNote;
@@ -2660,7 +2676,11 @@ let statusDetailsHideTimer = null;
       const enqueueTemplateGeneration = ({ templateId, closeDictationModal = false } = {}) => {
         const generationTranscriptId = transcriptId;
         if (!generationTranscriptId || !templateId) return Promise.resolve(false);
-        if (noteGenerationInFlight) return noteGenerationInFlight;
+        if (noteGenerationInFlight) {
+          noteGenerationShouldCloseDictationModal = noteGenerationShouldCloseDictationModal || closeDictationModal;
+          return noteGenerationInFlight;
+        }
+        noteGenerationShouldCloseDictationModal = closeDictationModal;
 
         noteGenerationInFlight = (async () => {
           noteGenerationBusy = true;
@@ -2682,13 +2702,14 @@ let statusDetailsHideTimer = null;
             showFlash('Queued note generation.', 'success');
             await fetchWorkspace();
             scheduleWorkspaceRefreshBurst();
-            if (closeDictationModal) {
+            if (noteGenerationShouldCloseDictationModal) {
               setDictationModalOpen(false);
             }
             return true;
           } finally {
             noteGenerationInFlight = null;
             noteGenerationBusy = false;
+            noteGenerationShouldCloseDictationModal = false;
             syncGenerationAvailability(readActiveDraftText());
             syncDictationControls();
           }
@@ -3145,7 +3166,6 @@ let statusDetailsHideTimer = null;
         reflectBackendStatus,
         persistUserAppPreferences,
         handleOutputTemplateChange,
-        syncGenerationAvailability: () => syncGenerationAvailability(readActiveDraftText()),
         setMicButtons,
         setTab,
         structuredEditor,

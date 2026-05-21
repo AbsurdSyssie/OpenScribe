@@ -1,33 +1,69 @@
-# Working-note correction critique
+# Working Note Corrections Critique
 
-## Kept
+Review target: latest Working-note enqueue/concurrency changes on `working_note` branch.
 
-1. Snapshot `transcriptId` before async Working-note save.
+## Keep And Implement
 
-Reason: low-probability race, cheap fix. Generation now uses `generationTranscriptId` for validation and POST URL after `await saveWorkingNoteBeforeGeneration()`.
+1. Generated-note save baseline must be target-scoped.
 
-2. Return existing in-flight generation promise on duplicate submit.
+   The original suggestion is valid. Working-note saves already guard `dirtyNoteExpectedUpdatedAt` by `dirtyNoteTargetId`; generated-note saves reused the dirty timestamp without checking target. If a preserved dirty editor and workspace refresh leave stale target state, a generated-note save could send another note's optimistic-lock baseline.
 
-Reason: cleaner than silent `false`, avoids second POST, and lets duplicate callers observe same success/error. No warning toast added; disabled controls already provide normal feedback.
+   Decision: keep, but implement through one small helper: `noteSaveExpectedUpdatedAtForTarget(targetId)`. Both Working-note and generated-note branches now use same target guard.
 
-3. Keep removed `silent` option deleted.
+2. Template controls should lock while generation is in flight.
 
-Reason: helper has one behavior. No fake API surface.
+   The original suggestion is valid. Backend request snapshots `template_id`, but allowing selector/picker changes during an in-flight enqueue makes UI state lie about which template was queued.
 
-4. Inline `handleTemplateGenerationQueued()`.
+   Decision: keep and broaden slightly. Disable global template select, custom picker button, picker options, and dictation template switching while `noteGenerationBusy` is true. Close picker if generation starts while open.
 
-Reason: one caller only. Inlining removes function hop without changing post-success flow.
+3. Duplicate generation calls should merge modal-close intent.
 
-## Modified / rejected
+   The original concern is valid but low risk. Returning one in-flight promise is correct for duplicate suppression, but a second caller with `closeDictationModal: true` should not lose that intent.
 
-- Rejected removing final `syncGenerationAvailability()` / `syncDictationControls()` in `finally`. It is partly redundant after successful `fetchWorkspace()`, but still protects failed save, failed POST, thrown refresh, and no-op paths.
-- Did not add a new JS harness test. Current `app.js` is a large DOM module not shaped for isolated enqueue testing; adding a brittle VM harness would increase debt. Added focused static assertions for the new guard/snapshot behavior instead. Future debt fix: extract generation enqueue into a small module, then add behavioral Node tests.
-- Did not change server idempotency. This is client-side race hardening only.
+   Decision: keep with minimal state, not a larger option object. Track `noteGenerationShouldCloseDictationModal`; any duplicate call can promote it to true before shared promise resolves.
 
-## Architecture checkpoints
+4. Remove unused `syncGenerationAvailability` action parameter.
 
-- Privacy: generation request remains `template_id` only; no transcript-derived content added to client payloads or logs.
-- Ownership: no route/auth changes; server still resolves saved transcript/Working-note sources for owner.
-- Deletion: no lifecycle/cascade/retention changes.
-- Provider: no provider selection, credential, redaction provider, or LLM payload contract changes.
-- Structured note: EMIS section contract unchanged.
+   Valid low-risk cleanup. `actions.js` accepted parameter but did not use it.
+
+   Decision: remove from action signature and call site.
+
+## Modify / Narrow
+
+1. Extract expected timestamp logic.
+
+   Keep only because it now removes real duplicated target-guard logic. Do not add broader save-request abstraction.
+
+2. Duplicate-generation tests.
+
+   Keep static regression coverage for current frontend layout. Direct JS behavioral tests remain better future work once enqueue logic is extracted from large DOM module.
+
+## Reject / Delete
+
+1. Split `enqueueTemplateGeneration()` into request and UI finalisation helpers.
+
+   Rejected. Current helper centralizes one app-owned flow. Splitting now adds names and call choreography without a second real caller needing different behavior.
+
+2. Replace `noteGenerationInFlight` and `noteGenerationBusy` with a state object.
+
+   Rejected. Current pair is small and explicit. A state object would not reduce enough risk to justify churn.
+
+3. Add broad in-flight option metadata object.
+
+   Rejected. Only option needing merge semantics is modal close. Boolean promotion is clearer and smaller.
+
+## Tests To Keep
+
+- Static frontend regression: generated-note saves use target-scoped baseline helper.
+- Static frontend regression: template select/picker lock while `noteGenerationBusy`.
+- Static frontend regression: duplicate generation calls preserve dictation-modal close intent.
+- Static frontend regression: unused `syncGenerationAvailability` action wiring removed.
+- Syntax checks: `node --check app/static/js/transcribe/app.js` and `node --check app/static/js/transcribe/actions.js`.
+
+## Architecture Checkpoints
+
+- Schema: no migration/schema change.
+- Auth/ownership: no route or permission change; owner-only server paths unchanged.
+- Lifecycle/deletion: no retention, clear, cascade, or hard-delete behavior changed.
+- Provider/privacy: generation request still sends `template_id` only; transcript-derived sources still loaded/redacted server-side.
+- Structured notes: EMIS section contract unchanged.

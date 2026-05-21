@@ -16,7 +16,7 @@ export function attachTranscribeActions({
   pollWorkspace,
   scheduleWorkspaceRefreshBurst,
   syncTranscriptTitleIfNeeded,
-  saveWorkingNoteBeforeGeneration,
+  enqueueTemplateGeneration,
   setVisibleStatus,
   setSessionProgress,
   setRetryAvailability,
@@ -31,30 +31,6 @@ export function attachTranscribeActions({
   clearWorkingNote,
 }) {
   let quickActionContextOverride = null;
-  let noteGenerationGuardUntil = 0;
-  let noteGenerationGuardTimer = null;
-  const NOTE_GENERATION_CLICK_GUARD_MS = 3000;
-
-  const setNoteGenerationGuard = () => {
-    noteGenerationGuardUntil = Date.now() + NOTE_GENERATION_CLICK_GUARD_MS;
-    const button = dom.generateOutputForm?.querySelector('button[type="submit"]');
-    if (button instanceof HTMLButtonElement) {
-      button.disabled = true;
-      button.dataset.noteGenerationGuarded = 'true';
-    }
-    window.clearTimeout(noteGenerationGuardTimer);
-    noteGenerationGuardTimer = window.setTimeout(() => {
-      noteGenerationGuardUntil = 0;
-      if (button instanceof HTMLButtonElement) {
-        delete button.dataset.noteGenerationGuarded;
-      }
-      if (syncGenerationAvailability) {
-        syncGenerationAvailability();
-      } else if (button instanceof HTMLButtonElement) {
-        button.disabled = false;
-      }
-    }, NOTE_GENERATION_CLICK_GUARD_MS);
-  };
 
   const followupCopyText = () => {
     const node = dom.latestFollowupOutput?.querySelector('[data-followup-copy-body]');
@@ -660,21 +636,12 @@ export function attachTranscribeActions({
       event.preventDefault();
       const transcriptId = getTranscriptId();
       if (!transcriptId) return;
-      if (Date.now() < noteGenerationGuardUntil) return;
+      if (!enqueueTemplateGeneration) return;
       const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';
       if (!templateId) return;
-      setNoteGenerationGuard();
       try {
-        await saveWorkingNoteBeforeGeneration?.({ silent: true });
-        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ template_id: templateId }),
-        });
-        if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
-        }
+        const queued = await enqueueTemplateGeneration({ templateId });
+        if (!queued) return;
         onNoteGenerationQueued?.();
         setTab('output');
         showFlash('Queued note generation.', 'success');

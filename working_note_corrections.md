@@ -1,59 +1,48 @@
 ## Working-note correction critique
 
-Status: reviewed and pruned on 2026-05-21.
+Status: reviewed and applied on 2026-05-21.
 
 ### Kept
 
-1. Generate availability must ignore generated-note-only content.
+1. Replace fixed 3 second Generate guard with in-flight state.
 
-Reason: generated-note editor rows are output, not generation source context. Generation now uses saved transcript text, saved dictation, and saved/dirty Working note only.
+Reason: timer guard can expire while slow Working-note save or `/generate-output` enqueue still runs. Correctness must follow request lifecycle, not wall-clock debounce.
 
 Applied rule:
 
 ```js
-const canGenerateNote = Boolean(
-  transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasWorkingNote || hasDictation)
-);
+if (noteGenerationInFlight) return false;
 ```
 
-2. Remove stale hidden `context_*` form fields and sync plumbing.
+2. Share template-generation enqueue path across normal Generate and dictation Save & generate.
 
-Reason: web/API generation accepts `template_id` only. Hidden EMIS fields can mislead future work and add dead DOM churn.
+Reason: both paths save current Working note, then post same `template_id` payload. One helper avoids drift and blocks accidental second enqueue from either entry point while first request is active.
 
-Removed:
+3. Remove dataset-backed Generate guard state.
 
-```html
-<input type="hidden" name="context_..." data-structured-context-hidden>
-```
+Reason: DOM `dataset` was duplicating JS state. `noteGenerationBusy` now drives button disabling directly.
 
-Removed JS surface:
+4. Remove remaining structured-context autosave no-op path.
 
-```js
-structuredContextHiddenInputs
-syncStructuredContextHiddenInputs()
-```
+Reason: saved Working note is generation source. `persistStructuredContextSilently`, `emisSaveTimer`, and `lastSavedStructuredContext` no longer saved anything useful and confused ownership of structured editor changes.
 
-3. Add 3 second Generate click guard.
+5. Centralise request body construction.
 
-Reason: frontend should block accidental double submission before queued document state returns.
+Reason: `JSON.stringify({ template_id: templateId })` now exists only in `app.js` helper. `actions.js` no longer constructs generation payloads.
 
 ### Modified
 
-1. Keep `collectStructuredContext()` for now.
+1. Dropped optional UI debounce.
 
-Reason: despite bad name, editor code still uses it to seed visible structured drafts from current rows when no generated note is active. Removing now would be broader refactor.
+Reason: in-flight guard already disables normal Generate and dictation Save & generate until settle. Extra timer would add second state source without extra correctness.
 
-2. Keep legacy generated-document structured context reader for now.
+2. Kept helper frontend-only.
 
-Reason: old queued/failed/generated documents may still carry `generated_documents.structured_context_json`. Removing reader needs deliberate migration/compatibility decision.
+Reason: this slice fixes client duplicate-submit behavior. Backend idempotency/rate limiting remains separate hardening if product wants cross-tab or malicious-client protection.
 
-### Deferred
+### Checkpoints
 
-1. Replace static JS substring assertions with behavioral JS runner tests.
-
-Reason: worthwhile, but this slice keeps current repo test style and adds only focused regression checks. Future behavioral tests should cover:
-
-- Generate button ignores generated-note-only content.
-- Working-note dirty baseline does not advance on workspace refresh.
-- Generate request body contains only `template_id`.
-- Duplicate Generate submits within 3 seconds are ignored.
+- Schema checkpoint: no DB/migration change.
+- Auth/ownership checkpoint: no route/auth change; generation still uses owner-scoped transcript API.
+- Lifecycle/deletion checkpoint: no retention, cascade, or clear/delete change.
+- Docs/tests checkpoint: working-note docs, progress note, static frontend regression checks updated.

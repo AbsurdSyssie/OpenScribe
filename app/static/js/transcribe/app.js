@@ -2657,20 +2657,10 @@ let statusDetailsHideTimer = null;
         return saved;
       };
 
-      const handleTemplateGenerationQueued = async ({ closeDictationModal = false } = {}) => {
-        selectedNoteDocumentId = null;
-        setTab('output');
-        showFlash('Queued note generation.', 'success');
-        await fetchWorkspace();
-        scheduleWorkspaceRefreshBurst();
-        if (closeDictationModal) {
-          setDictationModalOpen(false);
-        }
-      };
-
       const enqueueTemplateGeneration = ({ templateId, closeDictationModal = false } = {}) => {
-        if (!transcriptId || !templateId) return Promise.resolve(false);
-        if (noteGenerationInFlight) return Promise.resolve(false);
+        const generationTranscriptId = transcriptId;
+        if (!generationTranscriptId || !templateId) return Promise.resolve(false);
+        if (noteGenerationInFlight) return noteGenerationInFlight;
 
         noteGenerationInFlight = (async () => {
           noteGenerationBusy = true;
@@ -2678,7 +2668,7 @@ let statusDetailsHideTimer = null;
           syncDictationControls();
           try {
             await saveWorkingNoteBeforeGeneration();
-            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
+            const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
@@ -2687,7 +2677,14 @@ let statusDetailsHideTimer = null;
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
             }
-            await handleTemplateGenerationQueued({ closeDictationModal });
+            selectedNoteDocumentId = null;
+            setTab('output');
+            showFlash('Queued note generation.', 'success');
+            await fetchWorkspace();
+            scheduleWorkspaceRefreshBurst();
+            if (closeDictationModal) {
+              setDictationModalOpen(false);
+            }
             return true;
           } finally {
             noteGenerationInFlight = null;

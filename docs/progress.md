@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-05-21 Working Note Queue Cleanup
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept all suggested fixes, narrowed centralization to app-owned enqueue success handling.
+- Fixed dirty Working-note first-save conflict baseline so `""` remains an intentional no-existing-note sentinel and serializes as `null`.
+- Centralized template-generation post-success UI flow and removed dead `silent` option.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: no new backend idempotency added; duplicate enqueue guard remains client-side.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: explicit Working-note dirty timestamp sentinel, shared generation success helper, dictation modal close option, removed unused `silent` parameter.
+- `app/static/js/transcribe/actions.js`: normal Generate delegates all enqueue success effects to `app.js`.
+- `app/templates/transcribe/_shell_extras.html`: bumps frontend asset key.
+- `tests/test_admin_ui.py`: updates static regression checks for sentinel handling, shared success helper, asset key, and removed dead callback/option.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: document critique and final behavior.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_transcribe_page_shows_workspace_shell or transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_reorder_blocks_blank_note_lines"`: passed, 4 tests.
+
+### Documentation
+
+- Updated Working-note implementation notes for explicit baseline sentinel and app-owned generation success flow.
+- Rewrote correction critique with kept/modified decisions and architecture checkpoints.
+
+### Risks / assumptions
+
+- Multi-tab overwrite protection still depends on server `expected_updated_at` conflict handling; this change preserves correct client baseline.
+- Generation duplicate prevention remains a UI guard, not server idempotency.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content exposure added; generation request body remains `template_id` only.
+- Ownership rules preserved: no auth/API change; server still loads owner-scoped transcript, Working note, and dictation sources.
+- Deletion semantics preserved: no retention, cascade, clear, or hard-delete paths changed.
+- Provider rules preserved: no provider selection, credentials, redaction provider, or LLM payload schema changed.
+- Structured-note contract preserved: EMIS keys/validation and structured source shape unchanged.
+
 ## 2026-05-21 Working Note In-Flight Generation Guard
 
 ### Scope

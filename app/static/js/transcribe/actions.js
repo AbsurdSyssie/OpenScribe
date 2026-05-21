@@ -27,7 +27,6 @@ export function attachTranscribeActions({
   setMicButtons,
   setTab,
   structuredEditor,
-  onNoteGenerationQueued,
   clearWorkingNote,
 }) {
   let quickActionContextOverride = null;
@@ -642,11 +641,6 @@ export function attachTranscribeActions({
       try {
         const queued = await enqueueTemplateGeneration({ templateId });
         if (!queued) return;
-        onNoteGenerationQueued?.();
-        setTab('output');
-        showFlash('Queued note generation.', 'success');
-        await fetchWorkspace();
-        scheduleWorkspaceRefreshBurst();
       } catch (error) {
         showFlash(error instanceof Error ? error.message : 'Could not enqueue note generation.', 'error');
       }

@@ -153,7 +153,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - UI shows saving, saved, or error based on server response.
 - Mode lock is final only after server confirms save.
 - Generation first saves current editor content, then queues generation.
-- Note generation submit uses one client-side in-flight enqueue guard and one app-owned post-success flow shared by the normal Generate form and dictation Save & generate flow. The guard lasts until the save/enqueue request settles, not for a fixed timer.
+- Note generation submit uses one client-side in-flight enqueue guard and one app-owned post-success flow shared by the normal Generate form and dictation Save & generate flow. The guard snapshots the active transcript id before awaiting the Working-note save, returns the existing in-flight promise on duplicate submits, and lasts until the save/enqueue request settles.
 - Generation blocks while working-note editor has unsaved or failed-save state.
 - Working-note saves use the same note-editor dirty/save/queued/conflict machinery as generated-note edits; only the save endpoint/payload differs.
 - Working-note PATCH may include `expected_updated_at`; stale values return `409 conflict` instead of overwriting newer content.

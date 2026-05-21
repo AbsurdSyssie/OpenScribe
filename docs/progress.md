@@ -1,5 +1,50 @@
 # Progress
 
+## 2026-05-21 Working Note Enqueue Hardening
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept race/duplicate-submit hardening, deleted one-call helper, rejected removing defensive final UI sync.
+- Snapshotted transcript id before async Working-note save so generation POST cannot drift to a newly selected consultation.
+- Duplicate generation submits now return the existing in-flight promise instead of silently returning `false`.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: direct behavioral JS test deferred until enqueue logic is extracted from large DOM module.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: transcript-id snapshot, duplicate-submit promise reuse, inline post-success generation flow.
+- `app/templates/transcribe/_shell_extras.html`: frontend asset key bump.
+- `tests/test_admin_ui.py`: static regressions for enqueue snapshot/promise reuse/helper removal and asset key.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: updated final behavior and critique.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_transcribe_page_shows_workspace_shell or transcribe_reorder_blocks_blank_note_lines or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 4 tests.
+
+### Documentation
+
+- Updated Working-note implementation note with enqueue snapshot and duplicate-submit behavior.
+- Rewrote correction critique with kept/modified/rejected decisions.
+
+### Risks / assumptions
+
+- Duplicate prevention remains client-side only; backend idempotency is still separate future hardening.
+- Static frontend assertions cover this slice; a direct Node behavior test should follow only after generation enqueue is extracted into a small testable module.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content exposure added; generation body remains `template_id` only.
+- Ownership rules preserved: no API/auth change; server still resolves owner-scoped transcript, Working note, and dictation sources.
+- Deletion semantics preserved: no retention, cascade, clear, or hard-delete paths changed.
+- Provider rules preserved: no provider selection, credentials, redaction provider, or LLM payload schema changed.
+- Structured-note contract preserved: EMIS keys/validation and structured source shape unchanged.
+
 ## 2026-05-21 Working Note Queue Cleanup
 
 ### Scope

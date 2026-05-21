@@ -1,29 +1,28 @@
 # Working-note correction critique
 
-## Decisions
+## Kept
 
-1. Keep: explicit dirty Working-note timestamp sentinel.
+1. Snapshot `transcriptId` before async Working-note save.
 
-Reason: `""` means editing began before any saved Working note existed. `||` fallback could silently advance the save baseline after another tab creates the first note, causing overwrite instead of `409`.
+Reason: low-probability race, cheap fix. Generation now uses `generationTranscriptId` for validation and POST URL after `await saveWorkingNoteBeforeGeneration()`.
 
-Outcome: Working-note save payload now uses `dirtyNoteExpectedUpdatedAt !== null` for dirty same-target edits, then sends `null` when baseline was no saved note.
+2. Return existing in-flight generation promise on duplicate submit.
 
-2. Keep, narrowed: central generation success handling in `app.js`.
+Reason: cleaner than silent `false`, avoids second POST, and lets duplicate callers observe same success/error. No warning toast added; disabled controls already provide normal feedback.
 
-Reason: normal Generate and dictation Save & generate had duplicate post-queue behavior and could drift. `app.js` owns enqueue state and selected-note reset, so it should own shared post-success UI flow too.
+3. Keep removed `silent` option deleted.
 
-Outcome: `enqueueTemplateGeneration()` now calls one `handleTemplateGenerationQueued()` helper. Normal Generate only triggers enqueue. Dictation passes `closeDictationModal: true`.
+Reason: helper has one behavior. No fake API surface.
 
-3. Keep: remove unused `silent` parameter.
+4. Inline `handleTemplateGenerationQueued()`.
 
-Reason: dead parameter adds misleading API surface with no behavior.
+Reason: one caller only. Inlining removes function hop without changing post-success flow.
 
-Outcome: `saveWorkingNoteBeforeGeneration()` takes no options.
+## Modified / rejected
 
-## Rejected / modified
-
-- Rejected broad action API redesign beyond what was needed. `actions.js` still owns form events; `app.js` owns enqueue request and shared post-success effects.
-- Did not change server API, schema, redaction, provider, ownership, or deletion behavior.
+- Rejected removing final `syncGenerationAvailability()` / `syncDictationControls()` in `finally`. It is partly redundant after successful `fetchWorkspace()`, but still protects failed save, failed POST, thrown refresh, and no-op paths.
+- Did not add a new JS harness test. Current `app.js` is a large DOM module not shaped for isolated enqueue testing; adding a brittle VM harness would increase debt. Added focused static assertions for the new guard/snapshot behavior instead. Future debt fix: extract generation enqueue into a small module, then add behavioral Node tests.
+- Did not change server idempotency. This is client-side race hardening only.
 
 ## Architecture checkpoints
 

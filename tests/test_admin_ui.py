@@ -2202,7 +2202,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260521-working-note-final-hardening"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2776,7 +2776,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260521-working-note-final-hardening" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4135,11 +4135,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
     assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
     assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
+    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';" in app_js
     assert "let dirtyNoteExpectedUpdatedAt = null;" in app_js
-    assert "dirtyNoteExpectedUpdatedAt = currentNoteUpdatedAt() || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || '' : '');" in app_js
-    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => {" in app_js
-    assert "noteEditorDirty\n          && dirtyNoteTargetId === targetId\n          && dirtyNoteExpectedUpdatedAt !== null" in app_js
-    assert "return dirtyNoteExpectedUpdatedAt || null;" in app_js
+    assert "dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({" in app_js
+    assert "const clearNoteDirtyBaseline = () => {" in app_js
+    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({" in app_js
+    assert "noteBaselineForSave({" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);" in app_js
     assert "dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';" in app_js
@@ -4158,15 +4159,15 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "let noteGenerationInFlight = null;" in app_js
     assert "let noteGenerationBusy = false;" in app_js
-    assert "let noteGenerationShouldCloseDictationModal = false;" in app_js
+    assert "let noteGenerationCloseDictationAfterCurrentRequest = false;" in app_js
     assert "const queued = await enqueueTemplateGeneration({ templateId });" in actions_js
     assert "if (!queued) return;" in actions_js
     assert "body: JSON.stringify({ template_id: templateId })," in app_js
     assert "body: JSON.stringify({ template_id: templateId })," not in actions_js
     assert "const generationTranscriptId = transcriptId;" in app_js
     assert "if (!generationTranscriptId || !templateId) return Promise.resolve(false);" in app_js
-    assert "noteGenerationShouldCloseDictationModal = noteGenerationShouldCloseDictationModal || closeDictationModal;" in app_js
-    assert "if (noteGenerationShouldCloseDictationModal) {" in app_js
+    assert "noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;" in app_js
+    assert "if (noteGenerationCloseDictationAfterCurrentRequest) {" in app_js
     assert "const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {" in app_js
     assert "handleTemplateGenerationQueued" not in app_js
     assert "const queued = await enqueueTemplateGeneration({ templateId, closeDictationModal: true });" in app_js
@@ -4330,7 +4331,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260521-working-note-final-hardening" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260521-working-note-inflight-generation';
+import { attachTranscribeActions } from './actions.js?v=20260521-working-note-queue-cleanup';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -375,7 +375,11 @@ let statusDetailsHideTimer = null;
           const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
             mode,
           }) || { mode };
-          const expectedUpdatedAt = dirtyNoteExpectedUpdatedAt || currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
+          const expectedUpdatedAt = (
+            noteEditorDirty && dirtyNoteTargetId === targetId && dirtyNoteExpectedUpdatedAt !== null
+          )
+            ? (dirtyNoteExpectedUpdatedAt || null)
+            : (currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null);
           return {
             targetId,
             kind: 'working_note',
@@ -1606,13 +1610,8 @@ let statusDetailsHideTimer = null;
           return saved;
         }
         try {
-          const queued = await enqueueTemplateGeneration({ templateId });
+          const queued = await enqueueTemplateGeneration({ templateId, closeDictationModal: true });
           if (!queued) return saved;
-          setTab('output');
-          showFlash('Queued note generation.', 'success');
-          await fetchWorkspace();
-          scheduleWorkspaceRefreshBurst();
-          setDictationModalOpen(false);
         } catch (error) {
           showFlash(error instanceof Error ? error.message : 'Could not enqueue note generation.', 'error');
         } finally {
@@ -2634,7 +2633,7 @@ let statusDetailsHideTimer = null;
         shouldPreserveFollowupEditorRender,
       });
 
-      const saveWorkingNoteBeforeGeneration = async ({ silent = false } = {}) => {
+      const saveWorkingNoteBeforeGeneration = async () => {
         if (!transcriptId) return null;
         if (!isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           return activeWorkingNote;
@@ -2658,7 +2657,18 @@ let statusDetailsHideTimer = null;
         return saved;
       };
 
-      const enqueueTemplateGeneration = ({ templateId } = {}) => {
+      const handleTemplateGenerationQueued = async ({ closeDictationModal = false } = {}) => {
+        selectedNoteDocumentId = null;
+        setTab('output');
+        showFlash('Queued note generation.', 'success');
+        await fetchWorkspace();
+        scheduleWorkspaceRefreshBurst();
+        if (closeDictationModal) {
+          setDictationModalOpen(false);
+        }
+      };
+
+      const enqueueTemplateGeneration = ({ templateId, closeDictationModal = false } = {}) => {
         if (!transcriptId || !templateId) return Promise.resolve(false);
         if (noteGenerationInFlight) return Promise.resolve(false);
 
@@ -2667,7 +2677,7 @@ let statusDetailsHideTimer = null;
           syncGenerationAvailability(readActiveDraftText());
           syncDictationControls();
           try {
-            await saveWorkingNoteBeforeGeneration({ silent: true });
+            await saveWorkingNoteBeforeGeneration();
             const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-output`, {
               method: 'POST',
               credentials: 'include',
@@ -2677,6 +2687,7 @@ let statusDetailsHideTimer = null;
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
             }
+            await handleTemplateGenerationQueued({ closeDictationModal });
             return true;
           } finally {
             noteGenerationInFlight = null;
@@ -3140,35 +3151,32 @@ let statusDetailsHideTimer = null;
         syncGenerationAvailability: () => syncGenerationAvailability(readActiveDraftText()),
         setMicButtons,
         setTab,
-          structuredEditor,
-          onNoteGenerationQueued: () => {
-            selectedNoteDocumentId = null;
-          },
-          clearWorkingNote: async () => {
-            if (!transcriptId) return;
-            if (!workingNoteHasContent() && !activeWorkingNote?.mode) {
-              if (discardEmptyWorkingNoteDraft()) {
-                showFlash('Working note draft cleared.', 'success');
-              }
-              return;
+        structuredEditor,
+        clearWorkingNote: async () => {
+          if (!transcriptId) return;
+          if (!workingNoteHasContent() && !activeWorkingNote?.mode) {
+            if (discardEmptyWorkingNoteDraft()) {
+              showFlash('Working note draft cleared.', 'success');
             }
-            if (!window.confirm('Clear this working note? This cannot be undone.')) return;
-            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
-              method: 'DELETE',
-              credentials: 'include',
-            });
-            if (!response.ok) {
-              showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');
-              return;
-            }
-            activeWorkingNote = null;
-            clearNoteEditorDirty();
-            selectedNoteDocumentId = workingNoteTargetId(transcriptId || '');
-            renderSelectedNote();
-            showFlash('Working note cleared.', 'success');
-            void fetchWorkspace();
-          },
-        });
+            return;
+          }
+          if (!window.confirm('Clear this working note? This cannot be undone.')) return;
+          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
+            method: 'DELETE',
+            credentials: 'include',
+          });
+          if (!response.ok) {
+            showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');
+            return;
+          }
+          activeWorkingNote = null;
+          clearNoteEditorDirty();
+          selectedNoteDocumentId = workingNoteTargetId(transcriptId || '');
+          renderSelectedNote();
+          showFlash('Working note cleared.', 'success');
+          void fetchWorkspace();
+        },
+      });
 
       createGuidedTour({
         dom: {

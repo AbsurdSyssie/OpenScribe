@@ -1,48 +1,34 @@
-## Working-note correction critique
+# Working-note correction critique
 
-Status: reviewed and applied on 2026-05-21.
+## Decisions
 
-### Kept
+1. Keep: explicit dirty Working-note timestamp sentinel.
 
-1. Replace fixed 3 second Generate guard with in-flight state.
+Reason: `""` means editing began before any saved Working note existed. `||` fallback could silently advance the save baseline after another tab creates the first note, causing overwrite instead of `409`.
 
-Reason: timer guard can expire while slow Working-note save or `/generate-output` enqueue still runs. Correctness must follow request lifecycle, not wall-clock debounce.
+Outcome: Working-note save payload now uses `dirtyNoteExpectedUpdatedAt !== null` for dirty same-target edits, then sends `null` when baseline was no saved note.
 
-Applied rule:
+2. Keep, narrowed: central generation success handling in `app.js`.
 
-```js
-if (noteGenerationInFlight) return false;
-```
+Reason: normal Generate and dictation Save & generate had duplicate post-queue behavior and could drift. `app.js` owns enqueue state and selected-note reset, so it should own shared post-success UI flow too.
 
-2. Share template-generation enqueue path across normal Generate and dictation Save & generate.
+Outcome: `enqueueTemplateGeneration()` now calls one `handleTemplateGenerationQueued()` helper. Normal Generate only triggers enqueue. Dictation passes `closeDictationModal: true`.
 
-Reason: both paths save current Working note, then post same `template_id` payload. One helper avoids drift and blocks accidental second enqueue from either entry point while first request is active.
+3. Keep: remove unused `silent` parameter.
 
-3. Remove dataset-backed Generate guard state.
+Reason: dead parameter adds misleading API surface with no behavior.
 
-Reason: DOM `dataset` was duplicating JS state. `noteGenerationBusy` now drives button disabling directly.
+Outcome: `saveWorkingNoteBeforeGeneration()` takes no options.
 
-4. Remove remaining structured-context autosave no-op path.
+## Rejected / modified
 
-Reason: saved Working note is generation source. `persistStructuredContextSilently`, `emisSaveTimer`, and `lastSavedStructuredContext` no longer saved anything useful and confused ownership of structured editor changes.
+- Rejected broad action API redesign beyond what was needed. `actions.js` still owns form events; `app.js` owns enqueue request and shared post-success effects.
+- Did not change server API, schema, redaction, provider, ownership, or deletion behavior.
 
-5. Centralise request body construction.
+## Architecture checkpoints
 
-Reason: `JSON.stringify({ template_id: templateId })` now exists only in `app.js` helper. `actions.js` no longer constructs generation payloads.
-
-### Modified
-
-1. Dropped optional UI debounce.
-
-Reason: in-flight guard already disables normal Generate and dictation Save & generate until settle. Extra timer would add second state source without extra correctness.
-
-2. Kept helper frontend-only.
-
-Reason: this slice fixes client duplicate-submit behavior. Backend idempotency/rate limiting remains separate hardening if product wants cross-tab or malicious-client protection.
-
-### Checkpoints
-
-- Schema checkpoint: no DB/migration change.
-- Auth/ownership checkpoint: no route/auth change; generation still uses owner-scoped transcript API.
-- Lifecycle/deletion checkpoint: no retention, cascade, or clear/delete change.
-- Docs/tests checkpoint: working-note docs, progress note, static frontend regression checks updated.
+- Privacy: generation request remains `template_id` only; no transcript-derived content added to client payloads or logs.
+- Ownership: no route/auth changes; server still resolves saved transcript/Working-note sources for owner.
+- Deletion: no lifecycle/cascade/retention changes.
+- Provider: no provider selection, credential, redaction provider, or LLM payload contract changes.
+- Structured note: EMIS section contract unchanged.

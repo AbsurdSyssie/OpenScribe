@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-05-21 Working Note Generate Guard Cleanup
+
+### Scope
+
+- Critiqued `working_note_corrections.md` and kept the low-risk cleanup items: generated-note-only content no longer enables note generation, stale hidden `context_*` fields/sync plumbing were removed, and note Generate submissions are guarded for 3 seconds.
+- Kept `collectStructuredContext()` and legacy generated-document structured-context reader because they still have compatibility/editor roles.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: behavioral JS runner tests would be better than current static substring assertions for future frontend refactors.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: removes generated structured editor content from note generation availability and respects the 3 second Generate guard.
+- `app/static/js/transcribe/actions.js`: adds the 3 second duplicate-submit guard for note generation.
+- `app/static/js/transcribe/structured.js`, `app/templates/transcribe/_workspace.html`: remove dead structured-context hidden field sync.
+- `app/templates/transcribe/_shell_extras.html`: bumps frontend asset cache key.
+- `tests/test_admin_ui.py`: updates static/frontend regressions for hidden-field removal, source availability, asset key, and click guard.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: document critique decisions and final behavior.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/structured.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls or user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_generation or transcribe_page_exposes_home_and_context_settings_controls or transcribe_reorder_blocks_blank_note_lines or transcribe_static_asset_version_bumped_for_pii_source_visibility"`: passed, 5 tests.
+
+### Documentation
+
+- Updated Working-note implementation notes to state generation forms do not render legacy `context_*` fields and note generation has a 3 second client-side duplicate-submit guard.
+- Rewrote `working_note_corrections.md` with kept/modified/deferred decisions.
+
+### Risks / assumptions
+
+- Generate guard is client-side only; backend idempotency/rate limiting remains separate future hardening if needed.
+- `collectStructuredContext()` name remains imperfect but was kept to avoid broader editor refactor.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: generated-note output is no longer treated as generation input; no transcript-derived content exposure added.
+- Ownership rules preserved: no route/auth change; generation still uses owner-scoped transcript APIs.
+- Deletion semantics preserved: no lifecycle/cascade/retention behavior changed.
+- Provider rules preserved: no provider selection, credential, redaction, or LLM request schema change beyond source gating.
+- Structured-note contract preserved: EMIS section keys/validation unchanged; transient form fields removed in favor of saved Working-note source contract.
+
 ## 2026-05-20 Working Note Generation Contract Tightening
 
 ### Scope

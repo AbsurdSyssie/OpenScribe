@@ -517,15 +517,6 @@ export function createStructuredEditor({
     return context;
   };
 
-  const syncStructuredContextHiddenInputs = () => {
-    const context = collectStructuredContext();
-    dom.structuredContextHiddenInputs.forEach((input) => {
-      const sectionKey = input.dataset.sectionKey || '';
-      input.value = JSON.stringify(context[sectionKey] || []);
-    });
-    return context;
-  };
-
   const syncStructuredEditorAvailability = () => {
     const disabled = !getTranscriptId();
     document.querySelectorAll('[data-structured-line-checkbox]').forEach((input) => {
@@ -919,7 +910,6 @@ export function createStructuredEditor({
       lineRowAttr: 'data-structured-statement-row',
       onChange: () => {
         syncGeneratedStructuredDraftFromDom();
-        syncStructuredContextHiddenInputs();
         handleStructuredContextChanged();
         syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
@@ -941,7 +931,6 @@ export function createStructuredEditor({
         currentRow.remove();
         ensureSectionHasEditableRow(sectionContainer);
         syncGeneratedStructuredDraftFromDom();
-        syncStructuredContextHiddenInputs();
         handleStructuredContextChanged();
         syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
@@ -1029,7 +1018,6 @@ export function createStructuredEditor({
         removePlaceholderRowIfFilled(section);
       });
       syncGeneratedStructuredDraftFromDom();
-      syncStructuredContextHiddenInputs();
     }
     handleStructuredContextChanged();
     syncNoteEmptyState();
@@ -1154,7 +1142,6 @@ export function createStructuredEditor({
       window.refreshLucideIcons?.(card);
     });
     syncGeneratedStructuredDraftFromDom();
-    syncStructuredContextHiddenInputs();
     syncStructuredEditorAvailability();
     dom.generatedStructuredPanel.hidden = false;
     syncNoteEmptyState();
@@ -1471,7 +1458,6 @@ export function createStructuredEditor({
       lastSavedStructuredContext = value;
     },
     syncStatementRowVisualState,
-    syncStructuredContextHiddenInputs,
     syncStructuredEditorAvailability,
     syncTemplateModeBadge,
     syncStructuredTemplateUi,

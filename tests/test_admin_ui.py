@@ -2202,7 +2202,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260520-working-note-template-guard"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260521-working-note-generate-guard"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2776,7 +2776,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260520-working-note-template-guard" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260521-working-note-generate-guard" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -2904,12 +2904,12 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     assert "Create" in page.text
     assert "Psoriasis flare" in page.text
     assert 'data-generate-output-form' in page.text
-    assert 'data-structured-context-hidden' in page.text
-    assert 'name="context_social_history"' in page.text
-    assert 'name="context_examination"' in page.text
-    assert 'name="context_comment"' in page.text
-    assert 'name="context_tasks"' in page.text
-    assert 'name="context_investigations"' in page.text
+    assert 'data-structured-context-hidden' not in page.text
+    assert 'name="context_social_history"' not in page.text
+    assert 'name="context_examination"' not in page.text
+    assert 'name="context_comment"' not in page.text
+    assert 'name="context_tasks"' not in page.text
+    assert 'name="context_investigations"' not in page.text
 
 
 def test_user_transcribe_glm_2_page_shows_stt_config_label(
@@ -4119,6 +4119,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);" in app_js
     assert "if (!preserveDirtyNoteEditor) {" in app_js
     assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
+    assert "hasStructuredInput" not in app_js
+    assert "hasStructuredContextContent" not in app_js
+    assert "data-structured-context-hidden" not in workspace_html
+    assert "syncStructuredContextHiddenInputs" not in structured_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
@@ -4150,6 +4154,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "await saveWorkingNoteBeforeGeneration?.({ silent: true });" in actions_js
     assert "body: JSON.stringify({ template_id: templateId })," in actions_js
+    assert "const NOTE_GENERATION_CLICK_GUARD_MS = 3000;" in actions_js
+    assert "if (Date.now() < noteGenerationGuardUntil) return;" in actions_js
+    assert "generateOutputButton.dataset.noteGenerationGuarded === 'true'" in app_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
     assert "void persistNoteEditsSilently();" in app_js
@@ -4295,7 +4302,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260520-working-note-template-guard" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260521-working-note-generate-guard" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

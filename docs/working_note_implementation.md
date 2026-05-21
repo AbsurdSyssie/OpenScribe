@@ -89,6 +89,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Full working-note content comes from workspace payload or `GET /working-note`.
 - Do not bloat generic transcript responses with working-note content unless the workspace specifically needs it.
 - Generation requests do not send working-note content in the request payload.
+- Generation forms must not render legacy `context_*` structured-context fields; saved Working note is the only structured source path.
 - Client saves working note first; server loads saved working note from the DB during generation.
 - This gives deterministic snapshots/redaction and avoids trusting unsaved client payload.
 - `PATCH /working-note` rejects whitespace-only freeform text with `422` and instructs caller to clear/delete instead.
@@ -152,6 +153,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - UI shows saving, saved, or error based on server response.
 - Mode lock is final only after server confirms save.
 - Generation first saves current editor content, then queues generation.
+- Note generation submit is guarded client-side for 3 seconds to prevent accidental duplicate queue requests while workspace state catches up.
 - Generation blocks while working-note editor has unsaved or failed-save state.
 - Working-note saves use the same note-editor dirty/save/queued/conflict machinery as generated-note edits; only the save endpoint/payload differs.
 - Working-note PATCH may include `expected_updated_at`; stale values return `409 conflict` instead of overwriting newer content.

@@ -124,7 +124,7 @@ return;
 var generateFollowupButton = e.target.closest('[data-generate-followup-trigger]');
 if (generateFollowupButton) {
 e.preventDefault();
-var promptInput = document.querySelector('[data-followup-prompt-input]');
+var promptInput = document.querySelector('[data-quick-action-context-input]');
 var promptHidden = document.querySelector('[data-followup-prompt-hidden]');
 var generateFollowupForm = document.querySelector('[data-generate-followup-form]');
 if (promptInput && promptHidden && generateFollowupForm) {

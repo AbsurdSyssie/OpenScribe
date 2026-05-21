@@ -626,9 +626,10 @@ def resolve_transcribe_workspace(
     ]
     latest_generated_document = note_documents[0] if note_documents else None
     latest_followup_document = followup_documents[0] if followup_documents else None
+    selected_template = preferred_template or (available_templates[0] if available_templates else None)
     structured_section_definitions = (
         _structured_section_definitions_for_document(latest_generated_document)
-        or (_structured_section_definitions_for_template(available_templates[0]) if available_templates else _default_emis_section_definitions())
+        or (_structured_section_definitions_for_template(selected_template) if selected_template is not None else _default_emis_section_definitions())
     )
     show_redaction_debug = bool(
         request is not None

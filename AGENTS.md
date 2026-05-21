@@ -128,6 +128,7 @@ Every change must include:
 3. **Checklist completion after coding**
    - code complete
    - tests added/updated
+   - When fixing test failures, do not chase green, think about why the test failed, and if that test is now irrelevant, cut it. If it's still needed, think about why and adapt.
    - docs added/updated
    - open issues noted
 

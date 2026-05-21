@@ -9,6 +9,7 @@ import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
+import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -53,7 +54,7 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
       let noteSaveConflictShown = false;
       let noteGenerationInFlight = null;
       let noteGenerationBusy = false;
-      let noteGenerationShouldCloseDictationModal = false;
+      let noteGenerationCloseDictationAfterCurrentRequest = false;
       let followupEditorDirty = false;
       let dirtyFollowupDocumentId = null;
       let followupEditVersion = 0;
@@ -298,7 +299,11 @@ let statusDetailsHideTimer = null;
       const markNoteEditorDirty = () => {
         const targetId = currentRenderedNoteTargetId();
         if (!noteEditorDirty || dirtyNoteTargetId !== targetId) {
-          dirtyNoteExpectedUpdatedAt = currentNoteUpdatedAt() || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || '' : '');
+          dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({
+            currentUpdatedAt: currentNoteUpdatedAt(),
+            workingNoteUpdatedAt: activeWorkingNote?.updated_at || '',
+            isWorkingNote: isWorkingNoteTargetId(targetId),
+          });
         }
         noteEditorDirty = true;
         dirtyNoteTargetId = targetId;
@@ -311,8 +316,12 @@ let statusDetailsHideTimer = null;
         noteEditorDirty = false;
         dirtyNoteTargetId = null;
         dirtyNoteMode = null;
-        dirtyNoteExpectedUpdatedAt = null;
+        clearNoteDirtyBaseline();
         noteSaveConflictShown = false;
+      };
+
+      const clearNoteDirtyBaseline = () => {
+        dirtyNoteExpectedUpdatedAt = null;
       };
 
       const markFollowupEditorDirty = () => {
@@ -353,17 +362,15 @@ let statusDetailsHideTimer = null;
       };
       const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
 
-      const noteSaveExpectedUpdatedAtForTarget = (targetId) => {
-        if (
-          noteEditorDirty
-          && dirtyNoteTargetId === targetId
-          && dirtyNoteExpectedUpdatedAt !== null
-        ) {
-          return dirtyNoteExpectedUpdatedAt || null;
-        }
-        return currentNoteUpdatedAt()
-          || (isWorkingNoteTargetId(targetId) ? activeWorkingNote?.updated_at || null : '');
-      };
+      const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({
+        targetId,
+        noteEditorDirty,
+        dirtyNoteTargetId,
+        dirtyNoteExpectedUpdatedAt,
+        currentUpdatedAt: currentNoteUpdatedAt(),
+        workingNoteUpdatedAt: activeWorkingNote?.updated_at || '',
+        isWorkingNoteTarget: isWorkingNoteTargetId,
+      });
 
       const currentRenderedFollowupDocumentId = () => latestFollowupOutput?.dataset?.latestFollowupId || '';
 
@@ -2677,10 +2684,10 @@ let statusDetailsHideTimer = null;
         const generationTranscriptId = transcriptId;
         if (!generationTranscriptId || !templateId) return Promise.resolve(false);
         if (noteGenerationInFlight) {
-          noteGenerationShouldCloseDictationModal = noteGenerationShouldCloseDictationModal || closeDictationModal;
+          noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;
           return noteGenerationInFlight;
         }
-        noteGenerationShouldCloseDictationModal = closeDictationModal;
+        noteGenerationCloseDictationAfterCurrentRequest = closeDictationModal;
 
         noteGenerationInFlight = (async () => {
           noteGenerationBusy = true;
@@ -2702,14 +2709,14 @@ let statusDetailsHideTimer = null;
             showFlash('Queued note generation.', 'success');
             await fetchWorkspace();
             scheduleWorkspaceRefreshBurst();
-            if (noteGenerationShouldCloseDictationModal) {
+            if (noteGenerationCloseDictationAfterCurrentRequest) {
               setDictationModalOpen(false);
             }
             return true;
           } finally {
             noteGenerationInFlight = null;
             noteGenerationBusy = false;
-            noteGenerationShouldCloseDictationModal = false;
+            noteGenerationCloseDictationAfterCurrentRequest = false;
             syncGenerationAvailability(readActiveDraftText());
             syncDictationControls();
           }

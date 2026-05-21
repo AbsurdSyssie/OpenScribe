@@ -1,5 +1,54 @@
 # Progress
 
+## 2026-05-21 Working Note Baseline Helper Cleanup
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept low-risk rename, note-save baseline helper extraction, and focused baseline regression tests.
+- Rejected typed enqueue result/options-object refactor as extra churn without a current bug.
+- Clarified duplicate generation behavior: first in-flight template request wins while template controls are locked.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: enqueue behavior still has static coverage only; deeper behavioral test should wait until enqueue is extracted from DOM-heavy app module.
+
+### Files changed
+
+- `app/static/js/transcribe/noteSaveState.js`: pure dirty-baseline capture/save helpers.
+- `app/static/js/transcribe/app.js`: uses baseline helpers and clearer duplicate close-modal flag name.
+- `app/templates/transcribe/_shell_extras.html`: frontend asset key bump.
+- `tests/test_note_save_state_js.py`: focused Node baseline regression tests.
+- `tests/test_admin_ui.py`: updated static assertions and asset key checks.
+- `docs/working_note_implementation.md`, `working_note_corrections.md`, `docs/progress.md`: documented critique and final behavior.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/noteSaveState.js`: passed.
+- `.venv/bin/pytest -q tests/test_note_save_state_js.py tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_frontend_uses_global_template_selector_for_generation_controls or user_transcribe_page_shows_workspace_shell or transcribe_reorder_blocks_blank_note_lines or note_save_state"`: passed, 6 tests.
+
+### Documentation
+
+- Updated Working-note implementation notes for baseline helper ownership and first-template-wins duplicate enqueue behavior.
+- Rewrote correction critique with kept/rejected decisions.
+
+### Risks / assumptions
+
+- Template UI locking prevents normal user drift, not malicious request replay.
+- Client duplicate enqueue guard remains not backend idempotency.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript-derived content exposure added; generation request body remains `template_id` only.
+- Ownership rules preserved: no auth/API change; server still resolves owner-scoped sources.
+- Deletion semantics preserved: no retention, cascade, clear, or hard-delete paths changed.
+- Provider rules preserved: no provider selection, credentials, redaction provider, or LLM payload schema changed.
+- Structured-note contract preserved: EMIS keys/validation and structured source shape unchanged.
+
 ## 2026-05-21 Working Note Final Hardening
 
 ### Scope

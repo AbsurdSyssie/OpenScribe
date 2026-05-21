@@ -23,6 +23,7 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    RedactionRun,
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
@@ -2085,16 +2086,23 @@ def _build_followup_generation_messages(*, transcript_text: str, follow_up_promp
     )
 
 
-def _build_quick_action_generation_messages(*, transcript_text: str, quick_action_text: str, dictation_text: str = "") -> tuple[str, str]:
+def _build_quick_action_generation_messages(
+    *,
+    transcript_text: str,
+    quick_action_text: str,
+    dictation_text: str = "",
+    working_note_text: str = "",
+) -> tuple[str, str]:
     return (
         "You are a medical secretary writing in British English. "
         "Write from the perspective of the doctor. "
         "Complete the requested quick action using only consultation sources and quick action instructions. "
-        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
         "Return only the finished text. "
         "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         f"Consultation transcript:\n{transcript_text}"
+        + (f"\n\nConsultation working note:\n{working_note_text}" if working_note_text.strip() else "")
         + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         + f"\n\nQuick action instructions:\n{quick_action_text}",
     )
@@ -2264,7 +2272,16 @@ def queue_quick_action_generation(
 
     quick_action = _resolve_available_quick_action_for_user(db, actor, quick_action_id=quick_action_id)
     latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
-    transcript_version = _snapshot_transcript_version(db, transcript=transcript)
+    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(
+        db,
+        transcript=transcript,
+        allow_empty=(
+            bool(freeform_working_note_snapshot.strip())
+            or bool(structured_working_note_snapshot)
+            or bool(_effective_dictation_text(db, transcript=transcript))
+        ),
+    )
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
         raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
@@ -2287,6 +2304,9 @@ def queue_quick_action_generation(
         source_template_name="Quick action",
         source_quick_action_name=quick_action.name,
         prompt_snapshot_text=prompt_snapshot_text,
+        working_note_mode_snapshot=working_note_mode,
+        freeform_working_note_snapshot_encrypted=None,
+        structured_working_note_snapshot_json=None,
         status=GeneratedDocumentStatus.queued,
         title=f"Quick action: {quick_action.name}",
         document_mode=TemplateMode.freeform,
@@ -2297,6 +2317,17 @@ def queue_quick_action_generation(
         model_used=resolved_model_name,
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="freeform_working_note_snapshot_encrypted",
+        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
+    )
+    set_generated_document_structured_working_note_snapshot(
+        db,
+        document=generated_document,
+        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
@@ -2333,6 +2364,71 @@ def mark_generated_document_enqueue_failed(db: Session, *, document_id: UUID, me
     return document
 
 
+def _redacted_working_note_text_for_document(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    redaction_run: RedactionRun,
+    extra_phi_index: list[dict[str, object]],
+) -> str:
+    if document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform:
+        freeform_working_note = generated_document_text(db, document=document, field="freeform_working_note_snapshot_encrypted").strip()
+        if not freeform_working_note:
+            return ""
+        redacted_working_note, working_note_phi_index = _redact_dynamic_prompt_text(
+            db,
+            freeform_working_note,
+            team_id=document.team_id,
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(working_note_phi_index)
+        redacted_working_note, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
+            db,
+            transcript_id=document.transcript_id,
+            owner_user_id=document.owner_user_id,
+            transcript_text=redacted_working_note or "",
+            dictation_text="",
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(manual_working_note_phi_index)
+        return _format_working_note_for_prompt(
+            mode=TranscriptWorkingNoteMode.freeform,
+            freeform_text=redacted_working_note or "",
+        )
+
+    if document.working_note_mode_snapshot is TranscriptWorkingNoteMode.structured:
+        structured_working_note = generated_document_structured_working_note_snapshot(db, document=document)
+        if not structured_working_note:
+            return ""
+        redacted_structured_working_note, structured_working_note_phi_index = _redact_dynamic_prompt_value(
+            db,
+            structured_working_note,
+            team_id=document.team_id,
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(structured_working_note_phi_index)
+        if not isinstance(redacted_structured_working_note, dict):
+            raise AppError(500, "redaction_failed", "Working note redaction changed shape")
+        working_note_text = _format_working_note_for_prompt(
+            mode=TranscriptWorkingNoteMode.structured,
+            structured_note=redacted_structured_working_note,
+        )
+        if not working_note_text.strip():
+            return ""
+        working_note_text, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
+            db,
+            transcript_id=document.transcript_id,
+            owner_user_id=document.owner_user_id,
+            transcript_text=working_note_text,
+            dictation_text="",
+            start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        )
+        extra_phi_index.extend(manual_working_note_phi_index)
+        return working_note_text
+
+    return ""
+
+
 def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDocument:
     document = db.get(GeneratedDocument, document_id)
     if document is None:
@@ -2367,56 +2463,12 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     extra_phi_index.extend(manual_phi_index)
 
     if document.generator_type is GeneratedDocumentGeneratorType.template:
-        working_note_text = ""
-        if document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform:
-            freeform_working_note = generated_document_text(db, document=document, field="freeform_working_note_snapshot_encrypted").strip()
-            if freeform_working_note:
-                redacted_working_note, working_note_phi_index = _redact_dynamic_prompt_text(
-                    db,
-                    freeform_working_note,
-                    team_id=document.team_id,
-                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-                )
-                extra_phi_index.extend(working_note_phi_index)
-                redacted_working_note, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
-                    db,
-                    transcript_id=document.transcript_id,
-                    owner_user_id=document.owner_user_id,
-                    transcript_text=redacted_working_note or "",
-                    dictation_text="",
-                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-                )
-                extra_phi_index.extend(manual_working_note_phi_index)
-                working_note_text = _format_working_note_for_prompt(
-                    mode=TranscriptWorkingNoteMode.freeform,
-                    freeform_text=redacted_working_note or "",
-                )
-        elif document.working_note_mode_snapshot is TranscriptWorkingNoteMode.structured:
-            structured_working_note = generated_document_structured_working_note_snapshot(db, document=document)
-            if structured_working_note:
-                redacted_structured_working_note, structured_working_note_phi_index = _redact_dynamic_prompt_value(
-                    db,
-                    structured_working_note,
-                    team_id=document.team_id,
-                    start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-                )
-                extra_phi_index.extend(structured_working_note_phi_index)
-                if not isinstance(redacted_structured_working_note, dict):
-                    raise AppError(500, "redaction_failed", "Working note redaction changed shape")
-                working_note_text = _format_working_note_for_prompt(
-                    mode=TranscriptWorkingNoteMode.structured,
-                    structured_note=redacted_structured_working_note,
-                )
-                if working_note_text.strip():
-                    working_note_text, _, manual_working_note_phi_index = _apply_manual_pii_redaction(
-                        db,
-                        transcript_id=document.transcript_id,
-                        owner_user_id=document.owner_user_id,
-                        transcript_text=working_note_text,
-                        dictation_text="",
-                        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-                    )
-                    extra_phi_index.extend(manual_working_note_phi_index)
+        working_note_text = _redacted_working_note_text_for_document(
+            db,
+            document=document,
+            redaction_run=redaction_run,
+            extra_phi_index=extra_phi_index,
+        )
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Template snapshot is missing for this generated document")
@@ -2505,6 +2557,12 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             dictation_text=dictation_text,
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.quick_action:
+        working_note_text = _redacted_working_note_text_for_document(
+            db,
+            document=document,
+            redaction_run=redaction_run,
+            extra_phi_index=extra_phi_index,
+        )
         prompt_text = _prompt_snapshot_text_for_document(db, document=document)
         if not prompt_text:
             raise AppError(422, "business_rule_violation", "Quick action snapshot is missing for this generated document")
@@ -2535,6 +2593,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             transcript_text=transcript_text,
             quick_action_text=prompt_text_redacted,
             dictation_text=dictation_text,
+            working_note_text=working_note_text,
         )
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported generated document type", {"generator_type": document.generator_type.value})

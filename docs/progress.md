@@ -1,5 +1,49 @@
 # Progress
 
+## 2026-05-21 Quick Action Working Note Context
+
+### Scope
+
+- Plumbed saved Working note into quick-action generation.
+- Quick-action queue now snapshots Working note onto the generated document and allows empty transcript when saved Working note or dictation exists.
+- Quick-action prompt building now includes labelled Working-note context after redaction.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: follow-up generation remains unchanged; Working note is not automatically included there.
+
+### Files changed
+
+- `app/services/templates.py`: shared redacted Working-note prompt helper, quick-action snapshots, prompt inclusion.
+- `tests/test_api.py`: quick-action Working-note prompt/snapshot test and redaction fail-closed test.
+- `docs/working_note_implementation.md`, `docs/api.md`, `docs/progress.md`: updated generation contract and progress note.
+
+### Tests
+
+- `.venv/bin/python -m py_compile app/services/templates.py`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "quick_action_generation_uses_saved_working_note or quick_action_generation_fails_closed_when_working_note_redaction_fails or template_generation_uses_saved_working_note_when_transcript_empty or template_generation_fails_closed_when_working_note_redaction_fails"`: passed, 4 tests.
+
+### Documentation
+
+- Documented that quick actions use saved transcript/dictation/Working-note sources plus quick-action instructions/context.
+- Documented that follow-ups remain opt-in for Working-note context.
+
+### Risks / assumptions
+
+- Product scope interpreted as quick actions only; follow-ups intentionally unchanged.
+- Working-note snapshot fields are reused for quick-action documents; no schema change needed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no Working-note content added to request payloads or logs; server loads owner-scoped saved Working note.
+- Ownership rules preserved: existing owner-only transcript checks still gate quick-action generation.
+- Deletion semantics preserved: snapshots remain generated-document children under transcript-root cascade/retention.
+- Provider rules preserved: provider resolution unchanged; Working note is redacted before outbound LLM calls.
+- Structured-note contract preserved: structured Working note uses existing EMIS normalization and rendering.
+
 ## 2026-05-21 Working Note Baseline Helper Cleanup
 
 ### Scope

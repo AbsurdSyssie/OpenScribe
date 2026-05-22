@@ -206,8 +206,9 @@ export function createDocumentNavigator({
       card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
       const title = followupDocumentLabel(item);
+      const detail = item.follow_up_prompt_text || item.source_quick_action_name || "";
       card.innerHTML = `
-        <span>${escapeHtml(title)}</span>
+        <span>${escapeHtml(title)}${detail && detail !== title ? `<small>${escapeHtml(detail)}</small>` : ""}</span>
         <span>${escapeHtml(item.created_at || "")} <i data-lucide="chevron-right"></i></span>
       `;
       followupHistory.appendChild(card);

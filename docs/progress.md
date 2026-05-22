@@ -1,11 +1,56 @@
 # Progress
 
+## 2026-05-22 Pytest Warning Cleanup
+
+### Scope
+
+- Removed app-owned pytest warning noise from route audit cookie handling and OpenAPI validation.
+- Pinned `requests` and compatible `chardet` versions to avoid dependency mismatch warnings.
+- Added narrow pytest filters for upstream Starlette, Prance, and Prance-triggered OpenAPI validator deprecations.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: upstream deprecation filters should be revisited when FastAPI/Starlette/Prance/OpenAPI validator are upgraded.
+
+### Files changed
+
+- `app/api_route_audit.py`: sends audit cookies via `Cookie` header instead of deprecated per-request `cookies=`.
+- `app/services/provider_inspection.py`: uses `openapi_spec_validator.validate` instead of deprecated `validate_spec`.
+- `requirements.txt`: pins `requests==2.32.5` and `chardet==5.2.0`.
+- `pytest.ini`: adds narrow filters for known upstream-only deprecations.
+- `docs/progress.md`: records warning cleanup and verification.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api_route_audit.py tests/test_provider_inspection.py tests/test_api.py -k "route_audit or provider_inspection or inspect_stt_openapi or inspect_generic_stt_dynamic_field_names"`: passed, 11 tests selected, no warnings shown.
+- `.venv/bin/pytest -q`: passed, 650 tests, 1 skipped, no warnings shown.
+
+### Documentation
+
+- Progress note added for warning cleanup and remaining upstream-filter assumption.
+
+### Risks / assumptions
+
+- Audit cookies are generated internally and contain URL-safe session/CSRF values, so direct `Cookie` header construction is safe for this negative-audit helper.
+- Warning filters are scoped to known third-party modules/messages, not blanket deprecation suppression.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no transcript/note content access or logging changed.
+- Ownership rules preserved: route audit sends same session cookies through headers; endpoint auth behavior unchanged.
+- Deletion semantics preserved: no lifecycle or cascade behavior changed.
+- Provider rules preserved: provider inspection still validates OpenAPI documents and resolves refs; credential handling unchanged.
+- Structured-note contract preserved: no structured output/schema changes.
+
 ## 2026-05-22 Follow-up UI Hook Regression
 
 ### Scope
 
 - Restored follow-up custom prompt textarea hook used by frontend submission, enablement, recording, and clear flows.
-- Rendered recent follow-up/quick-action document titles in the follow-up list so saved generated documents remain switchable and visible.
+- Rendered recent follow-up/quick-action document titles as main labels while keeping prompt/source detail visible.
 - Refined hook regression tests to assert the shared textarea owns both runtime hooks instead of relying on one exact raw attribute string.
 
 ### Checklist
@@ -17,7 +62,8 @@
 
 ### Files changed
 
-- `app/templates/transcribe/_workspace.html`: restores `data-followup-prompt-input` on the shared follow-up context textarea and uses generated document titles in the recent follow-up list.
+- `app/templates/transcribe/_workspace.html`: restores `data-followup-prompt-input` on the shared follow-up context textarea and shows generated document titles plus prompt/source detail in the recent follow-up list.
+- `app/static/js/transcribe/documents.js`: keeps hydrated follow-up history rendering aligned with the server-rendered list.
 - `tests/test_admin_ui.py`: updates freeform follow-up UI assertion to check both runtime hooks on the same empty textarea.
 - `tests/test_web_refactor.py`: replaces brittle exact hook-order check with a co-located textarea hook assertion.
 - `docs/progress.md`: records this fix and verification.
@@ -25,6 +71,8 @@
 ### Tests
 
 - `.venv/bin/pytest -q tests/test_admin_ui.py::test_user_transcribe_page_enables_followups_from_structured_note_content tests/test_admin_ui.py::test_user_transcribe_page_enables_followups_from_freeform_note_content tests/test_admin_ui.py::test_user_transcribe_page_renders_generated_document_switchers tests/test_web_refactor.py::test_followup_redesign_preserves_required_hooks`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_user_transcribe_page_truncates_document_switcher_labels tests/test_admin_ui.py::test_user_transcribe_page_enables_followups_from_structured_note_content tests/test_admin_ui.py::test_user_transcribe_page_enables_followups_from_freeform_note_content tests/test_admin_ui.py::test_user_transcribe_page_renders_generated_document_switchers tests/test_web_refactor.py::test_followup_redesign_preserves_required_hooks`: passed, 5 tests.
+- `node --check app/static/js/transcribe/documents.js`: passed.
 
 ### Documentation
 

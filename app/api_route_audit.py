@@ -553,8 +553,10 @@ def send_case(client: Any, case: AuditCase, scenario: AuditScenario):
             cookies[CSRF_COOKIE_NAME] = csrf_token
             headers["X-CSRF-Token"] = csrf_token
             headers["Origin"] = "http://testserver"
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in cookies.items())
 
-    kwargs: dict[str, Any] = {"params": case.query_params, "headers": headers, "cookies": cookies}
+    kwargs: dict[str, Any] = {"params": case.query_params, "headers": headers}
     if case.json_body is not None:
         kwargs["json"] = case.json_body
     if case.form_data is not None:

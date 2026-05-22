@@ -2203,8 +2203,27 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260522-quick-action-source-guard"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_transcribe_page_does_not_block_on_uncached_stt_health(client, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Clinic Transcribe Fast Paint")
+    admin = make_user(email="fast-paint-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="fast-paint-member@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Slow health STT", base_url="http://127.0.0.1:9300")
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    def fail_if_live_health_checked(*args, **kwargs):
+        raise AssertionError("initial page render should not perform live STT health check")
+
+    monkeypatch.setattr("app.services.stt.httpx.get", fail_if_live_health_checked)
+
+    client.post("/login", data={"email": member.email, "password": "password-2"}, follow_redirects=False)
+    page = client.get("/transcribe")
+
+    assert page.status_code == 200
+    assert "Speech service health has not been checked yet." in page.text
 
 
 def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_user):
@@ -2233,6 +2252,14 @@ def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_u
 
 def _generate_create_form_block(html: str) -> str:
     return html.split("data-generate-output-form", 1)[1].split("</form>", 1)[0]
+
+
+def _quick_action_select_block(html: str) -> str:
+    return html.split('data-quick-action-select', 1)[0].rsplit('<select', 1)[1]
+
+
+def _run_quick_action_trigger_block(html: str) -> str:
+    return html.split('data-run-quick-action-trigger', 1)[0].rsplit('<button', 1)[1]
 
 
 def test_transcribe_create_button_enabled_for_saved_working_note(
@@ -2270,6 +2297,41 @@ def test_transcribe_create_button_enabled_for_saved_working_note(
     assert "disabled" not in _generate_create_form_block(page.text)
 
 
+def test_transcribe_quick_actions_enabled_for_saved_working_note(
+    client,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Working Note Quick Action UI")
+    admin = make_user(email="working-note-qa-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="working-note-qa-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="working-note-qa-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Working note message")
+
+    client.post("/login", data={"email": "working-note-qa-member@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Working note only quick action", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    note_response = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Send a text after results."},
+    )
+    assert note_response.status_code == 200
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}")
+
+    assert page.status_code == 200
+    assert "disabled" not in _quick_action_select_block(page.text)
+    assert "disabled" not in _run_quick_action_trigger_block(page.text)
+
 def test_transcribe_create_button_enabled_for_saved_dictation(
     client,
     db_session,
@@ -2301,6 +2363,38 @@ def test_transcribe_create_button_enabled_for_saved_dictation(
     assert page.status_code == 200
     assert "disabled" not in _generate_create_form_block(page.text)
 
+
+def test_transcribe_quick_actions_enabled_for_saved_dictation(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Dictation Quick Action UI")
+    admin = make_user(email="dictation-qa-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="dictation-qa-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="dictation-qa-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Dictation message")
+
+    client.post("/login", data={"email": "dictation-qa-member@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Dictation only quick action", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    update_post_consultation_dictation(db_session, member, transcript_id=UUID(transcript_id), combined_text="Send patient action list.")
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}")
+
+    assert page.status_code == 200
+    assert "disabled" not in _quick_action_select_block(page.text)
+    assert "disabled" not in _run_quick_action_trigger_block(page.text)
 
 def test_transcribe_create_button_ignores_existing_generated_note_without_source(
     client,
@@ -2777,7 +2871,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260522-quick-action-source-guard" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4123,8 +4217,13 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "hasStructuredContextContent" not in app_js
     assert "data-structured-context-hidden" not in workspace_html
     assert "syncStructuredContextHiddenInputs" not in structured_js
-    assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));" in app_js
+    assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;" in app_js
+    assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));" in app_js
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
+    assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
+    assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
+    assert "showFlash('Select a quick action first.', 'warning');" in actions_js
+    assert "./actions.js?v=20260522-quick-action-source-guard" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -4309,7 +4408,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="trash-2"' in workspace_html
     assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
     assert "not active_template_generation_input_available" in workspace_html
-    assert "not active_note_input_available" in workspace_html
+    assert "not active_quick_action_input_available" in workspace_html
 
 
 def test_generated_document_pii_no_reveal_mode_strips_cached_values():
@@ -4331,7 +4430,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260521-working-note-baseline-helpers" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260522-quick-action-source-guard" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

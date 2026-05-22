@@ -898,6 +898,7 @@ def check_selected_stt_health(
     *,
     purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
     bypass_cache: bool = False,
+    cache_only: bool = False,
 ) -> dict[str, Any]:
     include_details = _stt_health_detail_allowed(actor)
     if actor.team_id is None:
@@ -913,6 +914,13 @@ def check_selected_stt_health(
         cached = _stt_health_cache.get(cache_key)
         if cached is not None and now - cached[0] < _STT_HEALTH_CACHE_TTL_SECONDS:
             return _filter_stt_health_payload(cached[1], include_details=include_details)
+    if cache_only:
+        return _stt_health_response(
+            status="unknown",
+            message="Speech service health has not been checked yet.",
+            checked=False,
+            include_details=include_details,
+        )
 
     checked_at = now
     skip_reason = _stt_health_skip_reason(config)

@@ -490,6 +490,7 @@ def resolve_transcribe_workspace(
     request=None,
     local_dev_emails: set[str] | None = None,
     request_is_localhost_only=None,
+    live_stt_health_check: bool = True,
 ) -> dict[str, object]:
     recent_transcripts = list(
         db.scalars(
@@ -559,7 +560,12 @@ def resolve_transcribe_workspace(
             stt_status_message = _missing_stt_selection_message(team_leader_email=team_leader_email)
         else:
             stt_available = True
-            stt_health = check_selected_stt_health_service(db, current_user, purpose=SttSelectionPurpose.conversation)
+            stt_health = check_selected_stt_health_service(
+                db,
+                current_user,
+                purpose=SttSelectionPurpose.conversation,
+                cache_only=not live_stt_health_check,
+            )
         try:
             dictation_stt_selection = active_team_stt_selection_service(
                 db,
@@ -679,6 +685,7 @@ def resolve_transcribe_workspace(
             or _generated_note_has_content(db, latest_generated_document)
         )
     )
+    active_quick_action_input_available = active_template_generation_input_available
     structured_editor_sections = _structured_editor_sections(
         db,
         generated_document=latest_generated_document,
@@ -745,6 +752,7 @@ def resolve_transcribe_workspace(
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
         "active_note_input_available": active_note_input_available,
+        "active_quick_action_input_available": active_quick_action_input_available,
         "active_template_generation_input_available": active_template_generation_input_available,
         "show_redaction_debug": show_redaction_debug,
         "emis_sections": _default_emis_section_definitions(),
@@ -867,6 +875,7 @@ def render_transcribe(
         request=request,
         local_dev_emails=local_dev_emails,
         request_is_localhost_only=request_is_localhost_only,
+        live_stt_health_check=False,
     )
     workspace_endpoint = "/api/v1/transcribe/workspace"
     workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"

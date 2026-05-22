@@ -8693,6 +8693,33 @@ def test_run_quick_action_rejects_oversized_context_text(
     assert db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id))) is None
 
 
+def test_run_quick_action_rejects_empty_consultation_sources(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Quick Action Empty Sources")
+    owner = make_user(email="owner-quick-empty@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="SMS", prompt_text="Write SMS.")
+
+    login(client, email="owner-quick-empty@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Quick action empty", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    transcript_id = started.json()["id"]
+
+    response = client.post(
+        f"/api/v1/transcripts/{transcript_id}/run-quick-action",
+        json={"quick_action_id": str(quick_action.id)},
+    )
+
+    assert_error(response, status_code=422, code="business_rule_violation", message="Transcript draft is empty")
+    assert db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id))) is None
+
+
 def test_generated_document_keeps_prompt_snapshot_after_template_delete(
     db_session,
     monkeypatch,

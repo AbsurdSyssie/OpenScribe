@@ -526,14 +526,14 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 <div class="followup-step-v2">
 <div class="followup-step-v2__heading-row">
 <div class="followup-step-v2__heading"><span>1</span> Write your follow-up context</div>
-<button type="button" class="btn-ghost-sm" data-quick-action-context-record {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+<button type="button" class="btn-ghost-sm" data-quick-action-context-record {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %}>
 <i data-lucide="mic"></i>
 <span data-quick-action-context-record-label>Record context</span>
 </button>
 </div>
 <label class="followup-field-v2">
 <small>Describe what you want the follow-up to say, include, or achieve.</small>
-<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %} data-quick-action-context-input></textarea>
+<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %} data-quick-action-context-input></textarea>
 </label>
 <div class="followup-count-row-v2">
 <span data-context-char-count data-custom-prompt-char-count>0 / 2000</span>
@@ -554,7 +554,7 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 name="quick_action_id"
 data-quick-action-select
 class="sr-only"
-{% if not active_transcript or not available_quick_actions or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
 {% if not available_quick_actions %}
 <option value="">None available</option>
 {% else %}
@@ -594,7 +594,7 @@ data-quick-action-id="{{ quick_action.id }}"
 data-quick-action-name="{{ quick_action.name }}"
 data-quick-action-description="{{ quick_action.description or '' }}"
 aria-pressed="false"
-{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+{% if not active_transcript or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
 <span class="followup-action-card-v2__icon" aria-hidden="true">
 {% if quick_action_kind == "sms" %}<i data-lucide="message-square"></i>{% elif quick_action_kind == "letter" %}<i data-lucide="file-text"></i>{% elif quick_action_kind == "call" %}<i data-lucide="phone"></i>{% elif quick_action_kind == "results" %}<i data-lucide="chart-column"></i>{% else %}<i data-lucide="sparkles"></i>{% endif %}
 </span>
@@ -611,7 +611,7 @@ data-quick-action-card-run
 data-quick-action-id="{{ quick_action.id }}"
 aria-label="Generate {{ quick_action.name }} without context"
 hidden
-{% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}>
+{% if not active_transcript or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
 <i data-lucide="sparkles"></i>
 </button>
 </div>
@@ -631,7 +631,7 @@ hidden
 <div data-followup-llm-request-slot></div>
 </div>
 <div class="followup-primary-actions-v2">
-<button type="button" class="followup-action-button-v2 followup-action-button-v2--primary" data-run-quick-action-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}><i data-lucide="sparkles"></i> Generate</button>
+<button type="button" class="followup-action-button-v2 followup-action-button-v2--primary" data-run-quick-action-trigger {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %}><i data-lucide="sparkles"></i> Generate</button>
 <button type="button" class="followup-action-button-v2 followup-action-button-v2--secondary" data-followup-clear><i data-lucide="rotate-ccw"></i> Clear</button>
 </div>
 <button type="button" hidden data-generate-followup-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}></button>

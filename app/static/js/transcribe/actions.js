@@ -764,6 +764,10 @@ export function attachTranscribeActions({
       dom.runQuickActionForm?.requestSubmit?.();
       return;
     }
+    if (dom.generateFollowupTrigger?.disabled) {
+      showFlash('Select a quick action first.', 'warning');
+      return;
+    }
     dom.generateFollowupForm?.requestSubmit?.();
   });
 

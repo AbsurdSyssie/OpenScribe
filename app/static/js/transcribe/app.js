@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260521-working-note-final-hardening';
+import { attachTranscribeActions } from './actions.js?v=20260522-quick-action-source-guard';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -2034,10 +2034,14 @@ let statusDetailsHideTimer = null;
         const hasWorkingNote = workingNoteHasContent();
         const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
+        const selectedQuickActionId = runQuickActionSelect?.value || '';
+        const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
-        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && (hasDraft || hasWorkingNote || hasDictation));
-        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput) && hasSelectableOptions(runQuickActionSelect));
+        const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
+        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));
         const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));
+        const canUseFollowupRequest = canGenerateFollowup || canRunQuickAction;
+        const canUsePrimaryFollowupAction = selectedQuickActionId ? canRunQuickAction : canGenerateFollowup;
 
         if (generateOutputTemplateSelect) {
           generateOutputTemplateSelect.disabled = noteGenerationBusy || !canChooseTemplate;
@@ -2058,16 +2062,16 @@ let statusDetailsHideTimer = null;
           runQuickActionSelect.disabled = !canRunQuickAction;
         }
         if (runQuickActionTrigger) {
-          runQuickActionTrigger.disabled = !canGenerateFollowup;
+          runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;
         }
         if (quickActionContextInput) {
-          quickActionContextInput.disabled = !canRunQuickAction;
+          quickActionContextInput.disabled = !canUseFollowupRequest;
         }
         if (quickActionContextRecordButton) {
-          quickActionContextRecordButton.disabled = !canGenerateFollowup;
+          quickActionContextRecordButton.disabled = !canUseFollowupRequest;
         }
         if (recordCustomPromptButton) {
-          recordCustomPromptButton.disabled = !canGenerateFollowup;
+          recordCustomPromptButton.disabled = !canUseFollowupRequest;
         }
         quickActionQuickPicks.forEach((button) => {
           button.disabled = !canRunQuickAction;

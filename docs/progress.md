@@ -1,5 +1,58 @@
 # Progress
 
+## 2026-05-22 Quick Action Source Guard
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept quick-action UI/source guard alignment, rejected zero-source quick-action generation.
+- Quick-action controls now enable when saved transcript text, Working note, or dictation exists, matching backend queue eligibility.
+- Follow-up generation stays on its existing source path and does not implicitly consume Working note.
+- Removed uncached live STT health probes from initial `/transcribe` HTML render to protect LCP TTFB; workspace API and explicit recheck still perform live health checks.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: direct browser QA still useful for selected quick-action primary button state after changing selection.
+
+### Files changed
+
+- `app/web/transcribe_workspace.py`: adds quick-action source availability to template context.
+- `app/templates/transcribe/_workspace.html`: gates quick-action controls with quick-action eligibility instead of generated-note eligibility.
+- `app/static/js/transcribe/app.js`, `app/static/js/transcribe/actions.js`: share source guard between note generation and quick actions, keep follow-up guard separate, avoid falling through to follow-up submit when only quick-action sources exist, and bump the actions module cache key.
+- `app/services/stt.py`: adds cache-only STT health mode for paint-critical page render.
+- `app/templates/transcribe/_shell_extras.html`: bumps app JS asset key.
+- `tests/test_admin_ui.py`, `tests/test_api.py`: cover Working-note/dictation-only quick-action UI enablement and zero-source backend rejection.
+- `docs/working_note_implementation.md`, `docs/api.md`, `working_note_corrections.md`, `docs/progress.md`: document critique and final contract.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "quick_actions_enabled_for_saved_working_note or quick_actions_enabled_for_saved_dictation or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_reorder_blocks_blank_note_lines or transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 5 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility"`: passed, 2 tests after actions module cache-key bump.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_page_does_not_block_on_uncached_stt_health or transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "transcribe_workspace_stt_health_plain_for_user_diagnostic_for_leader or transcribe_stt_health_recheck_bypasses_workspace_cache"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "quick_action_generation_uses_saved_working_note_when_transcript_empty or run_quick_action_rejects_empty_consultation_sources"`: passed, 2 tests after rerun. First parallel attempt exited because shared OpenScribe test database was already in use.
+
+### Documentation
+
+- Working-note implementation and API docs now state quick actions require at least one saved consultation source.
+
+### Risks / assumptions
+
+- Quick-action instructions alone remain insufficient clinical context by design.
+- Server-rendered Generate button can be enabled before a quick action is selected when follow-up is unavailable but a quick-action source exists; JS shows a select-action warning instead of submitting an unsupported follow-up.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content exposure; UI only unlocks existing owner-only quick-action route.
+- Ownership rules preserved: backend owner transcript check unchanged.
+- Deletion semantics preserved: no lifecycle, retention, cascade, or clear behavior changed.
+- Provider rules preserved: provider resolution/redaction path unchanged; zero-source requests still fail before LLM queueing.
+- Structured-note contract preserved: EMIS keys and saved Working-note shape unchanged.
+
 ## 2026-05-21 Pytest Failure Cleanup
 
 ### Scope

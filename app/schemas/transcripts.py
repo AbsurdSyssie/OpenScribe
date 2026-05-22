@@ -104,10 +104,6 @@ class WorkingNoteUpdate(BaseModel):
         return self
 
 
-class WorkingNoteClear(BaseModel):
-    expected_updated_at: datetime | None = None
-
-
 class WorkingNoteDetail(BaseModel):
     transcript_id: UUID
     mode: TranscriptWorkingNoteMode | None = None

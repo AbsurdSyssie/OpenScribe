@@ -1,7 +1,5 @@
 """JSON/API routes extracted from app.main."""
 
-from fastapi import Body
-
 from .. import main as main_module
 from ..main import *  # noqa: F401,F403
 from ..main import (
@@ -20,7 +18,7 @@ from ..schemas import (
     SttConfigDraftReplaceCredentialBody,
     SttConfigFinalizeBody,
 )
-from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
+from ..schemas.transcripts import WorkingNoteDetail, WorkingNoteUpdate
 from ..services.smart_phrases import (
     create_personal_smart_phrase as create_personal_smart_phrase_service,
     delete_personal_smart_phrase as delete_personal_smart_phrase_service,
@@ -937,11 +935,10 @@ def update_transcript_working_note(
 @api.delete("/transcripts/{transcript_id}/working-note", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
 def delete_transcript_working_note(
     transcript_id: UUID,
-    payload: WorkingNoteClear | None = Body(default=None),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    clear_working_note_service(db, context.user, transcript_id=transcript_id, payload=payload)
+    clear_working_note_service(db, context.user, transcript_id=transcript_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

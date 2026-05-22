@@ -1,3 +1,4 @@
+import re
 from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,7 +69,10 @@ def test_followup_redesign_preserves_required_hooks():
     assert "Prompt preview" not in workspace_template
     assert workspace_template.index("data-followup-llm-request-slot") < workspace_template.index("followup-primary-actions-v2")
     assert "maxlength=\"2000\"" in workspace_template
-    assert "data-quick-action-context-input data-followup-prompt-input" in workspace_template
+    assert re.search(
+        r"<textarea\b(?=[^>]*data-quick-action-context-input)(?=[^>]*data-followup-prompt-input)[^>]*>",
+        workspace_template,
+    )
     assert "data-followup-selected-action-name" not in workspace_template
     assert "data-selected-quick-action-run" not in workspace_template
     assert "data-quick-action-card-run" in workspace_template

@@ -6061,7 +6061,21 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
 
     client.post("/api/v1/auth/logout")
     login(client, email="working-owner@example.com", password="password-1")
-    cleared = client.delete(f"/api/v1/transcripts/{transcript_id}/working-note")
+    stale_clear = client.request(
+        "DELETE",
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"expected_updated_at": "2000-01-01T00:00:00+00:00"},
+    )
+    assert_error(stale_clear, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    omitted_expected_clear = client.delete(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert_error(omitted_expected_clear, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    cleared = client.request(
+        "DELETE",
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"expected_updated_at": current_save.json()["updated_at"]},
+    )
     assert cleared.status_code == 204
     cleared_read = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
     assert cleared_read.status_code == 200
@@ -6070,6 +6084,59 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     db_session.refresh(transcript)
     assert transcript.working_note_mode is None
     assert transcript.freeform_working_note_encrypted is None
+
+
+def test_legacy_encrypted_structured_working_note_null_mode_locks_mode_until_clear(client, db_session, make_team, make_user):
+    team = make_team(name="Legacy Working Note Clinic")
+    owner = make_user(email="legacy-working-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Legacy structured note",
+        current_draft_text_encrypted=None,
+        structured_context_json=None,
+        working_note_mode=None,
+        working_note_updated_at=None,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.structured_context_json = encrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        plaintext={"profile": "emis", "sections": {"problem": ["Known asthma"]}},
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="legacy-working-owner@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}/working-note")
+    assert detail.status_code == 200
+    assert detail.json()["mode"] == "structured"
+    assert detail.json()["structured_note"] == {"profile": "emis", "sections": {"problem": ["Known asthma"]}}
+    assert detail.json()["updated_at"] is None
+
+    overwrite = client.patch(
+        f"/api/v1/transcripts/{transcript.id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Do not overwrite legacy structured note."},
+    )
+    assert_error(overwrite, status_code=409, code="business_rule_violation", message="Clear the working note before switching mode.")
+
+    cleared = client.delete(f"/api/v1/transcripts/{transcript.id}/working-note")
+    assert cleared.status_code == 204
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript.id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Fresh freeform note."},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["mode"] == "freeform"
+    assert saved.json()["freeform_text"] == "Fresh freeform note."
 
 
 def test_template_generation_uses_saved_working_note_when_transcript_empty(

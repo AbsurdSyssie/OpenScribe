@@ -84,6 +84,8 @@ Browser navigation behavior:
 - `GET /api/v1/transcripts/{transcript_id}/working-note`
 - `PATCH /api/v1/transcripts/{transcript_id}/working-note`
 - `DELETE /api/v1/transcripts/{transcript_id}/working-note`
+- `PATCH /working-note` and `DELETE /working-note` use `expected_updated_at` optimistic concurrency for saved notes; stale or omitted timestamps return `409 conflict` when server content has changed
+- legacy encrypted structured working notes with null `working_note_mode` are still returned as `structured` and remain mode-locked until explicitly cleared
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`

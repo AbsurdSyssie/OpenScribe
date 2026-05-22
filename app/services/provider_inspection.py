@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 import httpx
 from jsonpath_ng import parse as parse_jsonpath
 from openapi_spec_validator.exceptions import OpenAPISpecValidatorError
-from openapi_spec_validator import validate_spec
+from openapi_spec_validator import validate
 from openapi_spec_validator.validation.exceptions import OpenAPIValidationError
 from prance import ResolvingParser
 from prance.util.resolver import RESOLVE_INTERNAL
@@ -42,7 +42,7 @@ def fetch_openapi_document(
 
 def _validate_openapi_document(document: dict[str, Any]) -> None:
     try:
-        validate_spec(document)
+        validate(document)
     except (OpenAPIValidationError, OpenAPISpecValidatorError) as exc:
         raise AppError(422, "business_rule_violation", "OpenAPI document failed schema validation") from exc
 

@@ -502,7 +502,11 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if followup_documents %}
 {% for document in followup_documents %}
 <button type="button" class="followup-recent-item-v2{% if latest_followup_document and document.id == latest_followup_document.id %} is-selected{% endif %}" data-document-id="{{ document.id }}" data-document-kind="followup">
-<span>{{ document.title or document.source_quick_action_name or document.follow_up_prompt_text }}</span>
+<span>
+{{ document.title or document.source_quick_action_name or document.follow_up_prompt_text }}
+{% set followup_detail = document.follow_up_prompt_text or document.source_quick_action_name %}
+{% if followup_detail and followup_detail != document.title %}<small>{{ followup_detail }}</small>{% endif %}
+</span>
 <span>{{ document.created_at }} <i data-lucide="chevron-right"></i></span>
 </button>
 {% endfor %}

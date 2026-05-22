@@ -22,7 +22,7 @@ from app.models import (
     transcript_expiry,
     utcnow,
 )
-from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS, TranscriptCreate, TranscriptStart, WorkingNoteClear, WorkingNoteUpdate
+from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS, TranscriptCreate, TranscriptStart, WorkingNoteUpdate
 from app.services.audio import (
     enforce_whole_file_duration_limit,
     inspect_audio_duration_seconds,
@@ -454,33 +454,22 @@ def normalize_structured_working_note(raw_value: dict | None) -> dict | None:
     return {"profile": "emis", "sections": normalized_sections}
 
 
-def _working_note_content_mode(db: Session, *, transcript: Transcript) -> TranscriptWorkingNoteMode | None:
-    if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
-        return TranscriptWorkingNoteMode.freeform if freeform_working_note_text(db, transcript=transcript).strip() else None
-    if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
-        return TranscriptWorkingNoteMode.structured if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None else None
-    if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None:
-        return TranscriptWorkingNoteMode.structured
-    if freeform_working_note_text(db, transcript=transcript).strip():
-        return TranscriptWorkingNoteMode.freeform
-    return None
-
-
 def transcript_has_working_note(db: Session, *, transcript: Transcript) -> bool:
-    return _working_note_content_mode(db, transcript=transcript) is not None
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
+        return bool(freeform_working_note_text(db, transcript=transcript).strip())
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
+        return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+    return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
 
 
 def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dict:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
     structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
     mode = transcript.working_note_mode or (TranscriptWorkingNoteMode.structured if structured_note is not None else None)
-    freeform_text = freeform_working_note_text(db, transcript=transcript) if mode is TranscriptWorkingNoteMode.freeform or mode is None else ""
-    if mode is None and freeform_text.strip():
-        mode = TranscriptWorkingNoteMode.freeform
     return {
         "transcript_id": transcript.id,
         "mode": mode,
-        "freeform_text": freeform_text if mode is TranscriptWorkingNoteMode.freeform else "",
+        "freeform_text": freeform_working_note_text(db, transcript=transcript) if mode is TranscriptWorkingNoteMode.freeform else "",
         "structured_note": structured_note if mode is TranscriptWorkingNoteMode.structured else None,
         "updated_at": transcript.working_note_updated_at,
     }
@@ -501,13 +490,12 @@ def _assert_working_note_update_current(transcript: Transcript, expected_updated
 def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
     _assert_working_note_update_current(transcript, payload.expected_updated_at)
-    existing_content_mode = _working_note_content_mode(db, transcript=transcript)
-    if existing_content_mode is not None and existing_content_mode is not payload.mode:
+    if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
         raise AppError(
             409,
             "business_rule_violation",
             "Clear the working note before switching mode.",
-            {"code": "working_note_mode_locked", "working_note_mode": existing_content_mode.value},
+            {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value},
         )
     if payload.mode is TranscriptWorkingNoteMode.freeform:
         clean_text = (payload.freeform_text or "").strip()
@@ -530,10 +518,8 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
     return transcript
 
 
-def clear_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteClear | None = None) -> None:
+def clear_working_note(db: Session, actor: User, *, transcript_id: UUID) -> None:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
-    if transcript_has_working_note(db, transcript=transcript):
-        _assert_working_note_update_current(transcript, payload.expected_updated_at if payload else None)
     transcript.working_note_mode = None
     set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
     set_transcript_structured_context(db, transcript=transcript, plaintext=None)

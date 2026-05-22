@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-05-22 Working Note Safety Corrections
+
+### Scope
+
+- Critiqued `working_note_corrections.md`; kept two data-safety blockers, rejected restoring transient structured-context generation payloads.
+- Legacy encrypted structured Working notes with null `working_note_mode` now infer `structured` at runtime and remain mode-locked until clear.
+- `DELETE /working-note` now uses `expected_updated_at` optimistic concurrency for timestamped saved notes; frontend sends current timestamp.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: legacy no-timestamp notes cannot be stale-guarded, so clear remains allowed for those rows.
+
+### Files changed
+
+- `app/schemas/transcripts.py`: adds clear payload schema.
+- `app/services/transcripts.py`: adds runtime content-mode inference and clear conflict guard.
+- `app/routes/api_routes.py`: accepts optional DELETE body for clear concurrency.
+- `app/static/js/transcribe/app.js`: sends Working-note timestamp when clearing.
+- `app/templates/transcribe/_shell_extras.html`: bumps app JS asset key for clear-guard frontend change.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover stale clear rejection, legacy encrypted structured mode lock, and asset-key bump.
+- `docs/working_note_implementation.md`, `docs/api.md`, `working_note_corrections.md`, `docs/progress.md`: document critique and final contract.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note_routes_enforce_owner_mode_lock_and_clear or legacy_encrypted_structured_working_note_null_mode_locks_mode_until_clear"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility"`: passed, 1 test.
+
+### Documentation
+
+- Working-note docs and API docs now describe delete concurrency and legacy encrypted structured inference.
+
+### Risks / assumptions
+
+- Saved Working note remains only structured generation source; old transient structured-context payload path is intentionally not restored.
+- Runtime inference is preferred over decrypting user content in Alembic migration.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content exposure; inference decrypts only through owner-scoped Working-note reads/saves.
+- Ownership rules preserved: all routes still use owner transcript lookup.
+- Deletion semantics strengthened: clear still deletes immediately, now conflict-guarded when a timestamp exists.
+- Provider rules preserved: no provider resolution, credential, or redaction provider changes.
+- Structured-note contract preserved: EMIS allowed section keys and saved Working-note snapshot contract unchanged.
+
 ## 2026-05-22 Quick Action Source Guard
 
 ### Scope

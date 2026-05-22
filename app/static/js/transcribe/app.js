@@ -3192,6 +3192,8 @@ let statusDetailsHideTimer = null;
           const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
             method: 'DELETE',
             credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_updated_at: activeWorkingNote?.updated_at || null }),
           });
           if (!response.ok) {
             showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');

@@ -463,23 +463,35 @@ def normalize_structured_working_note(raw_value: dict | None) -> dict | None:
 
 
 def transcript_has_working_note(db: Session, *, transcript: Transcript) -> bool:
+    return transcript_working_note_mode(db, transcript=transcript) is not None
+
+
+def transcript_working_note_mode(db: Session, *, transcript: Transcript) -> TranscriptWorkingNoteMode | None:
     if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
-        return bool(freeform_working_note_text(db, transcript=transcript).strip())
+        return TranscriptWorkingNoteMode.freeform if freeform_working_note_text(db, transcript=transcript).strip() else None
     if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
-        return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
-    return normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+        return (
+            TranscriptWorkingNoteMode.structured
+            if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+            else None
+        )
+    return (
+        TranscriptWorkingNoteMode.structured
+        if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
+        else None
+    )
 
 
 def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dict:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
     structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
-    mode = transcript.working_note_mode or (TranscriptWorkingNoteMode.structured if structured_note is not None else None)
+    mode = transcript_working_note_mode(db, transcript=transcript)
     return {
         "transcript_id": transcript.id,
         "mode": mode,
         "freeform_text": freeform_working_note_text(db, transcript=transcript) if mode is TranscriptWorkingNoteMode.freeform else "",
         "structured_note": structured_note if mode is TranscriptWorkingNoteMode.structured else None,
-        "updated_at": transcript.working_note_updated_at,
+        "updated_at": transcript.working_note_updated_at if mode is not None else None,
     }
 
 

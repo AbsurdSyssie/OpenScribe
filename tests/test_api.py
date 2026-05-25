@@ -6058,6 +6058,11 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     )
     assert current_save.status_code == 200
     assert current_save.json()["freeform_text"] == "Clinician plan: review BP in two weeks."
+    listed = client.get(f"/api/v1/users/{owner.id}/transcripts")
+    assert listed.status_code == 200
+    listed_transcript = next(item for item in listed.json() if item["id"] == transcript_id)
+    assert listed_transcript["working_note_mode"] == "freeform"
+    assert listed_transcript["has_working_note"] is True
 
     clear_without_version = client.request("DELETE", f"/api/v1/transcripts/{transcript_id}/working-note")
     assert_error(clear_without_version, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
@@ -6128,6 +6133,46 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
         code="validation_error",
         message="Structured working note contains unsupported section keys",
     )
+
+
+def test_empty_legacy_structured_working_note_does_not_lock_mode(client, db_session, make_team, make_user):
+    team = make_team(name="Empty Legacy Working Note")
+    owner = make_user(email="empty-legacy-working@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Empty legacy note",
+        working_note_mode=TranscriptWorkingNoteMode.structured,
+        working_note_updated_at=utcnow(),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.recording,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    transcript.structured_context_json = encrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        plaintext={"profile": "emis", "sections": {}},
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    login(client, email="empty-legacy-working@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}/working-note")
+    assert detail.status_code == 200
+    assert detail.json()["mode"] is None
+    assert detail.json()["structured_note"] is None
+    assert detail.json()["updated_at"] is None
+
+    listed = client.get(f"/api/v1/users/{owner.id}/transcripts")
+    assert listed.status_code == 200
+    listed_transcript = next(item for item in listed.json() if item["id"] == str(transcript.id))
+    assert listed_transcript["working_note_mode"] is None
+    assert listed_transcript["has_working_note"] is False
 
 
 def test_transcript_patch_rejects_invalid_structured_context_without_clearing_working_note(
@@ -6372,6 +6417,90 @@ def test_template_generation_fails_closed_when_working_note_redaction_fails(
     assert provider_called is False
     db_session.refresh(document)
     assert document.llm_request_payload_json_encrypted is None
+
+
+def test_followup_generation_uses_saved_working_note_when_transcript_empty(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Working Note Followup")
+    admin = make_user(email="working-followup-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="working-followup-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+
+    class FakeTaskResult:
+        id = "working-note-followup-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    captured_provider_request = {}
+
+    def fake_generate_openai(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "Generated follow-up body", {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "duration_ms": 5}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    redaction_inputs = []
+
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
+        redaction_inputs.append(text)
+        has_name = "Jane Smith" in text
+        return {
+            "redacted_text": text.replace("Jane Smith", f"[PHI-{start_index}]"),
+            "phi_mapping": {"phi-1": {"type": "PERSON", "value": "Jane Smith"}} if has_name else {},
+            "phi_index": [{"index": start_index, "type": "PERSON", "value": "Jane Smith", "placeholder": f"[PHI-{start_index}]"}] if has_name else [],
+            "phi_count": 1 if has_name else 0,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
+    login(client, email="working-followup-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Jane Smith wants SMS follow-up after blood results."},
+    )
+    assert saved.status_code == 200
+
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript_id}/generate-followup",
+        json={"prompt_text": "Send patient update after bloods."},
+    )
+    assert generated.status_code == 202
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert document is not None
+    assert document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform
+    assert decrypt_generated_document_field(db_session, document, "freeform_working_note_snapshot_encrypted") == "Jane Smith wants SMS follow-up after blood results."
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert redaction_inputs == [
+        "Jane Smith wants SMS follow-up after blood results.",
+        "Send patient update after bloods.",
+    ]
+    user_message = captured_provider_request["messages"][1]["content"]
+    assert "Consultation transcript:\n" in user_message
+    assert "Consultation working note:\nFreeform working note:\n[PHI-1] wants SMS follow-up after blood results." in user_message
+    assert "Jane Smith" not in user_message
+    assert "Follow-up request:\nSend patient update after bloods." in user_message
+    versions = list(db_session.scalars(select(TranscriptVersion).where(TranscriptVersion.transcript_id == UUID(transcript_id))))
+    assert len(versions) == 1
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=versions[0].id,
+        stored_value=versions[0].text_encrypted,
+    ) == ""
 
 
 def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(

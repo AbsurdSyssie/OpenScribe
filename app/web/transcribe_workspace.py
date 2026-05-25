@@ -68,6 +68,7 @@ from ..services.transcripts import (
     manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_draft_text as transcript_draft_text_service,
     transcript_has_working_note as transcript_has_working_note_service,
+    transcript_working_note_mode as transcript_working_note_mode_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
     working_note_detail as working_note_detail_service,
@@ -317,6 +318,7 @@ def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
 def transcript_list_item_response(db: Session, transcript: Transcript) -> TranscriptListItem:
     payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
     payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+    payload["working_note_mode"] = transcript_working_note_mode_service(db, transcript=transcript)
     payload["has_working_note"] = transcript_has_working_note_service(db, transcript=transcript)
     return TranscriptListItem.model_validate(payload)
 

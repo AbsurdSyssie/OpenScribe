@@ -1,5 +1,44 @@
 # Progress
 
+## 2026-05-25 Working-note Follow-up Contract
+
+### Scope
+
+- Follow-up generation now supports Working-note-only consultations.
+- Follow-up jobs snapshot saved Working note, redact it, and include only redacted Working-note text in outbound LLM prompts.
+- Empty legacy structured Working-note mode no longer locks the UI when normalized content is empty.
+- Transcript list API now populates `working_note_mode` and `has_working_note` from decrypted/normalized content.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/templates.py`: follow-up queue/process path now uses saved Working-note snapshot and redaction helper.
+- `app/services/transcripts.py`, `app/web/transcribe_workspace.py`, `app/routes/api_routes.py`: derive public Working-note summary from normalized content and use it in list/detail responses.
+- `app/static/js/transcribe/actions.js`, `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: save dirty Working note before follow-up submit, enable follow-up from transcript or Working note, and bump cache keys.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover Working-note-only follow-up generation, empty legacy mode, list summaries, and frontend wiring.
+- `docs/transcript-capture.md`, `docs/working_note_implementation.md`, `docs/testing.md`, `docs/progress.md`: document follow-up Working-note contract.
+
+### Tests
+
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note_routes_enforce_owner_mode_lock_and_clear or empty_legacy_structured_working_note_does_not_lock_mode or followup_generation_uses_saved_working_note_when_transcript_empty or followup_generation_queues_and_processes_with_owner_scope"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility or user_transcribe_page_shows_workspace_shell"`: passed, 3 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: follow-up prompts use redacted Working-note snapshot, not raw Working-note text.
+- Ownership rules preserved: transcript and Working-note reads remain owner-only.
+- Deletion semantics preserved: no delete path changed; empty legacy response normalization does not mutate content.
+- Provider rules preserved: existing LLM and redaction provider resolution reused.
+- Structured-note contract preserved: EMIS normalization remains source of truth for structured Working-note content.
+
 ## 2026-05-25 Working-note Review Race Fixes
 
 ### Scope

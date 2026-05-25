@@ -41,7 +41,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - `PATCH /api/v1/transcripts/{transcript_id}/working-note`
 - `DELETE /api/v1/transcripts/{transcript_id}/working-note`
 - Keep generic transcript metadata updates separate from working-note content and mode-lock rules.
-- Existing `structured_context_json` transcript patch behavior may remain temporarily during UI migration.
+- Existing `structured_context_json` transcript patch behavior may remain temporarily during UI migration for valid non-empty EMIS payloads only. Empty, non-EMIS, or otherwise invalid payloads are rejected so legacy transcript metadata PATCH calls cannot clear Working notes outside the versioned Working-note clear endpoint.
 - `PATCH /working-note` accepts either freeform or structured payloads:
 
 ```json
@@ -125,7 +125,8 @@ Preserve clinician-authored note content separately from generated note output. 
 - Template generation may proceed when at least one source has content: transcript text, working note, or saved dictation.
 - Generation blocks when all sources are empty.
 - Saved structured Working notes are represented only through generated-document Working-note snapshots, not generated-document structured context. Generation requests reject transient `structured_context`; callers must save Working note content first.
-- Quick actions include the saved Working note as labelled clinician-authored context, using the same encrypted generated-document Working-note snapshot/redaction path as template generation.
+- Quick actions save dirty Working-note edits before enqueue, then include the saved Working note as labelled clinician-authored context, using the same encrypted generated-document Working-note snapshot/redaction path as template generation.
+- Quick actions must send only the redacted Working-note form to the LLM provider.
 - Quick-action UI enablement uses the same saved-source eligibility as template generation: transcript text, saved Working note, or saved dictation. It must not require an existing generated note.
 - Quick actions still block when all saved consultation sources are empty; quick-action instructions alone are not enough clinical context for source-bounded output.
 - Follow-ups do not automatically include Working note unless user explicitly supplies context.

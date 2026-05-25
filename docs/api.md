@@ -411,6 +411,7 @@ Current LLM-configuration behavior:
 - the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
 - normal team users may patch only their own ready note documents through `/api/v1/generated-documents/{generated_document_id}`
 - note save requests must include `expected_updated_at`; stale revisions return `409 conflict`
+- Working-note save and clear requests use `expected_updated_at` for optimistic concurrency. Clearing an existing Working note without the current token, or saving with a stale token after another tab clears it, returns `409 conflict`.
 - one team may have multiple provisioned LLM config rows
 - one team may have only one active LLM selection row
 
@@ -485,12 +486,13 @@ Current generation behavior:
   - `investigations`
 - structured template versions store per-section instructions in `template_versions.config_json`
 - structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
-- quick action generation uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; at least one saved consultation source is required
+- quick action generation always uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
 - the current transcript session stores structured Working note content in `transcripts.structured_context_json`
 - `/transcribe` reloads EMIS context fields from that transcript-backed state
 - when template or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
 - for structured notes, backend validation:
   - rejects user-submitted section keys outside the configured EMIS subset
+  - rejects unsupported saved Working-note section keys instead of dropping them
   - validates saved Working note EMIS sections through the Working-note API
   - drops empty sections
   - preserves configured section order

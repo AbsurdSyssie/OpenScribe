@@ -32,7 +32,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Do not rename existing structured context DB column in first slice unless needed.
 - Structured working note supports EMIS profile in MVP.
 - Validate structured content against allowed EMIS section keys.
-- Migration backfills mode to `structured` only when existing structured context has at least one non-empty allowed section.
+- Migration backfills mode to `structured` when existing plaintext structured context has at least one non-empty allowed section, or when the legacy value is already an encrypted owner-content envelope that must be treated as existing structured Working note content for mode-lock/concurrency purposes.
 
 ## API Direction
 
@@ -84,7 +84,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Response includes `mode` even when null so UI can render unlocked state.
 - If `PATCH /working-note` sends a different mode while existing working-note content locks the transcript, return `409 business_rule_violation` with detail code `working_note_mode_locked`.
 - User-facing message: "Clear the working note before switching mode."
-- `DELETE /working-note` requires no request body confirmation. UI confirms before calling it. API deletes owner working-note content immediately and returns `204`.
+- `DELETE /working-note` accepts `expected_updated_at` in the request body when a saved Working note exists. UI confirms before calling it. API deletes owner working-note content immediately and returns `204`; stale or omitted version tokens for existing notes return `409 conflict`.
 - Transcript list/detail responses may include summary fields only: `working_note_mode` and `has_working_note`.
 - Full working-note content comes from workspace payload or `GET /working-note`.
 - Do not bloat generic transcript responses with working-note content unless the workspace specifically needs it.
@@ -95,6 +95,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - `PATCH /working-note` rejects whitespace-only freeform text with `422` and instructs caller to clear/delete instead.
 - Trim for validation. Preserve useful internal line formatting for valid text. Follow existing editor normalization for leading/trailing whitespace.
 - Structured `PATCH /working-note` omits empty sections.
+- Structured `PATCH /working-note` rejects unsupported EMIS section keys instead of silently dropping clinician-entered text.
 - If all structured sections are empty, reject with `422` and instruct caller to clear/delete instead.
 - Empty structured saves must not lock mode.
 - Add `working_note_updated_at` for UI saved state.
@@ -159,7 +160,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Note generation submit uses one client-side in-flight enqueue guard and one app-owned post-success flow shared by the normal Generate form and dictation Save & generate flow. The guard snapshots the active transcript id before awaiting the Working-note save, returns the existing in-flight promise on duplicate submits, treats the first template request as authoritative while template controls are locked, merges duplicate dictation-modal close intent, and lasts until the save/enqueue request settles.
 - Generation blocks while working-note editor has unsaved or failed-save state.
 - Working-note saves use the same note-editor dirty/save/queued/conflict machinery as generated-note edits; only the save endpoint/payload differs.
-- Working-note PATCH may include `expected_updated_at`; stale values return `409 conflict` instead of overwriting newer content.
+- Working-note PATCH may include `expected_updated_at`; stale values return `409 conflict` instead of overwriting newer content. A non-null expected version also conflicts after another tab has cleared the note, so old saves cannot recreate deleted content.
 - Dirty Working-note edits preserve their initial timestamp baseline through pure note-save baseline helpers; an empty client baseline means "no saved note existed when editing began" and must be sent as `null`, not replaced with a newer workspace refresh timestamp.
 - Dirty generated-note and Working-note saves select optimistic-lock baselines by current editor target; a stale dirty target must not supply another note's baseline.
 - Structured Working note virtual sections provide plaintext line content through `section.text`; the shared structured editor must parse that alongside generated-note section text fields.

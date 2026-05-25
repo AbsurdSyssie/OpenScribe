@@ -31,22 +31,33 @@ def upgrade() -> None:
         UPDATE transcripts
         SET working_note_mode = 'structured', working_note_updated_at = created_at
         WHERE structured_context_json IS NOT NULL
-          AND jsonb_typeof(structured_context_json::jsonb) = 'object'
-          AND jsonb_typeof((structured_context_json::jsonb)->'sections') = 'object'
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_each((structured_context_json::jsonb)->'sections') AS section(key, value)
-            WHERE key IN ('problem', 'history', 'family_history', 'social_history', 'examination', 'comment', 'tasks', 'investigations')
-              AND (
-                (jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> '')
-                OR (
-                  jsonb_typeof(value) = 'array'
-                  AND EXISTS (
-                    SELECT 1 FROM jsonb_array_elements_text(value) AS item(text)
-                    WHERE btrim(item.text) <> ''
+          AND (
+            (
+              jsonb_typeof(structured_context_json::jsonb) = 'object'
+              AND jsonb_typeof((structured_context_json::jsonb)->'sections') = 'object'
+              AND EXISTS (
+                SELECT 1
+                FROM jsonb_each((structured_context_json::jsonb)->'sections') AS section(key, value)
+                WHERE key IN ('problem', 'history', 'family_history', 'social_history', 'examination', 'comment', 'tasks', 'investigations')
+                  AND (
+                    (jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> '')
+                    OR (
+                      jsonb_typeof(value) = 'array'
+                      AND EXISTS (
+                        SELECT 1 FROM jsonb_array_elements_text(value) AS item(text)
+                        WHERE btrim(item.text) <> ''
+                      )
+                    )
                   )
-                )
               )
+            )
+            OR (
+              jsonb_typeof(structured_context_json::jsonb) = 'string'
+              AND (structured_context_json::jsonb #>> '{}') LIKE '{"alg":"AES-256-GCM",%'
+              AND (structured_context_json::jsonb #>> '{}') LIKE '%"ct":%'
+              AND (structured_context_json::jsonb #>> '{}') LIKE '%"n":%'
+              AND (structured_context_json::jsonb #>> '{}') LIKE '%"v"%'
+            )
           )
         """
     )

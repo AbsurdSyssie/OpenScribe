@@ -1594,6 +1594,100 @@ def test_alembic_backfills_llm_setup_status():
 
 
 @pytest.mark.migration
+def test_working_note_migration_backfills_encrypted_structured_context():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "g6b7c9d1e2f3")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000170',
+                    'Clinic Working Note',
+                    'clinic working note',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000171',
+                    'Working Note Owner',
+                    'working-note-migration@example.com',
+                    'hash',
+                    '00000000-0000-0000-0000-000000000170',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    true,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, title, current_draft_text_encrypted, structured_context_json,
+                    ingestion_mode, status, next_live_chunk_sequence_no_applied, retention_days_applied,
+                    retention_expires_at, created_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000172',
+                    '00000000-0000-0000-0000-000000000171',
+                    '00000000-0000-0000-0000-000000000170',
+                    'Encrypted structured context',
+                    NULL,
+                    to_json(CAST(:envelope AS text)),
+                    'whole_file',
+                    'ready',
+                    1,
+                    30,
+                    NOW() + INTERVAL '30 days',
+                    NOW()
+                )
+                """
+            ),
+            {"envelope": '{"alg":"AES-256-GCM","ct":"abc","dkv":1,"n":"abc","v":1}'},
+        )
+
+    command.upgrade(alembic_config(), "r7s8t9u0v1w2")
+
+    with isolated_engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT working_note_mode, working_note_updated_at
+                FROM transcripts
+                WHERE id = '00000000-0000-0000-0000-000000000172'
+                """
+            )
+        ).one()
+
+    assert row.working_note_mode == "structured"
+    assert row.working_note_updated_at is not None
+
+
+@pytest.mark.migration
 def test_alembic_head_supports_simplified_transcript_ingestion_mode():
     reset_public_schema()
     command.upgrade(alembic_config(), "head")

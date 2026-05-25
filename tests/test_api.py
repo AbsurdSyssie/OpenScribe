@@ -5989,10 +5989,25 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
 
 def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_session, make_team, make_user):
     team = make_team(name="Working Note Clinic")
-    owner = make_user(email="working-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
-    other = make_user(email="working-other@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    owner = make_user(
+        email="working-owner@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    other = make_user(
+        email="working-other@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
 
-    login(client, email="working-owner@example.com", password="password-1")
+    login_response = login(client, email="working-owner@example.com", password="password-1")
+    assert login_response.status_code == 200, login_response.text
     started = client.post("/api/v1/transcripts/start", json={"title": "Working note visit", "ingestion_mode": "whole_file"})
     assert started.status_code == 201
     transcript_id = started.json()["id"]
@@ -6044,6 +6059,9 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     assert current_save.status_code == 200
     assert current_save.json()["freeform_text"] == "Clinician plan: review BP in two weeks."
 
+    clear_without_version = client.request("DELETE", f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert_error(clear_without_version, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
     mode_switch = client.patch(
         f"/api/v1/transcripts/{transcript_id}/working-note",
         json={
@@ -6055,13 +6073,26 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     assert_error(mode_switch, status_code=409, code="business_rule_violation", message="Clear the working note before switching mode.")
 
     client.post("/api/v1/auth/logout")
-    login(client, email="working-other@example.com", password="password-2")
+    login_response = login(client, email="working-other@example.com", password="password-2")
+    assert login_response.status_code == 200, login_response.text
     forbidden = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
     client.post("/api/v1/auth/logout")
-    login(client, email="working-owner@example.com", password="password-1")
-    cleared = client.delete(f"/api/v1/transcripts/{transcript_id}/working-note")
+    login_response = login(client, email="working-owner@example.com", password="password-1")
+    assert login_response.status_code == 200, login_response.text
+    stale_clear = client.request(
+        "DELETE",
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"expected_updated_at": saved.json()["updated_at"]},
+    )
+    assert_error(stale_clear, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    cleared = client.request(
+        "DELETE",
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"expected_updated_at": current_save.json()["updated_at"]},
+    )
     assert cleared.status_code == 204
     cleared_read = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
     assert cleared_read.status_code == 200
@@ -6070,6 +6101,33 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     db_session.refresh(transcript)
     assert transcript.working_note_mode is None
     assert transcript.freeform_working_note_encrypted is None
+
+    stale_resurrection = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "freeform",
+            "expected_updated_at": current_save.json()["updated_at"],
+            "freeform_text": "Do not recreate a cleared working note.",
+        },
+    )
+    assert_error(stale_resurrection, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    unsupported_section = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "structured",
+            "structured_note": {
+                "profile": "emis",
+                "sections": {"problem": ["Hypertension"], "typo_section": ["Do not drop me"]},
+            },
+        },
+    )
+    assert_error(
+        unsupported_section,
+        status_code=422,
+        code="validation_error",
+        message="Structured working note contains unsupported section keys",
+    )
 
 
 def test_template_generation_uses_saved_working_note_when_transcript_empty(

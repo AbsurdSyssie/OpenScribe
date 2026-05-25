@@ -1,5 +1,45 @@
 # Progress
 
+## 2026-05-24 Working-note Review Fixes
+
+### Scope
+
+- Kept quick actions as full-context generation: saved Working note is expected to be redacted and included automatically.
+- Added optimistic concurrency to Working-note clear, including stale clear rejection and stale save-after-clear rejection.
+- Rejected unsupported EMIS Working-note section keys instead of dropping clinician text.
+- Backfilled encrypted legacy `structured_context_json` values into structured Working-note mode locks.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/transcripts.py`: strict structured key validation and Working-note version conflict handling.
+- `app/routes/api_routes.py`, `app/schemas/transcripts.py`: clear payload with `expected_updated_at`.
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: clear request sends current token and app cache key bumped.
+- `alembic/versions/r7s8t9u0v1w2_add_working_notes.py`: encrypted legacy structured context backfill.
+- `tests/test_api.py`, `tests/test_migrations.py`, `tests/test_admin_ui.py`: concurrency, validation, migration, and asset-version coverage.
+- `docs/api.md`, `docs/working_note_implementation.md`, `docs/testing.md`, `docs/progress.md`: contract and verification notes.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note or quick_action_generation_uses_saved_working_note"` with `COOKIE_SECURE_MODE=never`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "working_note_migration_backfills_encrypted_structured_context"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility or working_note"` with `COOKIE_SECURE_MODE=never`: passed, 4 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: quick actions intentionally use saved Working note only after redaction; no new content visibility or logging.
+- Ownership rules preserved: owner transcript lookup still gates read/save/clear.
+- Deletion semantics preserved: clear remains immediate deletion, now protected from stale tabs.
+- Provider rules preserved: no provider resolution or credential flow changed.
+- Structured-note contract preserved: unsupported EMIS section keys now fail closed.
+
 ## 2026-05-22 Pytest Warning Cleanup
 
 ### Scope

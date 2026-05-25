@@ -430,6 +430,14 @@ def normalize_structured_working_note(raw_value: dict | None) -> dict | None:
     sections = raw_value.get("sections")
     if profile != "emis" or not isinstance(sections, dict):
         return None
+    unsupported_section_keys = sorted(set(sections) - set(EMIS_WORKING_NOTE_SECTION_KEYS))
+    if unsupported_section_keys:
+        raise AppError(
+            422,
+            "validation_error",
+            "Structured working note contains unsupported section keys",
+            {"section_keys": unsupported_section_keys},
+        )
     normalized_sections: dict[str, list[str]] = {}
     total_chars = 0
     for section_key in EMIS_WORKING_NOTE_SECTION_KEYS:
@@ -477,6 +485,8 @@ def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dic
 
 def _assert_working_note_update_current(transcript: Transcript, expected_updated_at: datetime | None) -> None:
     if transcript.working_note_updated_at is None:
+        if expected_updated_at is not None:
+            raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
         return
     if expected_updated_at is None:
         raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
@@ -518,8 +528,9 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
     return transcript
 
 
-def clear_working_note(db: Session, actor: User, *, transcript_id: UUID) -> None:
+def clear_working_note(db: Session, actor: User, *, transcript_id: UUID, expected_updated_at: datetime | None = None) -> None:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    _assert_working_note_update_current(transcript, expected_updated_at)
     transcript.working_note_mode = None
     set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
     set_transcript_structured_context(db, transcript=transcript, plaintext=None)

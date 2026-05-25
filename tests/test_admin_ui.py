@@ -2205,7 +2205,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260525-followup-working-note"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260525-working-note-save-drain"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2873,7 +2873,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260525-followup-working-note" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260525-working-note-save-drain" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4261,6 +4261,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "saveWorkingNoteBeforeGeneration" in app_js
     assert "await saveWorkingNoteBeforeGeneration?.();" in actions_js
     assert "Clear the working note before generating." in app_js
+    assert "const persistNoteEditsUntilDrained = async ({ keepalive = false } = {}) => {" in app_js
+    assert "noteSaveQueued = true;\n            savedDocument = await noteSaveInFlight;" in app_js
+    assert "const saved = await persistNoteEditsUntilDrained({ keepalive: false });" in app_js
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "let noteGenerationInFlight = null;" in app_js
     assert "let noteGenerationBusy = false;" in app_js
@@ -4436,7 +4439,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260525-followup-working-note" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260525-working-note-save-drain" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

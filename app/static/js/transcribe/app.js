@@ -667,6 +667,27 @@ let statusDetailsHideTimer = null;
         return noteSaveInFlight;
       };
 
+      const persistNoteEditsUntilDrained = async ({ keepalive = false } = {}) => {
+        let savedDocument = null;
+        while (true) {
+          if (noteSaveTimer) {
+            window.clearTimeout(noteSaveTimer);
+            noteSaveTimer = null;
+          }
+          if (noteSaveInFlight) {
+            noteSaveQueued = true;
+            savedDocument = await noteSaveInFlight;
+            if (!savedDocument) return null;
+            continue;
+          }
+          if (!noteEditorDirty) {
+            return savedDocument;
+          }
+          savedDocument = await persistNoteEditsSilently({ keepalive });
+          if (!savedDocument) return null;
+        }
+      };
+
       const persistFollowupEditsSilently = async ({ keepalive = false } = {}) => {
         if (followupSaveInFlight) {
           followupSaveQueued = true;
@@ -2675,7 +2696,7 @@ let statusDetailsHideTimer = null;
           throw new Error('Clear the working note before generating.');
         }
         setWorkingNoteStatus('Saving working note...');
-        const saved = await persistNoteEditsSilently({ keepalive: false });
+        const saved = await persistNoteEditsUntilDrained({ keepalive: false });
         if (!saved) {
           setWorkingNoteStatus('Working note save failed');
           throw new Error('Save the working note before generating.');

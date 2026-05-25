@@ -486,10 +486,11 @@ Current generation behavior:
   - `investigations`
 - structured template versions store per-section instructions in `template_versions.config_json`
 - structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
+- follow-up generation always uses saved transcript/dictation/Working-note sources plus the typed follow-up request; saved Working note content is redacted and included, not opt-in. At least transcript text or saved Working note content is required
 - quick action generation always uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
 - the current transcript session stores structured Working note content in `transcripts.structured_context_json`
 - `/transcribe` reloads EMIS context fields from that transcript-backed state
-- when template or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
+- when template, follow-up, or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
 - for structured notes, backend validation:
   - rejects user-submitted section keys outside the configured EMIS subset
   - rejects unsupported saved Working-note section keys instead of dropping them

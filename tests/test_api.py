@@ -6233,6 +6233,46 @@ def test_transcript_patch_rejects_invalid_structured_context_without_clearing_wo
     }
 
 
+def test_transcript_create_rejects_invalid_structured_context(client, db_session, make_team, make_user):
+    team = make_team(name="Structured Create Rejects")
+    owner = make_user(email="owner-structured-create-rejects@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="owner-structured-create-rejects@example.com", password="password-1")
+
+    start_response = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Invalid structured start",
+            "ingestion_mode": "whole_file",
+            "structured_context_json": {"profile": "other", "sections": {"problem": ["Do not drop"]}},
+        },
+    )
+    assert_error(
+        start_response,
+        status_code=422,
+        code="validation_error",
+        message="Structured working note must use EMIS profile with at least one non-empty section",
+    )
+
+    create_response = client.post(
+        "/api/v1/transcripts",
+        json={
+            "owner_user_id": str(owner.id),
+            "team_id": str(team.id),
+            "title": "Invalid structured create",
+            "ingestion_mode": "whole_file",
+            "structured_context_json": {"profile": "emis", "sections": ["Do not drop"]},
+        },
+    )
+    assert_error(
+        create_response,
+        status_code=422,
+        code="validation_error",
+        message="Structured working note must use EMIS profile with at least one non-empty section",
+    )
+    assert db_session.scalar(select(Transcript).where(Transcript.owner_user_id == owner.id)) is None
+
+
 def test_template_generation_uses_saved_working_note_when_transcript_empty(
     client,
     db_session,

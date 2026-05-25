@@ -168,6 +168,12 @@ def _create_transcript_row(
     retention_days = owner.team.default_retention_days
     transcript_id = uuid4()
     normalized_structured_context = normalize_structured_working_note(structured_context_json)
+    if structured_context_json is not None and normalized_structured_context is None:
+        raise AppError(
+            422,
+            "validation_error",
+            "Structured working note must use EMIS profile with at least one non-empty section",
+        )
     transcript = Transcript(
         id=transcript_id,
         owner_user_id=owner.id,

@@ -26,6 +26,7 @@ export function attachTranscribeActions({
   setMicButtons,
   setTab,
   structuredEditor,
+  saveWorkingNoteBeforeGeneration,
   clearWorkingNote,
 }) {
   let quickActionContextOverride = null;
@@ -798,6 +799,7 @@ export function attachTranscribeActions({
         hiddenContextInput.value = contextText;
       }
       try {
+        await saveWorkingNoteBeforeGeneration?.();
         const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/run-quick-action`, {
           method: 'POST',
           credentials: 'include',

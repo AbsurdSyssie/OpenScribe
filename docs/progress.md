@@ -1,5 +1,74 @@
 # Progress
 
+## 2026-05-25 Working-note Review Race Fixes
+
+### Scope
+
+- Quick actions now save dirty Working-note edits before posting `/run-quick-action`.
+- Legacy transcript `structured_context_json` PATCH now rejects invalid or empty structured payloads instead of clearing encrypted structured Working notes.
+- Bumped transcribe static asset versions for the quick-action UI change.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/static/js/transcribe/actions.js`, `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: save dirty Working note before quick actions and bust cached assets.
+- `app/services/transcripts.py`: reject invalid/empty legacy structured-context PATCH payloads before storage mutation.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover legacy PATCH non-clear behavior and static UI wiring.
+- `docs/working_note_implementation.md`, `docs/testing.md`, `docs/progress.md`: document final contract and checks.
+
+### Tests
+
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note_routes_enforce_owner_mode_lock_and_clear or transcript_patch_rejects_invalid_structured_context_without_clearing_working_note or quick_action_generation_uses_saved_working_note_when_transcript_empty"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_page_bootstraps_saved_working_note"`: passed, 3 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: quick actions still load saved owner-only Working note and provider prompts use existing redaction path.
+- Ownership rules preserved: no route gate changes; owner-only transcript lookup still protects content reads/writes.
+- Deletion semantics preserved: legacy PATCH cannot delete Working note; clear remains immediate only through `DELETE /working-note` with version check.
+- Provider rules preserved: no provider resolution or credential changes.
+- Structured-note contract preserved: invalid/non-EMIS and empty structured payloads fail closed.
+
+## 2026-05-25 Working-note Quick-action Contract
+
+### Scope
+
+- Preserved quick-action contract: saved Working note is included automatically, but only after transient redaction.
+- Counted Working-note-only consultations as non-empty for new-session lifecycle checks.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/transcripts.py`: includes saved Working note in meaningful-content checks.
+- `tests/test_api.py`: verifies quick-action Working-note redaction and Working-note-only new-session lifecycle.
+- `docs/transcript-capture.md`, `docs/testing.md`, `docs/working_note_implementation.md`, `docs/progress.md`: update contract and verification notes.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "working_note_only_session_allows_new_session or quick_action_generation_uses_saved_working_note"`: passed, 2 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: raw Working note stays owner-only and provider payload receives only redacted Working-note text.
+- Ownership rules preserved: existing owner-only Working-note save/snapshot paths unchanged.
+- Deletion semantics preserved: Working note remains under transcript-root retention/deletion; lifecycle check only treats saved content as non-empty.
+- Provider rules preserved: existing LLM/de-identification provider resolution reused.
+- Structured-note contract preserved: no EMIS output schema change.
+
 ## 2026-05-24 Working-note Review Fixes
 
 ### Scope

@@ -6130,6 +6130,64 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     )
 
 
+def test_transcript_patch_rejects_invalid_structured_context_without_clearing_working_note(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Legacy Structured Patch Team")
+    owner = make_user(email="legacy-structured-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="legacy-structured-owner@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Legacy structured patch",
+            "ingestion_mode": "whole_file",
+            "structured_context_json": {
+                "profile": "emis",
+                "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]},
+            },
+        },
+    )
+    assert started.status_code == 201
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+    original_updated_at = transcript.working_note_updated_at
+    assert original_updated_at is not None
+
+    empty_patch = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"structured_context_json": {}},
+    )
+    assert_error(
+        empty_patch,
+        status_code=422,
+        code="validation_error",
+        message="Structured working note must use EMIS profile with at least one non-empty section",
+    )
+
+    non_emis_patch = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"structured_context_json": {"profile": "other", "sections": {"problem": ["Do not replace note"]}}},
+    )
+    assert_error(
+        non_emis_patch,
+        status_code=422,
+        code="validation_error",
+        message="Structured working note must use EMIS profile with at least one non-empty section",
+    )
+
+    db_session.refresh(transcript)
+    assert transcript.working_note_mode is TranscriptWorkingNoteMode.structured
+    assert transcript.working_note_updated_at == original_updated_at
+    assert decrypt_transcript_structured_context(db_session, transcript) == {
+        "profile": "emis",
+        "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]},
+    }
+
+
 def test_template_generation_uses_saved_working_note_when_transcript_empty(
     client,
     db_session,
@@ -6344,13 +6402,27 @@ def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(
         return "Generated quick action body", {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "duration_ms": 5}
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    redaction_inputs = []
+
+    def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
+        redaction_inputs.append(text)
+        return {
+            "redacted_text": text.replace("Jane Smith", f"[PHI-{start_index}]"),
+            "phi_mapping": {"phi-1": {"type": "PERSON", "value": "Jane Smith"}},
+            "phi_index": [{"index": start_index, "type": "PERSON", "value": "Jane Smith", "placeholder": f"[PHI-{start_index}]"}],
+            "phi_count": 1,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "en_core_web_sm",
+        }
+
+    monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
     login(client, email="working-quick-owner@example.com", password="password-2")
     started = client.post("/api/v1/transcripts/start", json={"title": "Typed consult", "ingestion_mode": "whole_file"})
     assert started.status_code == 201
     transcript_id = started.json()["id"]
     saved = client.patch(
         f"/api/v1/transcripts/{transcript_id}/working-note",
-        json={"mode": "freeform", "freeform_text": "Patient prefers a text update after blood results."},
+        json={"mode": "freeform", "freeform_text": "Jane Smith prefers a text update after blood results."},
     )
     assert saved.status_code == 200
 
@@ -6359,13 +6431,15 @@ def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(
     document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert document is not None
     assert document.working_note_mode_snapshot is TranscriptWorkingNoteMode.freeform
-    assert decrypt_generated_document_field(db_session, document, "freeform_working_note_snapshot_encrypted") == "Patient prefers a text update after blood results."
+    assert decrypt_generated_document_field(db_session, document, "freeform_working_note_snapshot_encrypted") == "Jane Smith prefers a text update after blood results."
 
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
+    assert redaction_inputs == ["Jane Smith prefers a text update after blood results."]
     user_message = captured_provider_request["messages"][1]["content"]
     assert "Consultation transcript:\n" in user_message
-    assert "Consultation working note:\nFreeform working note:\nPatient prefers a text update after blood results." in user_message
+    assert "Consultation working note:\nFreeform working note:\n[PHI-1] prefers a text update after blood results." in user_message
+    assert "Jane Smith" not in user_message
     assert "Quick action instructions:\nWrite a patient SMS." in user_message
 
 
@@ -10763,6 +10837,28 @@ def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_con
     payload = response.json()
     assert payload["active_transcript"]["has_transcript_content"] is False
     assert payload["recent_transcripts"][0]["has_transcript_content"] is False
+
+
+def test_working_note_only_session_allows_new_session(
+    client,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Working Note New Session Team")
+    owner = make_user(email="owner-working-note-new-session@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="owner-working-note-new-session@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Working note only", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    saved = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Clinician-only plan exists."},
+    )
+    assert saved.status_code == 200
+
+    next_session = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
+    assert next_session.status_code == 201
 
 
 def test_transcribe_workspace_endpoint_returns_owner_pii_entities(

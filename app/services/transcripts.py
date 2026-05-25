@@ -703,6 +703,8 @@ def _transcript_has_meaningful_content(db: Session, transcript: Transcript) -> b
     current_draft = transcript_draft_text(db, transcript=transcript)
     if current_draft and current_draft.strip():
         return True
+    if transcript_has_working_note(db, transcript=transcript):
+        return True
     if db.scalar(select(TranscriptVersion.id).where(TranscriptVersion.transcript_id == transcript.id).limit(1)) is not None:
         return True
     if db.scalar(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id).limit(1)) is not None:
@@ -977,12 +979,17 @@ def update_transcript(
         transcript.ingestion_mode = ingestion_mode
     if structured_context_json is not None:
         normalized_structured_context = normalize_structured_working_note(structured_context_json)
-        if normalized_structured_context is not None:
-            if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform and transcript_has_working_note(db, transcript=transcript):
-                raise AppError(409, "business_rule_violation", "Clear the working note before switching mode.", {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value})
-            transcript.working_note_mode = TranscriptWorkingNoteMode.structured
-            transcript.working_note_updated_at = utcnow()
-            set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
+        if normalized_structured_context is None:
+            raise AppError(
+                422,
+                "validation_error",
+                "Structured working note must use EMIS profile with at least one non-empty section",
+            )
+        if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform and transcript_has_working_note(db, transcript=transcript):
+            raise AppError(409, "business_rule_violation", "Clear the working note before switching mode.", {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value})
+        transcript.working_note_mode = TranscriptWorkingNoteMode.structured
+        transcript.working_note_updated_at = utcnow()
+        set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
         set_transcript_structured_context(db, transcript=transcript, plaintext=normalized_structured_context)
     db.add(transcript)
     db.commit()

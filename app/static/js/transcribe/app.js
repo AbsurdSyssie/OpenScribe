@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260522-quick-action-source-guard';
+import { attachTranscribeActions } from './actions.js?v=20260525-quick-action-save-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -3180,6 +3180,7 @@ let statusDetailsHideTimer = null;
         setMicButtons,
         setTab,
         structuredEditor,
+        saveWorkingNoteBeforeGeneration,
         clearWorkingNote: async () => {
           if (!transcriptId) return;
           if (!workingNoteHasContent() && !activeWorkingNote?.mode) {

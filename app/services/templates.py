@@ -2072,15 +2072,22 @@ def _apply_manual_pii_redaction(
     return redacted_transcript_text, redacted_dictation_text, phi_index
 
 
-def _build_followup_generation_messages(*, transcript_text: str, follow_up_prompt_text: str, dictation_text: str = "") -> tuple[str, str]:
+def _build_followup_generation_messages(
+    *,
+    transcript_text: str,
+    follow_up_prompt_text: str,
+    dictation_text: str = "",
+    working_note_text: str = "",
+) -> tuple[str, str]:
     return (
         "You are a medical secretary writing in British English. "
         "Write a follow-up from doctor's perspective based only on consultation sources and requested follow-up task. "
-        "If post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
+        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
         "Return only the finished follow-up text. "
-        "The transcript and request may contain pseudonym placeholders like [PHI-1]. "
+        "The consultation sources and request may contain pseudonym placeholders like [PHI-1]. "
         "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
         f"Consultation transcript:\n{transcript_text}"
+        + (f"\n\nConsultation working note:\n{working_note_text}" if working_note_text.strip() else "")
         + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         + f"\n\nFollow-up request:\n{follow_up_prompt_text}",
     )
@@ -2216,7 +2223,15 @@ def queue_followup_generation(
     if not clean_prompt_text:
         raise AppError(422, "business_rule_violation", "Follow-up text is required", {"field": "prompt_text"})
 
-    transcript_version = _snapshot_transcript_version(db, transcript=transcript)
+    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(
+        db,
+        transcript=transcript,
+        allow_empty=(
+            bool(freeform_working_note_snapshot.strip())
+            or bool(structured_working_note_snapshot)
+        ),
+    )
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
         raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
@@ -2234,6 +2249,9 @@ def queue_followup_generation(
         llm_config_id=config.id,
         source_template_name="Follow-up",
         follow_up_prompt_text=None,
+        working_note_mode_snapshot=working_note_mode,
+        freeform_working_note_snapshot_encrypted=None,
+        structured_working_note_snapshot_json=None,
         status=GeneratedDocumentStatus.queued,
         title=f"Follow-up: {truncated_title}",
         document_mode=TemplateMode.freeform,
@@ -2246,6 +2264,17 @@ def queue_followup_generation(
         llm_base_url=config.base_url,
     )
     set_generated_document_text(db, document=generated_document, field="follow_up_prompt_text", plaintext=clean_prompt_text)
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="freeform_working_note_snapshot_encrypted",
+        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
+    )
+    set_generated_document_structured_working_note_snapshot(
+        db,
+        document=generated_document,
+        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
+    )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     db.add(generated_document)
@@ -2532,6 +2561,12 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 working_note_text=working_note_text,
             )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
+        working_note_text = _redacted_working_note_text_for_document(
+            db,
+            document=document,
+            redaction_run=redaction_run,
+            extra_phi_index=extra_phi_index,
+        )
         follow_up_prompt_text = generated_document_text(db, document=document, field="follow_up_prompt_text").strip()
         if not follow_up_prompt_text:
             raise AppError(422, "business_rule_violation", "Follow-up prompt text is missing for this generated document")
@@ -2555,6 +2590,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
             transcript_text=transcript_text,
             follow_up_prompt_text=prompt_text_redacted,
             dictation_text=dictation_text,
+            working_note_text=working_note_text,
         )
     elif document.generator_type is GeneratedDocumentGeneratorType.quick_action:
         working_note_text = _redacted_working_note_text_for_document(

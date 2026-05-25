@@ -2205,7 +2205,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260525-quick-action-save-working-note"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260525-followup-working-note"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2873,7 +2873,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260525-quick-action-save-working-note" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260525-followup-working-note" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4217,18 +4217,18 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const noteRenderState = renderSelectedNote();" in app_js
     assert "const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);" in app_js
     assert "if (!preserveDirtyNoteEditor) {" in app_js
-    assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" in app_js
+    assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" not in app_js
     assert "hasStructuredInput" not in app_js
     assert "hasStructuredContextContent" not in app_js
     assert "data-structured-context-hidden" not in workspace_html
     assert "syncStructuredContextHiddenInputs" not in structured_js
     assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));" in app_js
-    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));" in app_js
+    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote));" in app_js
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
     assert "showFlash('Select a quick action first.', 'warning');" in actions_js
-    assert "./actions.js?v=20260525-quick-action-save-working-note" in app_js
+    assert "./actions.js?v=20260525-followup-working-note" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -4436,7 +4436,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260525-quick-action-save-working-note" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260525-followup-working-note" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

@@ -36,6 +36,7 @@ from ..services.transcripts import (
     working_note_detail as working_note_detail_service,
 )
 from ..web.presentation import smart_phrase_response
+from ..web.transcribe_workspace import transcript_list_item_response
 
 
 def _env_enabled(name: str, default: str) -> bool:
@@ -1409,4 +1410,4 @@ def list_user_transcripts(user_id: UUID, context: AuthenticatedContext = Depends
     if user_id != context.user.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
     rows = db.scalars(select(Transcript).where(Transcript.owner_user_id == user_id).order_by(Transcript.created_at.desc()))
-    return list(rows)
+    return [transcript_list_item_response(db, transcript) for transcript in rows]

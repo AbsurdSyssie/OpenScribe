@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260525-quick-action-save-working-note';
+import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
@@ -2032,14 +2032,13 @@ let statusDetailsHideTimer = null;
         const hasDraft = Boolean(draftText && draftText.trim());
         const hasDictation = Boolean(lastSavedDictationText && lastSavedDictationText.trim());
         const hasWorkingNote = workingNoteHasContent();
-        const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
         const selectedQuickActionId = runQuickActionSelect?.value || '';
         const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
         const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
         const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));
-        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasNoteInput));
+        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote));
         const canUseFollowupRequest = canGenerateFollowup || canRunQuickAction;
         const canUsePrimaryFollowupAction = selectedQuickActionId ? canRunQuickAction : canGenerateFollowup;
 

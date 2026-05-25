@@ -657,6 +657,7 @@ export function attachTranscribeActions({
         || '';
       if (!promptText) return;
       try {
+        await saveWorkingNoteBeforeGeneration?.();
         const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/generate-followup`, {
           method: 'POST',
           credentials: 'include',

@@ -341,6 +341,7 @@ Implemented now for manual browser testing:
 - follow-up generation sends:
   - a fixed system instruction that the model is acting as a medical secretary in British English
   - the current transcript draft
+  - any saved Working note as labelled clinician-authored context after transient redaction
   - the user-entered follow-up request text
 - quick action generation sends:
   - a fixed system instruction that the model is acting as a medical secretary in British English and writing from the doctor's perspective
@@ -384,7 +385,7 @@ Implemented now for manual browser testing:
   - if a note fails JSON parsing, the same dev-only debug payload now includes the raw redacted provider output for diagnosis
   - does not expose the original PHI values
 - follow-up and quick-action free-text instructions are also redacted transiently before the provider call so outbound user-entered text follows the same PHI rule
-- saved Working note is included in quick-action generation by contract, but only the redacted Working-note form is sent to the provider
+- saved Working note is included in follow-up and quick-action generation by contract, but only the redacted Working-note form is sent to the provider
 - successful generation persists a `generated_documents` row under the current transcript root and renders the latest output back into the Output tab
 - selected generated notes expose a permanent-delete control that confirms before calling the owner-only generated-document delete API
 - successful follow-up generation persists a second `generated_documents` type under the same transcript root and renders it back into the Follow-ups tab

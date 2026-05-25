@@ -91,6 +91,8 @@ Preserve clinician-authored note content separately from generated note output. 
 - Generation requests do not send working-note content in the request payload.
 - Generation forms must not render legacy `context_*` structured-context fields; saved Working note is the only structured source path.
 - Client saves working note first; server loads saved working note from the DB during generation.
+- Follow-up generation may use a saved Working note as the only consultation source when transcript text is still empty.
+- Follow-up generation snapshots the saved Working note onto the generated document, redacts that snapshot, and sends only the redacted Working-note text to the LLM.
 - This gives deterministic snapshots/redaction and avoids trusting unsaved client payload.
 - `PATCH /working-note` rejects whitespace-only freeform text with `422` and instructs caller to clear/delete instead.
 - Trim for validation. Preserve useful internal line formatting for valid text. Follow existing editor normalization for leading/trailing whitespace.

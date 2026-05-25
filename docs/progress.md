@@ -1,5 +1,42 @@
 # Progress
 
+## 2026-05-25 Working-note Save Drain And Create Validation
+
+### Scope
+
+- Note, follow-up, and quick-action generation now wait for queued Working-note saves to drain before enqueueing.
+- Transcript create/start now reject invalid or empty legacy `structured_context_json` Working-note payloads instead of silently treating them as absent.
+- Follow-up contract clarified: saved Working note is included automatically after redaction, matching current product behavior.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: adds a save-drain helper for generation.
+- `app/services/transcripts.py`: validates create/start structured context the same way as PATCH.
+- `app/templates/transcribe/_shell_extras.html`: bumps the transcribe app asset version.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: cover create/start rejection and frontend save-drain wiring.
+- `docs/api.md`, `docs/testing.md`, `docs/working_note_implementation.md`, `docs/progress.md`: document the current Working-note follow-up contract and validation.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_api.py -k "transcript_create_rejects_invalid_structured_context or followup_generation_uses_saved_working_note_when_transcript_empty"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_frontend_uses_global_template_selector_for_generation_controls or user_transcribe_page_shows_workspace_shell"`: passed, 3 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: provider prompts still receive only redacted Working-note snapshots.
+- Ownership rules preserved: create/start still require full owner context; generation still loads owner-scoped transcript content.
+- Deletion semantics preserved: no delete or retention behavior changed.
+- Provider rules preserved: no provider resolution or credential path changed.
+- Structured-note contract preserved: invalid/non-EMIS and empty structured payloads fail closed.
+
 ## 2026-05-25 Working-note Follow-up Contract
 
 ### Scope

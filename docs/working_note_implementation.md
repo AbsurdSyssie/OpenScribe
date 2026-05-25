@@ -131,7 +131,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Quick actions must send only the redacted Working-note form to the LLM provider.
 - Quick-action UI enablement uses the same saved-source eligibility as template generation: transcript text, saved Working note, or saved dictation. It must not require an existing generated note.
 - Quick actions still block when all saved consultation sources are empty; quick-action instructions alone are not enough clinical context for source-bounded output.
-- Follow-ups do not automatically include Working note unless user explicitly supplies context.
+- Follow-ups save dirty Working-note edits before enqueue, then include the saved Working note as labelled clinician-authored context, using the same encrypted generated-document Working-note snapshot/redaction path as template generation.
 
 ## Redaction And Privacy
 

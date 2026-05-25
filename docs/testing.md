@@ -269,6 +269,8 @@ What it does:
 - post-consultation dictation preview STT returning text without persisting dictation rows/segments, while preserving owner-only auth, size/duration limits, and dictation STT selection requirements
 - dictation-only note generation allowing an empty transcript snapshot when saved dictation exists and redacting dictation before the LLM provider call
 - working-note-only sessions counting as non-empty for new-session lifecycle checks, follow-up/quick-action generation sending the saved Working note only in redacted form after saving dirty Working-note edits, transcript list responses reporting saved Working notes, and legacy transcript structured-context PATCH rejecting invalid/empty payloads without clearing saved Working notes
+- note/follow-up/quick-action generation drains queued Working-note saves before enqueueing, so the worker snapshots the latest saved Working note instead of a stale in-flight version
+- transcript create/start routes reject invalid or empty legacy `structured_context_json` Working-note payloads instead of silently dropping submitted note content
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active

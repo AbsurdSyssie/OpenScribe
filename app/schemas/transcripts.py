@@ -42,6 +42,7 @@ class TranscriptUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     ingestion_mode: TranscriptIngestionMode | None = None
     structured_context_json: dict | None = None
+    expected_updated_at: datetime | None = None
 
 
 class TranscriptListItem(BaseModel):

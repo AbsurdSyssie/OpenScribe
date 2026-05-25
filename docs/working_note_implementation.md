@@ -41,7 +41,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - `PATCH /api/v1/transcripts/{transcript_id}/working-note`
 - `DELETE /api/v1/transcripts/{transcript_id}/working-note`
 - Keep generic transcript metadata updates separate from working-note content and mode-lock rules.
-- Existing `structured_context_json` transcript patch behavior may remain temporarily during UI migration for valid non-empty EMIS payloads only. Empty, non-EMIS, or otherwise invalid payloads are rejected so legacy transcript metadata PATCH calls cannot clear Working notes outside the versioned Working-note clear endpoint.
+- Existing `structured_context_json` transcript patch behavior may remain temporarily during UI migration for valid non-empty EMIS payloads only. Empty, non-EMIS, or otherwise invalid payloads are rejected so legacy transcript metadata PATCH calls cannot clear Working notes outside the versioned Working-note clear endpoint. When the transcript already has a Working note, legacy structured-note PATCH calls must include the current `expected_updated_at` value or they are rejected as stale.
 - `PATCH /working-note` accepts either freeform or structured payloads:
 
 ```json

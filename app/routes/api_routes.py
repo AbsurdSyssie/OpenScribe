@@ -902,6 +902,7 @@ def update_transcript(
         title=payload.title,
         ingestion_mode=payload.ingestion_mode,
         structured_context_json=payload.structured_context_json,
+        expected_updated_at=payload.expected_updated_at,
     )
     return transcript_detail_response(db, transcript)
 

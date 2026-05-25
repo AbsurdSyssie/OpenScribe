@@ -672,10 +672,10 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                     empty_warning="No compatible chat models were returned. Enter a model name manually.",
                 )
             except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 available_models_json = []
                 warning = "Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."
-                if exc.code == "llm_invalid_credential":
-                    warning = "Live model discovery rejected the API key. Save with a manually entered model, or inspect again with a valid key."
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=[warning], notes=[])
         elif config is not None and not provider_endpoint_changed:
             available_models_json = list(config.available_models_json or [])
@@ -694,10 +694,10 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                     empty_warning="No compatible chat models were returned. Enter a model name manually.",
                 )
             except AppError as exc:
+                if exc.code == "llm_invalid_credential":
+                    raise
                 available_models_json = []
                 warning = "Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."
-                if exc.code == "llm_invalid_credential":
-                    warning = "Live model discovery rejected the API key. Save with a manually entered model, or inspect again with a valid key."
                 discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=[warning], notes=[])
         elif config is not None and not provider_endpoint_changed:
             available_models_json = list(config.available_models_json or [])

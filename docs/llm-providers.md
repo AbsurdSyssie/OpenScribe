@@ -44,7 +44,7 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 
 - Successful discovery stores provider-returned models in `available_models_json`.
 - The admin wizard first creates a pending draft after `Check API key and find models`; the API key is not returned to the browser or carried in hidden inputs after this step.
-- Provider credential rejection (`401`/`403` or SDK authentication errors) returns `llm_invalid_credential`, does not create a draft config, and does not write a Vault secret. Browser setup stays on the Provider/API key step with the API-key rejection message.
+- Provider credential rejection (`401`/`403` or SDK authentication errors) returns `llm_invalid_credential`, does not create a draft config, and does not write a Vault secret. This remains true even when a manual model name is supplied. Browser setup stays on the Provider/API key step with the API-key rejection message.
 - Successful discovery that returns zero compatible chat models is treated as `manual_required`, not `fetched`, so admins must enter an explicit model name before save.
 - When successful discovery returns models, the saved `model_name` must be one of those discovered models. If no model is submitted, OpenScribe uses the first discovered model.
 - Failed non-auth discovery returns `manual_required` and allows a system admin to enter a model name manually. The browser warns that generation may fail if the endpoint, key, or model name is wrong. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.

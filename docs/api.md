@@ -489,6 +489,7 @@ Current generation behavior:
 - follow-up generation always uses saved transcript/dictation/Working-note sources plus the typed follow-up request; saved Working note content is redacted and included, not opt-in. At least transcript text or saved Working note content is required
 - quick action generation always uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
 - the current transcript session stores structured Working note content in `transcripts.structured_context_json`
+- legacy `PATCH /api/v1/transcripts/{transcript_id}` structured Working-note writes accept `expected_updated_at` and enforce the same stale-write guard as `/working-note`
 - `/transcribe` reloads EMIS context fields from that transcript-backed state
 - when template, follow-up, or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
 - for structured notes, backend validation:

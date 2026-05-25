@@ -981,6 +981,7 @@ def update_transcript(
     title: str | None,
     ingestion_mode: TranscriptIngestionMode | None,
     structured_context_json: dict | None,
+    expected_updated_at: datetime | None = None,
 ) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if title is not None:
@@ -1003,6 +1004,7 @@ def update_transcript(
                 "validation_error",
                 "Structured working note must use EMIS profile with at least one non-empty section",
             )
+        _assert_working_note_update_current(transcript, expected_updated_at)
         if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform and transcript_has_working_note(db, transcript=transcript):
             raise AppError(409, "business_rule_violation", "Clear the working note before switching mode.", {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value})
         transcript.working_note_mode = TranscriptWorkingNoteMode.structured

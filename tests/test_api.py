@@ -2974,6 +2974,35 @@ def test_llm_draft_invalid_key_creates_no_config_or_vault_secret(client, db_sess
     assert db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)) is None
 
 
+def test_llm_save_invalid_key_with_manual_model_creates_no_config_or_vault_secret(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bad Manual LLM Key")
+    make_user(email="admin-bad-manual-llm-key@example.com", password="password-1", is_system_admin=True)
+    writes: list[str] = []
+
+    def reject_key(**kwargs):
+        raise AppError(401, "llm_invalid_credential", "The API key was rejected by the provider.")
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", reject_key)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: writes.append(kwargs["bearer_token"]) or "secret:unexpected")
+
+    login(client, email="admin-bad-manual-llm-key@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "openrouter",
+            "label": "Bad Manual Router",
+            "bearer_token": "bad-key",
+            "model_name": "manual/router-model",
+            "is_active": True,
+        },
+    )
+
+    assert_error(created, status_code=401, code="llm_invalid_credential", message="The API key was rejected by the provider.")
+    assert writes == []
+    assert db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)) is None
+
+
 def test_llm_draft_preserves_supplied_label_and_falls_back_when_omitted(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Draft Labels")
     make_user(email="admin-llm-draft-labels@example.com", password="password-1", is_system_admin=True)
@@ -6202,6 +6231,21 @@ def test_transcript_patch_rejects_invalid_structured_context_without_clearing_wo
     original_updated_at = transcript.working_note_updated_at
     assert original_updated_at is not None
 
+    missing_version_patch = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={"structured_context_json": {"profile": "emis", "sections": {"problem": ["Do not overwrite without version"]}}},
+    )
+    assert_error(missing_version_patch, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
+    stale_patch = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={
+            "expected_updated_at": "2000-01-01T00:00:00+00:00",
+            "structured_context_json": {"profile": "emis", "sections": {"problem": ["Do not overwrite from stale tab"]}},
+        },
+    )
+    assert_error(stale_patch, status_code=409, code="conflict", message="Working note changed elsewhere. Reload before saving again.")
+
     empty_patch = client.patch(
         f"/api/v1/transcripts/{transcript.id}",
         json={"structured_context_json": {}},
@@ -6230,6 +6274,21 @@ def test_transcript_patch_rejects_invalid_structured_context_without_clearing_wo
     assert decrypt_transcript_structured_context(db_session, transcript) == {
         "profile": "emis",
         "sections": {"problem": ["Known asthma"], "tasks": ["Peak flow diary"]},
+    }
+
+    current_patch = client.patch(
+        f"/api/v1/transcripts/{transcript.id}",
+        json={
+            "expected_updated_at": original_updated_at.isoformat(),
+            "structured_context_json": {"profile": "emis", "sections": {"problem": ["Updated asthma plan"]}},
+        },
+    )
+    assert current_patch.status_code == 200
+    db_session.refresh(transcript)
+    assert transcript.working_note_mode is TranscriptWorkingNoteMode.structured
+    assert decrypt_transcript_structured_context(db_session, transcript) == {
+        "profile": "emis",
+        "sections": {"problem": ["Updated asthma plan"]},
     }
 
 

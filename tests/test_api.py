@@ -2850,9 +2850,10 @@ def test_stt_selection_rejects_non_provider_model(client, make_team, make_user, 
     )
 
 
-def test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal(client, db_session, make_team, make_user):
+def test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["gpt-4o-mini"])
 
     login(client, email="admin@example.com", password="password-1")
     created = client.post(

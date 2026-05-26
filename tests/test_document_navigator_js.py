@@ -160,6 +160,16 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
             const document = sandbox.workingNoteToEditorDocument({
               transcriptId: 'transcript-1',
               selectedTemplateMode: 'structured',
+              structuredSectionDefinitions: [
+                { key: 'problem', label: 'Problem' },
+                { key: 'history', label: 'History' },
+                { key: 'family_history', label: 'Family history' },
+                { key: 'social_history', label: 'Social history' },
+                { key: 'examination', label: 'Examination' },
+                { key: 'comment', label: 'Comment' },
+                { key: 'tasks', label: 'Tasks' },
+                { key: 'investigations', label: 'Investigations' },
+              ],
               workingNote: {
                 mode: 'structured',
                 updated_at: '2026-05-19T10:00:00+00:00',
@@ -179,6 +189,16 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
             assert.deepEqual(document.sections.map((section) => [section.section_key, section.text]), [
               ['problem', 'Headache\\nNausea'],
               ['tasks', 'Safety net'],
+            ]);
+            assert.deepEqual(document.structured_section_definitions_json.sections.map((section) => section.section_key), [
+              'problem',
+              'history',
+              'family_history',
+              'social_history',
+              'examination',
+              'comment',
+              'tasks',
+              'investigations',
             ]);
 
             const unlocked = sandbox.workingNoteToEditorDocument({

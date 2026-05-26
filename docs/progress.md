@@ -1,5 +1,76 @@
 # Progress
 
+## 2026-05-25 LLM Config Test Discovery Stub
+
+### Scope
+
+- Restored deterministic LLM config API coverage by stubbing live OpenAI-compatible model discovery in the legacy secret-redaction provisioning test.
+- No application behavior changed; invalid LLM credential rejection remains covered by dedicated tests.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `tests/test_api.py`: stubs `_list_openai_compatible_chat_models` for the dummy OpenAI token used by `test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal`.
+- `docs/progress.md`: records diagnosis, verification, and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q`: failed before fix with 1 failure, `test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal`, because dummy token triggered `llm_invalid_credential`.
+- `.venv/bin/pytest -q tests/test_api.py::test_system_admin_can_provision_and_read_team_llm_configs_without_secret_reveal`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_config or llm_configs or llm_save or llm_draft or llm_provider or llm_selection"`: passed, 16 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: system-admin route guard unchanged; test still exercises admin-only provisioning.
+- Lifecycle/deletion checkpoint: no deletion, retention, or Vault cleanup behavior changed.
+- Provider checkpoint: production provider validation unchanged; test now avoids real provider calls with existing monkeypatch pattern.
+- Structured-note contract: no structured-note behavior changed.
+
+## 2026-05-25 Working-note EMIS Section Preservation
+
+### Scope
+
+- Structured Working-note virtual documents now include the full EMIS section definition snapshot, so selected output templates cannot hide and autosave-drop existing Working-note sections.
+- Transcribe static asset version bumped for the client fix.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/static/js/transcribe/documents.js`: adds EMIS section-definition snapshots to virtual Working-note documents.
+- `app/static/js/transcribe/app.js`: passes bootstrapped EMIS section definitions into the document navigator and bumps the documents module import.
+- `app/templates/transcribe/_shell_extras.html`: bumps the transcribe app asset version.
+- `tests/test_document_navigator_js.py`, `tests/test_admin_ui.py`: cover full section snapshots and updated cache keys.
+- `docs/working_note_implementation.md`, `docs/progress.md`: document section preservation.
+
+### Tests
+
+- `node --check app/static/js/transcribe/documents.js`: passed.
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_document_navigator_js.py tests/test_admin_ui.py -k "working_note_to_editor_document_maps_virtual_target or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_page_bootstraps_saved_working_note or transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_document_navigator_js.py`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_transcribe_page_shows_workspace_shell or transcribe_reorder_blocks_blank_note_lines or transcribe_static_asset_version_bumped_for_pii_source_visibility"`: passed, 3 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries preserved: no new content leaves owner-only editor state.
+- Ownership rules preserved: no route or query scope changed.
+- Deletion semantics preserved: no delete/retention behavior changed; fix prevents accidental overwrite data loss.
+- Provider rules preserved: no provider resolution or credential behavior changed.
+- Structured-note contract preserved: full EMIS section list remains the Working-note editor contract; output templates still control generated output shape only.
+
 ## 2026-05-25 Working-note Save Drain And Create Validation
 
 ### Scope

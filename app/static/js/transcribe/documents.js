@@ -1,10 +1,28 @@
 import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 
-export function workingNoteToEditorDocument({ transcriptId, workingNote, selectedTemplateMode }) {
+const structuredDefinitionsSnapshot = (definitions = []) => {
+  const sections = (Array.isArray(definitions) ? definitions : [])
+    .map((section, index) => {
+      const sectionKey = section?.section_key || section?.key || '';
+      if (!sectionKey) return null;
+      return {
+        section_key: sectionKey,
+        section_label: section?.section_label || section?.label || sectionKey.replaceAll('_', ' '),
+        section_order: Number.isInteger(section?.section_order) ? section.section_order : index,
+      };
+    })
+    .filter(Boolean);
+  return sections.length ? { sections } : null;
+};
+
+export function workingNoteToEditorDocument({ transcriptId, workingNote, selectedTemplateMode, structuredSectionDefinitions = [] }) {
   if (!transcriptId) return null;
   const note = workingNote || {};
   const mode = note.mode || selectedTemplateMode || 'freeform';
   const sections = note.structured_note?.sections || {};
+  const sectionDefinitionsSnapshot = mode === 'structured'
+    ? structuredDefinitionsSnapshot(structuredSectionDefinitions)
+    : null;
   return {
     id: workingNoteTargetId(transcriptId || ''),
     kind: 'working_note',
@@ -14,6 +32,7 @@ export function workingNoteToEditorDocument({ transcriptId, workingNote, selecte
     mode_locked: Boolean(note.mode),
     edited_output_text: note.freeform_text || '',
     updated_at: note.updated_at || '',
+    structured_section_definitions_json: sectionDefinitionsSnapshot,
     sections: Object.entries(sections).map(([sectionKey, lines], index) => ({
       section_key: sectionKey,
       section_label: sectionKey.replaceAll('_', ' '),
@@ -111,6 +130,7 @@ export function createDocumentNavigator({
       transcriptId: state.activeTranscriptId || '',
       workingNote: state.activeWorkingNote || {},
       selectedTemplateMode: state.selectedTemplateMode,
+      structuredSectionDefinitions: state.structuredSectionDefinitions || [],
     });
   };
 

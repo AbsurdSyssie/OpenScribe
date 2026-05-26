@@ -167,6 +167,7 @@ Preserve clinician-authored note content separately from generated note output. 
 - Dirty Working-note edits preserve their initial timestamp baseline through pure note-save baseline helpers; an empty client baseline means "no saved note existed when editing began" and must be sent as `null`, not replaced with a newer workspace refresh timestamp.
 - Dirty generated-note and Working-note saves select optimistic-lock baselines by current editor target; a stale dirty target must not supply another note's baseline.
 - Structured Working note virtual sections provide plaintext line content through `section.text`; the shared structured editor must parse that alongside generated-note section text fields.
+- Structured Working note virtual documents carry the full EMIS section definition snapshot, not the currently selected output template sections, so autosave cannot drop hidden sections when a narrower template is selected.
 - After generation, workspace may focus generated output, but working note must remain visible or easy to reopen.
 - Unsaved working-note edits must be protected from accidental loss.
 - Generated-note edits never feed back into working note automatically.

@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260520-working-note-template-guard';
+import { createDocumentNavigator } from './documents.js?v=20260525-working-note-emis-sections';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
 import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';
@@ -2659,6 +2659,7 @@ let statusDetailsHideTimer = null;
           activeTranscriptId: transcriptId,
           hasActiveTranscript: Boolean(transcriptId),
           selectedTemplateMode: selectedWorkingNoteMode(),
+          structuredSectionDefinitions,
           selectedNoteDocumentId,
           selectedFollowupDocumentId,
         }),

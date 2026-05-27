@@ -446,6 +446,7 @@ Current generation behavior:
 - generation resolves the active team LLM provider plus the user's preferred/default model through the existing provider-selection path
 - generation currently supports both OpenAI chat-style providers and Ollama chat hosts
 - template note generation snapshots the current user's saved note options when the generated-document row is queued; later preference changes affect future queued notes only
+- the transcribe workspace waits for pending note option/model preference saves and retries each save once before queueing template note generation; if the retry still fails, the user is warned and the queued row snapshots the last saved options
 - `note_generation_length` maps to output-token caps: `short=800`, `normal=1600`, `long=3200`; absent preferences use `normal`
 - OpenAI-compatible and Bedrock gateway request bodies use `max_completion_tokens`; Ollama `/api/chat` requests use `options.num_predict`
 - `llm_detail_level` adds format-neutral detail guidance to template-note system prompts only; quick actions, follow-ups, dictation cleanup, redaction, clinical extraction, and STT do not use it

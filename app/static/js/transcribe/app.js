@@ -55,6 +55,8 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       let noteGenerationInFlight = null;
       let noteGenerationBusy = false;
       let noteGenerationCloseDictationAfterCurrentRequest = false;
+      let noteOptionsSaveQueue = Promise.resolve();
+      const noteOptionsPendingSaves = new Set();
       let followupEditorDirty = false;
       let dirtyFollowupDocumentId = null;
       let followupEditVersion = 0;
@@ -560,13 +562,42 @@ let statusDetailsHideTimer = null;
         noteOptionsWarning.hidden = !message;
       };
 
+      const runNoteOptionsSaveWithRetry = async (saveTask) => {
+        try {
+          return await saveTask();
+        } catch (_) {
+          return await saveTask();
+        }
+      };
+
+      const enqueueNoteOptionsSave = (saveTask) => {
+        const savePromise = noteOptionsSaveQueue.catch(() => {}).then(() => runNoteOptionsSaveWithRetry(saveTask));
+        noteOptionsSaveQueue = savePromise.catch(() => {});
+        noteOptionsPendingSaves.add(savePromise);
+        savePromise.finally(() => {
+          noteOptionsPendingSaves.delete(savePromise);
+        }).catch(() => {});
+        return savePromise;
+      };
+
+      const waitForPendingNoteOptionSaves = async () => {
+        let saveFailed = false;
+        while (noteOptionsPendingSaves.size) {
+          const results = await Promise.allSettled(Array.from(noteOptionsPendingSaves));
+          if (results.some((result) => result.status === 'rejected')) {
+            saveFailed = true;
+          }
+        }
+        return !saveFailed;
+      };
+
       const saveNoteGenerationOptions = async () => {
         if (!noteOptionsLengthSelect || !noteOptionsDetailSelect) return;
         try {
-          await persistUserAppPreferences({
+          await enqueueNoteOptionsSave(() => persistUserAppPreferences({
             note_generation_length: noteOptionsLengthSelect.value || 'normal',
             llm_detail_level: noteOptionsDetailSelect.value || 'balanced',
-          });
+          }));
           showNoteOptionsWarning('');
         } catch (_) {
           showNoteOptionsWarning('Options not saved; next note may use previous settings.');
@@ -576,15 +607,17 @@ let statusDetailsHideTimer = null;
       const saveNoteModelPreference = async () => {
         if (!noteOptionsModelSelect || noteOptionsModelSelect.disabled) return;
         try {
-          const response = await csrfFetch('/api/v1/llm-preference', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ preferred_model_name: noteOptionsModelSelect.value || null }),
+          await enqueueNoteOptionsSave(async () => {
+            const response = await csrfFetch('/api/v1/llm-preference', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ preferred_model_name: noteOptionsModelSelect.value || null }),
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, 'Could not save your model preference.'));
+            }
           });
-          if (!response.ok) {
-            throw new Error(await parseErrorMessage(response, 'Could not save your model preference.'));
-          }
           showNoteOptionsWarning('');
         } catch (_) {
           showNoteOptionsWarning('Options not saved; next note may use previous settings.');
@@ -2765,6 +2798,10 @@ let statusDetailsHideTimer = null;
           syncGenerationAvailability(readActiveDraftText());
           syncDictationControls();
           try {
+            if (!(await waitForPendingNoteOptionSaves())) {
+              showNoteOptionsWarning('Options not saved; next note may use previous settings.');
+              showFlash('Could not save note options. Queueing with last saved settings.', 'warning');
+            }
             await saveWorkingNoteBeforeGeneration();
             const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {
               method: 'POST',

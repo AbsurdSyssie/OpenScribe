@@ -29,7 +29,13 @@ from app.schemas import (
     SttSelectionUpsert,
 )
 from app.stt_normalization import normalize_optional_stt_text, normalize_stt_language
-from app.services.stt_presets import apply_stt_provider_defaults, default_stt_config_label, get_stt_provider_preset, resolve_stt_provider_preset
+from app.services.stt_presets import (
+    apply_stt_provider_defaults,
+    default_stt_config_label,
+    get_stt_provider_preset,
+    is_deepgram_stt_base_url,
+    resolve_stt_provider_preset,
+)
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
 from app.services.provider_inspection import (
     dereference_openapi_document,
@@ -463,6 +469,23 @@ def _missing_stt_credential_error(*, team_id: UUID, config_id: UUID) -> AppError
         "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
         {"team_id": str(team_id), "config_id": str(config_id)},
     )
+
+
+def _resolve_stt_provider_preset_for_admin_write(
+    provider_preset: str | SttProviderPreset | None,
+    adapter_kind: SttAdapterKind,
+    base_url: str,
+) -> str:
+    if is_deepgram_stt_base_url(base_url):
+        if adapter_kind is not SttAdapterKind.generic_rest:
+            raise AppError(
+                422,
+                "business_rule_violation",
+                "Deepgram STT must use the Deepgram generic REST contract",
+                {"field": "adapter_kind"},
+            )
+        return SttProviderPreset.deepgram.value
+    return resolve_stt_provider_preset(provider_preset, adapter_kind, base_url)
 
 
 def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str | None:
@@ -1700,7 +1723,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
     )
-    provider_preset = resolve_stt_provider_preset(provider_preset, adapter_kind, base_url)
+    provider_preset = _resolve_stt_provider_preset_for_admin_write(provider_preset, adapter_kind, base_url)
     preset = get_stt_provider_preset(provider_preset)
     if preset.requires_api_key and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "This STT provider requires an API key", {"field": "bearer_token"})
@@ -1893,7 +1916,7 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
 
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    provider_preset = resolve_stt_provider_preset(payload.provider_preset, payload.adapter_kind, payload.base_url)
+    provider_preset = _resolve_stt_provider_preset_for_admin_write(payload.provider_preset, payload.adapter_kind, payload.base_url)
     if provider_preset == SttProviderPreset.deepgram.value and payload.adapter_kind is not SttAdapterKind.generic_rest:
         raise AppError(422, "business_rule_violation", "Deepgram STT must use the Deepgram generic REST contract", {"field": "adapter_kind"})
     extra_form_fields_json = _normalize_deepgram_extra_query_params(
@@ -2374,7 +2397,7 @@ def _infer_segments_contract(schema: dict[str, Any] | None) -> tuple[str | None,
 
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    provider_preset = resolve_stt_provider_preset(payload.provider_preset, payload.adapter_kind, payload.base_url)
+    provider_preset = _resolve_stt_provider_preset_for_admin_write(payload.provider_preset, payload.adapter_kind, payload.base_url)
     if payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         provider_preset = SttProviderPreset.elevenlabs.value
     if provider_preset == SttProviderPreset.deepgram.value:

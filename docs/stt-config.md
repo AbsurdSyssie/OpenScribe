@@ -138,6 +138,7 @@ Both OpenAI adapter families still keep:
 `deepgram` is a provider-specific known contract on top of `generic_rest`:
 
 - inspection requires an API key and calls `GET https://api.deepgram.com/v1/models`
+- admin save/inspect paths normalize `https://api.deepgram.com` to the Deepgram contract only when the adapter is `generic_rest`; incompatible adapters are rejected, while existing runtime rows continue to honor their stored adapter instead of switching transport by hostname alone
 - discovery uses `Authorization: Token <api key>` and stores only `stt` models where `batch` is not `false`
 - invalid Deepgram credentials fail draft creation and do not create a config row
 - successful discovery saves returned model ids in `available_models_json`; finalization must choose from that list when non-empty

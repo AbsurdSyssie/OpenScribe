@@ -31,7 +31,7 @@ from ..models import (
     UserStatus,
 )
 from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, get_llm_provider_preset, infer_llm_provider_preset
-from ..services.stt_presets import STT_PROVIDER_PRESETS, get_stt_provider_preset, infer_stt_provider_preset
+from ..services.stt_presets import STT_PROVIDER_PRESETS, get_stt_provider_preset, infer_stt_provider_preset, resolve_stt_provider_preset
 from ..schemas import (
     ClinicalNlpSelectionDetail,
     DeidentificationInspectResult,
@@ -74,6 +74,7 @@ from ..services.llm import (
     list_llm_configs as list_llm_configs_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
 from ..services.deidentification import (
     get_team_clinical_nlp_selection as get_team_clinical_nlp_selection_service,
     get_team_deidentification_selection as get_team_deidentification_selection_service,
@@ -109,7 +110,7 @@ from .templates import templates
 
 
 def stt_config_response(config) -> SttConfigDetail:
-    provider_preset = config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url)
+    provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
     provider_display_name = get_stt_provider_preset(provider_preset).display_name
     setup_status = config.setup_status or SttConfigSetupStatus.ready
     setup_status_label = "Setup incomplete" if setup_status == SttConfigSetupStatus.pending_model_selection else None
@@ -326,6 +327,7 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         default_quick_action_id=payload.get("default_quick_action_id"),
         default_template_id=payload.get("default_template_id"),
         llm_detail_level=payload.get("llm_detail_level"),
+        note_generation_length=payload.get("note_generation_length"),
         preferred_recording_mode=payload.get("preferred_recording_mode"),
         preferred_transcribe_tab=payload.get("preferred_transcribe_tab"),
         created_at=preference.created_at,
@@ -525,11 +527,12 @@ def stt_form_defaults(config, inspection: SttInspectResult | None) -> dict[str, 
             "stt_provider_presets": list(STT_PROVIDER_PRESETS.values()),
         }
     if config is not None:
+        provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
         return {
             "config_id": str(config.id),
             "label": config.label,
-            "provider_preset": config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url),
-            "provider_display_name": get_stt_provider_preset(config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url)).display_name,
+            "provider_preset": provider_preset,
+            "provider_display_name": get_stt_provider_preset(provider_preset).display_name,
             "adapter_kind": config.adapter_kind.value,
             "base_url": config.base_url,
             "openapi_path": "/openapi.json" if config.adapter_kind is SttAdapterKind.generic_rest else "",
@@ -1023,11 +1026,15 @@ def render_home(
     selectable_clinical_nlp_providers = list_selectable_clinical_nlp_providers_service(db, current_user) if is_manager else []
     user_llm_preference = None
     resolved_user_llm_model = None
+    user_app_preferences_json = {}
     if not current_user.is_system_admin and current_user.team_id is not None:
         try:
             _, _, resolved_user_llm_model, user_llm_preference = resolve_user_llm_service(db, current_user)
         except AppError:
             user_llm_preference = get_user_llm_preference_service(db, current_user)
+        user_app_preference = get_user_app_preferences_service(db, current_user)
+        if user_app_preference is not None and isinstance(user_app_preference.preferences_json, dict):
+            user_app_preferences_json = user_app_preference.preferences_json
     team_leader_email = None
     if current_user.team_id is not None:
         team_leader_email = db.scalar(
@@ -1097,6 +1104,7 @@ def render_home(
         "clinical_nlp_selection": clinical_nlp_selection,
         "selectable_clinical_nlp_providers": selectable_clinical_nlp_providers,
         "user_llm_preference": user_llm_preference,
+        "user_app_preferences_json": user_app_preferences_json,
         "resolved_user_llm_model": resolved_user_llm_model,
         "team_leader_email": team_leader_email,
         "team_templates": team_templates,

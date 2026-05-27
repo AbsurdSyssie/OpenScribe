@@ -51,6 +51,8 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["default_template_id"] = str(payload.default_template_id)
     if payload.llm_detail_level is not None:
         preferences["llm_detail_level"] = payload.llm_detail_level.value
+    if payload.note_generation_length is not None:
+        preferences["note_generation_length"] = payload.note_generation_length.value
     if payload.preferred_recording_mode is not None:
         preferences["preferred_recording_mode"] = payload.preferred_recording_mode.value
     if payload.preferred_transcribe_tab is not None:
@@ -133,6 +135,10 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
     raw_llm_detail_level = preferences_json.get("llm_detail_level")
     if isinstance(raw_llm_detail_level, str) and raw_llm_detail_level in {"concise", "balanced", "detailed"}:
         normalized["llm_detail_level"] = raw_llm_detail_level
+
+    raw_note_generation_length = preferences_json.get("note_generation_length")
+    if isinstance(raw_note_generation_length, str) and raw_note_generation_length in {"short", "normal", "long"}:
+        normalized["note_generation_length"] = raw_note_generation_length
 
     raw_preferred_recording_mode = preferences_json.get("preferred_recording_mode")
     if isinstance(raw_preferred_recording_mode, str) and raw_preferred_recording_mode in {"whole_file", "live_chunked"}:

@@ -55,6 +55,7 @@ from app.models import (
     TranscriptStatus,
     TranscriptVersion,
     User,
+    UserAppPreference,
     UserLlmPreference,
     UserStatus,
     utcnow,
@@ -960,11 +961,17 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
     page = client.get("/home")
     assert "Your writing assistant preference" in page.text
     assert "Clinic OpenAI" in page.text
+    assert "Short (up to ~1 page)" in page.text
+    assert "Detailed" in page.text
     assert "Team allows:" not in page.text
 
     save = client.post(
         "/home/llm-preference",
-        data={"preferred_model_name": "gpt-4.1-mini"},
+        data={
+            "preferred_model_name": "gpt-4.1-mini",
+            "note_generation_length": "short",
+            "llm_detail_level": "concise",
+        },
         follow_redirects=False,
     )
     assert save.status_code == 303
@@ -972,6 +979,10 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
     preference = db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id))
     assert preference is not None
     assert preference.preferred_model_name == "gpt-4.1-mini"
+    app_preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert app_preference is not None
+    assert app_preference.preferences_json["note_generation_length"] == "short"
+    assert app_preference.preferences_json["llm_detail_level"] == "concise"
 
 
 def test_user_home_can_clear_llm_preference(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -2185,6 +2196,10 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-copy-transcript' in page.text
     assert 'data-template-picker-button' in page.text
     assert 'data-template-picker-modal' in page.text
+    assert 'data-note-options-menu' in page.text
+    assert 'data-note-options-length-select' in page.text
+    assert 'data-note-options-detail-select' in page.text
+    assert "Note options" in page.text
     assert 'data-note-selector' in page.text
     assert 'Copy transcript' in page.text
     assert 'data-select-structured-selection' in page.text
@@ -2205,7 +2220,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260525-working-note-emis-sections"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260527-note-options"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2873,7 +2888,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260525-working-note-emis-sections" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260527-note-options" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4439,7 +4454,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260525-working-note-emis-sections" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260527-note-options" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

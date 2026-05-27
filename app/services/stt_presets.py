@@ -54,7 +54,7 @@ STT_PROVIDER_PRESETS: dict[str, SttProviderPresetDefinition] = {
         supports_diarization=True,
         default_model_name=None,
         default_response_text_path="results.channels.0.alternatives.0.transcript",
-        default_extra_form_fields={"smart_format": "true"},
+        default_extra_form_fields={"smart_format": "true", "mip_opt_out": "true"},
     ),
     SttProviderPreset.elevenlabs.value: SttProviderPresetDefinition(
         key=SttProviderPreset.elevenlabs.value,
@@ -130,6 +130,21 @@ def infer_stt_provider_preset(adapter_kind: str | SttAdapterKind, base_url: str 
     if adapter_value == SttAdapterKind.openai_compatible_rest.value:
         return SttProviderPreset.custom_openai_compatible.value
     return SttProviderPreset.custom_rest_openapi.value
+
+
+def resolve_stt_provider_preset(
+    provider_preset: str | SttProviderPreset | None,
+    adapter_kind: str | SttAdapterKind,
+    base_url: str | None,
+) -> str:
+    preset_value = provider_preset.value if isinstance(provider_preset, SttProviderPreset) else provider_preset
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if host == "api.deepgram.com":
+        return SttProviderPreset.deepgram.value
+    inferred = infer_stt_provider_preset(adapter_kind, base_url)
+    if inferred == SttProviderPreset.deepgram.value:
+        return SttProviderPreset.deepgram.value
+    return preset_value or inferred
 
 
 def apply_stt_provider_defaults(

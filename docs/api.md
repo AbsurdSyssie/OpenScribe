@@ -391,7 +391,8 @@ Current LLM-configuration behavior:
   - favourite quick action ids
   - favourite template ids
   - default quick action/template ids
-  - `llm_detail_level`
+  - `llm_detail_level` (`concise`, `balanced`, `detailed`) for template note-generation detail only
+  - `note_generation_length` (`short`, `normal`, `long`) for template note-generation token caps only
   - preferred recording mode
   - preferred transcribe tab
 - `user_app_preferences` rejects template/quick-action ids outside the caller's currently visible owner/team scope
@@ -444,6 +445,10 @@ Current generation behavior:
   - provider execution metadata needed to keep the worker stable if team defaults later change
 - generation resolves the active team LLM provider plus the user's preferred/default model through the existing provider-selection path
 - generation currently supports both OpenAI chat-style providers and Ollama chat hosts
+- template note generation snapshots the current user's saved note options when the generated-document row is queued; later preference changes affect future queued notes only
+- `note_generation_length` maps to output-token caps: `short=800`, `normal=1600`, `long=3200`; absent preferences use `normal`
+- OpenAI-compatible and Bedrock gateway request bodies use `max_completion_tokens`; Ollama `/api/chat` requests use `options.num_predict`
+- `llm_detail_level` adds format-neutral detail guidance to template-note system prompts only; quick actions, follow-ups, dictation cleanup, redaction, clinical extraction, and STT do not use it
 - generation now applies native PHI pseudonymisation before outbound LLM calls:
   - a successful reusable `redaction_runs` row is created lazily per `transcript_versions` snapshot when first needed
   - `redaction_entities` persist the placeholder-to-original mapping for later reconstruction
@@ -622,6 +627,7 @@ Current live chunk-ingestion behavior:
 - the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`; ffprobe/ffmpeg calls have bounded timeouts so stuck media inspection/normalization fails cleanly
 - the backend worker reads the queued STT snapshot plus the selected provider credentials from Vault
 - the backend worker forwards the normalized chunk to the external STT service
+- Deepgram STT calls always include `mip_opt_out=true`; save paths add it when missing and reject explicit non-true values so admins cannot provision an opt-in Deepgram endpoint
 - the backend worker encrypts the returned live-chunk text at rest before later owner-visible draft reconciliation
 - live chunk application is sequence-aware:
   - duplicate `chunk_sequence_no` values are rejected at queue time

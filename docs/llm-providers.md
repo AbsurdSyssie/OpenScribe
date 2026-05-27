@@ -70,11 +70,18 @@ Replacing a saved key reruns discovery, marks the config `pending_model_selectio
 
 New generated documents store an encrypted snapshot of the outbound LLM request on `generated_documents.llm_request_payload_json_encrypted`.
 
-- The snapshot includes generation type, adapter/model/base URL metadata, exact request body/messages sent to the provider adapter, redacted transcript/dictation text, redacted template or quick-action prompt, and structured context where applicable.
-- Payload shape is grouped as `provider`, `generation`, `request`, and `input`; `request` is the same body passed to the runtime adapter.
+- While a template note is queued, the field may temporarily hold saved note-generation options so a later preference edit cannot change that queued job.
+- When the worker starts, the snapshot is replaced with the exact request body/messages sent to the provider adapter, including redacted transcript/dictation text and redacted template or quick-action prompt where applicable.
 - Raw provider secrets are not stored in the snapshot.
 - The generated-document detail API decrypts and returns `llm_request_payload_json` only through existing generated-document owner access paths.
 - Older generated documents may have `llm_request_payload_json=null`; the transcript UI shows `LLM request not available for this document.`
+
+Template note output caps are adapter-specific:
+
+- OpenAI-compatible providers and the Bedrock HTTP gateway receive `max_completion_tokens`.
+- Ollama `/api/chat` receives `options.num_predict`.
+- Saved length presets map to `short=800`, `normal=1600`, and `long=3200`; absent preferences use `normal`.
+- Length/detail presets apply only to template note generation. Follow-ups and quick actions keep their existing request shape.
 
 ## Labels
 

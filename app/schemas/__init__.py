@@ -54,7 +54,7 @@ from .llm import (
     UserLlmPreferenceDetail,
     UserLlmPreferenceUpsert,
 )
-from .preferences import LlmDetailLevel, UserAppPreferencesDetail, UserAppPreferencesUpsert
+from .preferences import LlmDetailLevel, NoteGenerationLength, UserAppPreferencesDetail, UserAppPreferencesUpsert
 from .smart_phrases import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
 from .stt import (
     SttConfigDraftCreate,
@@ -162,6 +162,7 @@ __all__ = [
     "LlmSelectionDetail",
     "LlmSelectionUpsert",
     "LlmDetailLevel",
+    "NoteGenerationLength",
     "SmartPhraseCreate",
     "SmartPhraseDetail",
     "SmartPhraseUpdate",

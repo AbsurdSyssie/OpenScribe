@@ -795,6 +795,7 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     assert body["config"]["is_active"] is False
     assert body["available_models"] == ["nova-3"]
     assert body["config"]["available_models_json"] == ["nova-3"]
+    assert body["config"]["extra_form_fields_json"] == {"smart_format": "true", "mip_opt_out": "true"}
     assert "dg-secret" not in draft.text
 
     persisted = db_session.get(TeamSttConfig, config_id)
@@ -802,6 +803,7 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
     assert persisted.model_name is None
     assert persisted.available_models_json == ["nova-3"]
+    assert persisted.extra_form_fields_json == {"smart_format": "true", "mip_opt_out": "true"}
 
     options_before = client.get(f"/api/v1/stt-selection/options?team_id={team.id}")
     assert options_before.status_code == 200
@@ -1474,6 +1476,119 @@ def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(
     persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Manual STT"))
     assert persisted is not None
     assert persisted.inspection_metadata_json["sample_test"] == "passed"
+
+
+def test_deepgram_direct_save_forces_mip_opt_out_and_known_runtime(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Deepgram Direct")
+    make_user(email="admin-deepgram-direct@example.com", password="password-1", is_system_admin=True)
+    calls: dict[str, object] = {}
+
+    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+        calls["url"] = url
+        calls["headers"] = headers
+        calls["params"] = params
+        calls["content"] = content
+        calls["data"] = data
+        calls["files"] = files
+        return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "sample transcript"}]}]}})
+
+    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+
+    login(client, email="admin-deepgram-direct@example.com", password="password-1")
+    created = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Deepgram direct",
+            "provider_preset": "custom_rest_openapi",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://api.deepgram.com",
+            "transcribe_path": "/v1/listen",
+            "bearer_token": "dg-secret",
+            "credential_action": "replace",
+            "model_name": "nova-3",
+            "model_field_name": "model",
+            "file_field_name": "file",
+            "language": "en",
+            "language_field_name": "language",
+            "response_text_path": "results.channels.0.alternatives.0.transcript",
+            "extra_form_fields_json": {"smart_format": "true"},
+            "is_active": True,
+        },
+    )
+
+    assert created.status_code == 200, created.text
+    assert created.json()["provider_preset"] == SttProviderPreset.deepgram.value
+    assert created.json()["extra_form_fields_json"] == {"smart_format": "true", "mip_opt_out": "true"}
+    assert calls["url"] == "https://api.deepgram.com/v1/listen"
+    assert calls["headers"] == {"Authorization": "Token dg-secret", "Content-Type": "audio/wav"}
+    assert calls["params"] == {"smart_format": "true", "mip_opt_out": "true", "model": "nova-3", "language": "en"}
+    assert calls["content"]
+    assert calls["data"] is None
+    assert calls["files"] is None
+
+    persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Deepgram direct"))
+    assert persisted is not None
+    assert persisted.provider_preset == SttProviderPreset.deepgram.value
+    assert persisted.extra_form_fields_json == {"smart_format": "true", "mip_opt_out": "true"}
+
+
+def test_deepgram_save_rejects_explicit_mip_opt_out_false(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Deepgram Unsafe")
+    make_user(email="admin-deepgram-unsafe@example.com", password="password-1", is_system_admin=True)
+    calls: list[str] = []
+
+    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: calls.append("called") or FakeHttpxResponse({"text": "unexpected"}))
+
+    login(client, email="admin-deepgram-unsafe@example.com", password="password-1")
+    rejected = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Unsafe Deepgram",
+            "provider_preset": "deepgram",
+            "adapter_kind": "generic_rest",
+            "base_url": "https://api.deepgram.com",
+            "transcribe_path": "/v1/listen",
+            "bearer_token": "dg-secret",
+            "credential_action": "replace",
+            "model_name": "nova-3",
+            "model_field_name": "model",
+            "file_field_name": "file",
+            "response_text_path": "results.channels.0.alternatives.0.transcript",
+            "extra_form_fields_json": {"mip_opt_out": "false"},
+            "is_active": True,
+        },
+    )
+
+    assert_error(rejected, status_code=422, code="business_rule_violation", message="Deepgram STT requires mip_opt_out=true")
+    assert calls == []
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Unsafe Deepgram")) is None
+
+
+def test_deepgram_host_rejects_non_deepgram_adapter(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Deepgram Adapter")
+    make_user(email="admin-deepgram-adapter@example.com", password="password-1", is_system_admin=True)
+    calls: list[str] = []
+
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: calls.append("called") or ["whisper-1"])
+
+    login(client, email="admin-deepgram-adapter@example.com", password="password-1")
+    rejected = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "team_id": str(team.id),
+            "label": "Wrong Deepgram Adapter",
+            "adapter_kind": "openai_cloud",
+            "base_url": "https://api.deepgram.com",
+            "bearer_token": "dg-secret",
+            "model_name": "whisper-1",
+        },
+    )
+
+    assert_error(rejected, status_code=422, code="business_rule_violation", message="Deepgram STT must use the Deepgram generic REST contract")
+    assert calls == []
+    assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Wrong Deepgram Adapter")) is None
 
 
 def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selection(
@@ -5680,6 +5795,7 @@ def test_user_can_set_get_and_clear_app_preferences(
             "default_quick_action_id": str(team_quick_action.id),
             "default_template_id": str(personal_template.id),
             "llm_detail_level": "detailed",
+            "note_generation_length": "long",
             "preferred_recording_mode": "live_chunked",
             "preferred_transcribe_tab": "followups",
         },
@@ -5691,6 +5807,7 @@ def test_user_can_set_get_and_clear_app_preferences(
     assert body["default_quick_action_id"] == str(team_quick_action.id)
     assert body["default_template_id"] == str(personal_template.id)
     assert body["llm_detail_level"] == "detailed"
+    assert body["note_generation_length"] == "long"
     assert body["preferred_recording_mode"] == "live_chunked"
     assert body["preferred_transcribe_tab"] == "followups"
 
@@ -5702,9 +5819,13 @@ def test_user_can_set_get_and_clear_app_preferences(
         "default_quick_action_id": str(team_quick_action.id),
         "default_template_id": str(personal_template.id),
         "llm_detail_level": "detailed",
+        "note_generation_length": "long",
         "preferred_recording_mode": "live_chunked",
         "preferred_transcribe_tab": "followups",
     }
+
+    rejected_length = client.post("/api/v1/app-preferences", json={"note_generation_length": "giant"})
+    assert rejected_length.status_code == 422
 
     fetched = client.get("/api/v1/app-preferences")
     assert fetched.status_code == 200
@@ -5792,6 +5913,7 @@ def test_get_app_preferences_drops_deleted_or_hidden_asset_refs(
             "default_quick_action_id": str(quick_action.id),
             "default_template_id": str(template.id),
             "llm_detail_level": "balanced",
+            "note_generation_length": "short",
         },
     )
 
@@ -5807,10 +5929,11 @@ def test_get_app_preferences_drops_deleted_or_hidden_asset_refs(
     assert fetched.json()["default_quick_action_id"] is None
     assert fetched.json()["default_template_id"] is None
     assert fetched.json()["llm_detail_level"] == "balanced"
+    assert fetched.json()["note_generation_length"] == "short"
 
     refreshed = db_session.get(UserAppPreference, preference.id)
     assert refreshed is not None
-    assert refreshed.preferences_json == {"llm_detail_level": "balanced"}
+    assert refreshed.preferences_json == {"llm_detail_level": "balanced", "note_generation_length": "short"}
 
 
 def test_leader_cannot_allow_non_provider_llm_models(client, make_team, make_user, make_llm_config):
@@ -6015,6 +6138,72 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert_error(forbidden_read, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
     forbidden_delete = client.delete(f"/api/v1/templates/personal/{personal_template_id}")
     assert_error(forbidden_delete, status_code=404, code="not_found", message="Personal template not found")
+
+
+@pytest.mark.parametrize(
+    ("saved_length", "saved_detail", "expected_cap", "expected_guidance"),
+    [
+        ("short", "concise", 800, "Use compact wording. Avoid unnecessary phrasing."),
+        ("normal", "balanced", 1600, "Use clear standard clinical wording."),
+        ("long", "detailed", 3200, "Use fuller wording where helpful."),
+        (None, None, 1600, "Use clear standard clinical wording."),
+    ],
+)
+def test_template_generation_uses_queued_note_options_for_cap_and_detail(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    saved_length,
+    saved_detail,
+    expected_cap,
+    expected_guidance,
+):
+    team = make_team(name=f"Clinic Note Options {saved_length or 'default'}")
+    admin = make_user(email=f"admin-note-options-{saved_length or 'default'}@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email=f"owner-note-options-{saved_length or 'default'}@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name=f"Options note {saved_length or 'default'}", prompt_text="Write a note.")
+    captured_requests: list[dict[str, object]] = []
+
+    class FakeTaskResult:
+        id = "generated-note-options"
+
+    def fake_generate_openai(**kwargs):
+        captured_requests.append(kwargs["request_body"])
+        return '{"title":"Options summary","content":"Generated note body"}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 5}
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email=owner.email, password="password-2")
+    if saved_length is not None and saved_detail is not None:
+        saved = client.post("/api/v1/app-preferences", json={"note_generation_length": saved_length, "llm_detail_level": saved_detail})
+        assert saved.status_code == 200
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Options visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Patient reports headaches."},
+    )
+    assert started.status_code == 201
+    generated = client.post(f"/api/v1/transcripts/{started.json()['id']}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+
+    changed = client.post("/api/v1/app-preferences", json={"note_generation_length": "long", "llm_detail_level": "detailed"})
+    assert changed.status_code == 200
+    processed = process_generated_document(db_session, document_id=UUID(generated.json()["id"]))
+    assert processed.status is GeneratedDocumentStatus.ready
+
+    assert captured_requests
+    provider_request = captured_requests[0]
+    assert provider_request["max_completion_tokens"] == expected_cap
+    assert expected_guidance in provider_request["messages"][0]["content"]
+    stored_request = generated_document_llm_request_payload(db_session, document=processed)
+    assert stored_request["max_completion_tokens"] == expected_cap
 
 
 def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_session, make_team, make_user):
@@ -6754,6 +6943,8 @@ def test_template_generation_supports_ollama_adapter(
     )
 
     login(client, email="owner-ollama@example.com", password="password-2")
+    saved_preferences = client.post("/api/v1/app-preferences", json={"note_generation_length": "long", "llm_detail_level": "balanced"})
+    assert saved_preferences.status_code == 200
     started = client.post(
         "/api/v1/transcripts/start",
         json={"title": "Ollama visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Transcript draft."},
@@ -6773,6 +6964,7 @@ def test_template_generation_supports_ollama_adapter(
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Ollama note body"
     assert persisted_document.model_used == "llama3.2"
+    assert generated_document_llm_request_payload(db_session, document=processed)["options"] == {"num_predict": 3200}
 
 
 def test_template_generation_supports_bedrock_adapter(
@@ -9224,6 +9416,7 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
     quick_action = make_quick_action(scope=TemplateScope.user, owner=owner, actor=owner, name="SMS", prompt_text="Write a short SMS update.")
+    db_session.add(UserAppPreference(user_id=owner.id, preferences_json={"note_generation_length": "short", "llm_detail_level": "concise"}))
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -9261,7 +9454,9 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "SMS body"
     quick_action_payload = generated_document_llm_request_payload(db_session, document=processed)
     assert quick_action_payload == captured_provider_request
+    assert quick_action_payload["max_completion_tokens"] == 1600
     assert quick_action_payload["messages"] == captured_provider_request["messages"]
+    assert "Output detail:" not in quick_action_payload["messages"][0]["content"]
     assert "generation" not in quick_action_payload
     assert "input" not in quick_action_payload
     assert "provider" not in quick_action_payload
@@ -14574,7 +14769,7 @@ def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
         transcribe_path="/v1/listen",
         file_field_name="file",
         response_text_path="results.channels.0.alternatives.0.transcript",
-        extra_form_fields_json={"smart_format": "true"},
+        extra_form_fields_json={"smart_format": "true", "mip_opt_out": "false"},
         bearer_token="dg-secret",
         model_name="nova-3",
         model_field_name="model",
@@ -14589,7 +14784,7 @@ def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
     assert result == "hello from deepgram"
     assert captured["url"] == "https://api.deepgram.com/v1/listen"
     assert captured["headers"] == {"Authorization": "Token dg-secret", "Content-Type": "audio/wav"}
-    assert captured["params"] == {"smart_format": "true", "model": "nova-3", "language": "en"}
+    assert captured["params"] == {"smart_format": "true", "mip_opt_out": "true", "model": "nova-3", "language": "en"}
     assert captured["content"] == b"wav-bytes"
     assert captured["data"] is None
     assert captured["files"] is None
@@ -14644,7 +14839,7 @@ def test_transcribe_with_team_stt_deepgram_uses_raw_audio_transport(
 
     assert text == "recognized text"
     assert captured["headers"]["Authorization"] == "Token dg-secret"
-    assert captured["params"] == {"smart_format": "true", "model": "nova-3", "language": "en"}
+    assert captured["params"] == {"smart_format": "true", "mip_opt_out": "true", "model": "nova-3", "language": "en"}
     assert captured["content"] == b"normalized-audio"
     assert captured["data"] is None
     assert captured["files"] is None

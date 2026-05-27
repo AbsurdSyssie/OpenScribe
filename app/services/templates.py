@@ -1736,7 +1736,7 @@ def _build_template_generation_messages(
     detail_guidance: str = NOTE_GENERATION_DETAIL_GUIDANCE[DEFAULT_LLM_DETAIL_LEVEL],
 ) -> tuple[str, str]:
     return (
-        "You generate concise note output from consultation source material using the provided template instructions. "
+        "You generate medical note output from consultation source material using the provided template instructions. "
         f"Output detail: {detail_guidance} "
         "Return only a valid JSON object with exactly two string fields: "
         "\"title\" and \"content\". "
@@ -1772,7 +1772,7 @@ def _build_structured_template_generation_messages(
         for section in sorted(template_config.sections, key=lambda item: item.section_order)
     ]
     return (
-        "You generate a structured GP note from a transcript using the provided EMIS section instructions. "
+        "You generate a structured medical note from a transcript using the provided EMIS section instructions. "
         f"Output detail: {detail_guidance} "
         "Return only a valid JSON object with exactly two top-level fields: "
         "\"title\" and \"content\". "

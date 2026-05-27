@@ -37,6 +37,7 @@ from app.models import (
     TranscriptVersion,
     TranscriptWorkingNoteMode,
     User,
+    UserAppPreference,
     utcnow,
 )
 from app.schemas.templates import (
@@ -74,6 +75,19 @@ TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
 QUICK_ACTION_CONTEXT_MARKER = "\n\nAdditional context:\n"
+NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY = "_openscribe_note_generation_options"
+DEFAULT_NOTE_GENERATION_LENGTH = "normal"
+DEFAULT_LLM_DETAIL_LEVEL = "balanced"
+NOTE_GENERATION_LENGTH_TOKEN_CAPS = {
+    "short": 800,
+    "normal": 1600,
+    "long": 3200,
+}
+NOTE_GENERATION_DETAIL_GUIDANCE = {
+    "concise": "Use compact wording. Avoid unnecessary phrasing.",
+    "balanced": "Use clear standard clinical wording.",
+    "detailed": 'Use fuller wording where helpful. Include short direct quotations from the patient only when present in the source and clinically useful, for example: patient described headaches as "dreadful".',
+}
 
 
 class GenerationUsage(TypedDict):
@@ -82,6 +96,41 @@ class GenerationUsage(TypedDict):
     total_tokens: int | None
     duration_ms: int | None
     provider_duration_ms: int | None
+
+
+class NoteGenerationOptions(TypedDict):
+    note_generation_length: str
+    llm_detail_level: str
+
+
+def _normalize_note_generation_options(preferences_json: dict[str, object] | None) -> NoteGenerationOptions:
+    payload = preferences_json if isinstance(preferences_json, dict) else {}
+    raw_length = payload.get("note_generation_length")
+    raw_detail = payload.get("llm_detail_level")
+    return {
+        "note_generation_length": raw_length if isinstance(raw_length, str) and raw_length in NOTE_GENERATION_LENGTH_TOKEN_CAPS else DEFAULT_NOTE_GENERATION_LENGTH,
+        "llm_detail_level": raw_detail if isinstance(raw_detail, str) and raw_detail in NOTE_GENERATION_DETAIL_GUIDANCE else DEFAULT_LLM_DETAIL_LEVEL,
+    }
+
+
+def _note_generation_options_for_user(db: Session, *, user_id: UUID) -> NoteGenerationOptions:
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user_id))
+    return _normalize_note_generation_options(preference.preferences_json if preference is not None else None)
+
+
+def _note_generation_options_from_document(db: Session, *, document: GeneratedDocument) -> NoteGenerationOptions:
+    payload = generated_document_llm_request_payload(db, document=document)
+    if isinstance(payload, dict):
+        return _normalize_note_generation_options(payload.get(NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY))
+    return _normalize_note_generation_options(None)
+
+
+def _note_generation_output_token_cap(options: NoteGenerationOptions) -> int:
+    return NOTE_GENERATION_LENGTH_TOKEN_CAPS.get(options["note_generation_length"], NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH])
+
+
+def _note_generation_detail_guidance(options: NoteGenerationOptions) -> str:
+    return NOTE_GENERATION_DETAIL_GUIDANCE.get(options["llm_detail_level"], NOTE_GENERATION_DETAIL_GUIDANCE[DEFAULT_LLM_DETAIL_LEVEL])
 
 
 def _structured_section_definitions_snapshot(template_config: StructuredTemplateConfig | None) -> dict | None:
@@ -1650,6 +1699,7 @@ def _generation_request_snapshot(
     user_id: UUID,
     system_message: str,
     user_message: str,
+    output_token_cap: int | None = None,
 ) -> dict[str, object]:
     messages = [
         {"role": "system", "content": system_message},
@@ -1659,7 +1709,7 @@ def _generation_request_snapshot(
         request_body: dict[str, object] = {
             "model": model,
             "temperature": 0.2,
-            "max_completion_tokens": 1600,
+            "max_completion_tokens": output_token_cap or NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH],
             "user": str(user_id),
             "messages": messages,
         }
@@ -1669,6 +1719,8 @@ def _generation_request_snapshot(
             "stream": True,
             "messages": messages,
         }
+        if output_token_cap is not None:
+            request_body["options"] = {"num_predict": output_token_cap}
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
     return request_body
@@ -1681,9 +1733,11 @@ def _build_template_generation_messages(
     transcript_text: str,
     dictation_text: str = "",
     working_note_text: str = "",
+    detail_guidance: str = NOTE_GENERATION_DETAIL_GUIDANCE[DEFAULT_LLM_DETAIL_LEVEL],
 ) -> tuple[str, str]:
     return (
         "You generate concise note output from consultation source material using the provided template instructions. "
+        f"Output detail: {detail_guidance} "
         "Return only a valid JSON object with exactly two string fields: "
         "\"title\" and \"content\". "
         "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
@@ -1711,6 +1765,7 @@ def _build_structured_template_generation_messages(
     dictation_text: str,
     template_config: StructuredTemplateConfig,
     working_note_text: str = "",
+    detail_guidance: str = NOTE_GENERATION_DETAIL_GUIDANCE[DEFAULT_LLM_DETAIL_LEVEL],
 ) -> tuple[str, str]:
     section_lines = [
         f'- "{section.section_key}": {section.instruction}'
@@ -1718,6 +1773,7 @@ def _build_structured_template_generation_messages(
     ]
     return (
         "You generate a structured GP note from a transcript using the provided EMIS section instructions. "
+        f"Output detail: {detail_guidance} "
         "Return only a valid JSON object with exactly two top-level fields: "
         "\"title\" and \"content\". "
         "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
@@ -2198,6 +2254,11 @@ def queue_document_generation_from_template(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
+    set_generated_document_llm_request_payload(
+        db,
+        document=generated_document,
+        plaintext={NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id)},
+    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -2491,7 +2552,11 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     )
     extra_phi_index.extend(manual_phi_index)
 
+    output_token_cap: int | None = None
     if document.generator_type is GeneratedDocumentGeneratorType.template:
+        note_generation_options = _note_generation_options_from_document(db, document=document)
+        output_token_cap = _note_generation_output_token_cap(note_generation_options)
+        detail_guidance = _note_generation_detail_guidance(note_generation_options)
         working_note_text = _redacted_working_note_text_for_document(
             db,
             document=document,
@@ -2551,6 +2616,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 dictation_text=dictation_text,
                 template_config=template_config,
                 working_note_text=working_note_text,
+                detail_guidance=detail_guidance,
             )
         else:
             system_message, user_message = _build_template_generation_messages(
@@ -2559,6 +2625,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 transcript_text=transcript_text,
                 dictation_text=dictation_text,
                 working_note_text=working_note_text,
+                detail_guidance=detail_guidance,
             )
     elif document.generator_type is GeneratedDocumentGeneratorType.followup:
         working_note_text = _redacted_working_note_text_for_document(
@@ -2642,6 +2709,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         user_id=document.owner_user_id,
         system_message=system_message,
         user_message=user_message,
+        output_token_cap=output_token_cap,
     )
     set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
 

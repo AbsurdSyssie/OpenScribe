@@ -17,6 +17,12 @@ class LlmDetailLevel(str, Enum):
     detailed = "detailed"
 
 
+class NoteGenerationLength(str, Enum):
+    short = "short"
+    normal = "normal"
+    long = "long"
+
+
 def _dedupe_uuids(values: list[UUID]) -> list[UUID]:
     seen: set[UUID] = set()
     deduped: list[UUID] = []
@@ -36,6 +42,7 @@ class UserAppPreferencesUpsert(BaseModel):
     default_quick_action_id: UUID | None = None
     default_template_id: UUID | None = None
     llm_detail_level: LlmDetailLevel | None = None
+    note_generation_length: NoteGenerationLength | None = None
     preferred_recording_mode: TranscriptIngestionMode | None = None
     preferred_transcribe_tab: Literal["output", "followups"] | None = None
 
@@ -58,6 +65,7 @@ class UserAppPreferencesDetail(BaseModel):
     default_quick_action_id: UUID | None
     default_template_id: UUID | None
     llm_detail_level: LlmDetailLevel | None
+    note_generation_length: NoteGenerationLength | None
     preferred_recording_mode: TranscriptIngestionMode | None
     preferred_transcribe_tab: Literal["output", "followups"] | None
     created_at: datetime

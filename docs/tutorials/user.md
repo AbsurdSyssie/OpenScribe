@@ -130,6 +130,10 @@ Examples:
 
 Choose the template that matches the document you want. If you choose the wrong template, the output may be in the wrong format or may emphasise the wrong things.
 
+Use `Note options` beside `Create` to choose the writing model, approximate maximum length, and detail level for future generated notes. These settings save immediately. If saving fails, OpenScribe warns you; you can still create the note, but it may use the previous saved settings.
+
+The same model, length, and detail preferences are available on Home in the `Your writing assistant preference` card.
+
 ## Step 7: Generate the Draft Note
 
 After audio and transcript are available:
@@ -277,4 +281,3 @@ Ask for help when:
 - you think content is visible to the wrong person
 - you need account recovery
 - you are unsure whether deletion is appropriate
-

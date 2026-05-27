@@ -7109,3 +7109,22 @@
 - Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "working_note or create_button or transcribe_workspace_static"` passed, 4 tests.
 - Tests: `.venv/bin/pytest -q tests/test_api.py -k "working_note or dictation_only_session_before_provider_call"` passed, 5 tests.
 - Architecture checkpoint: privacy boundaries preserved; Working note and dictation remain owner-only generation inputs; deletion semantics unchanged; provider resolution unchanged; structured-note contract unchanged.
+
+# 2026-05-26 Deepgram MIP Opt-Out Enforcement
+
+- Added Deepgram STT query-param enforcement so `mip_opt_out=true` is part of provider defaults, direct saves, draft/finalize flows, reinspection, saved-config tests, and runtime transcription.
+- Forced `api.deepgram.com` configs through the Deepgram preset even when submitted as custom REST, closing provider-preset bypass.
+- Added focused API/runtime regressions for draft defaults, direct-save normalization, explicit false rejection, and old saved runtime params.
+- Updated `docs/stt-config.md` and `docs/api.md`.
+- Architecture checkpoint: privacy boundaries strengthened for provider processing; system-admin STT provisioning remains scoped by team; no ownership, deletion cascade, encryption-key, or structured-note contract changes.
+
+# 2026-05-27 LLM Note Generation Options
+
+- Added owner-scoped `note_generation_length` app preference and reused `llm_detail_level` for template-note detail.
+- Added workspace `Note options` and Home writing-assistant controls for model, length, and detail; workspace saves length/detail through app preferences and model through the existing LLM preference route.
+- Template note jobs snapshot saved length/detail at queue time, map length to provider token caps, and keep quick actions/follow-ups outside the new option path.
+- Updated API, provider, and user docs.
+- Tests: `.venv/bin/pytest -q tests/test_api.py -k "app_preferences or queued_note_options or template_generation_supports_ollama_adapter or generated_document_keeps_prompt_snapshot_after_quick_action_delete"` passed, 9 tests.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_home_can_save_llm_preference or user_transcribe_page_shows_workspace_shell or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_reorder_blocks_blank_note_lines"` passed, 4 tests.
+- Tests: `.venv/bin/pytest -q tests/test_api.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation or structured_emis_template_generation_persists_sections or template_generation_supports_bedrock_adapter"` passed, 3 tests.
+- Architecture checkpoint: privacy boundaries preserved; only owner app preferences are read. Ownership rules unchanged for transcript/generated-document access. Deletion semantics unchanged. Provider rules preserved by using existing LLM selection/credential paths and adapter-specific cap fields. Structured-note contract preserved; detail guidance does not expand EMIS keys or output schema.

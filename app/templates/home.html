@@ -1722,15 +1722,46 @@ padding: 1rem 0;
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="overview">
 <label style="margin-top: 4px;">
+<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Model</span>
+{% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
+{% if allowed_llm_models|length > 1 %}
 <select name="preferred_model_name">
 <option value="">Use team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or "none" }})</option>
-{% for model in llm_selection.allowed_models_json %}
+{% for model in allowed_llm_models %}
 <option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
 {% endfor %}
 </select>
+{% else %}
+<select disabled>
+<option>{{ allowed_llm_models[0] if allowed_llm_models else (llm_selection.model_name_override or llm_selection.config.model_name or "No model configured") }}</option>
+</select>
+<input type="hidden" name="preferred_model_name" value="">
+{% endif %}
 </label>
-<div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px;">
+<div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 12px;">
+<label>
+<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Length</span>
+<select name="note_generation_length">
+{% set home_note_length = user_app_preferences_json.get('note_generation_length', 'normal') %}
+<option value="short" {% if home_note_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option>
+<option value="normal" {% if home_note_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option>
+<option value="long" {% if home_note_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option>
+</select>
+</label>
+<label>
+<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Detail</span>
+<select name="llm_detail_level">
+{% set home_detail_level = user_app_preferences_json.get('llm_detail_level', 'balanced') %}
+<option value="concise" {% if home_detail_level == 'concise' %}selected{% endif %}>Concise</option>
+<option value="balanced" {% if home_detail_level == 'balanced' %}selected{% endif %}>Balanced</option>
+<option value="detailed" {% if home_detail_level == 'detailed' %}selected{% endif %}>Detailed</option>
+</select>
+</label>
+</div>
+<div style="margin-top: 12px;">
 <button type="submit" class="btn-primary btn-sm">Save preference</button>
+</div>
+</form>
 {% if user_llm_preference %}
 <form method="post" action="/home/llm-preference/clear" data-confirm-submit="Clear your personal writing assistant preference?" style="margin: 0;">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
@@ -1739,7 +1770,11 @@ padding: 1rem 0;
 </form>
 {% endif %}
 </div>
-</form>
+{% else %}
+<div>
+<h3 style="margin-bottom: 8px;">Writing assistant</h3>
+<p style="font-size: 0.88rem; color: var(--slate);">No LLM provider configured</p>
+</div>
 {% endif %}
 </div>
 {% endif %}

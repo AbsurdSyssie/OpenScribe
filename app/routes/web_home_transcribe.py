@@ -1,5 +1,7 @@
 """Home and transcribe browser routes extracted from app.main."""
 
+from pydantic import ValidationError
+
 from ..main import *  # noqa: F401,F403
 from ..main import (
     _home_page_route_from_return_view,
@@ -447,6 +449,8 @@ def home_clear_clinical_nlp_selection(
 def home_set_llm_preference(
     request: Request,
     preferred_model_name: str = Form(""),
+    note_generation_length: str = Form(""),
+    llm_detail_level: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -461,7 +465,24 @@ def home_set_llm_preference(
             context.user,
             UserLlmPreferenceUpsert(preferred_model_name=preferred_model_name or None),
         )
-    except (ValueError, AppError) as exc:
+        if note_generation_length or llm_detail_level:
+            preference = get_user_app_preferences_service(db, context.user)
+            existing = preference.preferences_json if preference is not None and isinstance(preference.preferences_json, dict) else {}
+            set_user_app_preferences_service(
+                db,
+                context.user,
+                UserAppPreferencesUpsert(
+                    favorite_quick_action_ids=existing.get("favorite_quick_action_ids") or [],
+                    favorite_template_ids=existing.get("favorite_template_ids") or [],
+                    default_quick_action_id=existing.get("default_quick_action_id"),
+                    default_template_id=existing.get("default_template_id"),
+                    llm_detail_level=llm_detail_level or existing.get("llm_detail_level"),
+                    note_generation_length=note_generation_length or existing.get("note_generation_length"),
+                    preferred_recording_mode=existing.get("preferred_recording_mode"),
+                    preferred_transcribe_tab=existing.get("preferred_transcribe_tab"),
+                ),
+            )
+    except (ValueError, ValidationError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM preference"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
         return render_home(

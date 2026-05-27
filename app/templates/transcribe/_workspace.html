@@ -253,6 +253,55 @@ class="btn-primary btn-primary--compact"
 Create
 </button>
 </form>
+<details class="relative" data-note-options-menu>
+<summary class="btn-secondary btn-primary--compact cursor-pointer list-none" data-note-options-summary>
+<i class="w-4 h-4" data-lucide="sliders-horizontal"></i>
+Note options
+</summary>
+<div class="absolute right-0 z-40 mt-2 w-[19rem] max-w-[calc(100vw-2rem)] rounded-lg border border-stone bg-white p-3 shadow-lg space-y-3" data-note-options-panel>
+<div>
+<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-model">Model</label>
+{% if llm_selection %}
+{% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
+{% if allowed_llm_models|length > 1 %}
+<select id="note-options-model" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm" data-note-options-model-select>
+<option value="">Team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or "none" }})</option>
+{% for model in allowed_llm_models %}
+<option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
+{% endfor %}
+</select>
+{% else %}
+<select id="note-options-model" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm" disabled data-note-options-model-select>
+<option>{{ allowed_llm_models[0] if allowed_llm_models else (llm_selection.model_name_override or llm_selection.config.model_name or "No model configured") }}</option>
+</select>
+{% endif %}
+{% else %}
+<div class="mt-1 rounded-lg border border-stone bg-parchment px-3 py-2 text-sm text-slate">No LLM provider configured</div>
+{% endif %}
+</div>
+<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-length">
+Length
+<select id="note-options-length" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm normal-case tracking-normal text-ink" data-note-options-length-select>
+{% set note_generation_length = user_app_preferences_json.get('note_generation_length', 'normal') %}
+<option value="short" {% if note_generation_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option>
+<option value="normal" {% if note_generation_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option>
+<option value="long" {% if note_generation_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option>
+</select>
+</label>
+<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-detail">
+Detail
+<select id="note-options-detail" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm normal-case tracking-normal text-ink" data-note-options-detail-select>
+{% set llm_detail_level = user_app_preferences_json.get('llm_detail_level', 'balanced') %}
+<option value="concise" {% if llm_detail_level == 'concise' %}selected{% endif %}>Concise</option>
+<option value="balanced" {% if llm_detail_level == 'balanced' %}selected{% endif %}>Balanced</option>
+<option value="detailed" {% if llm_detail_level == 'detailed' %}selected{% endif %}>Detailed</option>
+</select>
+</label>
+</div>
+<div class="text-xs text-coral" data-note-options-warning hidden></div>
+</div>
+</details>
 <a
 href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
 class="btn-icon"

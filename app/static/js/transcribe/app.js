@@ -185,6 +185,10 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
       const generateOutputForm = document.querySelector('[data-generate-output-form]');
       const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
+      const noteOptionsModelSelect = document.querySelector('[data-note-options-model-select]');
+      const noteOptionsLengthSelect = document.querySelector('[data-note-options-length-select]');
+      const noteOptionsDetailSelect = document.querySelector('[data-note-options-detail-select]');
+      const noteOptionsWarning = document.querySelector('[data-note-options-warning]');
       const templatePickerButton = document.querySelector('[data-template-picker-button]');
       const templatePickerLabel = document.querySelector('[data-template-picker-label]');
       const templatePickerMode = document.querySelector('[data-template-picker-mode]');
@@ -528,6 +532,7 @@ let statusDetailsHideTimer = null;
           default_quick_action_id: userAppPreferences.default_quick_action_id || null,
           default_template_id: userAppPreferences.default_template_id || null,
           llm_detail_level: userAppPreferences.llm_detail_level || null,
+          note_generation_length: userAppPreferences.note_generation_length || null,
           preferred_recording_mode: userAppPreferences.preferred_recording_mode || null,
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
           ...patch,
@@ -548,6 +553,47 @@ let statusDetailsHideTimer = null;
         }
         return userAppPreferences;
       };
+
+      const showNoteOptionsWarning = (message) => {
+        if (!noteOptionsWarning) return;
+        noteOptionsWarning.textContent = message || '';
+        noteOptionsWarning.hidden = !message;
+      };
+
+      const saveNoteGenerationOptions = async () => {
+        if (!noteOptionsLengthSelect || !noteOptionsDetailSelect) return;
+        try {
+          await persistUserAppPreferences({
+            note_generation_length: noteOptionsLengthSelect.value || 'normal',
+            llm_detail_level: noteOptionsDetailSelect.value || 'balanced',
+          });
+          showNoteOptionsWarning('');
+        } catch (_) {
+          showNoteOptionsWarning('Options not saved; next note may use previous settings.');
+        }
+      };
+
+      const saveNoteModelPreference = async () => {
+        if (!noteOptionsModelSelect || noteOptionsModelSelect.disabled) return;
+        try {
+          const response = await csrfFetch('/api/v1/llm-preference', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ preferred_model_name: noteOptionsModelSelect.value || null }),
+          });
+          if (!response.ok) {
+            throw new Error(await parseErrorMessage(response, 'Could not save your model preference.'));
+          }
+          showNoteOptionsWarning('');
+        } catch (_) {
+          showNoteOptionsWarning('Options not saved; next note may use previous settings.');
+        }
+      };
+
+      noteOptionsLengthSelect?.addEventListener('change', saveNoteGenerationOptions);
+      noteOptionsDetailSelect?.addEventListener('change', saveNoteGenerationOptions);
+      noteOptionsModelSelect?.addEventListener('change', saveNoteModelPreference);
 
       const persistDictationExplicitly = async () => {
         if (dictationSaveInFlight) {

@@ -29,7 +29,7 @@ from app.schemas import (
     SttSelectionUpsert,
 )
 from app.stt_normalization import normalize_optional_stt_text, normalize_stt_language
-from app.services.stt_presets import apply_stt_provider_defaults, default_stt_config_label, get_stt_provider_preset, infer_stt_provider_preset
+from app.services.stt_presets import apply_stt_provider_defaults, default_stt_config_label, get_stt_provider_preset, resolve_stt_provider_preset
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
 from app.services.provider_inspection import (
     dereference_openapi_document,
@@ -52,6 +52,10 @@ ELEVENLABS_PREFERRED_STT_MODELS = (
     "scribe_v1",
 )
 ELEVENLABS_SYNC_STT_MODEL_IDS = set(ELEVENLABS_PREFERRED_STT_MODELS)
+DEEPGRAM_MIP_OPT_OUT_FIELD = "mip_opt_out"
+DEEPGRAM_MIP_OPT_OUT_TRUE = "true"
+DEEPGRAM_TRUE_VALUES = {"true", "1", "yes", "on"}
+DEEPGRAM_FALSE_VALUES = {"false", "0", "no", "off"}
 
 
 logger = logging.getLogger("openscribe.stt")
@@ -147,6 +151,37 @@ def _ensure_unique_stt_config_label(db: Session, *, team_id: UUID, label: str, c
 def _raise_stt_label_conflict_if_needed(exc: IntegrityError) -> None:
     if "uq_team_stt_configs_team_label_lower" in str(exc.orig):
         raise AppError(409, "conflict", "An STT provider with this name already exists for this team.", {"field": "label"}) from exc
+
+
+def _normalize_deepgram_extra_query_params(
+    extra_fields: dict[str, str] | None,
+    *,
+    provider_preset: str | SttProviderPreset | None,
+    adapter_kind: SttAdapterKind,
+    base_url: str,
+    reject_explicit_non_true: bool,
+) -> dict[str, str]:
+    resolved_preset = resolve_stt_provider_preset(provider_preset, adapter_kind, base_url)
+    fields = dict(extra_fields or {})
+    if resolved_preset != SttProviderPreset.deepgram.value:
+        return fields
+
+    for key in list(fields.keys()):
+        if key.strip().lower() != DEEPGRAM_MIP_OPT_OUT_FIELD:
+            continue
+        raw_value = fields.pop(key)
+        normalized_value = str(raw_value).strip().lower()
+        if reject_explicit_non_true and normalized_value not in DEEPGRAM_TRUE_VALUES:
+            raise AppError(
+                422,
+                "business_rule_violation",
+                "Deepgram STT requires mip_opt_out=true",
+                {"field": "extra_form_fields_json.mip_opt_out"},
+            )
+        if not reject_explicit_non_true and normalized_value in DEEPGRAM_FALSE_VALUES:
+            continue
+    fields[DEEPGRAM_MIP_OPT_OUT_FIELD] = DEEPGRAM_MIP_OPT_OUT_TRUE
+    return fields
 
 
 def _stt_model_options(models: list[str], *, source: str) -> list[SttModelOption]:
@@ -445,7 +480,7 @@ def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str
 
 def _stt_config_requires_saved_credential(config: TeamSttConfig) -> bool:
     try:
-        preset = get_stt_provider_preset(config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url))
+        preset = get_stt_provider_preset(resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url))
     except ValueError:
         return config.adapter_kind is SttAdapterKind.openai_cloud
     return preset.requires_api_key or config.adapter_kind is SttAdapterKind.openai_cloud
@@ -1111,6 +1146,7 @@ def _transcribe_via_http(
     segment_speaker_field: str | None = None,
 ) -> str:
     url = f"{base_url.rstrip('/')}{transcribe_path}"
+    resolved_provider_preset = resolve_stt_provider_preset(provider_preset, adapter_kind or SttAdapterKind.generic_rest, base_url)
     if adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         return _transcribe_via_elevenlabs_speech_to_text(
             base_url=base_url,
@@ -1121,7 +1157,7 @@ def _transcribe_via_http(
             model_name=model_name,
             language=language,
         )
-    if provider_preset == SttProviderPreset.deepgram.value:
+    if resolved_provider_preset == SttProviderPreset.deepgram.value:
         return _transcribe_via_deepgram(
             url=url,
             bearer_token=bearer_token,
@@ -1129,7 +1165,13 @@ def _transcribe_via_http(
             content_type=content_type,
             model_name=model_name,
             language=language,
-            extra_query_params=extra_form_fields_json or {},
+            extra_query_params=_normalize_deepgram_extra_query_params(
+                extra_form_fields_json,
+                provider_preset=resolved_provider_preset,
+                adapter_kind=adapter_kind or SttAdapterKind.generic_rest,
+                base_url=base_url,
+                reject_explicit_non_true=False,
+            ),
             response_text_path=response_text_path,
             segments_path=segments_path,
             segment_text_field=segment_text_field,
@@ -1162,7 +1204,7 @@ def _transcribe_via_http(
     try:
         headers: dict[str, str] = {}
         if bearer_token:
-            preset = get_stt_provider_preset(provider_preset) if provider_preset else None
+            preset = get_stt_provider_preset(resolved_provider_preset) if resolved_provider_preset else None
             if preset and preset.auth_header_style == "token":
                 headers["Authorization"] = f"Token {bearer_token}"
             elif preset and preset.auth_header_style == "xi-api-key":
@@ -1411,7 +1453,8 @@ def transcribe_with_team_stt(
 ) -> str:
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
     bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
-    if config.adapter_kind is SttAdapterKind.openai_cloud:
+    provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
+    if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value:
         if not bearer_token:
             raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
         return _transcribe_via_openai_cloud(
@@ -1430,7 +1473,7 @@ def transcribe_with_team_stt(
         response_text_path=config.response_text_path,
         extra_form_fields_json=config.extra_form_fields_json,
         bearer_token=bearer_token,
-        provider_preset=config.provider_preset,
+        provider_preset=provider_preset,
         adapter_kind=config.adapter_kind,
         model_name=resolved_model_name,
         model_field_name=config.model_field_name or "model",
@@ -1481,13 +1524,14 @@ def transcribe_with_stt_snapshot(
             content_type=content_type,
         )
     resolved_adapter = SttAdapterKind(adapter_kind)
+    replay_provider_preset = resolve_stt_provider_preset(provider_preset, resolved_adapter, base_url)
     bearer_token = _read_stt_snapshot_bearer_token(
         db,
         team_id=team_id,
         stt_config_id=stt_config_id,
         adapter_kind=resolved_adapter,
     )
-    if resolved_adapter is SttAdapterKind.openai_cloud:
+    if resolved_adapter is SttAdapterKind.openai_cloud and replay_provider_preset != SttProviderPreset.deepgram.value:
         if not bearer_token:
             raise _missing_stt_credential_error(team_id=team_id, config_id=stt_config_id)
         return _transcribe_via_openai_cloud(
@@ -1501,7 +1545,6 @@ def transcribe_with_stt_snapshot(
         )
     if not transcribe_path or not file_field_name or not response_text_path:
         raise AppError(422, "business_rule_violation", "Queued STT snapshot is incomplete")
-    replay_provider_preset = provider_preset or SttProviderPreset.custom_rest_openapi.value
     return _transcribe_via_http(
         base_url=base_url,
         transcribe_path=transcribe_path,
@@ -1545,6 +1588,7 @@ def run_saved_stt_config_test(
     health_url = None
     try:
         bearer_token = _read_saved_stt_bearer_token(team_id=config.team_id, config=config)
+        provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
         transcript_text = (
             _transcribe_via_openai_cloud(
                 base_url=config.base_url,
@@ -1555,7 +1599,7 @@ def run_saved_stt_config_test(
                 audio_bytes=audio_bytes,
                 filename=sample_path.name,
             )
-            if config.adapter_kind is SttAdapterKind.openai_cloud
+            if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value
             else _transcribe_via_http(
                 base_url=config.base_url,
                 transcribe_path=config.transcribe_path,
@@ -1563,7 +1607,7 @@ def run_saved_stt_config_test(
                 response_text_path=config.response_text_path,
                 extra_form_fields_json=config.extra_form_fields_json,
                 bearer_token=bearer_token,
-                provider_preset=config.provider_preset,
+                provider_preset=provider_preset,
                 adapter_kind=config.adapter_kind,
                 model_name=config.model_name,
                 model_field_name=config.model_field_name or "model",
@@ -1656,6 +1700,8 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
     )
+    provider_preset = resolve_stt_provider_preset(provider_preset, adapter_kind, base_url)
+    preset = get_stt_provider_preset(provider_preset)
     if preset.requires_api_key and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "This STT provider requires an API key", {"field": "bearer_token"})
     inspection = inspect_stt_contract(
@@ -1754,6 +1800,15 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     model_name = payload.model_name.strip() if payload.model_name else None
     if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         model_name = _validated_elevenlabs_model(model_name)
+    provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
+    config.provider_preset = provider_preset
+    config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
+        config.extra_form_fields_json,
+        provider_preset=provider_preset,
+        adapter_kind=config.adapter_kind,
+        base_url=config.base_url,
+        reject_explicit_non_true=True,
+    )
     available = list(config.available_models_json or [])
     if available and model_name and model_name not in available:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
@@ -1784,7 +1839,7 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
         raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(payload.config_id)})
     if _stt_config_has_in_flight_jobs(db, config_id=config.id):
         raise AppError(409, "conflict", "Cannot edit this STT config while transcription jobs are queued or processing", {"config_id": str(config.id)})
-    provider_preset = config.provider_preset or infer_stt_provider_preset(config.adapter_kind, config.base_url)
+    provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
     preset = get_stt_provider_preset(provider_preset)
     inspection = inspect_stt_contract(
         db,
@@ -1803,6 +1858,14 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
     config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
     config.credential_status = _inspection_status(inspection, had_secret=True)
     config.available_models_json = list(inspection.available_models)
+    config.provider_preset = provider_preset
+    config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
+        config.extra_form_fields_json,
+        provider_preset=provider_preset,
+        adapter_kind=config.adapter_kind,
+        base_url=config.base_url,
+        reject_explicit_non_true=True,
+    )
     if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
         config.model_name = None
     config.inspection_metadata_json = _status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=config.credential_status)
@@ -1830,7 +1893,16 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
 
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    provider_preset = payload.provider_preset.value if payload.provider_preset else infer_stt_provider_preset(payload.adapter_kind, payload.base_url)
+    provider_preset = resolve_stt_provider_preset(payload.provider_preset, payload.adapter_kind, payload.base_url)
+    if provider_preset == SttProviderPreset.deepgram.value and payload.adapter_kind is not SttAdapterKind.generic_rest:
+        raise AppError(422, "business_rule_violation", "Deepgram STT must use the Deepgram generic REST contract", {"field": "adapter_kind"})
+    extra_form_fields_json = _normalize_deepgram_extra_query_params(
+        payload.extra_form_fields_json,
+        provider_preset=provider_preset,
+        adapter_kind=payload.adapter_kind,
+        base_url=payload.base_url,
+        reject_explicit_non_true=True,
+    )
     _ensure_unique_stt_config_label(db, team_id=team.id, label=payload.label, current_config_id=payload.config_id)
     config = None
     if payload.config_id is not None:
@@ -1916,7 +1988,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             segment_start_field=payload.segment_start_field,
             segment_end_field=payload.segment_end_field,
             segment_speaker_field=payload.segment_speaker_field,
-            extra_form_fields_json=payload.extra_form_fields_json,
+            extra_form_fields_json=extra_form_fields_json,
             vault_secret_ref="pending" if replacing_secret or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
             credential_status=ProviderCredentialStatus.pending_inspection if replacing_secret else ProviderCredentialStatus.unknown,
             credential_fingerprint=fingerprint,
@@ -1945,7 +2017,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.segment_start_field = payload.segment_start_field
         config.segment_end_field = payload.segment_end_field
         config.segment_speaker_field = payload.segment_speaker_field
-        config.extra_form_fields_json = payload.extra_form_fields_json
+        config.extra_form_fields_json = extra_form_fields_json
         config.is_active = payload.is_active
         config.setup_status = SttConfigSetupStatus.ready
         config.updated_by_user_id = actor.id
@@ -2068,12 +2140,14 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
 def reinspect_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> TeamSttConfig:
     config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
     bearer_token = _read_saved_stt_bearer_token(team_id=config.team_id, config=config)
+    provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
     try:
         inspection = inspect_stt_contract(
             db,
             actor,
             SttInspectRequest(
                 team_id=config.team_id,
+                provider_preset=provider_preset,
                 adapter_kind=config.adapter_kind,
                 base_url=config.base_url,
                 bearer_token=bearer_token,
@@ -2300,7 +2374,7 @@ def _infer_segments_contract(schema: dict[str, Any] | None) -> tuple[str | None,
 
 def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -> SttInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    provider_preset = payload.provider_preset.value if isinstance(payload.provider_preset, SttProviderPreset) else payload.provider_preset
+    provider_preset = resolve_stt_provider_preset(payload.provider_preset, payload.adapter_kind, payload.base_url)
     if payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         provider_preset = SttProviderPreset.elevenlabs.value
     if provider_preset == SttProviderPreset.deepgram.value:

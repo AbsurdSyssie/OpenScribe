@@ -7128,3 +7128,11 @@
 - Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "user_home_can_save_llm_preference or user_transcribe_page_shows_workspace_shell or transcribe_static_asset_version_bumped_for_pii_source_visibility or transcribe_reorder_blocks_blank_note_lines"` passed, 4 tests.
 - Tests: `.venv/bin/pytest -q tests/test_api.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation or structured_emis_template_generation_persists_sections or template_generation_supports_bedrock_adapter"` passed, 3 tests.
 - Architecture checkpoint: privacy boundaries preserved; only owner app preferences are read. Ownership rules unchanged for transcript/generated-document access. Deletion semantics unchanged. Provider rules preserved by using existing LLM selection/credential paths and adapter-specific cap fields. Structured-note contract preserved; detail guidance does not expand EMIS keys or output schema.
+
+# 2026-05-27 Note Option Save Ordering Fix
+
+- Serialized workspace note option/model preference saves and made template-note Create wait for pending saves before queueing `/generate-output`.
+- Added one retry for failed option/model saves; if retry still fails during Create, the workspace warns the user and queues generation with the last saved settings.
+- Bumped the transcribe app asset version and added static UI regression checks for the pending-save/retry guard before the generation POST.
+- Updated `docs/api.md` to record the retry and last-saved fallback behavior.
+- Architecture checkpoint: privacy boundaries preserved; preference writes still use owner-scoped endpoints, generation remains owner-only, deletion semantics unchanged, provider resolution unchanged, and structured-note contract unchanged.

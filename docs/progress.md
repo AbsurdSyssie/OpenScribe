@@ -7136,3 +7136,11 @@
 - Bumped the transcribe app asset version and added static UI regression checks for the pending-save/retry guard before the generation POST.
 - Updated `docs/api.md` to record the retry and last-saved fallback behavior.
 - Architecture checkpoint: privacy boundaries preserved; preference writes still use owner-scoped endpoints, generation remains owner-only, deletion semantics unchanged, provider resolution unchanged, and structured-note contract unchanged.
+
+# 2026-05-27 Deepgram Host Adapter Guard
+
+- Stopped runtime provider resolution from switching persisted STT rows to Deepgram solely because `base_url` is `https://api.deepgram.com`.
+- Kept admin save/inspect protection by normalizing that host to Deepgram only for `generic_rest` and rejecting incompatible adapters.
+- Added focused runtime regression coverage for persisted `openai_cloud` rows on the Deepgram host staying on the OpenAI adapter path.
+- Updated `docs/stt-config.md`.
+- Architecture checkpoint: privacy boundaries unchanged; provider resolution now preserves stored adapter semantics for existing rows while keeping new Deepgram admin writes on the known `generic_rest` contract; no ownership, deletion cascade, encryption-key, or structured-note contract changes.

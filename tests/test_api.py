@@ -15221,6 +15221,55 @@ def test_transcribe_with_stt_snapshot_supports_old_and_new_snapshot_fields(
     assert captured["provider_preset"] == SttProviderPreset.deepgram.value
 
 
+def test_transcribe_with_team_stt_deepgram_host_preserves_openai_adapter(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Clinical Team OpenAI Host")
+    owner = make_user(email="owner-openai-deepgram-host@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(
+        team=team,
+        actor=owner,
+        adapter_kind=SttAdapterKind.openai_cloud,
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/audio/transcriptions",
+        file_field_name="file",
+        response_text_path="text",
+        model_name="whisper-1",
+        language="en",
+    )
+    make_stt_selection(config=config, actor=owner)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "openai-token")
+
+    def fake_openai_transcribe(**kwargs):
+        captured.update(kwargs)
+        return "openai transcript"
+
+    def fail_http_transcribe(**kwargs):  # pragma: no cover
+        raise AssertionError("Deepgram/generic HTTP transport should not be used")
+
+    monkeypatch.setattr("app.services.stt._transcribe_via_openai_cloud", fake_openai_transcribe)
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", fail_http_transcribe)
+
+    text = transcribe_with_team_stt(
+        db_session,
+        team_id=team.id,
+        audio_bytes=b"audio",
+        filename="openai.wav",
+        content_type="audio/wav",
+    )
+
+    assert text == "openai transcript"
+    assert captured["base_url"] == "https://api.deepgram.com"
+    assert captured["model_name"] == "whisper-1"
+
+
 def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
     db_session, make_team, make_user, make_stt_selection, monkeypatch, caplog
 ):

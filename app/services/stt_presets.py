@@ -116,14 +116,23 @@ def default_stt_config_label(*, provider_display_name: str, team_name: str) -> s
     return f"{provider_display_name} · {team_name}"
 
 
-def infer_stt_provider_preset(adapter_kind: str | SttAdapterKind, base_url: str | None) -> str:
+def is_deepgram_stt_base_url(base_url: str | None) -> bool:
+    return (urlparse(base_url or "").hostname or "").lower() == "api.deepgram.com"
+
+
+def infer_stt_provider_preset(
+    adapter_kind: str | SttAdapterKind,
+    base_url: str | None,
+    *,
+    prefer_known_hosts: bool = True,
+) -> str:
     adapter_value = adapter_kind.value if isinstance(adapter_kind, SttAdapterKind) else str(adapter_kind or "")
     host = (urlparse(base_url or "").hostname or "").lower()
     if adapter_value == SttAdapterKind.openai_cloud.value:
         return SttProviderPreset.openai.value
     if adapter_value == SttAdapterKind.elevenlabs_speech_to_text.value:
         return SttProviderPreset.elevenlabs.value
-    if host == "api.deepgram.com":
+    if prefer_known_hosts and host == "api.deepgram.com":
         return SttProviderPreset.deepgram.value
     if host == "api.elevenlabs.io":
         return SttProviderPreset.elevenlabs.value
@@ -138,12 +147,7 @@ def resolve_stt_provider_preset(
     base_url: str | None,
 ) -> str:
     preset_value = provider_preset.value if isinstance(provider_preset, SttProviderPreset) else provider_preset
-    host = (urlparse(base_url or "").hostname or "").lower()
-    if host == "api.deepgram.com":
-        return SttProviderPreset.deepgram.value
-    inferred = infer_stt_provider_preset(adapter_kind, base_url)
-    if inferred == SttProviderPreset.deepgram.value:
-        return SttProviderPreset.deepgram.value
+    inferred = infer_stt_provider_preset(adapter_kind, base_url, prefer_known_hosts=False)
     return preset_value or inferred
 
 

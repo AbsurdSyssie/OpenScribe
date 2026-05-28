@@ -174,8 +174,8 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
       const sessionList = document.querySelector('[data-session-list]');
-      let sessionLinks = [...document.querySelectorAll('[data-session-link]')];
-      let selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
+      const currentSessionLinks = () => sessionList ? [...sessionList.querySelectorAll('[data-session-link]')] : [];
+      const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];
       const deleteButton = document.querySelector('[data-delete-selected]');
       const newSessionButton = document.querySelector('[data-new-session-button]');
       const uploadForm = document.querySelector('[data-upload-form]');
@@ -2440,19 +2440,18 @@ let statusDetailsHideTimer = null;
 
       const syncDeleteState = () => {
         if (!deleteButton) return;
-        deleteButton.disabled = !selectionBoxes.some((checkbox) => checkbox.checked);
-        selectionBoxes.forEach((checkbox) => {
+        const boxes = currentSelectionBoxes();
+        deleteButton.disabled = !boxes.some((checkbox) => checkbox.checked);
+        boxes.forEach((checkbox) => {
           checkbox.closest('.session-item')?.classList.toggle('selected', checkbox.checked);
         });
       };
 
-      const bindSessionSelectionBox = (checkbox) => {
-        if (!checkbox || checkbox.dataset.selectionBound === 'true') return;
-        checkbox.dataset.selectionBound = 'true';
-        checkbox.addEventListener('change', syncDeleteState);
-      };
-
-      selectionBoxes.forEach(bindSessionSelectionBox);
+      sessionList?.addEventListener('change', (event) => {
+        if (event.target instanceof HTMLInputElement && event.target.matches('[data-session-select]')) {
+          syncDeleteState();
+        }
+      });
       syncDeleteState();
 
       const sidebarStatusClassName = (statusLabel, ingestionMode) => {
@@ -2522,7 +2521,6 @@ let statusDetailsHideTimer = null;
         link.append(titleRow, mode);
         row.append(checkbox, link);
         wrapper.append(row);
-        bindSessionSelectionBox(checkbox);
         return wrapper;
       };
 
@@ -2545,9 +2543,6 @@ let statusDetailsHideTimer = null;
           }
           previousNode = node;
         });
-        sessionLinks = [...document.querySelectorAll('[data-session-link]')];
-        selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
-        selectionBoxes.forEach(bindSessionSelectionBox);
         syncDeleteState();
       };
       structuredEditor = createStructuredEditor({
@@ -3159,7 +3154,7 @@ let statusDetailsHideTimer = null;
         setRetryAvailability(retryAvailable);
         syncSidebarTranscripts(sidebarTranscripts);
 
-        sessionLinks.forEach((link) => {
+        currentSessionLinks().forEach((link) => {
           const isActive = link.dataset.transcriptId === transcriptId;
           link.classList.toggle('active', isActive);
           link.closest('.session-item')?.classList.toggle('active', isActive);
@@ -3170,7 +3165,7 @@ let statusDetailsHideTimer = null;
           if (node) node.textContent = displayStatusLabel(item.status, item.ingestion_mode);
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           if (titleNode) titleNode.textContent = item.title || 'Untitled session';
-          const checkbox = selectionBoxes.find((input) => input.value === item.id);
+          const checkbox = currentSelectionBoxes().find((input) => input.value === item.id);
           if (checkbox) checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
         });
 
@@ -3452,8 +3447,7 @@ let statusDetailsHideTimer = null;
           runQuickActionSelect,
           runQuickActionTrigger,
           selectStructuredSelectionButton,
-          selectionBoxes,
-          sessionLinks,
+          sessionList,
           structuredCopyStatus,
           titleForm,
           uploadForm,

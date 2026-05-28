@@ -450,30 +450,31 @@ export function attachTranscribeActions({
     });
   }
 
-  dom.sessionLinks.forEach((link) => {
-    link.addEventListener('click', async (event) => {
-      if (window.document.querySelector('[data-legacy-note-workspace][data-inline-controller="true"]')) {
-        return;
-      }
-      event.preventDefault();
-      const nextTranscriptId = link.dataset.transcriptId;
-      if (!nextTranscriptId || nextTranscriptId === getTranscriptId()) {
-        return;
-      }
-      if (getIsRecordingSwitchBlocked?.()) {
-        showFlash('Stop recording before switching consultations.', 'warning');
-        return;
-      }
-      const workspace = await fetchWorkspace(nextTranscriptId);
-      if (!workspace) {
-        window.location.assign(link.href);
-        return;
-      }
-      const url = new URL(window.location.href);
-      url.searchParams.set('transcript_id', nextTranscriptId);
-      window.history.pushState({}, '', url.toString());
-      showFlash('', 'success');
-    });
+  dom.sessionList?.addEventListener('click', async (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const link = target?.closest('[data-session-link]');
+    if (!link || !dom.sessionList.contains(link)) return;
+    if (window.document.querySelector('[data-legacy-note-workspace][data-inline-controller="true"]')) {
+      return;
+    }
+    event.preventDefault();
+    const nextTranscriptId = link.dataset.transcriptId;
+    if (!nextTranscriptId || nextTranscriptId === getTranscriptId()) {
+      return;
+    }
+    if (getIsRecordingSwitchBlocked?.()) {
+      showFlash('Stop recording before switching consultations.', 'warning');
+      return;
+    }
+    const workspace = await fetchWorkspace(nextTranscriptId);
+    if (!workspace) {
+      window.location.assign(link.href);
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set('transcript_id', nextTranscriptId);
+    window.history.pushState({}, '', url.toString());
+    showFlash('', 'success');
   });
 
   if (dom.newSessionForm) {
@@ -541,7 +542,9 @@ export function attachTranscribeActions({
   if (dom.bulkDeleteForm) {
     dom.bulkDeleteForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const selectedBoxes = dom.selectionBoxes.filter((checkbox) => checkbox.checked);
+      const selectedBoxes = [
+        ...(dom.sessionList || window.document).querySelectorAll('[data-session-select]'),
+      ].filter((checkbox) => checkbox.checked);
       const selectedIds = selectedBoxes.map((checkbox) => checkbox.value);
       if (selectedIds.length === 0) return;
       if (selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')) {

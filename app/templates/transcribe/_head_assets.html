@@ -1023,6 +1023,78 @@ border-bottom: 1px solid rgba(61, 122, 140, 0.18);
 overflow: hidden;
 }
 
+.consult-boundary-modal[hidden] {
+display: none;
+}
+
+.consult-boundary-modal {
+position: fixed;
+inset: 0;
+z-index: 95;
+display: flex;
+align-items: center;
+justify-content: center;
+padding: 1rem;
+}
+
+.consult-boundary-modal__backdrop {
+position: absolute;
+inset: 0;
+background: rgba(15, 23, 42, 0.48);
+}
+
+.consult-boundary-modal__dialog {
+position: relative;
+z-index: 1;
+width: min(28rem, 100%);
+border: 1px solid var(--border);
+border-radius: 0.75rem;
+background: white;
+box-shadow: 0 24px 70px rgba(15, 23, 42, 0.26);
+}
+
+.consult-boundary-modal__header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 1rem;
+padding: 1rem 1rem 0.8rem;
+border-bottom: 1px solid var(--border);
+}
+
+.consult-boundary-modal__header h2 {
+margin: 0;
+font-size: 1.35rem;
+font-weight: 850;
+color: var(--fg);
+}
+
+.consult-boundary-modal__header p {
+margin: 0.35rem 0 0;
+font-size: 0.9rem;
+color: var(--muted);
+}
+
+.consult-boundary-modal__close {
+width: 2rem;
+height: 2rem;
+display: inline-flex;
+align-items: center;
+justify-content: center;
+border: 1px solid var(--border);
+border-radius: 999px;
+background: white;
+color: var(--muted);
+}
+
+.consult-boundary-modal__actions {
+display: flex;
+flex-wrap: wrap;
+justify-content: flex-end;
+gap: 0.55rem;
+padding: 1rem;
+}
+
 .dictation-modal__bars {
 position: absolute;
 inset: 0.6rem 1rem;

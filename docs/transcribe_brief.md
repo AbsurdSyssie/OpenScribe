@@ -69,6 +69,7 @@ User can change:
 - upload audio file
 - record audio
 - retry failed file ingestion when retry audio still exists
+- choose whether a new microphone recording should continue the current ready consultation or start a fresh consultation when the previous transcript completed more than 30 seconds ago
 
 How:
 - choose available recording mode
@@ -76,6 +77,7 @@ How:
 - upload file
 - trigger retry
 - try blocked navigation/session creation and receive a toast without sidebar layout changes
+- if recording into a stale ready consultation with transcript content, answer the local confirmation prompt; choosing a new consultation creates a fresh transcript root and starts recording there
 
 Access:
 - owner only

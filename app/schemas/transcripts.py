@@ -55,6 +55,7 @@ class TranscriptListItem(BaseModel):
     has_transcript_content: bool = False
     working_note_mode: TranscriptWorkingNoteMode | None = None
     has_working_note: bool = False
+    latest_successful_ingestion_completed_at: datetime | None = None
     retention_days_applied: int
     retention_expires_at: datetime
     created_at: datetime

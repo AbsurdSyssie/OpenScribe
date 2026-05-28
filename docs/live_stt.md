@@ -191,6 +191,8 @@ For `live_chunked` sessions:
 - while microphone recording is active, 30 seconds without VAD-detected speech shows a local, non-blocking `Are you still there?` prompt
 - the inactivity prompt is browser UI only; it does not stop capture, upload audio, finalize capture, or change transcript ownership/state
 - dismissing the inactivity prompt suppresses only the current silent interval; later VAD speech followed by silence re-arms it, and stop/page-unload reset clears any pending prompt timer
+- when the user presses the main microphone record control on a ready consultation that already has transcript content and whose latest successful ingestion completed more than 30 seconds ago, the browser asks whether to record into the current consultation or create a fresh consultation
+- choosing the fresh-consultation option creates a new transcript root in the currently selected recording mode, switches the workspace there, shows a toast, and then starts recording
 - status copy changes to live-specific text:
   - `Listening for speech...`
   - `Speech detected. Building live chunk...`

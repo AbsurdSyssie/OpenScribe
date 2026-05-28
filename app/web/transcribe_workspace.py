@@ -63,6 +63,7 @@ from ..services.transcripts import (
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
+    latest_successful_ingestion_completed_at as latest_successful_ingestion_completed_at_service,
     next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     reconcile_transcript_status as reconcile_transcript_status_service,
     manual_pii_entity_value as manual_pii_entity_value_service,
@@ -318,6 +319,10 @@ def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
 def transcript_list_item_response(db: Session, transcript: Transcript) -> TranscriptListItem:
     payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
     payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+    payload["latest_successful_ingestion_completed_at"] = latest_successful_ingestion_completed_at_service(
+        db,
+        transcript_id=transcript.id,
+    )
     payload["working_note_mode"] = transcript_working_note_mode_service(db, transcript=transcript)
     payload["has_working_note"] = transcript_has_working_note_service(db, transcript=transcript)
     return TranscriptListItem.model_validate(payload)

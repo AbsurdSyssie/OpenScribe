@@ -23,6 +23,7 @@ export function createAudioCaptureController({
   showFlash,
   reflectBackendStatus,
   reportMicIssue,
+  confirmBeforeStartRecording,
 }) {
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   const MIC_VISUALIZER_BAR_COUNT = 12;
@@ -38,6 +39,7 @@ export function createAudioCaptureController({
   let batchRestartPending = false;
   let batchRolloverUploadPending = false;
   let batchUploadQueue = Promise.resolve();
+  let recordStartGuardInFlight = false;
   let batchCaptureGeneration = 0;
   let liveChunkTimeoutId = null;
   let liveStopRequested = false;
@@ -1100,7 +1102,7 @@ export function createAudioCaptureController({
     }
   };
 
-  const handleRecordToggle = () => {
+  const handleRecordToggle = async () => {
     const liveCaptureActive = captureMode === 'live' && (Boolean(liveVadInstance) || liveRestartPending);
     const batchCaptureActive = Boolean(batchVadInstance) || batchRestartPending;
     if (liveCaptureActive || batchCaptureActive) {
@@ -1111,10 +1113,21 @@ export function createAudioCaptureController({
       }
       return;
     }
+    if (typeof confirmBeforeStartRecording === 'function') {
+      if (recordStartGuardInFlight) return;
+      recordStartGuardInFlight = true;
+      let canStart = false;
+      try {
+        canStart = await confirmBeforeStartRecording();
+      } finally {
+        recordStartGuardInFlight = false;
+      }
+      if (!canStart) return;
+    }
     if (getState().activeIngestionMode === 'live_chunked') {
-      beginLiveTranscription();
+      await beginLiveTranscription();
     } else {
-      beginMicrophoneBatch();
+      await beginMicrophoneBatch();
     }
   };
 
@@ -1129,7 +1142,9 @@ export function createAudioCaptureController({
     }
 
     if (dom.recordToggleButton) {
-      dom.recordToggleButton.addEventListener('click', handleRecordToggle);
+      dom.recordToggleButton.addEventListener('click', () => {
+        void handleRecordToggle();
+      });
     }
 
     if (dom.silencePromptDismiss) {

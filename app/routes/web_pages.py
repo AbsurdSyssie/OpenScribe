@@ -16,6 +16,14 @@ from ..main import (
 from ..models import UserOnboardingState
 
 
+@app.get("/", response_class=HTMLResponse)
+def splash_page(request: Request, db: Session = Depends(get_db)):
+    context = _current_context_optional(request, db)
+    if context is not None:
+        return RedirectResponse(url=_post_login_redirect(context), status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(request, "splashpage.html", {"request": request})
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: Session = Depends(get_db)):
     context = _current_context_optional(request, db)

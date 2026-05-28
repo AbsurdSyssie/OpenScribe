@@ -174,6 +174,7 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
       const sessionList = document.querySelector('[data-session-list]');
+      const sessionListSentinel = document.querySelector('[data-session-list-sentinel]');
       const currentSessionLinks = () => sessionList ? [...sessionList.querySelectorAll('[data-session-link]')] : [];
       const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];
       const deleteButton = document.querySelector('[data-delete-selected]');
@@ -271,6 +272,10 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       let statusDetailsVisible = false;
 let statusDetailsHideTimer = null;
       let structuredEditor = null;
+      let sessionRailItems = [];
+      let sessionRailNextCursor = null;
+      let sessionRailHasMore = false;
+      let sessionRailLoading = false;
       let workspaceRefreshBurstTimeoutIds = [];
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
       const liveVadBundleVersion = '0.0.29';
@@ -2524,13 +2529,24 @@ let statusDetailsHideTimer = null;
         return wrapper;
       };
 
-      const syncSidebarTranscripts = (items) => {
-        if (!sessionList || !Array.isArray(items)) return;
+      const sortSessionRailItems = (items) => {
+        return [...items].sort((left, right) => {
+          const leftTime = Date.parse(left.created_at || '');
+          const rightTime = Date.parse(right.created_at || '');
+          const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
+          const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
+          if (safeRightTime !== safeLeftTime) return safeRightTime - safeLeftTime;
+          return String(right.id || '').localeCompare(String(left.id || ''));
+        });
+      };
+
+      const renderSidebarTranscripts = () => {
+        if (!sessionList) return;
         sessionList.querySelectorAll('[data-sidebar-empty]').forEach((node) => node.remove());
         const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));
         const seenIds = new Set();
         let previousNode = null;
-        items.forEach((item) => {
+        sessionRailItems.forEach((item) => {
           if (!item?.id) return;
           seenIds.add(String(item.id));
           let link = linksById.get(String(item.id));
@@ -2550,6 +2566,60 @@ let statusDetailsHideTimer = null;
           if (id && !seenIds.has(id)) node.remove();
         });
         syncDeleteState();
+        if (sessionListSentinel) {
+          sessionListSentinel.hidden = !sessionRailHasMore && !sessionRailLoading;
+          sessionListSentinel.textContent = sessionRailLoading ? 'Loading...' : '';
+        }
+      };
+
+      const syncSidebarTranscripts = (items, options = {}) => {
+        if (!sessionList || !Array.isArray(items)) return;
+        const incoming = items.filter((item) => item?.id);
+        const incomingIds = new Set(incoming.map((item) => String(item.id)));
+        const existingById = new Map(sessionRailItems.map((item) => [String(item.id), item]));
+        incoming.forEach((item) => existingById.set(String(item.id), { ...(existingById.get(String(item.id)) || {}), ...item }));
+        if (options.replaceTop) {
+          const preserved = sessionRailItems.filter((item) => item?.id && !incomingIds.has(String(item.id)));
+          sessionRailItems = sortSessionRailItems([
+            ...incoming.map((item) => existingById.get(String(item.id))),
+            ...preserved.map((item) => existingById.get(String(item.id)) || item),
+          ].filter(Boolean));
+        } else {
+          sessionRailItems = sortSessionRailItems([...existingById.values()]);
+        }
+        renderSidebarTranscripts();
+      };
+
+      const loadMoreSidebarTranscripts = async () => {
+        if (!sessionRailHasMore || sessionRailLoading || !sessionRailNextCursor) return;
+        sessionRailLoading = true;
+        renderSidebarTranscripts();
+        try {
+          const url = new URL('/api/v1/transcripts', window.location.origin);
+          url.searchParams.set('limit', '12');
+          url.searchParams.set('cursor', sessionRailNextCursor);
+          const response = await fetch(url.toString(), { credentials: 'include' });
+          if (!response.ok) throw new Error('Could not load consultations.');
+          const page = await response.json();
+          syncSidebarTranscripts(Array.isArray(page.items) ? page.items : []);
+          sessionRailNextCursor = page.next_cursor || null;
+          sessionRailHasMore = Boolean(page.has_more && sessionRailNextCursor);
+        } catch (_) {
+          sessionRailHasMore = true;
+        } finally {
+          sessionRailLoading = false;
+          renderSidebarTranscripts();
+        }
+      };
+
+      const setupSidebarInfiniteScroll = () => {
+        if (!sessionListSentinel || !('IntersectionObserver' in window)) return;
+        const observer = new IntersectionObserver((entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) {
+            void loadMoreSidebarTranscripts();
+          }
+        }, { root: sessionListSentinel.parentElement, rootMargin: '120px 0px' });
+        observer.observe(sessionListSentinel);
       };
       structuredEditor = createStructuredEditor({
         dom: {
@@ -3158,7 +3228,9 @@ let statusDetailsHideTimer = null;
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
         setRetryAvailability(retryAvailable);
-        syncSidebarTranscripts(sidebarTranscripts);
+        sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
+        sessionRailHasMore = Boolean(workspace.recent_transcripts_has_more && sessionRailNextCursor);
+        syncSidebarTranscripts(sidebarTranscripts, { replaceTop: true });
 
         currentSessionLinks().forEach((link) => {
           const isActive = link.dataset.transcriptId === transcriptId;
@@ -3554,6 +3626,8 @@ let statusDetailsHideTimer = null;
           },
         ],
       }).attach();
+
+      setupSidebarInfiniteScroll();
 
       window.addEventListener('pagehide', () => {
         captureController?.handlePageLifecycleExit?.();

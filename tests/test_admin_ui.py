@@ -2211,14 +2211,15 @@ def test_browser_transcribe_upload_rejects_missing_csrf_token(
 
 def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user):
     team = make_team(name="Clinic North")
-    make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    make_user(email="member-shell@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
-    client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
+    client.post("/login", data={"email": "member-shell@example.com", "password": "password-3"}, follow_redirects=False)
     page = client.get("/transcribe")
 
     assert page.status_code == 200
     assert "OpenScribe" in page.text
     assert 'data-new-session-button' in page.text
+    assert 'data-session-list-sentinel' in page.text
     assert "Create new consultation" in page.text
     assert 'data-record-toggle' in page.text
     assert 'data-audio-action-trigger' in page.text
@@ -2253,7 +2254,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260527-note-options-save"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260528-consult-history-scroll"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2921,7 +2922,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260527-note-options-save" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260528-consult-history-scroll" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
 
@@ -4167,8 +4168,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "confirmBeforeStartRecording," in app_js
     assert "confirmBeforeStartRecording," in media_js
     assert "New consultation started. Recording will begin here." in app_js
-    assert "const syncSidebarTranscripts = (items) => {" in app_js
-    assert "syncSidebarTranscripts(sidebarTranscripts);" in app_js
+    assert "const syncSidebarTranscripts = (items, options = {}) => {" in app_js
+    assert "syncSidebarTranscripts(sidebarTranscripts, { replaceTop: true });" in app_js
+    assert "const loadMoreSidebarTranscripts = async () => {" in app_js
+    assert "new URL('/api/v1/transcripts', window.location.origin)" in app_js
+    assert "const setupSidebarInfiniteScroll = () => {" in app_js
+    assert "data-session-list-sentinel" in sidebar_html
     assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
     assert "const seenIds = new Set();" in app_js
     assert "if (id && !seenIds.has(id)) node.remove();" in app_js
@@ -4526,7 +4531,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260527-note-options-save" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260528-consult-history-scroll" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

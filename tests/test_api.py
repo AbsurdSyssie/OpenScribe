@@ -6277,9 +6277,9 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
     )
     assert current_save.status_code == 200
     assert current_save.json()["freeform_text"] == "Clinician plan: review BP in two weeks."
-    listed = client.get(f"/api/v1/users/{owner.id}/transcripts")
+    listed = client.get("/api/v1/transcripts")
     assert listed.status_code == 200
-    listed_transcript = next(item for item in listed.json() if item["id"] == transcript_id)
+    listed_transcript = next(item for item in listed.json()["items"] if item["id"] == transcript_id)
     assert listed_transcript["working_note_mode"] == "freeform"
     assert listed_transcript["has_working_note"] is True
 
@@ -6387,9 +6387,9 @@ def test_empty_legacy_structured_working_note_does_not_lock_mode(client, db_sess
     assert detail.json()["structured_note"] is None
     assert detail.json()["updated_at"] is None
 
-    listed = client.get(f"/api/v1/users/{owner.id}/transcripts")
+    listed = client.get("/api/v1/transcripts")
     assert listed.status_code == 200
-    listed_transcript = next(item for item in listed.json() if item["id"] == str(transcript.id))
+    listed_transcript = next(item for item in listed.json()["items"] if item["id"] == str(transcript.id))
     assert listed_transcript["working_note_mode"] is None
     assert listed_transcript["has_working_note"] is False
 
@@ -10687,14 +10687,12 @@ def test_transcript_routes_require_full_auth_and_preserve_owner_only_access(clie
         == "[PHI-1]-text-v2"
     )
 
-    owner_list = client.get(f"/api/v1/users/{owner.id}/transcripts")
-    other_list = client.get(f"/api/v1/users/{other.id}/transcripts")
+    owner_list = client.get("/api/v1/transcripts")
 
     assert owner_list.status_code == 200
-    owner_rows = owner_list.json()
+    owner_rows = owner_list.json()["items"]
     assert [row["id"] for row in owner_rows] == [legacy_response.json()["id"], transcript_id]
     assert [row["ingestion_mode"] for row in owner_rows] == ["whole_file", "live_chunked"]
-    assert_error(other_list, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
     client.post("/api/v1/auth/logout")
     login(client, email="admin@example.com", password="password-3")
@@ -11263,6 +11261,128 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
     assert forbidden.status_code == 200
     assert forbidden.json()["active_transcript"] is None
+
+
+def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Paged Consult Team")
+    owner = make_user(email="paged-consults@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="paged-consults-other@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    base_time = utcnow() - timedelta(days=1)
+    owner_transcripts = []
+    for index in range(15):
+        owner_transcripts.append(
+            Transcript(
+                owner_user_id=owner.id,
+                team_id=team.id,
+                title=f"Owner consult {index}",
+                ingestion_mode=TranscriptIngestionMode.whole_file,
+                status=TranscriptStatus.ready,
+                retention_days_applied=30,
+                retention_expires_at=base_time + timedelta(days=30),
+                created_at=base_time + timedelta(minutes=index),
+            )
+        )
+    db_session.add_all(owner_transcripts)
+    db_session.add(
+        Transcript(
+            owner_user_id=other.id,
+            team_id=team.id,
+            title="Other consult",
+            current_draft_text_encrypted="Other user content",
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=base_time + timedelta(days=30),
+            created_at=base_time + timedelta(minutes=99),
+        )
+    )
+    db_session.commit()
+
+    login(client, email="paged-consults@example.com", password="password-1")
+    first_page = client.get("/api/v1/transcripts?limit=12")
+
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert first_payload["has_more"] is True
+    assert first_payload["next_cursor"]
+    assert [item["title"] for item in first_payload["items"]] == [f"Owner consult {index}" for index in range(14, 2, -1)]
+    assert "current_draft_text" not in first_payload["items"][0]
+
+    second_page = client.get(f"/api/v1/transcripts?limit=12&cursor={first_payload['next_cursor']}")
+
+    assert second_page.status_code == 200
+    second_payload = second_page.json()
+    assert second_payload["has_more"] is False
+    assert second_payload["next_cursor"] is None
+    assert [item["title"] for item in second_payload["items"]] == ["Owner consult 2", "Owner consult 1", "Owner consult 0"]
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="paged-consults-other@example.com", password="password-2")
+    other_page = client.get("/api/v1/transcripts")
+    assert other_page.status_code == 200
+    assert [item["title"] for item in other_page.json()["items"]] == ["Other consult"]
+
+
+def test_transcript_list_endpoint_rejects_invalid_cursor(client, make_team, make_user):
+    team = make_team(name="Bad Cursor Team")
+    make_user(email="bad-cursor@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email="bad-cursor@example.com", password="password-1")
+    response = client.get("/api/v1/transcripts?cursor=not-a-cursor")
+
+    assert_error(response, status_code=400, code="invalid_cursor", message="Transcript history cursor is invalid")
+
+
+def test_transcribe_workspace_includes_active_old_consult_in_recent_rail(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Old Active Consult Team")
+    owner = make_user(email="old-active@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    base_time = utcnow() - timedelta(days=1)
+    old_transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Older selected consult",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=base_time + timedelta(days=30),
+        created_at=base_time,
+    )
+    recent_transcripts = [
+        Transcript(
+            owner_user_id=owner.id,
+            team_id=team.id,
+            title=f"Recent consult {index}",
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=base_time + timedelta(days=30),
+            created_at=base_time + timedelta(minutes=index + 1),
+        )
+        for index in range(12)
+    ]
+    db_session.add_all([old_transcript, *recent_transcripts])
+    db_session.commit()
+
+    login(client, email="old-active@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={old_transcript.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_transcript"]["id"] == str(old_transcript.id)
+    assert len(payload["recent_transcripts"]) == 13
+    assert str(old_transcript.id) in [item["id"] for item in payload["recent_transcripts"]]
+    assert payload["recent_transcripts_has_more"] is True
+    assert payload["recent_transcripts_next_cursor"]
 
 
 def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_content_flag(

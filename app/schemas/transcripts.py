@@ -63,6 +63,12 @@ class TranscriptListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TranscriptListPage(BaseModel):
+    items: list[TranscriptListItem]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class TranscriptDetail(TranscriptListItem):
     current_draft_text: str | None = None
     structured_context_json: dict | None = None

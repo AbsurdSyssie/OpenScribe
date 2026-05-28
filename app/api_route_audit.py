@@ -457,7 +457,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         json_body=_json(quick_action_id=PLACEHOLDER_UUID_2),
     ),
-    AuditCase("GET", f"/api/v1/users/{PLACEHOLDER_UUID}/transcripts", AccessTier.full),
+    AuditCase("GET", "/api/v1/transcripts", AccessTier.full),
 )
 
 

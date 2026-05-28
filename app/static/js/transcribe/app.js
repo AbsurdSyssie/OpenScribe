@@ -2527,11 +2527,13 @@ let statusDetailsHideTimer = null;
       const syncSidebarTranscripts = (items) => {
         if (!sessionList || !Array.isArray(items)) return;
         sessionList.querySelectorAll('[data-sidebar-empty]').forEach((node) => node.remove());
+        const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));
+        const seenIds = new Set();
         let previousNode = null;
         items.forEach((item) => {
           if (!item?.id) return;
-          let link = [...sessionList.querySelectorAll('[data-session-link]')]
-            .find((candidate) => candidate.dataset.transcriptId === item.id);
+          seenIds.add(String(item.id));
+          let link = linksById.get(String(item.id));
           let node = link?.closest('.session-item') || null;
           if (!node) {
             node = createSidebarSessionItem(item);
@@ -2542,6 +2544,10 @@ let statusDetailsHideTimer = null;
             sessionList.insertBefore(node, referenceNode);
           }
           previousNode = node;
+        });
+        sessionList.querySelectorAll('.session-item').forEach((node) => {
+          const id = node.querySelector('[data-session-link]')?.dataset.transcriptId || '';
+          if (id && !seenIds.has(id)) node.remove();
         });
         syncDeleteState();
       };

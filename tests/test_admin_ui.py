@@ -4169,6 +4169,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "New consultation started. Recording will begin here." in app_js
     assert "const syncSidebarTranscripts = (items) => {" in app_js
     assert "syncSidebarTranscripts(sidebarTranscripts);" in app_js
+    assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
+    assert "const seenIds = new Set();" in app_js
+    assert "if (id && !seenIds.has(id)) node.remove();" in app_js
     assert "const currentSessionLinks = () => sessionList ? [...sessionList.querySelectorAll('[data-session-link]')] : [];" in app_js
     assert "const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];" in app_js
     assert "sessionList?.addEventListener('change', (event) => {" in app_js
@@ -4177,6 +4180,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "dom.sessionLinks.forEach" not in actions_js
     assert "dom.selectionBoxes.filter" not in actions_js
     assert 'data-session-list' in sidebar_html
+    assert 'data-sidebar-empty' in sidebar_html
     assert "const armSilencePromptTimer = () => {" in media_js
     assert "markVadSpeechStarted();" in media_js
     assert "markVadSpeechEndedOrIdle();" in media_js

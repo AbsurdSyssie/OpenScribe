@@ -1,5 +1,39 @@
 # Progress
 
+## 2026-05-28 Boundary Modal Sidebar Refresh
+
+### Scope
+
+- Fixed the boundary-modal `New consult` recording path so the newly active consultation is rendered into Recent consultations without a full page reload.
+- Reused the backend workspace `recent_transcripts` payload as the sidebar source of truth and kept existing sidebar rows updated/reordered.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: adds sidebar row creation/rebinding in `applyWorkspacePayload` for consultations present in `recent_transcripts` but absent from the DOM.
+- `app/templates/transcribe/_sidebar.html`: adds `data-session-list` hook for safe sidebar updates.
+- `tests/test_admin_ui.py`: adds static regression assertions for dynamic sidebar sync hooks.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 1 test.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: sidebar rendering consumes already owner-filtered workspace payload; no new endpoint or content access path.
+- Lifecycle/deletion checkpoint: no transcript root, cascade, retention, or deletion behavior changed.
+- Provider checkpoint: no STT, LLM, de-identification, credential, or Vault behavior changed.
+- Structured-note contract: no generated document or EMIS JSON behavior changed.
+
 ## 2026-05-27 Public Splash Landing Page
 
 ### Scope

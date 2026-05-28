@@ -173,8 +173,9 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
       const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
-      const sessionLinks = [...document.querySelectorAll('[data-session-link]')];
-      const selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
+      const sessionList = document.querySelector('[data-session-list]');
+      let sessionLinks = [...document.querySelectorAll('[data-session-link]')];
+      let selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
       const deleteButton = document.querySelector('[data-delete-selected]');
       const newSessionButton = document.querySelector('[data-new-session-button]');
       const uploadForm = document.querySelector('[data-upload-form]');
@@ -2445,10 +2446,110 @@ let statusDetailsHideTimer = null;
         });
       };
 
-      selectionBoxes.forEach((checkbox) => {
+      const bindSessionSelectionBox = (checkbox) => {
+        if (!checkbox || checkbox.dataset.selectionBound === 'true') return;
+        checkbox.dataset.selectionBound = 'true';
         checkbox.addEventListener('change', syncDeleteState);
-      });
+      };
+
+      selectionBoxes.forEach(bindSessionSelectionBox);
       syncDeleteState();
+
+      const sidebarStatusClassName = (statusLabel, ingestionMode) => {
+        const visibleStatus = displayStatusLabel(statusLabel, ingestionMode);
+        if (visibleStatus === 'ready') {
+          return 'flex-shrink-0 px-1.5 py-0.5 bg-teal-pale text-teal-deep text-xs font-medium rounded';
+        }
+        if (visibleStatus === 'failed') {
+          return 'flex-shrink-0 px-1.5 py-0.5 bg-coral/15 text-coral text-xs font-medium rounded';
+        }
+        return 'flex-shrink-0 px-1.5 py-0.5 bg-white text-slate text-xs font-medium rounded border border-stone';
+      };
+
+      const formatSidebarCreatedAt = (value) => {
+        if (!value) return '';
+        const timestamp = Date.parse(value);
+        if (!Number.isFinite(timestamp)) return value;
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+      };
+
+      const createSidebarSessionItem = (item) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'session-item rounded-lg px-3 py-2.5';
+
+        const row = document.createElement('div');
+        row.className = 'flex items-start gap-2';
+
+        const checkbox = document.createElement('input');
+        checkbox.className = 'mt-1';
+        checkbox.type = 'checkbox';
+        checkbox.name = 'transcript_ids';
+        checkbox.value = item.id;
+        checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
+        checkbox.setAttribute('data-session-select', '');
+
+        const link = document.createElement('a');
+        link.className = 'flex-1 min-w-0';
+        link.href = `${routeBase}?transcript_id=${encodeURIComponent(item.id)}`;
+        link.dataset.sessionLink = '';
+        link.dataset.transcriptId = item.id;
+
+        const titleRow = document.createElement('div');
+        titleRow.className = 'flex items-start justify-between gap-2';
+
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'flex-1 min-w-0';
+
+        const title = document.createElement('div');
+        title.className = 'font-medium text-sm text-ink truncate session-title';
+        title.textContent = item.title || 'Untitled session';
+
+        const createdAt = document.createElement('div');
+        createdAt.className = 'text-xs text-slate mt-0.5';
+        createdAt.textContent = formatSidebarCreatedAt(item.created_at);
+
+        const status = document.createElement('span');
+        status.className = sidebarStatusClassName(item.status, item.ingestion_mode);
+        status.dataset.sidebarStatus = item.id;
+        status.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+
+        const mode = document.createElement('div');
+        mode.className = 'text-xs text-slate mt-1';
+        mode.textContent = String(item.ingestion_mode || '').replaceAll('_', ' ');
+
+        titleWrap.append(title, createdAt);
+        titleRow.append(titleWrap, status);
+        link.append(titleRow, mode);
+        row.append(checkbox, link);
+        wrapper.append(row);
+        bindSessionSelectionBox(checkbox);
+        return wrapper;
+      };
+
+      const syncSidebarTranscripts = (items) => {
+        if (!sessionList || !Array.isArray(items)) return;
+        sessionList.querySelectorAll('[data-sidebar-empty]').forEach((node) => node.remove());
+        let previousNode = null;
+        items.forEach((item) => {
+          if (!item?.id) return;
+          let link = [...sessionList.querySelectorAll('[data-session-link]')]
+            .find((candidate) => candidate.dataset.transcriptId === item.id);
+          let node = link?.closest('.session-item') || null;
+          if (!node) {
+            node = createSidebarSessionItem(item);
+            link = node.querySelector('[data-session-link]');
+          }
+          const referenceNode = previousNode ? previousNode.nextSibling : sessionList.firstChild;
+          if (node !== referenceNode) {
+            sessionList.insertBefore(node, referenceNode);
+          }
+          previousNode = node;
+        });
+        sessionLinks = [...document.querySelectorAll('[data-session-link]')];
+        selectionBoxes = [...document.querySelectorAll('[data-session-select]')];
+        selectionBoxes.forEach(bindSessionSelectionBox);
+        syncDeleteState();
+      };
       structuredEditor = createStructuredEditor({
         dom: {
           generateOutputTemplateSelect,
@@ -3056,6 +3157,7 @@ let statusDetailsHideTimer = null;
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
         setRetryAvailability(retryAvailable);
+        syncSidebarTranscripts(sidebarTranscripts);
 
         sessionLinks.forEach((link) => {
           const isActive = link.dataset.transcriptId === transcriptId;

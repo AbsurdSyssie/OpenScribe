@@ -4167,6 +4167,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "confirmBeforeStartRecording," in app_js
     assert "confirmBeforeStartRecording," in media_js
     assert "New consultation started. Recording will begin here." in app_js
+    assert "const syncSidebarTranscripts = (items) => {" in app_js
+    assert "syncSidebarTranscripts(sidebarTranscripts);" in app_js
+    assert 'data-session-list' in sidebar_html
     assert "const armSilencePromptTimer = () => {" in media_js
     assert "markVadSpeechStarted();" in media_js
     assert "markVadSpeechEndedOrIdle();" in media_js

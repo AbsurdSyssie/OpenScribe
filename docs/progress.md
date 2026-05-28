@@ -1,5 +1,40 @@
 # Progress
 
+## 2026-05-27 Public Splash Landing Page
+
+### Scope
+
+- Added the saved splash page as the public root landing page.
+- Anonymous browser users now see marketing content at `/`; authenticated users are redirected with existing post-login routing.
+- Kept first-pass links to implemented routes only: `/login`, `/request-access`, and same-page anchors.
+- Replaced embedded splash SVG markup with the bundled Lucide icon pack.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/templates/splashpage.html`: new root landing page template with CSP nonce on inline styles and Lucide icons loaded from local static assets.
+- `app/routes/web_pages.py`: adds `GET /` public splash route with authenticated redirects.
+- `tests/test_admin_ui.py`: covers anonymous splash rendering, icon-pack wiring, and authenticated root redirects.
+- `docs/auth.md`, `docs/progress.md`: documents root route behavior and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "root_route or invalid_browser_route_redirects"`: passed, 5 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: existing session resolution and `_post_login_redirect` are reused; no protected content exposed.
+- Lifecycle/deletion checkpoint: no transcript root, generated document, retention, or deletion path changed.
+- Provider checkpoint: no provider selection, credential, Vault, STT, LLM, or de-identification behavior changed.
+- Structured-note contract: no structured-note generation or EMIS JSON contract changed.
+
 ## 2026-05-25 LLM Config Test Discovery Stub
 
 ### Scope

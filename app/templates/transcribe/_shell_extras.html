@@ -199,6 +199,8 @@ syncRecordButtonLabel();
     {{ {
       "activeTranscriptId": active_transcript_id,
       "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,
+      "activeTranscriptHasContent": active_transcript.has_transcript_content if active_transcript else false,
+      "latestSuccessfulIngestionCompletedAt": active_transcript.latest_successful_ingestion_completed_at.isoformat() if active_transcript and active_transcript.latest_successful_ingestion_completed_at else none,
       "nextLiveChunkSequenceNo": active_transcript_next_live_chunk_sequence_no_upload if active_transcript_next_live_chunk_sequence_no_upload is not none else 1,
       "hasSttSelection": stt_selection is not none,
       "hasDictationSttSelection": dictation_stt_selected,
@@ -224,5 +226,5 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-  <script type="module" src="/static/js/transcribe/app.js?v=20260527-note-options-save"></script>
+  <script type="module" src="/static/js/transcribe/app.js?v=20260528-consult-boundary-guard"></script>
   {% include "_csrf_script.html" %}

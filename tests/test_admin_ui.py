@@ -800,6 +800,39 @@ def test_invalid_browser_route_redirects_to_login_without_auth(client):
     assert response.headers["location"] == "/login"
 
 
+def test_root_route_shows_public_splash_without_auth(client):
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "Open-source clinical scribing" in response.text
+    assert 'href="/login"' in response.text
+    assert 'href="/request-access"' in response.text
+    assert 'src="/static/vendor/lucide/1.8.0/lucide.min.js"' in response.text
+    assert 'data-lucide="feather"' in response.text
+    assert "<svg" not in response.text
+
+
+def test_root_route_redirects_authenticated_user_to_home(client, make_team, make_user):
+    team = make_team(name="Clinic Root User")
+    make_user(email="root-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "root-user@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/home"
+
+
+def test_root_route_redirects_authenticated_admin_to_admin(client, make_user):
+    make_user(email="root-admin@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "root-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+
+
 def test_invalid_browser_route_redirects_to_home_when_authenticated(client, make_team, make_user):
     team = make_team(name="Clinic Invalid Route")
     make_user(email="member-invalid-route@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -4128,6 +4161,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const micVisualizer = document.querySelector('[data-mic-visualizer]');" in app_js
     assert "const silencePrompt = document.querySelector('[data-vad-silence-prompt]');" in app_js
     assert "const VAD_SILENCE_PROMPT_MS = 30000;" in media_js
+    assert "const STALE_CONSULT_RECORDING_WARNING_MS = 30000;" in app_js
+    assert "const shouldWarnBeforeRecordingCurrentConsult = () => {" in app_js
+    assert "latestSuccessfulIngestionCompletedAt = transcript?.latest_successful_ingestion_completed_at || null;" in app_js
+    assert "confirmBeforeStartRecording," in app_js
+    assert "confirmBeforeStartRecording," in media_js
+    assert "New consultation started. Recording will begin here." in app_js
     assert "const armSilencePromptTimer = () => {" in media_js
     assert "markVadSpeechStarted();" in media_js
     assert "markVadSpeechEndedOrIdle();" in media_js
@@ -4140,7 +4179,14 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-vad-silence-prompt' in workspace_html
     assert 'Are you still there?' in workspace_html
     assert 'data-vad-silence-prompt-dismiss' in workspace_html
+    assert 'data-consult-boundary-modal' in workspace_html
+    assert "It's been a while." in workspace_html
+    assert 'Start recording or make a new consult?' in workspace_html
+    assert 'data-consult-boundary-new' in workspace_html
+    assert 'latestSuccessfulIngestionCompletedAt' in shell_extras
     assert ".vad-silence-prompt" in head_assets
+    assert ".consult-boundary-modal" in head_assets
+    assert ".consult-boundary-modal__header p" in head_assets
     assert "const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';" in media_js
     assert "const beginAccumulatedTimer = () => {" in media_js
     assert "const finalizeAccumulatedTimer = () => {" in media_js

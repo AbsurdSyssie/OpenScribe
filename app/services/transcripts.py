@@ -621,6 +621,21 @@ def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> 
     )
 
 
+def latest_successful_ingestion_completed_at(db: Session, *, transcript_id: UUID) -> datetime | None:
+    return db.scalar(
+        select(TranscriptIngestionJob.completed_at)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            TranscriptIngestionJob.status.in_(
+                [TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.completed]
+            ),
+            TranscriptIngestionJob.completed_at.is_not(None),
+        )
+        .order_by(TranscriptIngestionJob.completed_at.desc(), TranscriptIngestionJob.id.desc())
+        .limit(1)
+    )
+
+
 def _has_pending_ingestion_jobs(db: Session, *, transcript_id: UUID) -> bool:
     return db.scalar(
         select(TranscriptIngestionJob.id)

@@ -2,7 +2,7 @@ import { attachTranscribeActions } from './actions.js?v=20260525-followup-workin
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator } from './documents.js?v=20260525-working-note-emis-sections';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
-import { createAudioCaptureController } from './media.js?v=20260513-vad-inactivity-prompt';
+import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -34,6 +34,8 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       let dictationSttStatusMessage = bootstrap.dictationSttStatusMessage;
       let latestIngestionJobStatus = bootstrap.latestIngestionJobStatus;
       let latestIngestionErrorMessage = bootstrap.latestIngestionErrorMessage;
+      let activeTranscriptHasContent = Boolean(bootstrap.activeTranscriptHasContent);
+      let latestSuccessfulIngestionCompletedAt = bootstrap.latestSuccessfulIngestionCompletedAt || null;
       let currentTranscriptStatus = null;
       let workspaceEventSource = null;
       let workspaceEventSourceEndpoint = null;
@@ -229,6 +231,10 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const recordToggleButton = document.querySelector('[data-record-toggle]');
       const recordToggleLabel = document.querySelector('[data-record-toggle-label]');
       const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');
+      const consultBoundaryModal = document.querySelector('[data-consult-boundary-modal]');
+      const consultBoundaryStartButton = document.querySelector('[data-consult-boundary-start]');
+      const consultBoundaryNewButton = document.querySelector('[data-consult-boundary-new]');
+      const consultBoundaryCancelButtons = [...document.querySelectorAll('[data-consult-boundary-cancel]')];
       const dictationRecordToggleButton = document.querySelector('[data-dictation-record-toggle]');
       const dictationRecordToggleLabel = document.querySelector('[data-dictation-record-toggle-label]');
       const dictationRecordToggleIcon = document.querySelector('[data-dictation-record-toggle-icon]');
@@ -286,6 +292,7 @@ let statusDetailsHideTimer = null;
       const batchRolloverMaxDurationMs = 12 * 60 * 1000;
       const batchRolloverMaxBytes = 22 * 1024 * 1024;
       const batchRolloverConflictRetryMs = 5000;
+      const STALE_CONSULT_RECORDING_WARNING_MS = 30000;
       const structuredSectionDefinitions = bootstrap.emisSections;
 
       let currentAssistantTab = bootstrap.activeTab;
@@ -2252,6 +2259,92 @@ let statusDetailsHideTimer = null;
         });
       };
 
+      const selectedRecordingMode = () => (
+        recordingModeSelect?.value
+        || activeIngestionMode
+        || userAppPreferences.preferred_recording_mode
+        || 'whole_file'
+      );
+
+      const shouldWarnBeforeRecordingCurrentConsult = () => {
+        if (currentTranscriptStatus !== 'ready') return false;
+        if (!activeTranscriptHasContent) return false;
+        if (!latestSuccessfulIngestionCompletedAt) return false;
+        const completedAtMs = Date.parse(latestSuccessfulIngestionCompletedAt);
+        if (!Number.isFinite(completedAtMs)) return false;
+        return Date.now() - completedAtMs > STALE_CONSULT_RECORDING_WARNING_MS;
+      };
+
+      const promptConsultBoundaryChoice = () => new Promise((resolve) => {
+        if (!consultBoundaryModal) {
+          resolve(window.confirm('Start recording or make a new consult?') ? 'start' : 'cancel');
+          return;
+        }
+        let settled = false;
+        const finish = (choice) => {
+          if (settled) return;
+          settled = true;
+          consultBoundaryModal.hidden = true;
+          consultBoundaryStartButton?.removeEventListener('click', startHandler);
+          consultBoundaryNewButton?.removeEventListener('click', newHandler);
+          consultBoundaryCancelButtons.forEach((button) => button.removeEventListener('click', cancelHandler));
+          document.removeEventListener('keydown', keyHandler);
+          resolve(choice);
+        };
+        const startHandler = () => finish('start');
+        const newHandler = () => finish('new');
+        const cancelHandler = () => finish('cancel');
+        const keyHandler = (event) => {
+          if (event.key === 'Escape') finish('cancel');
+        };
+        consultBoundaryStartButton?.addEventListener('click', startHandler);
+        consultBoundaryNewButton?.addEventListener('click', newHandler);
+        consultBoundaryCancelButtons.forEach((button) => button.addEventListener('click', cancelHandler));
+        document.addEventListener('keydown', keyHandler);
+        consultBoundaryModal.hidden = false;
+        consultBoundaryStartButton?.focus();
+      });
+
+      const createNewConsultForRecording = async () => {
+        const mode = selectedRecordingMode();
+        const response = await csrfFetch('/api/v1/transcripts/start', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Untitled session', ingestion_mode: mode }),
+        });
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not create a new consultation.'));
+        }
+        const transcript = await response.json();
+        const newTranscriptId = transcript?.id;
+        if (!newTranscriptId) {
+          throw new Error('Could not open the new consultation.');
+        }
+        const workspace = await fetchWorkspace(newTranscriptId);
+        if (!workspace) {
+          throw new Error('Could not open the new consultation.');
+        }
+        const url = new URL(window.location.href);
+        url.searchParams.set('transcript_id', newTranscriptId);
+        window.history.pushState({}, '', url.toString());
+        showFlash('New consultation started. Recording will begin here.', 'success');
+        return true;
+      };
+
+      const confirmBeforeStartRecording = async () => {
+        if (!shouldWarnBeforeRecordingCurrentConsult()) return true;
+        const choice = await promptConsultBoundaryChoice();
+        if (choice === 'start') return true;
+        if (choice !== 'new') return false;
+        try {
+          return await createNewConsultForRecording();
+        } catch (error) {
+          showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
+          return false;
+        }
+      };
+
       const syncTranscriptTitleIfNeeded = async () => {
         if (!transcriptId || !renameTitleInput) return;
         const nextTitle = renameTitleInput.value.trim();
@@ -2316,6 +2409,7 @@ let statusDetailsHideTimer = null;
         },
         getDefaultMicStatusState: defaultMicStatusState,
         syncTranscriptTitleIfNeeded,
+        confirmBeforeStartRecording,
         finalizeLiveCapture: async ({ keepalive = false } = {}) => {
           if (!transcriptId) return null;
           const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
@@ -2940,6 +3034,8 @@ let statusDetailsHideTimer = null;
         workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };
         currentTranscriptStatus = transcript?.status || null;
         activeIngestionMode = transcript?.ingestion_mode || null;
+        activeTranscriptHasContent = Boolean(transcript?.has_transcript_content);
+        latestSuccessfulIngestionCompletedAt = transcript?.latest_successful_ingestion_completed_at || null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
         hasDictationSttSelection = Boolean(workspace.dictation_stt_selected);

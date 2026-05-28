@@ -129,6 +129,32 @@ hidden>
 <button type="button" data-vad-silence-prompt-dismiss>Still here</button>
 </div>
 
+<div
+class="consult-boundary-modal"
+data-consult-boundary-modal
+role="dialog"
+aria-modal="true"
+aria-labelledby="consult-boundary-modal-title"
+hidden>
+<div class="consult-boundary-modal__backdrop" data-consult-boundary-cancel></div>
+<div class="consult-boundary-modal__dialog">
+<div class="consult-boundary-modal__header">
+<div>
+<h2 id="consult-boundary-modal-title">It's been a while.</h2>
+<p>Start recording or make a new consult?</p>
+</div>
+<button type="button" class="consult-boundary-modal__close" data-consult-boundary-cancel aria-label="Cancel">
+<i class="w-4 h-4" data-lucide="x"></i>
+</button>
+</div>
+<div class="consult-boundary-modal__actions">
+<button type="button" class="btn-secondary" data-consult-boundary-start>Start recording</button>
+<button type="button" class="btn-primary" data-consult-boundary-new>New consult</button>
+<button type="button" class="btn-ghost-sm" data-consult-boundary-cancel>Cancel</button>
+</div>
+</div>
+</div>
+
 <div class="hidden px-3 py-1.5 bg-parchment rounded-full text-sm text-ink" data-active-ingestion-mode>
 {% if active_transcript %}
 {{ 'Uploaded recording' if active_transcript.ingestion_mode.value == 'whole_file' else 'Live capture' }}

@@ -11067,6 +11067,46 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
     assert detail.json()["latest_ingestion_retry_available"] is True
 
 
+def test_transcript_detail_includes_latest_successful_ingestion_completed_at(client, db_session, make_team, make_user):
+    team = make_team(name="Clinical Team")
+    owner = make_user(email="owner-detail-success-at@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    completed_at = utcnow() - timedelta(minutes=1)
+
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    older_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="older.mp3",
+        status=TranscriptIngestionJobStatus.applied,
+        completed_at=completed_at - timedelta(minutes=5),
+    )
+    latest_successful_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="latest.mp3",
+        status=TranscriptIngestionJobStatus.applied,
+        completed_at=completed_at,
+    )
+    db_session.add_all([older_job, latest_successful_job])
+    db_session.commit()
+
+    login(client, email="owner-detail-success-at@example.com", password="password-1")
+    detail = client.get(f"/api/v1/transcripts/{transcript.id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["latest_successful_ingestion_completed_at"] == completed_at.isoformat().replace("+00:00", "Z")
+
+
 def test_transcript_detail_hides_retry_when_failed_upload_blob_is_missing(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-detail-no-retry@example.com", password="password-1", team=team, team_role=TeamRole.user)

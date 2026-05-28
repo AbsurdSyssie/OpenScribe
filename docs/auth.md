@@ -13,6 +13,13 @@ Frontend direction and longer-term migration planning remain in [frontend-roadma
 - system admins can bootstrap the first account only while the database has zero users
 - account-request onboarding replaces invite acceptance for MVP
 
+## Public landing route
+
+- `/` renders the public OpenScribe splash page for anonymous browser users
+- signed-in users visiting `/` are redirected through the existing post-login destination logic
+- normal users land on `/home`, system administrators land on `/admin`, and partial sessions remain routed to onboarding or MFA challenge pages
+- splash page calls to action link only to implemented browser routes: `/login` and `/request-access`
+
 ## End-to-end onboarding flow
 
 ### Public request flow

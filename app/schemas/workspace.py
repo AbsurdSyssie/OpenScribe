@@ -8,6 +8,8 @@ from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEnti
 
 class TranscribeWorkspaceDetail(BaseModel):
     recent_transcripts: list[TranscriptListItem]
+    recent_transcripts_next_cursor: str | None = None
+    recent_transcripts_has_more: bool = False
     active_transcript: TranscriptDetail | None = None
     active_transcript_pii_entities: list[TranscriptPiiEntityDetail] = []
     active_transcript_redaction_status: dict | None = None

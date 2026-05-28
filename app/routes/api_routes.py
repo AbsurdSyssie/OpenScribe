@@ -19,6 +19,7 @@ from ..schemas import (
     SmartPhraseUpdate,
     SttConfigDraftReplaceCredentialBody,
     SttConfigFinalizeBody,
+    TranscriptListPage,
 )
 from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
 from ..services.smart_phrases import (
@@ -36,7 +37,7 @@ from ..services.transcripts import (
     working_note_detail as working_note_detail_service,
 )
 from ..web.presentation import smart_phrase_response
-from ..web.transcribe_workspace import transcript_list_item_response
+from ..web.transcribe_workspace import list_transcript_history_page
 
 
 def _env_enabled(name: str, default: str) -> bool:
@@ -1406,9 +1407,11 @@ def run_transcript_quick_action(
     return generated_document_response(db, document)
 
 
-@api.get("/users/{user_id}/transcripts", response_model=list[TranscriptListItem], responses=error_responses)
-def list_user_transcripts(user_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    if user_id != context.user.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
-    rows = db.scalars(select(Transcript).where(Transcript.owner_user_id == user_id).order_by(Transcript.created_at.desc()))
-    return [transcript_list_item_response(db, transcript) for transcript in rows]
+@api.get("/transcripts", response_model=TranscriptListPage, responses=error_responses)
+def list_transcripts(
+    limit: int | None = None,
+    cursor: str | None = None,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return list_transcript_history_page(db, context.user, limit=limit, cursor=cursor)

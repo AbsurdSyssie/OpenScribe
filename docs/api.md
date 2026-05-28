@@ -88,7 +88,10 @@ Browser navigation behavior:
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
 - `POST /api/v1/transcripts/{transcript_id}/generate-output`
-- `GET /api/v1/users/{user_id}/transcripts`
+- `GET /api/v1/transcripts`
+  - self-scoped to the authenticated owner
+  - returns metadata-only consultation pages: `items`, `next_cursor`, `has_more`
+  - supports `limit` and keyset `cursor`
 - whole-file upload rejects oversize payloads with:
   - status `413`
   - code `payload_too_large`

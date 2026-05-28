@@ -168,6 +168,7 @@ What it does:
 - transcript start provisioning an owner DEK and storing the initial draft encrypted at rest
 - transcript structured context persisting encrypted at rest while owner-facing responses still expose plaintext JSON
 - transcript list responses including the persisted `ingestion_mode`
+- transcript list responses use self-scoped keyset pagination, stay owner-only, and return metadata without transcript or note text
 - owner-only transcript detail fetch for browser polling
 - transcript detail and workspace reads still returning plaintext draft/context data to the owner while the DB stores ciphertext
 - generated-document queue/process flows storing note bodies, follow-up prompts, structured section text, and structured context encrypted at rest while the owner-facing APIs still return plaintext
@@ -273,6 +274,7 @@ What it does:
 - transcript create/start routes reject invalid or empty legacy `structured_context_json` Working-note payloads instead of silently dropping submitted note content
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
+- owner transcription workspace exposes an infinite-scroll sentinel for metadata-only consultation history pages and preserves loaded older rows across workspace refreshes
 - owner transcription workspace keeping blocked new-session feedback out of the sidebar and blocking session switches with toasts while recording is active
 - owner transcription workspace preserving structured EMIS output hooks during workspace refresh and poll-driven rerender
 - owner transcription workspace keeping the redesigned clinical shell copy and core controls while preserving current browser hooks

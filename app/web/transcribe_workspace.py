@@ -1,8 +1,11 @@
 import asyncio
+import base64
+from datetime import datetime
 import json
 from contextlib import contextmanager
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
@@ -81,6 +84,8 @@ from .templates import templates
 
 
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
+TRANSCRIPT_HISTORY_DEFAULT_LIMIT = 12
+TRANSCRIPT_HISTORY_MAX_LIMIT = 24
 
 
 def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
@@ -328,6 +333,75 @@ def transcript_list_item_response(db: Session, transcript: Transcript) -> Transc
     return TranscriptListItem.model_validate(payload)
 
 
+def _normalize_transcript_history_limit(limit: int | None) -> int:
+    if limit is None:
+        return TRANSCRIPT_HISTORY_DEFAULT_LIMIT
+    return min(max(limit, 1), TRANSCRIPT_HISTORY_MAX_LIMIT)
+
+
+def _encode_transcript_history_cursor(transcript: Transcript) -> str:
+    payload = {
+        "created_at": transcript.created_at.isoformat(),
+        "id": str(transcript.id),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_transcript_history_cursor(cursor: str | None) -> tuple[datetime, UUID] | None:
+    if not cursor:
+        return None
+    try:
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        created_at = datetime.fromisoformat(str(payload["created_at"]))
+        transcript_id = UUID(str(payload["id"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AppError(400, "invalid_cursor", "Transcript history cursor is invalid") from exc
+    return created_at, transcript_id
+
+
+def list_transcript_history_page(
+    db: Session,
+    current_user: User,
+    *,
+    limit: int | None = None,
+    cursor: str | None = None,
+    include_transcript: Transcript | None = None,
+) -> dict[str, object]:
+    page_limit = _normalize_transcript_history_limit(limit)
+    decoded_cursor = _decode_transcript_history_cursor(cursor)
+    conditions = [Transcript.owner_user_id == current_user.id]
+    if decoded_cursor is not None:
+        cursor_created_at, cursor_id = decoded_cursor
+        conditions.append(
+            or_(
+                Transcript.created_at < cursor_created_at,
+                and_(Transcript.created_at == cursor_created_at, Transcript.id < cursor_id),
+            )
+        )
+    rows = list(
+        db.scalars(
+            select(Transcript)
+            .where(*conditions)
+            .order_by(Transcript.created_at.desc(), Transcript.id.desc())
+            .limit(page_limit + 1)
+        )
+    )
+    page_rows = rows[:page_limit]
+    has_more = len(rows) > page_limit
+    next_cursor = _encode_transcript_history_cursor(page_rows[-1]) if has_more and page_rows else None
+    if include_transcript is not None and include_transcript.owner_user_id == current_user.id:
+        page_ids = {transcript.id for transcript in page_rows}
+        if include_transcript.id not in page_ids:
+            page_rows.append(include_transcript)
+    return {
+        "items": [transcript_list_item_response(db, transcript) for transcript in page_rows],
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+    }
+
+
 def _pii_entity_response(
     *,
     id,
@@ -499,19 +573,9 @@ def resolve_transcribe_workspace(
     request_is_localhost_only=None,
     live_stt_health_check: bool = True,
 ) -> dict[str, object]:
-    recent_transcripts = list(
-        db.scalars(
-            select(Transcript)
-            .where(Transcript.owner_user_id == current_user.id)
-            .order_by(Transcript.created_at.desc())
-            .limit(12)
-        )
-    )
     active_transcript = None
     requested_transcript_id = queued_transcript_id or transcript_id
     if requested_transcript_id:
-        from uuid import UUID
-
         try:
             selected_id = UUID(requested_transcript_id)
         except ValueError:
@@ -520,8 +584,16 @@ def resolve_transcribe_workspace(
             candidate = db.get(Transcript, selected_id)
             if candidate is not None and candidate.owner_user_id == current_user.id:
                 active_transcript = candidate
+    recent_transcript_page = list_transcript_history_page(
+        db,
+        current_user,
+        limit=TRANSCRIPT_HISTORY_DEFAULT_LIMIT,
+        include_transcript=active_transcript,
+    )
+    recent_transcripts = recent_transcript_page["items"]
     if active_transcript is None and recent_transcripts:
-        active_transcript = recent_transcripts[0]
+        first_recent_id = recent_transcripts[0].id
+        active_transcript = db.get(Transcript, first_recent_id)
     if active_transcript is not None:
         active_transcript = reconcile_transcript_status_service(db, transcript=active_transcript)
     active_transcript_latest_job = (
@@ -714,6 +786,8 @@ def resolve_transcribe_workspace(
     )
     return {
         "recent_transcripts": recent_transcripts,
+        "recent_transcripts_next_cursor": recent_transcript_page["next_cursor"],
+        "recent_transcripts_has_more": recent_transcript_page["has_more"],
         "active_transcript": active_transcript,
         "active_transcript_latest_job": active_transcript_latest_job,
         "active_transcript_next_live_chunk_sequence_no_upload": active_transcript_next_live_chunk_sequence_no_upload,
@@ -803,7 +877,12 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
     available_quick_actions = workspace.get("available_quick_actions") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
     return TranscribeWorkspaceDetail(
-        recent_transcripts=[transcript_list_item_response(db, transcript) for transcript in recent_transcripts],
+        recent_transcripts=[
+            transcript if isinstance(transcript, TranscriptListItem) else transcript_list_item_response(db, transcript)
+            for transcript in recent_transcripts
+        ],
+        recent_transcripts_next_cursor=workspace.get("recent_transcripts_next_cursor"),
+        recent_transcripts_has_more=bool(workspace.get("recent_transcripts_has_more")),
         active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
         active_transcript_pii_entities=list(workspace.get("active_transcript_pii_entities") or []),
         active_transcript_redaction_status=dict(workspace.get("active_transcript_redaction_status") or {}),
@@ -896,9 +975,9 @@ def render_transcribe(
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
     recent_transcripts = workspace.get("recent_transcripts") or []
     workspace["recent_transcripts"] = [
-        transcript_list_item_response(db, transcript)
+        transcript if isinstance(transcript, TranscriptListItem) else transcript_list_item_response(db, transcript)
         for transcript in recent_transcripts
-        if isinstance(transcript, Transcript)
+        if isinstance(transcript, (Transcript, TranscriptListItem))
     ]
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     if post_consultation_dictation is not None:

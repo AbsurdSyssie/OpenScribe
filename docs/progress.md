@@ -1,5 +1,40 @@
 # Progress
 
+## 2026-05-28 Dynamic Sidebar Delegation
+
+### Scope
+
+- Replaced stale sidebar link/checkbox snapshots with delegated sidebar listeners and query-at-use checkbox reads.
+- Kept dynamic `recent_transcripts` rendering separate from action wiring so newly inserted consultations use existing delete and recording-switch guard behavior.
+
+### Checklist
+
+- Code complete: yes
+- Tests added/updated: yes
+- Docs added/updated: yes
+- Open issues: none known.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`: sidebar state styling now queries current rows and delegates checkbox changes through `sessionList`.
+- `app/static/js/transcribe/actions.js`: sidebar navigation delegates clicks through `sessionList`; bulk delete queries current checkboxes on submit.
+- `tests/test_admin_ui.py`: static regression checks ensure stale `sessionLinks`/`selectionBoxes` action snapshots stay removed.
+- `docs/progress.md`: records checklist and architecture checkpoints.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 1 test.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no endpoint or ownership change; sidebar actions still call existing owner-filtered workspace and delete APIs.
+- Lifecycle/deletion checkpoint: delete semantics preserved; fix only ensures current selected transcript roots reach existing delete path.
+- Provider checkpoint: no STT, LLM, de-identification, credential, or Vault behavior changed.
+- Structured-note contract: no generated document or EMIS JSON behavior changed.
+
 ## 2026-05-28 Boundary Modal Sidebar Refresh
 
 ### Scope

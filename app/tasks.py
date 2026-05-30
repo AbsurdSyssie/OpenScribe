@@ -3,7 +3,7 @@ from uuid import UUID
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
-from app.services.templates import process_generated_document
+from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import process_transcript_ingestion_job
 
 
@@ -18,10 +18,13 @@ def enqueue_transcript_ingestion_job(*, job_id: UUID):
     return process_transcript_ingestion_job_task.delay(job_id=str(job_id))
 
 
-@celery_app.task(name="openscribe.process_generated_document")
-def process_generated_document_task(*, document_id: str) -> None:
+@celery_app.task(name="openscribe.process_generated_document", bind=True, max_retries=None)
+def process_generated_document_task(self, *, document_id: str) -> None:
     with SessionLocal() as db:
-        process_generated_document(db, document_id=UUID(document_id))
+        try:
+            process_generated_document(db, document_id=UUID(document_id))
+        except GeneratedDocumentWaitingForTranscript as exc:
+            raise self.retry(exc=exc, countdown=exc.retry_seconds) from exc
 
 
 def enqueue_generated_document_job(*, document_id: UUID):

@@ -103,6 +103,7 @@ Characteristics:
 - backend updates the current transcript draft incrementally
 - stopping live capture calls a server-side finalize step that applies completed chunks, moves the transcript out of `recording`, and creates/reuses a version-linked redaction run once no chunks remain pending
 - if queued or processing chunks still exist, finalize leaves the transcript `transcribing`; completion/reconciliation creates the redaction preview once the transcript becomes `ready`
+- after capture has stopped and ingestion jobs exist, users may create or open another consultation while the previous transcript remains `transcribing`; pending jobs stay attached to their original transcript root
 - this is the first live-oriented mode we expect to implement
 
 ## Shared backend foundation

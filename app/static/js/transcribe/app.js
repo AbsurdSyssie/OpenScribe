@@ -2145,60 +2145,66 @@ let statusDetailsHideTimer = null;
         const hasDraft = Boolean(draftText && draftText.trim());
         const hasDictation = Boolean(lastSavedDictationText && lastSavedDictationText.trim());
         const hasWorkingNote = workingNoteHasContent();
+        const generationBusy = noteGenerationBusy;
+        const transcriptWaitingForText = ['queued', 'processing'].includes(latestIngestionJobStatus || '')
+          || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '');
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
         const selectedQuickActionId = runQuickActionSelect?.value || '';
-        const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;
+        const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
         const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
         const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));
-        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote));
+        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || transcriptWaitingForText));
         const canUseFollowupRequest = canGenerateFollowup || canRunQuickAction;
         const canUsePrimaryFollowupAction = selectedQuickActionId ? canRunQuickAction : canGenerateFollowup;
 
         if (generateOutputTemplateSelect) {
-          generateOutputTemplateSelect.disabled = noteGenerationBusy || !canChooseTemplate;
+          generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;
         }
         if (templatePickerButton) {
-          templatePickerButton.disabled = noteGenerationBusy || !canChooseTemplate;
+          templatePickerButton.disabled = generationBusy || !canChooseTemplate;
         }
         templatePickerOptions.forEach((button) => {
-          button.disabled = noteGenerationBusy || !canChooseTemplate;
+          button.disabled = generationBusy || !canChooseTemplate;
         });
-        if (noteGenerationBusy) closeTemplatePicker();
+        if (generationBusy) closeTemplatePicker();
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = noteGenerationBusy || !canGenerateNote;
+          generateOutputButton.disabled = generationBusy || !canGenerateNote;
         }
 
         if (runQuickActionSelect) {
-          runQuickActionSelect.disabled = !canRunQuickAction;
+          runQuickActionSelect.disabled = generationBusy || !canRunQuickAction;
         }
         if (runQuickActionTrigger) {
-          runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;
+          runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;
         }
         if (quickActionContextInput) {
-          quickActionContextInput.disabled = !canUseFollowupRequest;
+          quickActionContextInput.disabled = generationBusy || !canUseFollowupRequest;
         }
         if (quickActionContextRecordButton) {
-          quickActionContextRecordButton.disabled = !canUseFollowupRequest;
+          quickActionContextRecordButton.disabled = generationBusy || !canUseFollowupRequest;
         }
         if (recordCustomPromptButton) {
-          recordCustomPromptButton.disabled = !canUseFollowupRequest;
+          recordCustomPromptButton.disabled = generationBusy || !canUseFollowupRequest;
         }
         quickActionQuickPicks.forEach((button) => {
-          button.disabled = !canRunQuickAction;
+          button.disabled = generationBusy || !canRunQuickAction;
         });
         quickActionCardRunButtons.forEach((button) => {
-          button.disabled = !canRunQuickAction;
+          button.disabled = generationBusy || !canRunQuickAction;
         });
 
         if (generateFollowupPromptInput) {
-          generateFollowupPromptInput.disabled = !canGenerateFollowup;
+          generateFollowupPromptInput.disabled = generationBusy || !canGenerateFollowup;
         }
         if (generateFollowupTrigger) {
-          generateFollowupTrigger.disabled = !canGenerateFollowup;
+          generateFollowupTrigger.disabled = generationBusy || !canGenerateFollowup;
         }
       };
+
+      const isTranscriptWaitingForText = () => ['queued', 'processing'].includes(latestIngestionJobStatus || '')
+        || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '');
 
       const setMicButtons = (isRecording) => {
         const liveMode = activeIngestionMode === 'live_chunked';
@@ -2639,6 +2645,7 @@ let statusDetailsHideTimer = null;
         structuredSectionDefinitions,
         getTranscriptId: () => transcriptId,
         getDraftText: () => readActiveDraftText().trim(),
+        getTranscriptWaitingForText: isTranscriptWaitingForText,
         syncGenerationAvailability,
         onNoteEditorChanged: markNoteEditorDirty,
       });
@@ -2745,7 +2752,10 @@ let statusDetailsHideTimer = null;
           return;
         }
         if (document.status === 'queued') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">Your follow-up is waiting to be written.</span>';
+          const waitingMessage = document.generator_type === 'quick_action'
+            ? 'Waiting for transcription to finish before running this quick action.'
+            : 'Waiting for transcription to finish before writing your follow-up.';
+          latestFollowupOutput.innerHTML = `<span class="text-slate">${isTranscriptWaitingForText() ? waitingMessage : 'Your follow-up is waiting to be written.'}</span>`;
           return;
         }
         if (document.status === 'processing') {

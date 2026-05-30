@@ -113,6 +113,7 @@ from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
     DICTATION_SOURCE_SPLIT_MARKER,
+    GeneratedDocumentWaitingForTranscript,
     _generate_freeform_output_ollama,
     _parse_generated_note_json,
     delete_personal_template,
@@ -6206,6 +6207,276 @@ def test_template_generation_uses_queued_note_options_for_cap_and_detail(
     assert stored_request["max_completion_tokens"] == expected_cap
 
 
+def test_generation_waits_for_pending_transcription_then_uses_fresh_snapshot(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Generation Wait")
+    admin = make_user(email="admin-generation-wait@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-generation-wait@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Wait note", prompt_text="Write a note.")
+
+    class FakeTaskResult:
+        id = "generation-wait-task"
+
+    provider_requests: list[dict] = []
+
+    def fake_generate_openai(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return '{"title":"Waited note","content":"Generated after transcription"}', {
+            "input_tokens": 10,
+            "output_tokens": 6,
+            "total_tokens": 16,
+            "duration_ms": 5,
+        }
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email=owner.email, password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Waiting visit", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="pending.wav",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    transcript.status = TranscriptStatus.transcribing
+    db_session.add(job)
+    db_session.add(transcript)
+    db_session.commit()
+
+    generated = client.post(f"/api/v1/transcripts/{transcript.id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    db_session.refresh(transcript)
+    assert transcript.status is TranscriptStatus.transcribing
+    document = db_session.get(GeneratedDocument, UUID(generated.json()["id"]))
+    assert document is not None
+    initial_version_id = document.transcript_version_id
+
+    with pytest.raises(GeneratedDocumentWaitingForTranscript):
+        process_generated_document(db_session, document_id=document.id)
+    assert provider_requests == []
+
+    db_session.refresh(transcript)
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="Final transcript text from STT.",
+    )
+    transcript.status = TranscriptStatus.ready
+    job.status = TranscriptIngestionJobStatus.applied
+    job.completed_at = utcnow()
+    job.applied_at = utcnow()
+    db_session.add(transcript)
+    db_session.add(job)
+    db_session.commit()
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.transcript_version_id != initial_version_id
+    assert "Final transcript text from STT." in provider_requests[0]["messages"][1]["content"]
+    fresh_version = db_session.get(TranscriptVersion, processed.transcript_version_id)
+    assert fresh_version is not None
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=fresh_version.id,
+        stored_value=fresh_version.text_encrypted,
+    ) == "Final transcript text from STT."
+
+
+def test_generation_without_pending_transcription_keeps_queued_snapshot(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Queued Snapshot")
+    admin = make_user(email="admin-queued-snapshot@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-queued-snapshot@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Snapshot note", prompt_text="Write a note.")
+
+    class FakeTaskResult:
+        id = "queued-snapshot-task"
+
+    provider_requests: list[dict] = []
+
+    def fake_generate_openai(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return '{"title":"Snapshot note","content":"Generated from queued snapshot"}', {
+            "input_tokens": 10,
+            "output_tokens": 6,
+            "total_tokens": 16,
+            "duration_ms": 5,
+        }
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email=owner.email, password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Snapshot visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Original click-time text."},
+    )
+    assert started.status_code == 201
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+
+    generated = client.post(f"/api/v1/transcripts/{transcript.id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    document = db_session.get(GeneratedDocument, UUID(generated.json()["id"]))
+    assert document is not None
+    queued_version_id = document.transcript_version_id
+
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="Edited after queue click.",
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.transcript_version_id == queued_version_id
+    assert "Original click-time text." in provider_requests[0]["messages"][1]["content"]
+    assert "Edited after queue click." not in provider_requests[0]["messages"][1]["content"]
+
+
+def test_generation_allows_multiple_queued_followups_and_blocks_active_recording(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Generation Guards")
+    admin = make_user(email="admin-generation-guards@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-generation-guards@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Guard note", prompt_text="Write a note.")
+
+    class FakeTaskResult:
+        id = "generation-guard-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    login(client, email=owner.email, password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Guard visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Ready text."},
+    )
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+
+    first = client.post(f"/api/v1/transcripts/{transcript_id}/generate-followup", json={"prompt_text": "First queued follow-up"})
+    assert first.status_code == 202
+    second = client.post(f"/api/v1/transcripts/{transcript_id}/generate-followup", json={"prompt_text": "Second queued follow-up"})
+    assert second.status_code == 202
+    documents = list(db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id))))
+    assert len(documents) == 2
+    assert {document.status for document in documents} == {GeneratedDocumentStatus.queued}
+
+    db_session.query(GeneratedDocument).delete()
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    assert transcript is not None
+    transcript.status = TranscriptStatus.recording
+    db_session.add(transcript)
+    db_session.commit()
+    recording = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert_error(recording, status_code=409, code="conflict", message="Stop recording before generating from this transcript")
+
+
+def test_generation_wait_timeout_fails_without_llm_call(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Clinic Generation Timeout")
+    admin = make_user(email="admin-generation-timeout@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-generation-timeout@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="Timeout note", prompt_text="Write a note.")
+
+    class FakeTaskResult:
+        id = "generation-timeout-task"
+
+    provider_called = False
+
+    def fake_generate_openai(**kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return '{"title":"Should not run","content":"Should not run"}', {}
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    login(client, email=owner.email, password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Timeout visit", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript = db_session.get(Transcript, UUID(started.json()["id"]))
+    assert transcript is not None
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="pending.wav",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    transcript.status = TranscriptStatus.transcribing
+    db_session.add(job)
+    db_session.add(transcript)
+    db_session.commit()
+
+    generated = client.post(f"/api/v1/transcripts/{transcript.id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+    document = db_session.get(GeneratedDocument, UUID(generated.json()["id"]))
+    assert document is not None
+    document.created_at = utcnow() - timedelta(seconds=121)
+    job.created_at = document.created_at
+    db_session.add(document)
+    db_session.add(job)
+    db_session.commit()
+
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.failed
+    assert processed.error_code == "transcript_wait_timeout"
+    assert provider_called is False
+
+
 def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_session, make_team, make_user):
     team = make_team(name="Working Note Clinic")
     owner = make_user(
@@ -12228,7 +12499,12 @@ def test_transcript_input_mode_can_switch_only_for_blank_idle_owner_session(clie
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
-def test_transcript_start_rejects_second_empty_latest_session_until_content_exists(client, db_session, make_team, make_user):
+def test_transcript_start_rejects_second_blank_but_allows_new_session_while_transcribing(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
@@ -12259,24 +12535,14 @@ def test_transcript_start_rejects_second_empty_latest_session_until_content_exis
     db_session.add(job)
     db_session.commit()
 
-    blocked_while_transcribing = client.post("/api/v1/transcripts/start", json={"title": "Second", "ingestion_mode": "whole_file"})
-    assert_error(
-        blocked_while_transcribing,
-        status_code=409,
-        code="business_rule_violation",
-        message="Wait for the current session transcription to finish before creating a new one",
-    )
-
-    latest = db_session.get(Transcript, first_id)
-    assert latest is not None
-    latest.status = TranscriptStatus.ready
-    job.status = TranscriptIngestionJobStatus.applied
-    db_session.add(latest)
-    db_session.add(job)
-    db_session.commit()
-
     allowed = client.post("/api/v1/transcripts/start", json={"title": "Second", "ingestion_mode": "whole_file"})
     assert allowed.status_code == 201
+    second_id = UUID(allowed.json()["id"])
+    assert second_id != first_id
+    db_session.refresh(latest)
+    db_session.refresh(job)
+    assert latest.status is TranscriptStatus.transcribing
+    assert job.status is TranscriptIngestionJobStatus.queued
 
 
 def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generated_documents(

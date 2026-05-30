@@ -1,5 +1,79 @@
 # Progress
 
+## 2026-05-30 Pending Transcript New Consult Fix
+
+### Scope
+
+- Allowed owners to create a new consultation while the previous stopped consultation still has queued/transcribing ingestion work.
+- Kept the duplicate blank-consult guard for latest sessions with no transcript content, working note, version, or ingestion job.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/transcripts.py`: treats a latest session with ingestion jobs as meaningful enough to allow a new consultation, even while status reconciles to `transcribing`.
+- `tests/test_api.py`: updates the new-consult guard regression to require creation during pending transcription and verify the original job remains queued.
+- `docs/transcribe_brief.md`: documents that users can open another consultation while prior transcription is pending.
+- `docs/transcript-capture.md`: records pending jobs staying attached to the original transcript root while users move on.
+- `docs/progress.md`: records this checklist and architecture checkpoint.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "transcript_start_rejects_second_blank_but_allows_new_session_while_transcribing or transcript_input_mode_can_switch_only_for_blank_idle_owner_session"`: passed, 2 tests.
+- `node --check app/static/js/transcribe/actions.js`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema changes.
+- Auth/ownership checkpoint: `start_transcript` still derives owner/team from the authenticated user; no cross-user transcript access added.
+- Lifecycle/deletion checkpoint: transcript-root cascade unchanged; queued ingestion jobs remain children of the original transcript root.
+- Provider checkpoint: STT/LLM provider resolution unchanged.
+- Structured-note contract: unchanged.
+
+## 2026-05-29 Generation Wait Review Fixes
+
+### Scope
+
+- Fixed queued generation review regressions for pending transcription status while preserving user-controlled generation queueing.
+- Fixed non-waiting queued generation so worker keeps click-time transcript snapshot even if draft changes before Celery starts.
+- Kept placeholder transcript snapshots for existing non-null generated-document FK, but stopped them marking pending transcripts ready.
+- Stored a private generated-document queue-time wait flag in encrypted request payload so only pending-transcription jobs refresh snapshots.
+- Kept active-recording generation blocked, but allow multiple queued follow-ups/notes/actions for the same transcript; rate limits remain the queue throttle.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/templates.py`: adds `mark_transcript_ready` snapshot control, active-recording queue guard, and queue-time wait flag for worker refresh.
+- `app/static/js/transcribe/app.js`: leaves generation controls usable while other generated documents are queued/processing; only the local enqueue request disables controls.
+- `tests/test_api.py`: asserts pending generation keeps transcript `transcribing`, refreshes to final STT snapshot, non-waiting generation keeps queued snapshot after later draft edits, and multiple follow-ups can queue for one transcript.
+- `docs/testing.md`: documents generation queue policy.
+- `docs/progress.md`: records review-fix checklist and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "generation_waits_for_pending_transcription_then_uses_fresh_snapshot or generation_without_pending_transcription_keeps_queued_snapshot or generation_allows_multiple_queued_followups_and_blocks_active_recording or generation_wait_timeout_fails_without_llm_call"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "alembic_upgrade_head_creates_expected_schema or alembic_head_adds_onboarding_and_session_tables"`: passed, 2 tests.
+- `node --check app/static/js/transcribe/app.js`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no generated-document uniqueness guard added; multiple queued/processing documents remain valid rows.
+- Auth/ownership checkpoint: owner-only generation checks preserved; locked row is rechecked before queueing.
+- Lifecycle/deletion checkpoint: transcript-root cascade unchanged; multiple queued children remain cascade-owned by the transcript root; pending generation still times out/fails closed.
+- Provider checkpoint: LLM/STT provider resolution unchanged.
+- Structured-note contract: EMIS JSON/generated-document structure unchanged.
+
 ## 2026-05-28 Dynamic Sidebar Delegation
 
 ### Scope

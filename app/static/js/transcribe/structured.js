@@ -3,6 +3,7 @@ export function createStructuredEditor({
   structuredSectionDefinitions,
   getTranscriptId,
   getDraftText,
+  getTranscriptWaitingForText,
   syncGenerationAvailability,
   onNoteEditorChanged,
 }) {
@@ -1215,7 +1216,10 @@ export function createStructuredEditor({
       return;
     }
     if (generatedDocument.status === 'queued') {
-      dom.latestGeneratedOutput.innerHTML = '<span class="text-slate">Your note is waiting to be written.</span>';
+      const message = getTranscriptWaitingForText?.()
+        ? 'Waiting for transcription to finish before writing your note.'
+        : 'Your note is waiting to be written.';
+      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">${message}</span>`;
       syncNoteEditorToolbar();
       return;
     }

@@ -1,8 +1,9 @@
 import json
 import logging
+import os
 import re
 import time
-from datetime import timezone
+from datetime import timedelta, timezone
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
@@ -32,6 +33,8 @@ from app.models import (
     TemplateMode,
     TemplateScope,
     Transcript,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobStatus,
     TranscriptManualPiiEntity,
     TranscriptStatus,
     TranscriptVersion,
@@ -63,6 +66,7 @@ from app.services.transcripts import (
     manual_pii_entity_value,
     freeform_working_note_text,
     normalize_structured_working_note,
+    reconcile_transcript_status,
     transcript_structured_context,
     transcript_version_text,
 )
@@ -76,13 +80,27 @@ QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_a
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
 QUICK_ACTION_CONTEXT_MARKER = "\n\nAdditional context:\n"
 NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY = "_openscribe_note_generation_options"
+GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY = "_openscribe_wait_for_transcript"
 DEFAULT_NOTE_GENERATION_LENGTH = "normal"
 DEFAULT_LLM_DETAIL_LEVEL = "balanced"
+GENERATION_WAIT_FOR_TRANSCRIPT_RETRY_SECONDS = 2
+GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS = int(
+    os.getenv("GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS", "120")
+)
 NOTE_GENERATION_LENGTH_TOKEN_CAPS = {
     "short": 800,
     "normal": 1600,
     "long": 3200,
 }
+
+
+class GeneratedDocumentWaitingForTranscript(Exception):
+    def __init__(self, document_id: UUID, *, retry_seconds: int = GENERATION_WAIT_FOR_TRANSCRIPT_RETRY_SECONDS) -> None:
+        self.document_id = document_id
+        self.retry_seconds = retry_seconds
+        super().__init__("Generated document is waiting for transcript ingestion to finish")
+
+
 NOTE_GENERATION_DETAIL_GUIDANCE = {
     "concise": "Use compact wording. Avoid unnecessary phrasing.",
     "balanced": "Use clear standard clinical wording.",
@@ -123,6 +141,11 @@ def _note_generation_options_from_document(db: Session, *, document: GeneratedDo
     if isinstance(payload, dict):
         return _normalize_note_generation_options(payload.get(NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY))
     return _normalize_note_generation_options(None)
+
+
+def _document_waits_for_transcript(db: Session, *, document: GeneratedDocument) -> bool:
+    payload = generated_document_llm_request_payload(db, document=document)
+    return isinstance(payload, dict) and payload.get(GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY) is True
 
 
 def _note_generation_output_token_cap(options: NoteGenerationOptions) -> int:
@@ -1070,7 +1093,13 @@ def update_generated_document_content(
     return document
 
 
-def _snapshot_transcript_version(db: Session, *, transcript: Transcript, allow_empty: bool = False) -> TranscriptVersion:
+def _snapshot_transcript_version(
+    db: Session,
+    *,
+    transcript: Transcript,
+    allow_empty: bool = False,
+    mark_transcript_ready: bool = True,
+) -> TranscriptVersion:
     current_text = (
         decrypt_text_for_owner(
             db,
@@ -1102,9 +1131,10 @@ def _snapshot_transcript_version(db: Session, *, transcript: Transcript, allow_e
             or ""
         ).strip()
         if existing_text == current_text:
-            transcript.status = TranscriptStatus.ready
-            db.add(transcript)
-            db.flush()
+            if mark_transcript_ready:
+                transcript.status = TranscriptStatus.ready
+                db.add(transcript)
+                db.flush()
             return existing_version
     version_id = uuid4()
     current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
@@ -1121,11 +1151,118 @@ def _snapshot_transcript_version(db: Session, *, transcript: Transcript, allow_e
             plaintext=current_text,
         ),
     )
-    transcript.status = TranscriptStatus.ready
+    if mark_transcript_ready:
+        transcript.status = TranscriptStatus.ready
     db.add(version)
-    db.add(transcript)
+    if mark_transcript_ready:
+        db.add(transcript)
     db.flush()
     return version
+
+
+def _has_generation_wait_ingestion_jobs(db: Session, *, transcript_id: UUID, created_at_upper_bound) -> bool:
+    return db.scalar(
+        select(TranscriptIngestionJob.id)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            TranscriptIngestionJob.created_at <= created_at_upper_bound,
+            TranscriptIngestionJob.status.in_(
+                [
+                    TranscriptIngestionJobStatus.queued,
+                    TranscriptIngestionJobStatus.processing,
+                    TranscriptIngestionJobStatus.completed,
+                ]
+            ),
+        )
+        .limit(1)
+    ) is not None
+
+
+def _ensure_generation_can_be_queued(db: Session, *, transcript: Transcript) -> tuple[Transcript, bool]:
+    locked_transcript = db.scalar(select(Transcript).where(Transcript.id == transcript.id).with_for_update())
+    if locked_transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
+    if locked_transcript.owner_user_id != transcript.owner_user_id:
+        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = locked_transcript
+    if transcript.status is TranscriptStatus.recording:
+        raise AppError(409, "conflict", "Stop recording before generating from this transcript")
+    return transcript, _has_generation_wait_ingestion_jobs(db, transcript_id=transcript.id, created_at_upper_bound=utcnow())
+
+
+def _document_has_empty_allowed_source(db: Session, *, document: GeneratedDocument, transcript: Transcript | None) -> bool:
+    freeform_working_note = generated_document_text(db, document=document, field="freeform_working_note_snapshot_encrypted")
+    if freeform_working_note and freeform_working_note.strip():
+        return True
+    structured_working_note = generated_document_structured_working_note_snapshot(db, document=document)
+    if structured_working_note:
+        return True
+    if (
+        document.generator_type in {GeneratedDocumentGeneratorType.template, GeneratedDocumentGeneratorType.quick_action}
+        and transcript is not None
+        and _effective_dictation_text(db, transcript=transcript).strip()
+    ):
+        return True
+    return False
+
+
+def _mark_generated_document_failed_before_llm(db: Session, *, document: GeneratedDocument, code: str, message: str) -> GeneratedDocument:
+    document.status = GeneratedDocumentStatus.failed
+    document.completed_at = utcnow()
+    document.error_code = code
+    document.error_message = message
+    document.provider_error_code = None
+    document.provider_http_status = None
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    _record_generation_usage_event(db, event="llm_generation_failed", document=document, status=document.status.value)
+    return document
+
+
+def _refresh_document_transcript_snapshot_when_ready(db: Session, *, document: GeneratedDocument) -> GeneratedDocument | None:
+    if not _document_waits_for_transcript(db, document=document):
+        return None
+
+    transcript = db.get(Transcript, document.transcript_id)
+    if transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(document.transcript_id)})
+    transcript = reconcile_transcript_status(db, transcript=transcript)
+
+    if transcript.status is TranscriptStatus.recording:
+        return _mark_generated_document_failed_before_llm(
+            db,
+            document=document,
+            code="transcript_still_recording",
+            message="Recording was still active before generation could start",
+        )
+    if transcript.status is TranscriptStatus.failed:
+        return _mark_generated_document_failed_before_llm(
+            db,
+            document=document,
+            code="transcript_not_ready",
+            message="Transcription failed before note generation could start",
+        )
+
+    created_at_upper_bound = document.created_at or utcnow()
+    if _has_generation_wait_ingestion_jobs(db, transcript_id=document.transcript_id, created_at_upper_bound=created_at_upper_bound):
+        timeout_at = created_at_upper_bound + timedelta(seconds=GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS)
+        if utcnow() >= timeout_at:
+            return _mark_generated_document_failed_before_llm(
+                db,
+                document=document,
+                code="transcript_wait_timeout",
+                message="Transcription did not finish in time. Try again after transcription completes.",
+            )
+        raise GeneratedDocumentWaitingForTranscript(document.id)
+
+    allow_empty = _document_has_empty_allowed_source(db, document=document, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(db, transcript=transcript, allow_empty=allow_empty)
+    document.transcript_version_id = transcript_version.id
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return None
 
 
 def _generation_usage_event(
@@ -2194,6 +2331,7 @@ def queue_document_generation_from_template(
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     template = _resolve_available_template_for_user(db, actor, template_id=template_id)
     latest_version = _latest_template_version(db, template_id=template.id)
@@ -2203,10 +2341,12 @@ def queue_document_generation_from_template(
         db,
         transcript=transcript,
         allow_empty=(
-            bool(freeform_working_note_snapshot.strip())
+            waiting_for_transcript
+            or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
             or bool(_effective_dictation_text(db, transcript=transcript))
         ),
+        mark_transcript_ready=not waiting_for_transcript,
     )
 
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
@@ -2257,7 +2397,10 @@ def queue_document_generation_from_template(
     set_generated_document_llm_request_payload(
         db,
         document=generated_document,
-        plaintext={NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id)},
+        plaintext={
+            NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id),
+            GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript,
+        },
     )
     db.add(generated_document)
     db.commit()
@@ -2279,6 +2422,7 @@ def queue_followup_generation(
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     clean_prompt_text = prompt_text.strip()
     if not clean_prompt_text:
@@ -2289,9 +2433,11 @@ def queue_followup_generation(
         db,
         transcript=transcript,
         allow_empty=(
-            bool(freeform_working_note_snapshot.strip())
+            waiting_for_transcript
+            or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
         ),
+        mark_transcript_ready=not waiting_for_transcript,
     )
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
@@ -2338,6 +2484,11 @@ def queue_followup_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
+    set_generated_document_llm_request_payload(
+        db,
+        document=generated_document,
+        plaintext={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
+    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -2359,6 +2510,7 @@ def queue_quick_action_generation(
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     quick_action = _resolve_available_quick_action_for_user(db, actor, quick_action_id=quick_action_id)
     latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
@@ -2367,10 +2519,12 @@ def queue_quick_action_generation(
         db,
         transcript=transcript,
         allow_empty=(
-            bool(freeform_working_note_snapshot.strip())
+            waiting_for_transcript
+            or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
             or bool(_effective_dictation_text(db, transcript=transcript))
         ),
+        mark_transcript_ready=not waiting_for_transcript,
     )
     _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
     if not resolved_model_name:
@@ -2421,6 +2575,11 @@ def queue_quick_action_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
+    set_generated_document_llm_request_payload(
+        db,
+        document=generated_document,
+        plaintext={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
+    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -2523,8 +2682,11 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     document = db.get(GeneratedDocument, document_id)
     if document is None:
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(document_id)})
-    if document.status is GeneratedDocumentStatus.ready:
+    if document.status in {GeneratedDocumentStatus.ready, GeneratedDocumentStatus.failed}:
         return document
+    failed_document = _refresh_document_transcript_snapshot_when_ready(db, document=document)
+    if failed_document is not None:
+        return failed_document
 
     config = _resolve_runtime_llm_config(db, document=document)
     transcript_version = db.get(TranscriptVersion, document.transcript_version_id)

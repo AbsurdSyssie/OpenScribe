@@ -750,8 +750,6 @@ def can_create_new_session(db: Session, owner: User) -> tuple[bool, str | None]:
     if latest is None:
         return True, None
     latest = reconcile_transcript_status(db, transcript=latest)
-    if latest.status is TranscriptStatus.transcribing:
-        return False, "Wait for the current session transcription to finish before creating a new one"
     if _transcript_has_meaningful_content(db, latest):
         return True, None
     return False, "Finish or delete the current empty session before creating a new one"

@@ -90,6 +90,7 @@ What it does:
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
 - generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft and is revoked when the copyable note text changes; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
+- generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
@@ -223,6 +224,9 @@ What it does:
 - workspace PII coverage verifies detected rows are hidden when the latest redaction run failed rather than falling back to stale older successful runs
 - clinical NLP coverage verifies admin provider flags, team assignment plus leader enablement, remote providers receiving redacted transcript text, local/private providers receiving unredacted transcript text only when allowed, encrypted owner-scoped clinical entity rows, stale zero-result runs rerunning after provider config changes, transcript deletion cascade cleanup, and the `/transcribe` PII panel rendering disease/symptom rows and clinical NLP status with a separate highlight class
 - generated-document worker lazily creating or reusing a `redaction_runs` snapshot for the queued transcript version, including reuse of an existing matching transcript version
+- generated-document worker waiting up to 120 seconds for pre-click transcription jobs to finish before refreshing the transcript snapshot and building the LLM request, with no second user click needed
+- generated-document worker preserving click-time transcript snapshots for queued docs that were not waiting on pre-click transcription, even if live draft changes before worker start
+- generation routes blocking active recording while allowing multiple queued follow-ups for the same transcript
 - generated-document worker sending only redacted transcript text to the LLM and re-identifying the finished output before persistence
 - generated-document worker failing closed when the LLM returns malformed or unknown PHI placeholders
 - system-admin de-identification provider provisioning and team assignment

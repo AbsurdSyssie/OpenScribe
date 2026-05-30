@@ -43,6 +43,7 @@ User can change:
 - switch active consultation
 - rename consultation
 - delete consultation
+- create/open another consultation while a previous stopped recording is still queued or transcribing
 
 How:
 - start/open another consultation

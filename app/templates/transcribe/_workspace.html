@@ -413,7 +413,11 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text %}
 {{ latest_generated_document.edited_output_text }}
 {% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
+{% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
+<span class="text-slate">Waiting for transcription to finish before writing your note.</span>
+{% else %}
 <span class="text-slate">Your note is waiting to be written.</span>
+{% endif %}
 {% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
 <span class="text-slate">Your note is being written.</span>
 {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
@@ -562,7 +566,15 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
 {% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
+{% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
+{% if latest_followup_document.generator_type and latest_followup_document.generator_type.value == "quick_action" %}
+<span class="text-slate">Waiting for transcription to finish before running this quick action.</span>
+{% else %}
+<span class="text-slate">Waiting for transcription to finish before writing your follow-up.</span>
+{% endif %}
+{% else %}
 <span class="text-slate">Waiting to be written...</span>
+{% endif %}
 {% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
 <span class="text-slate">Your follow-up is being written.</span>
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}

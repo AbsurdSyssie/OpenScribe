@@ -2374,6 +2374,10 @@ def _run_quick_action_trigger_block(html: str) -> str:
     return html.split('data-run-quick-action-trigger', 1)[0].rsplit('<button', 1)[1]
 
 
+def _generate_followup_trigger_block(html: str) -> str:
+    return html.split('data-generate-followup-trigger', 1)[0].rsplit('<button', 1)[1]
+
+
 def test_transcribe_create_button_enabled_for_saved_working_note(
     client,
     make_team,
@@ -2507,6 +2511,43 @@ def test_transcribe_quick_actions_enabled_for_saved_dictation(
     assert page.status_code == 200
     assert "disabled" not in _quick_action_select_block(page.text)
     assert "disabled" not in _run_quick_action_trigger_block(page.text)
+
+
+def test_transcribe_followups_enabled_for_saved_dictation(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Dictation Followup UI")
+    admin = make_user(email="dictation-followup-ui-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="dictation-followup-ui-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    member = make_user(email="dictation-followup-ui-member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, label="Clinic OpenAI", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+    make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Dictation message")
+
+    client.post("/login", data={"email": "dictation-followup-ui-member@example.com", "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Dictation only followup UI", "ingestion_mode": "whole_file", "current_draft_text_encrypted": ""},
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    update_post_consultation_dictation(db_session, member, transcript_id=UUID(transcript_id), combined_text="Send blood test instructions.")
+
+    page = client.get(f"/transcribe?transcript_id={transcript_id}&tab=followups")
+
+    assert page.status_code == 200
+    assert "disabled" not in _generate_followup_trigger_block(page.text)
+    assert re.search(
+        r"<textarea\b(?=[^>]*data-quick-action-context-input)(?=[^>]*data-followup-prompt-input)(?![^>]*disabled)[^>]*>",
+        page.text,
+    )
+
 
 def test_transcribe_create_button_ignores_existing_generated_note_without_source(
     client,
@@ -4363,10 +4404,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "hasStructuredContextContent" not in app_js
     assert "data-structured-context-hidden" not in workspace_html
     assert "syncStructuredContextHiddenInputs" not in structured_js
-    assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation;" in app_js
+    assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));" in app_js
-    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote));" in app_js
-    assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
+    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText));" in app_js
+    assert "runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;" in app_js
     assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
     assert "showFlash('Select a quick action first.', 'warning');" in actions_js
     assert "./actions.js?v=20260525-followup-working-note" in app_js
@@ -4435,10 +4476,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "onNoteGenerationQueued" not in actions_js
     assert "silent: true" not in app_js
     assert "silent = false" not in app_js
-    assert "generateOutputButton.disabled = noteGenerationBusy || !canGenerateNote;" in app_js
-    assert "generateOutputTemplateSelect.disabled = noteGenerationBusy || !canChooseTemplate;" in app_js
-    assert "templatePickerButton.disabled = noteGenerationBusy || !canChooseTemplate;" in app_js
-    assert "button.disabled = noteGenerationBusy || !canChooseTemplate;" in app_js
+    assert "generateOutputButton.disabled = generationBusy || !canGenerateNote;" in app_js
+    assert "generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;" in app_js
+    assert "templatePickerButton.disabled = generationBusy || !canChooseTemplate;" in app_js
+    assert "button.disabled = generationBusy || !canChooseTemplate;" in app_js
     assert "if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;" in app_js
     assert "syncGenerationAvailability," not in actions_js
     assert "const NOTE_GENERATION_CLICK_GUARD_MS" not in actions_js

@@ -7069,6 +7069,57 @@ def test_followup_generation_uses_saved_working_note_when_transcript_empty(
     ) == ""
 
 
+def test_followup_generation_uses_saved_dictation_when_transcript_empty(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Dictation Followup")
+    admin = make_user(email="dictation-followup-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="dictation-followup-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+
+    class FakeTaskResult:
+        id = "dictation-followup-task"
+
+    monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    captured_provider_request = {}
+
+    def fake_generate_openai(**kwargs):
+        captured_provider_request.update(kwargs["request_body"])
+        return "Generated dictation follow-up", {"input_tokens": 9, "output_tokens": 5, "total_tokens": 14, "duration_ms": 4}
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email="dictation-followup-owner@example.com", password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Dictation-only followup", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    transcript = db_session.get(Transcript, UUID(transcript_id))
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript.id, combined_text="Book repeat U&E blood test next week.")
+
+    generated = client.post(
+        f"/api/v1/transcripts/{transcript_id}/generate-followup",
+        json={"prompt_text": "Create patient SMS."},
+    )
+    assert generated.status_code == 202
+
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    assert document is not None
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated dictation follow-up"
+    user_message = captured_provider_request["messages"][1]["content"]
+    assert "Consultation transcript:\n" in user_message
+    assert "Post-consultation dictation:\nBook repeat U&E blood test next week." in user_message
+    assert "Follow-up request:\nCreate patient SMS." in user_message
+
+
 def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(
     client,
     db_session,
@@ -7606,6 +7657,88 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
     assert debug["failure_message"] == "The LLM provider rejected the generation request"
     assert debug["provider_http_status"] == 400
     assert debug["provider_error_code"] == "bad_request"
+
+
+def test_structured_hallucination_check_vault_failure_does_not_fail_document(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "1")
+    team = make_team(name="Clinic Hallucination Vault Fail")
+    admin = make_user(email="admin-hcheck-vault@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-hcheck-vault@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    main_config = make_llm_config(team=team, actor=admin, label="Main LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    checker_config = make_llm_config(team=team, actor=admin, label="Checker LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=True)
+    make_llm_selection(config=main_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    db_session.add(
+        TeamHallucinationCheckSelection(
+            team_id=team.id,
+            llm_config_id=checker_config.id,
+            model_name_override="gpt-4o-mini",
+            selected_by_user_id=admin.id,
+        )
+    )
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS checker vault fail",
+        prompt_text="Use source only.",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{"section_key": "problem", "section_label": "Problem", "instruction": "Summarise.", "section_order": 1}]},
+    )
+
+    calls = []
+
+    def fake_generate_openai(**kwargs):
+        calls.append(kwargs["request_body"])
+        return ('{"title":"Cough review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25})
+
+    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+        assert config_id == checker_config.id
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+    monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+
+    login(client, email="owner-hcheck-vault@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Checker vault fail", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Patient says cough improving."},
+    )
+    transcript_id = started.json()["id"]
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.hallucination_check_status is HallucinationCheckStatus.failed_provider
+    assert processed.hallucination_check_llm_config_id == checker_config.id
+    assert len(calls) == 1
+
+    usage_event = db_session.scalar(
+        select(ProviderUsageEvent).where(
+            ProviderUsageEvent.generated_document_id == processed.id,
+            ProviderUsageEvent.status == "hallucination_check:failed_provider",
+        )
+    )
+    assert usage_event is not None
+    assert usage_event.event_type is ProviderUsageEventType.failed
+    assert usage_event.error_code == "vault_read_failed"
+
+    detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
+    debug = detail.json()[0]["hallucination_check_debug_json"]
+    assert detail.json()[0]["hallucination_check_bucket"] == "unchecked"
+    assert debug["failure_code"] == "vault_read_failed"
+    assert debug["failure_message"] == "Vault secret read failed"
 
 
 def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):

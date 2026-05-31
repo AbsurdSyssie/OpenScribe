@@ -163,7 +163,8 @@ What it does:
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
 - hallucination-check selection API coverage for system-admin-only set/read/clear using ready active team LLM configs
 - structured hallucination-check generation coverage for redacted-only checker prompt shape, exact-substring patch application, checked bucket, applied edit count, encrypted dev debug payload, and provider usage metadata
-- structured hallucination-check provider-failure coverage verifies notes still save ready/unchecked and owner-only debug includes safe provider failure metadata
+- structured hallucination-check provider/Vault-failure coverage verifies notes still save ready/unchecked and owner-only debug includes safe failure metadata
+- dictation-only follow-up generation coverage verifies saved post-consultation dictation counts as a valid source when transcript text is empty
 - OpenAI-compatible LLM generation coverage verifies content-part dictionary responses are extracted as note text instead of being treated as empty provider output
 - gpt-oss hallucination-check request coverage verifies the checker uses low reasoning effort and a larger completion cap so reasoning tokens do not consume the final JSON answer
 - leader team STT selection and clear flow using admin-provisioned options

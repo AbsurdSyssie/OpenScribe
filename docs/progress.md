@@ -1,5 +1,44 @@
 # Progress
 
+## 2026-05-31 Generation Regression Fixes
+
+### Scope
+
+- Fixed optional structured hallucination-check Vault secret failures so they mark the checker `failed_provider` while saving the generated note as ready.
+- Fixed dictation-only follow-up generation so saved post-consultation dictation counts as a valid source when transcript text is empty.
+- Documented current hallucination-check provider policy: checker selection is resolved at worker processing time, not queue time.
+
+### Checklist
+
+- Target behavior: checker-only provider/secret failures do not fail generated documents; follow-ups accept transcript, dictation, or Working-note sources.
+- Affected schema/modules/endpoints: `app/services/templates.py`, generation worker paths, generated-document metadata; no schema change.
+- Affected tests: hallucination-check Vault failure regression and dictation-only follow-up regression.
+- Architecture risks: no ownership, privacy, deletion, encryption, provider resolution, or structured-note JSON contract redesign.
+- Docs referenced/updated: `docs/api.md`, `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: reused existing checker failure metadata/audit event path and existing dictation source helper.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: queue-time hallucination-check snapshotting remains a future auditability decision requiring schema/API work.
+
+### Files changed
+
+- `app/services/templates.py`: catches checker Vault read failures as `failed_provider`, records safe debug/audit metadata, and lets dictation satisfy follow-up empty-source checks.
+- `tests/test_api.py`: adds regressions for checker secret-read failure and dictation-only follow-up generation.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document source requirements, checker failure handling, runtime checker selection policy, and test coverage.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "structured_hallucination_check_vault_failure_does_not_fail_document or structured_hallucination_check_provider_failure_records_safe_debug or followup_generation_uses_saved_dictation_when_transcript_empty or followup_generation_uses_saved_working_note_when_transcript_empty"`: passed, 4 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema changes.
+- Auth/ownership checkpoint: generation remains owner-only; no new content visibility.
+- Lifecycle/deletion checkpoint: generated documents still inherit transcript retention and cascade from transcript root.
+- Provider checkpoint: main generation provider snapshot unchanged; checker failure is isolated from document success; checker selection remains runtime-resolved by documented policy.
+- Structured-note contract: unchanged; checker still receives redacted evidence and exact-substring JSON edits only.
+
 ## 2026-05-31 Admin2 Bedrock Provider URL Sync
 
 ### Scope

@@ -29,6 +29,8 @@ Current behavior:
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
+- admin UI regression tests verify hallucination checker provider selection uses discovered model dropdowns instead of free-text checker model entry
+- transcribe UI static regressions verify generated notes expose hallucination check status/debug panel and refresh the document navigator cache-bust token
 - mail-service tests verify disabled/stdout/resend configuration validation, stdout local delivery, skipped delivery when mail is disabled, hidden Resend API key repr behavior, Resend API payload/header construction, provider-error mapping, and Vault-ref API key resolution
 - auth-email tests verify generic password reset request responses when mail is enabled, non-enumerable password reset behavior during mail misconfiguration/send failures, disabled-mail reset gating in API and browser pages, current browser shell styling for reset pages, hashed setup/reset tokens, invalid confirm tokens being rejected before password hashing, password reset session/trusted-device revocation, first-time-only activation into TOTP onboarding, manager recovery same-team authorization, one-time temporary password generation, password-only recovery preserving TOTP/recovery codes, MFA-only reset preserving pending password changes, persistent copy-modal browser display, and MFA/recovery-code clearing for full recovery
 - auth-service tests verify Argon2id password hashing, non-Argon2id hash rejection, and forced dev password rotation
@@ -159,6 +161,11 @@ What it does:
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
 - LLM provider presets covering branded provider catalog/inference, live-discovery-only manual fallback, manual model selectability after failed discovery, service-owned inspection metadata, stale model clearing/rediscovery on provider endpoint changes, OpenAI-only prefix filtering, base URL override reclassification to custom OpenAI-compatible, saved inspection metadata, and migration backfill
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
+- hallucination-check selection API coverage for system-admin-only set/read/clear using ready active team LLM configs
+- structured hallucination-check generation coverage for redacted-only checker prompt shape, exact-substring patch application, checked bucket, applied edit count, encrypted dev debug payload, and provider usage metadata
+- structured hallucination-check provider-failure coverage verifies notes still save ready/unchecked and owner-only debug includes safe provider failure metadata
+- OpenAI-compatible LLM generation coverage verifies content-part dictionary responses are extracted as note text instead of being treated as empty provider output
+- gpt-oss hallucination-check request coverage verifies the checker uses low reasoning effort and a larger completion cap so reasoning tokens do not consume the final JSON answer
 - leader team STT selection and clear flow using admin-provisioned options
 - STT browser model selection using provider-populated dropdowns instead of free-text overrides
 - STT provisioning/selection route blocking for unauthenticated, ordinary-user, onboarding, and pending-MFA callers

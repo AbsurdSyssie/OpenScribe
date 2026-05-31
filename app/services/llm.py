@@ -8,8 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, Team, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
-from app.schemas import LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
+from app.schemas import HallucinationCheckSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
     default_llm_config_label,
@@ -544,7 +544,8 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
-    if _llm_config_has_in_flight_jobs(db, config_id=config.id):
+    has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    if has_in_flight_jobs and config.setup_status != LlmConfigSetupStatus.pending_model_selection:
         raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
     model_name = payload.model_name.strip()
     available = list(config.available_models_json or [])
@@ -581,8 +582,10 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
-    if _llm_config_has_in_flight_jobs(db, config_id=config.id):
-        raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
+    has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    was_ready = config.setup_status == LlmConfigSetupStatus.ready
+    was_active = config.is_active
+    existing_model_name = config.model_name
     inspection = inspect_llm_contract(
         db,
         actor,
@@ -599,8 +602,13 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
         config.model_name = None
     config.inspection_metadata_json = _inspection_metadata(inspection)
-    config.setup_status = LlmConfigSetupStatus.pending_model_selection
-    config.is_active = False
+    if has_in_flight_jobs and was_ready and existing_model_name and (not inspection.available_models or existing_model_name in inspection.available_models):
+        config.model_name = existing_model_name
+        config.setup_status = LlmConfigSetupStatus.ready
+        config.is_active = was_active
+    else:
+        config.setup_status = LlmConfigSetupStatus.pending_model_selection
+        config.is_active = False
     config.updated_by_user_id = actor.id
     db.add(config)
     db.commit()
@@ -624,15 +632,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
         if config is None:
             raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
-        if _llm_config_has_in_flight_jobs(db, config_id=config.id):
-            raise AppError(
-                409,
-                "conflict",
-                "Cannot edit this LLM config while generated documents are queued or processing",
-                {"config_id": str(config.id)},
-            )
     creating = config is None
-    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id if config is not None else None)
     replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
     removing_secret = payload.credential_action == "remove"
     if removing_secret and payload.bearer_token:
@@ -654,6 +654,24 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             or config.base_url.rstrip("/") != base_url.rstrip("/")
         )
     )
+    has_in_flight_jobs = config is not None and _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    credential_correction_during_in_flight = (
+        has_in_flight_jobs
+        and config is not None
+        and replacing_secret
+        and not removing_secret
+        and not provider_endpoint_changed
+    )
+    if has_in_flight_jobs and not credential_correction_during_in_flight:
+        raise AppError(
+            409,
+            "conflict",
+            "Cannot edit this LLM config while generated documents are queued or processing",
+            {"config_id": str(config.id)},
+        )
+    if credential_correction_during_in_flight:
+        label = config.label
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id if config is not None else None)
 
     existing_token_for_discovery: str | None = None
     if provider_endpoint_changed and not replacing_secret and has_existing_secret:
@@ -722,7 +740,10 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     else:
         available_models_json = []
 
-    model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
+    if credential_correction_during_in_flight and config is not None:
+        model_name = config.model_name
+    else:
+        model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
     if not model_name:
         raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
     manual_required_without_models = discovery_metadata.get("discovery_status") == "manual_required" and len(available_models_json) == 0
@@ -773,7 +794,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.available_models_json = available_models_json
         config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
         config.setup_status = LlmConfigSetupStatus.ready
-        config.is_active = payload.is_active
+        config.is_active = config.is_active if credential_correction_during_in_flight else payload.is_active
         config.updated_by_user_id = actor.id
         db.add(config)
 
@@ -938,6 +959,89 @@ def clear_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None =
         raise AppError(404, "not_found", "LLM selection not found", {"resource": "llm_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+
+
+def _resolve_checker_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin hallucination checker access required")
+    if team_id is None:
+        raise AppError(422, "business_rule_violation", "Team is required for hallucination checker management", {"field": "team_id"})
+    return _resolve_team(db, team_id=team_id)
+
+
+def get_team_hallucination_check_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamHallucinationCheckSelection | None:
+    team = _resolve_checker_scoped_team(db, actor, team_id=team_id)
+    return db.scalar(
+        select(TeamHallucinationCheckSelection)
+        .options(joinedload(TeamHallucinationCheckSelection.config))
+        .where(TeamHallucinationCheckSelection.team_id == team.id)
+    )
+
+
+def set_team_hallucination_check_selection(db: Session, actor: User, payload: HallucinationCheckSelectionUpsert) -> TeamHallucinationCheckSelection:
+    team = _resolve_checker_scoped_team(db, actor, team_id=payload.team_id)
+    config = db.scalar(
+        select(TeamLlmConfig).where(
+            TeamLlmConfig.id == payload.llm_config_id,
+            TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.is_active.is_(True),
+            TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
+            TeamLlmConfig.model_name.is_not(None),
+        )
+    )
+    if config is None:
+        raise AppError(404, "not_found", "Selectable hallucination checker LLM config not found", {"resource": "llm_config", "config_id": str(payload.llm_config_id)})
+    override = payload.model_name_override.strip() if payload.model_name_override else None
+    provider_models = list(config.available_models_json or [])
+    if override and provider_models and override not in provider_models:
+        raise AppError(422, "business_rule_violation", "Selected checker model is not available for this LLM provider", {"field": "model_name_override"})
+    selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+    if selection is None:
+        selection = TeamHallucinationCheckSelection(
+            id=uuid4(),
+            team_id=team.id,
+            llm_config_id=config.id,
+            model_name_override=override,
+            selected_by_user_id=actor.id,
+        )
+    else:
+        selection.llm_config_id = config.id
+        selection.model_name_override = override
+        selection.selected_by_user_id = actor.id
+    db.add(selection)
+    db.commit()
+    db.refresh(selection)
+    return db.scalar(
+        select(TeamHallucinationCheckSelection)
+        .options(joinedload(TeamHallucinationCheckSelection.config))
+        .where(TeamHallucinationCheckSelection.id == selection.id)
+    ) or selection
+
+
+def clear_team_hallucination_check_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
+    team = _resolve_checker_scoped_team(db, actor, team_id=team_id)
+    selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+    if selection is None:
+        raise AppError(404, "not_found", "Hallucination checker selection not found", {"resource": "hallucination_check_selection", "team_id": str(team.id)})
+    db.delete(selection)
+    db.commit()
+
+
+def active_team_hallucination_check_selection(db: Session, *, team_id: UUID) -> TeamHallucinationCheckSelection | None:
+    selection = db.scalar(
+        select(TeamHallucinationCheckSelection)
+        .options(joinedload(TeamHallucinationCheckSelection.config))
+        .where(TeamHallucinationCheckSelection.team_id == team_id)
+    )
+    if (
+        selection is None
+        or selection.config is None
+        or not selection.config.is_active
+        or selection.config.setup_status != LlmConfigSetupStatus.ready
+        or not selection.config.model_name
+    ):
+        return None
+    return selection
 
 
 def active_team_llm_selection(db: Session, *, team_id: UUID) -> TeamLlmSelection:

@@ -17,9 +17,6 @@ Current implemented pieces:
 - revocable opaque sessions and trusted-device records
 
 Current gaps:
-
-- no full self-service forgot-password flow
-- no recovery-code login challenge for lost TOTP
 - no manager-assisted TOTP reset flow
 - no dedicated recovery UX for "lost password and lost authenticator"
 - no outbound email transport abstraction for reset delivery

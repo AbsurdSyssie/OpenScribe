@@ -196,6 +196,16 @@ class GeneratedDocumentStatus(str, enum.Enum):
     failed = "failed"
 
 
+class HallucinationCheckStatus(str, enum.Enum):
+    not_applicable = "not_applicable"
+    skipped_not_configured = "skipped_not_configured"
+    skipped_config_invalid = "skipped_config_invalid"
+    failed_provider = "failed_provider"
+    failed_invalid_response = "failed_invalid_response"
+    checked_unchanged = "checked_unchanged"
+    checked_corrected = "checked_corrected"
+
+
 class ProviderFeatureType(str, enum.Enum):
     llm_generation = "llm_generation"
 
@@ -245,6 +255,11 @@ class Team(Base):
     stt_selections: Mapped[list["TeamSttSelection"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     llm_configs: Mapped[list["TeamLlmConfig"]] = relationship(back_populates="team")
     llm_selection: Mapped["TeamLlmSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
+    hallucination_check_selection: Mapped["TeamHallucinationCheckSelection | None"] = relationship(
+        back_populates="team",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     deidentification_provider_assignments: Mapped[list["TeamDeidentificationProviderAssignment"]] = relationship(
         back_populates="team",
         cascade="all, delete-orphan",
@@ -638,6 +653,7 @@ class TeamLlmConfig(Base):
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
     updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
     selections: Mapped[list["TeamLlmSelection"]] = relationship(back_populates="config")
+    hallucination_check_selections: Mapped[list["TeamHallucinationCheckSelection"]] = relationship(back_populates="config")
 
 
 class TeamLlmSelection(Base):
@@ -654,6 +670,22 @@ class TeamLlmSelection(Base):
 
     team: Mapped[Team] = relationship(back_populates="llm_selection")
     config: Mapped[TeamLlmConfig] = relationship(back_populates="selections")
+    selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
+
+
+class TeamHallucinationCheckSelection(Base):
+    __tablename__ = "team_hallucination_check_selections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), unique=True, nullable=False)
+    llm_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="CASCADE"), nullable=False)
+    model_name_override: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="hallucination_check_selection")
+    config: Mapped[TeamLlmConfig] = relationship(back_populates="hallucination_check_selections")
     selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
 
 
@@ -1309,6 +1341,7 @@ class GeneratedDocument(Base):
     edited_output_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     failed_provider_output_redacted_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_request_payload_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hallucination_check_debug_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_edited: Mapped[bool] = mapped_column(default=False, nullable=False)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -1321,6 +1354,16 @@ class GeneratedDocument(Base):
     estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hallucination_check_status: Mapped[HallucinationCheckStatus] = mapped_column(
+        Enum(HallucinationCheckStatus),
+        default=HallucinationCheckStatus.not_applicable,
+        nullable=False,
+    )
+    hallucination_check_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    hallucination_check_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hallucination_check_provider_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    hallucination_check_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hallucination_check_applied_edit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)

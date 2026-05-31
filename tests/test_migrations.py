@@ -81,6 +81,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "team_deidentification_selections",
         "team_clinical_nlp_selections",
         "team_llm_configs",
+        "team_hallucination_check_selections",
         "team_llm_selections",
         "team_stt_configs",
         "team_stt_selections",
@@ -176,6 +177,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     stt_columns = {column["name"] for column in inspector.get_columns("team_stt_configs")}
     stt_selection_columns = {column["name"] for column in inspector.get_columns("team_stt_selections")}
     llm_columns = {column["name"] for column in inspector.get_columns("team_llm_configs")}
+    hallucination_check_selection_columns = {column["name"] for column in inspector.get_columns("team_hallucination_check_selections")}
     llm_selection_columns = {column["name"] for column in inspector.get_columns("team_llm_selections")}
     deidentification_provider_columns = {column["name"] for column in inspector.get_columns("deidentification_providers")}
     deidentification_assignment_columns = {column["name"] for column in inspector.get_columns("team_deidentification_provider_assignments")}
@@ -263,6 +265,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     assert {"team_id", "provider_preset", "adapter_kind", "base_url", "vault_secret_ref", "available_models_json", "inspection_metadata_json", "setup_status"} <= llm_columns
     assert any(item["name"] == "ix_team_llm_configs_setup_status" for item in llm_indexes)
     assert any(item["name"] == "uq_team_llm_configs_team_label_lower" for item in llm_indexes)
+    assert {"team_id", "llm_config_id", "model_name_override", "selected_by_user_id"} <= hallucination_check_selection_columns
     assert {"team_id", "llm_config_id", "allowed_models_json", "model_name_override", "selected_by_user_id"} <= llm_selection_columns
     assert {
         "label",
@@ -343,6 +346,13 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "provider_http_status",
         "error_message",
         "failed_provider_output_redacted_encrypted",
+        "hallucination_check_debug_json_encrypted",
+        "hallucination_check_status",
+        "hallucination_check_llm_config_id",
+        "hallucination_check_model_name",
+        "hallucination_check_provider_snapshot_json",
+        "hallucination_check_completed_at",
+        "hallucination_check_applied_edit_count",
         "started_at",
         "completed_at",
     } <= generated_document_columns

@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, TemplateMode, TemplateScope
+from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, HallucinationCheckStatus, TemplateMode, TemplateScope
 
 
 EMIS_SECTION_KEYS = (
@@ -155,6 +155,10 @@ class GeneratedDocumentDetail(BaseModel):
     estimated_cost_usd: float | None = None
     duration_ms: int | None = None
     provider_duration_ms: int | None = None
+    hallucination_check_status: HallucinationCheckStatus = HallucinationCheckStatus.not_applicable
+    hallucination_check_bucket: str = "not_applicable"
+    hallucination_check_applied_edit_count: int | None = None
+    hallucination_check_debug_json: dict | None = None
     error_code: str | None = None
     provider_error_code: str | None = None
     provider_http_status: int | None = None

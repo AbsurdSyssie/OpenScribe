@@ -14,12 +14,19 @@ from ..main import (
     _set_trusted_device_cookie,
 )
 from ..schemas import (
+    HallucinationCheckSelectionDetail,
+    HallucinationCheckSelectionUpsert,
     SmartPhraseCreate,
     SmartPhraseDetail,
     SmartPhraseUpdate,
     SttConfigDraftReplaceCredentialBody,
     SttConfigFinalizeBody,
     TranscriptListPage,
+)
+from ..services.llm import (
+    clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
+    get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
+    set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
 )
 from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
 from ..services.smart_phrases import (
@@ -36,7 +43,7 @@ from ..services.transcripts import (
     save_working_note as save_working_note_service,
     working_note_detail as working_note_detail_service,
 )
-from ..web.presentation import smart_phrase_response
+from ..web.presentation import hallucination_check_selection_response, smart_phrase_response
 from ..web.transcribe_workspace import list_transcript_history_page
 
 
@@ -592,6 +599,22 @@ def set_llm_selection(payload: LlmSelectionUpsert, context: AuthenticatedContext
 @api.delete("/llm-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
 def clear_llm_selection(team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_llm_selector), db: Session = Depends(get_db)):
     clear_team_llm_selection_service(db, context.user, team_id=team_id)
+
+
+@api.get("/hallucination-check-selection", response_model=HallucinationCheckSelectionDetail | None, responses=error_responses)
+def get_hallucination_check_selection(team_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    selection = get_team_hallucination_check_selection_service(db, context.user, team_id=team_id)
+    return hallucination_check_selection_response(selection) if selection else None
+
+
+@api.post("/hallucination-check-selection", response_model=HallucinationCheckSelectionDetail, responses=error_responses)
+def set_hallucination_check_selection(payload: HallucinationCheckSelectionUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return hallucination_check_selection_response(set_team_hallucination_check_selection_service(db, context.user, payload))
+
+
+@api.delete("/hallucination-check-selection", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_hallucination_check_selection(team_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    clear_team_hallucination_check_selection_service(db, context.user, team_id=team_id)
 
 
 @api.get("/deidentification-providers", response_model=list[DeidentificationProviderDetail], responses=error_responses)
@@ -1286,7 +1309,7 @@ async def stream_transcribe_workspace(
 
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
 def list_generated_documents_for_transcript(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    return [generated_document_response(db, document) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
+    return [generated_document_response(db, document, actor=context.user) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
 
 
 @api.get("/generated-documents/{generated_document_id}/redaction-debug", response_model=GeneratedDocumentRedactionDebugDetail, responses=error_responses)
@@ -1311,7 +1334,7 @@ def update_generated_document(
     db: Session = Depends(get_db),
 ):
     document = update_generated_document_content_service(db, context.user, generated_document_id=generated_document_id, payload=payload)
-    return generated_document_response(db, document)
+    return generated_document_response(db, document, actor=context.user)
 
 
 @api.delete("/generated-documents/{generated_document_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
@@ -1350,7 +1373,7 @@ def generate_transcript_output(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue note generation") from exc
-    return generated_document_response(db, document)
+    return generated_document_response(db, document, actor=context.user)
 
 
 @api.post("/transcripts/{transcript_id}/generate-followup", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
@@ -1374,7 +1397,7 @@ def generate_transcript_followup(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue follow-up generation") from exc
-    return generated_document_response(db, document)
+    return generated_document_response(db, document, actor=context.user)
 
 
 @api.post("/transcripts/{transcript_id}/run-quick-action", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
@@ -1404,7 +1427,7 @@ def run_transcript_quick_action(
         if document is not None:
             mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
         raise AppError(502, "generation_enqueue_failed", "Could not enqueue quick action generation") from exc
-    return generated_document_response(db, document)
+    return generated_document_response(db, document, actor=context.user)
 
 
 @api.get("/transcripts", response_model=TranscriptListPage, responses=error_responses)

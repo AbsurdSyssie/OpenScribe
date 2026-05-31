@@ -11,6 +11,7 @@ from ..models import (
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     GeneratedDocument,
+    HallucinationCheckStatus,
     LlmAdapterKind,
     LlmConfigSetupStatus,
     LlmProviderPreset,
@@ -44,6 +45,7 @@ from ..schemas import (
     GeneratedDocumentPiiEntityDetail,
     GeneratedDocumentRedactionDebugDetail,
     GeneratedDocumentSectionDetail,
+    HallucinationCheckSelectionDetail,
     LlmConfigDetail,
     LlmConfigInspectResult,
     LlmSelectionDetail,
@@ -68,6 +70,7 @@ from ..services.admin import (
 from ..services.auth_email import email_password_reset_enabled as email_password_reset_enabled_service
 from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
+    get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
     get_user_llm_preference as get_user_llm_preference_service,
     list_selectable_llm_configs as list_selectable_llm_configs_service,
@@ -225,6 +228,29 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
         selected_config_base_url=config.base_url,
         provider_available_models_json=list(config.available_models_json or []),
         allowed_models_json=allowed_models_json,
+        model_name_override=selection.model_name_override,
+        resolved_model_name=resolved_model_name,
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
+def hallucination_check_selection_response(selection) -> HallucinationCheckSelectionDetail:
+    config = selection.config
+    resolved_model_name = selection.model_name_override or config.model_name
+    provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
+    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    return HallucinationCheckSelectionDetail(
+        id=selection.id,
+        team_id=selection.team_id,
+        llm_config_id=selection.llm_config_id,
+        selected_by_user_id=selection.selected_by_user_id,
+        selected_config_label=config.label,
+        selected_config_provider_preset=provider_preset,
+        selected_config_provider_display_name=provider_display_name,
+        selected_config_adapter_kind=config.adapter_kind,
+        selected_config_base_url=config.base_url,
+        provider_available_models_json=list(config.available_models_json or []),
         model_name_override=selection.model_name_override,
         resolved_model_name=resolved_model_name,
         created_at=selection.created_at,
@@ -430,13 +456,32 @@ def smart_phrase_response(phrase: SmartPhrase) -> SmartPhraseDetail:
     )
 
 
-def generated_document_response(db: Session, document: GeneratedDocument) -> GeneratedDocumentDetail:
+def _hallucination_check_bucket(status: HallucinationCheckStatus | str | None) -> str:
+    value = status.value if isinstance(status, HallucinationCheckStatus) else status
+    if value in {HallucinationCheckStatus.checked_unchanged.value, HallucinationCheckStatus.checked_corrected.value}:
+        return "checked"
+    if value == HallucinationCheckStatus.not_applicable.value or value is None:
+        return "not_applicable"
+    return "unchecked"
+
+
+def generated_document_response(db: Session, document: GeneratedDocument, *, actor: User | None = None) -> GeneratedDocumentDetail:
     payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
     payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
     payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
     payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
     payload["llm_request_payload_json"] = generated_document_llm_request_payload_service(db, document=document)
     payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
+    payload["hallucination_check_bucket"] = _hallucination_check_bucket(document.hallucination_check_status)
+    payload["hallucination_check_debug_json"] = None
+    if (
+        actor is not None
+        and actor.id == document.owner_user_id
+        and os.getenv("HALLUCINATION_CHECK_DEBUG_UI", "").lower() in {"1", "true", "yes"}
+    ):
+        from ..services.templates import generated_document_hallucination_check_debug
+
+        payload["hallucination_check_debug_json"] = generated_document_hallucination_check_debug(db, document=document)
     payload["sections"] = [
         GeneratedDocumentSectionDetail.model_validate(
             {
@@ -809,6 +854,7 @@ def render_admin(
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    hallucination_check_selection = get_team_hallucination_check_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     deidentification_providers = list_deidentification_providers_service(db, current_user)
     edit_deidentification_provider = next(
         (provider for provider in deidentification_providers if str(provider.id) == selected_deidentification_provider_id),
@@ -875,6 +921,7 @@ def render_admin(
         "llm_configs": llm_configs,
         "llm_config": edit_llm_config,
         "llm_selection": llm_selection,
+        "hallucination_check_selection": hallucination_check_selection,
         "llm_inspection": llm_inspection,
         "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),
         "selectable_llm_configs": list_selectable_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],

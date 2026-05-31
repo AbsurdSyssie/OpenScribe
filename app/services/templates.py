@@ -19,6 +19,7 @@ from app.models import (
     GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
+    HallucinationCheckStatus,
     LlmAdapterKind,
     PromptTemplate,
     PromptTemplateVersion,
@@ -29,6 +30,7 @@ from app.models import (
     ProviderUsageEvent,
     ProviderUsageEventType,
     TeamLlmConfig,
+    TeamHallucinationCheckSelection,
     TeamRole,
     TemplateMode,
     TemplateScope,
@@ -51,7 +53,7 @@ from app.schemas.templates import (
     QuickActionUpsert,
     StructuredTemplateConfig,
 )
-from app.services.llm import resolve_user_llm
+from app.services.llm import active_team_hallucination_check_selection, resolve_user_llm
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.redaction import (
@@ -92,6 +94,12 @@ NOTE_GENERATION_LENGTH_TOKEN_CAPS = {
     "normal": 1600,
     "long": 3200,
 }
+NOTE_GENERATION_LENGTH_EDIT_CAPS = {
+    "short": 20,
+    "normal": 50,
+    "long": 100,
+}
+GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS = 4000
 
 
 class GeneratedDocumentWaitingForTranscript(Exception):
@@ -1690,6 +1698,35 @@ def set_generated_document_llm_request_payload(db: Session, *, document: Generat
     )
 
 
+def generated_document_hallucination_check_debug(db: Session, *, document: GeneratedDocument) -> dict | None:
+    if not document.hallucination_check_debug_json_encrypted:
+        return None
+    payload = decrypt_json_for_owner(
+        db,
+        owner_user_id=document.owner_user_id,
+        table="generated_documents",
+        field="hallucination_check_debug_json_encrypted",
+        record_id=document.id,
+        stored_value=document.hallucination_check_debug_json_encrypted,
+    )
+    return payload if isinstance(payload, dict) else None
+
+
+def set_generated_document_hallucination_check_debug(db: Session, *, document: GeneratedDocument, plaintext: dict | None) -> None:
+    document.hallucination_check_debug_json_encrypted = (
+        encrypt_json_for_owner(
+            db,
+            owner_user_id=document.owner_user_id,
+            table="generated_documents",
+            field="hallucination_check_debug_json_encrypted",
+            record_id=document.id,
+            plaintext=plaintext,
+        )
+        if plaintext is not None
+        else None
+    )
+
+
 def generated_document_section_text(db: Session, *, section: GeneratedDocumentSection, field: str) -> str:
     stored_value = getattr(section, field)
     return (
@@ -1734,7 +1771,7 @@ def _generate_freeform_output_openai(
     api_key: str,
     base_url: str,
     request_body: dict[str, object],
- ) -> tuple[str, GenerationUsage]:
+) -> tuple[str, GenerationUsage]:
     started = time.perf_counter()
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -1744,14 +1781,7 @@ def _generate_freeform_output_openai(
 
     message = completion.choices[0].message if completion.choices else None
     content = getattr(message, "content", None) if message is not None else None
-    if isinstance(content, str):
-        generated_text = content.strip()
-    elif isinstance(content, list):
-        generated_text = "".join(
-            part.text for part in content if getattr(part, "type", None) == "text" and getattr(part, "text", None)
-        ).strip()
-    else:
-        generated_text = ""
+    generated_text = _openai_message_content_text(content)
     if not generated_text:
         raise AppError(502, "llm_generation_failed", "LLM generation returned no note text")
     usage = getattr(completion, "usage", None)
@@ -1764,6 +1794,27 @@ def _generate_freeform_output_openai(
         total_tokens=total_tokens,
         duration_ms=int((time.perf_counter() - started) * 1000),
     )
+
+
+def _openai_message_content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    generated_parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            generated_parts.append(part)
+            continue
+        part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+        if part_type not in {None, "text", "output_text"}:
+            continue
+        text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+        if isinstance(text, str):
+            generated_parts.append(text)
+        elif isinstance(text, dict) and isinstance(text.get("value"), str):
+            generated_parts.append(text["value"])
+    return "".join(generated_parts).strip()
 
 
 def _generate_freeform_output_ollama(
@@ -2082,6 +2133,309 @@ def _strip_markdown_code_fence(payload_text: str) -> str:
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _hallucination_check_debug_enabled() -> bool:
+    return os.getenv("HALLUCINATION_CHECK_DEBUG_UI", "").lower() in {"1", "true", "yes"}
+
+
+def _hallucination_check_edit_cap(options: NoteGenerationOptions) -> int:
+    return NOTE_GENERATION_LENGTH_EDIT_CAPS.get(options["note_generation_length"], NOTE_GENERATION_LENGTH_EDIT_CAPS[DEFAULT_NOTE_GENERATION_LENGTH])
+
+
+def _apply_hallucination_check_request_overrides(request_body: dict[str, object], *, model_name: str) -> None:
+    if "temperature" in request_body:
+        request_body["temperature"] = 0
+    if "gpt-oss" not in model_name.lower():
+        return
+    request_body["reasoning_effort"] = "low"
+    current_cap = request_body.get("max_completion_tokens")
+    if not isinstance(current_cap, int) or current_cap < GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS:
+        request_body["max_completion_tokens"] = GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS
+
+
+def _structured_note_debug_payload(*, title: str, sections: list[dict[str, str | int]]) -> dict[str, object]:
+    return {
+        "title": title,
+        "sections": [
+            {
+                "key": str(section["section_key"]),
+                "content": str(section["text"]),
+            }
+            for section in sections
+        ],
+    }
+
+
+def _build_hallucination_check_messages(
+    *,
+    transcript_text: str,
+    working_note_text: str,
+    dictation_text: str,
+    title: str,
+    sections: list[dict[str, str | int]],
+    edit_cap: int,
+    retry_failure_code: str | None = None,
+) -> tuple[str, str]:
+    note_payload = _structured_note_debug_payload(title=title, sections=sections)
+    system_message = (
+        "You are checking an AI-generated clinical note. The note may or may not contain hallucinated text. "
+        "The transcript and other provided redacted source material are messy and may contain transcription errors, "
+        "but they are your only source of truth. Do not use clinical knowledge, likely intent, or normal practice to fill gaps. "
+        "Return JSON only. Do not include markdown fences, commentary, or extra keys. "
+        "If there are no unsupported claims, return exactly {\"status\":\"unchanged\"}. "
+        "If changes are needed, return {\"status\":\"corrected\",\"edits\":[{\"section_key\":\"problem\",\"original\":\"exact substring\",\"replacement\":\"replacement\"}]}. "
+        "Each original must be an exact unique substring from the target title or section, including spaces and newlines. "
+        "Use section_key \"__title__\" for title edits. Do not create sections. Replacement may be empty for sections, not title. "
+        "Only remove unsupported facts or soften wording when the softer wording is explicitly supported. "
+        f"Return at most {edit_cap} edits."
+    )
+    failure_line = f"Previous checker attempt failed validation with code: {retry_failure_code}. Return exact-substring edits only.\n\n" if retry_failure_code else ""
+    user_message = (
+        failure_line
+        + f"TRANSCRIPT\n{transcript_text}"
+        + (f"\n\nWORKING_NOTE\n{working_note_text}" if working_note_text.strip() else "")
+        + (f"\n\nDICTATION\n{dictation_text}" if dictation_text.strip() else "")
+        + "\n\nNOTE\n"
+        + json.dumps(note_payload, ensure_ascii=True)
+    )
+    return system_message, user_message
+
+
+def _parse_hallucination_check_response(payload_text: str, *, edit_cap: int) -> dict[str, object]:
+    try:
+        payload = json.loads(payload_text.strip())
+    except json.JSONDecodeError as exc:
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid JSON", {"failure_code": "invalid_json"}) from exc
+    if not isinstance(payload, dict):
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid JSON shape", {"failure_code": "invalid_shape"})
+    if set(payload.keys()) - {"status", "edits"}:
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned unsupported keys", {"failure_code": "unsupported_keys"})
+    status = payload.get("status")
+    if status == "unchanged":
+        return {"status": "unchanged", "edits": []}
+    if status != "corrected":
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid status", {"failure_code": "invalid_status"})
+    edits = payload.get("edits")
+    if not isinstance(edits, list) or not edits:
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned no edits", {"failure_code": "missing_edits"})
+    if len(edits) > edit_cap:
+        raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned too many edits", {"failure_code": "too_many_edits"})
+    parsed_edits: list[dict[str, str]] = []
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit.keys()) != {"section_key", "original", "replacement"}:
+            raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid edit shape", {"failure_code": "invalid_edit_shape"})
+        section_key = edit.get("section_key")
+        original = edit.get("original")
+        replacement = edit.get("replacement")
+        if not isinstance(section_key, str) or not section_key.strip() or not isinstance(original, str) or not original or not isinstance(replacement, str):
+            raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid edit values", {"failure_code": "invalid_edit_value"})
+        parsed_edits.append({"section_key": section_key, "original": original, "replacement": replacement})
+    return {"status": "corrected", "edits": parsed_edits}
+
+
+def _apply_hallucination_check_edits(
+    *,
+    title: str,
+    sections: list[dict[str, str | int]],
+    edits: list[dict[str, str]],
+) -> tuple[str, list[dict[str, str | int]], int]:
+    section_map = {str(section["section_key"]): dict(section) for section in sections}
+    next_title = title
+    for edit in edits:
+        section_key = edit["section_key"]
+        original = edit["original"]
+        replacement = edit["replacement"]
+        if section_key == "__title__":
+            if next_title.count(original) != 1:
+                raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker title edit did not match exactly once", {"failure_code": "patch_not_unique"})
+            candidate_title = next_title.replace(original, replacement, 1).strip()
+            if not candidate_title:
+                raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker title edit removed title", {"failure_code": "empty_title"})
+            next_title = candidate_title
+            continue
+        section = section_map.get(section_key)
+        if section is None:
+            raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker targeted unknown section", {"failure_code": "unknown_section"})
+        text = str(section["text"])
+        if text.count(original) != 1:
+            raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker section edit did not match exactly once", {"failure_code": "patch_not_unique"})
+        section["text"] = text.replace(original, replacement, 1).strip()
+    ordered_sections = []
+    for section in sections:
+        updated = section_map[str(section["section_key"])]
+        if str(updated["text"]).strip():
+            ordered_sections.append(updated)
+    return next_title, ordered_sections, len(edits)
+
+
+def _checker_provider_snapshot(config: TeamLlmConfig) -> dict[str, object]:
+    return {
+        "llm_config_id": str(config.id),
+        "adapter_kind": config.adapter_kind.value,
+        "base_url": config.base_url,
+        "provider_preset": config.provider_preset,
+    }
+
+
+def _record_hallucination_check_usage_event(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    config: TeamLlmConfig,
+    model_name: str | None,
+    usage: GenerationUsage | None,
+    status: str,
+    event_type: ProviderUsageEventType,
+    error_code: str | None = None,
+) -> None:
+    usage_event = ProviderUsageEvent(
+        id=uuid4(),
+        team_id=document.team_id,
+        owner_user_id=document.owner_user_id,
+        generated_document_id=document.id,
+        transcript_id=document.transcript_id,
+        llm_config_id=config.id,
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=event_type,
+        provider_adapter=config.adapter_kind.value,
+        model_name=model_name,
+        status=f"hallucination_check:{status}",
+        prompt_tokens=usage.get("input_tokens") if usage else None,
+        completion_tokens=usage.get("output_tokens") if usage else None,
+        total_tokens=usage.get("total_tokens") if usage else None,
+        estimated_cost_usd=_estimated_cost_usd(config=config, usage=usage) if usage else None,
+        duration_ms=usage.get("duration_ms") if usage else None,
+        provider_duration_ms=usage.get("provider_duration_ms") if usage else None,
+        error_code=error_code,
+    )
+    db.add(usage_event)
+
+
+def _run_hallucination_check(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    transcript_text: str,
+    working_note_text: str,
+    dictation_text: str,
+    title: str,
+    sections: list[dict[str, str | int]],
+    note_generation_options: NoteGenerationOptions,
+) -> tuple[str, list[dict[str, str | int]], HallucinationCheckStatus, int | None]:
+    selection = active_team_hallucination_check_selection(db, team_id=document.team_id)
+    debug_payload: dict[str, object] | None = None
+    if _hallucination_check_debug_enabled():
+        debug_payload = {
+            "initial_note": _structured_note_debug_payload(title=title, sections=sections),
+            "checker_edits": [],
+            "retry_count": 0,
+            "failure_code": None,
+            "failure_message": None,
+            "provider_error_code": None,
+            "provider_http_status": None,
+        }
+    if selection is None or selection.config is None:
+        if debug_payload is not None:
+            debug_payload["failure_code"] = "not_configured"
+            set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        return title, sections, HallucinationCheckStatus.skipped_not_configured, None
+    config = selection.config
+    model_name = selection.model_name_override or config.model_name
+    if not model_name:
+        if debug_payload is not None:
+            debug_payload["failure_code"] = "config_invalid"
+            set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        return title, sections, HallucinationCheckStatus.skipped_config_invalid, None
+
+    edit_cap = _hallucination_check_edit_cap(note_generation_options)
+    output_token_cap = _note_generation_output_token_cap(note_generation_options)
+    bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+    failure_code: str | None = None
+    usage_events: list[tuple[GenerationUsage | None, str, ProviderUsageEventType, str | None]] = []
+    for attempt in range(2):
+        system_message, user_message = _build_hallucination_check_messages(
+            transcript_text=transcript_text,
+            working_note_text=working_note_text,
+            dictation_text=dictation_text,
+            title=title,
+            sections=sections,
+            edit_cap=edit_cap,
+            retry_failure_code=failure_code,
+        )
+        request_body = _generation_request_snapshot(
+            adapter_kind=config.adapter_kind,
+            model=model_name,
+            user_id=document.owner_user_id,
+            system_message=system_message,
+            user_message=user_message,
+            output_token_cap=output_token_cap,
+        )
+        _apply_hallucination_check_request_overrides(request_body, model_name=model_name)
+        try:
+            if config.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+                response_text, checker_usage = _generate_freeform_output_openai(api_key=bearer_token or "", base_url=config.base_url, request_body=request_body)
+            elif config.adapter_kind is LlmAdapterKind.ollama_chat:
+                response_text, checker_usage = _generate_freeform_output_ollama(base_url=config.base_url, bearer_token=bearer_token, request_body=request_body)
+            else:  # pragma: no cover
+                raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": config.adapter_kind.value})
+        except AppError as exc:
+            usage_events.append((None, "failed_provider", ProviderUsageEventType.failed, exc.code))
+            if debug_payload is not None:
+                debug_payload["retry_count"] = attempt
+                debug_payload["failure_code"] = exc.code
+                debug_payload["failure_message"] = exc.message
+                debug_payload["provider_error_code"] = (exc.details or {}).get("provider_error_code")
+                debug_payload["provider_http_status"] = (exc.details or {}).get("provider_http_status")
+                set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            document.hallucination_check_llm_config_id = config.id
+            document.hallucination_check_model_name = model_name
+            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+            for usage, status, event_type, error_code in usage_events:
+                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        try:
+            parsed = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
+            edits = parsed["edits"]
+            if parsed["status"] == "unchanged":
+                usage_events.append((checker_usage, "checked_unchanged", ProviderUsageEventType.completed, None))
+                if debug_payload is not None:
+                    debug_payload["retry_count"] = attempt
+                    set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+                document.hallucination_check_llm_config_id = config.id
+                document.hallucination_check_model_name = model_name
+                document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+                for usage, status, event_type, error_code in usage_events:
+                    _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+                return title, sections, HallucinationCheckStatus.checked_unchanged, 0
+            next_title, next_sections, applied_count = _apply_hallucination_check_edits(title=title, sections=sections, edits=edits)  # type: ignore[arg-type]
+            usage_events.append((checker_usage, "checked_corrected", ProviderUsageEventType.completed, None))
+            if debug_payload is not None:
+                debug_payload["checker_edits"] = edits
+                debug_payload["retry_count"] = attempt
+                set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            document.hallucination_check_llm_config_id = config.id
+            document.hallucination_check_model_name = model_name
+            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+            for usage, status, event_type, error_code in usage_events:
+                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+            return next_title, next_sections, HallucinationCheckStatus.checked_corrected, applied_count
+        except AppError as exc:
+            failure_code = str((exc.details or {}).get("failure_code") or exc.code)
+            usage_events.append((checker_usage, "failed_invalid_response", ProviderUsageEventType.failed, failure_code))
+            if attempt == 0:
+                continue
+            if debug_payload is not None:
+                debug_payload["retry_count"] = attempt
+                debug_payload["failure_code"] = failure_code
+                set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            document.hallucination_check_llm_config_id = config.id
+            document.hallucination_check_model_name = model_name
+            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+            for usage, status, event_type, error_code in usage_events:
+                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+            return title, sections, HallucinationCheckStatus.failed_invalid_response, None
+    return title, sections, HallucinationCheckStatus.failed_invalid_response, None
 
 
 def _extract_first_balanced_json_object(payload_text: str) -> str | None:
@@ -2945,6 +3299,19 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                 if template_config is None:
                     raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
                 redacted_title, redacted_sections = _parse_generated_structured_note_json(generated_text, template_config=template_config)
+                redacted_title, redacted_sections, check_status, applied_edit_count = _run_hallucination_check(
+                    db,
+                    document=document,
+                    transcript_text=transcript_text,
+                    working_note_text=working_note_text,
+                    dictation_text=dictation_text,
+                    title=redacted_title,
+                    sections=redacted_sections,
+                    note_generation_options=note_generation_options,
+                )
+                document.hallucination_check_status = check_status
+                document.hallucination_check_applied_edit_count = applied_edit_count
+                document.hallucination_check_completed_at = utcnow()
                 restored_title = reidentify_text(redacted_title, phi_index=phi_index)
                 for section in redacted_sections:
                     restored_section_text = reidentify_text(str(section["text"]), phi_index=phi_index)
@@ -2958,10 +3325,16 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
                     )
                 restored_text = _render_structured_sections_text(structured_sections)
             else:
+                document.hallucination_check_status = HallucinationCheckStatus.not_applicable
+                document.hallucination_check_applied_edit_count = None
+                document.hallucination_check_completed_at = None
                 redacted_title, redacted_content = _parse_generated_note_json(generated_text)
                 restored_title = reidentify_text(redacted_title, phi_index=phi_index)
                 restored_text = reidentify_text(redacted_content, phi_index=phi_index)
         else:
+            document.hallucination_check_status = HallucinationCheckStatus.not_applicable
+            document.hallucination_check_applied_edit_count = None
+            document.hallucination_check_completed_at = None
             restored_text = reidentify_text(
                 generated_text,
                 phi_index=phi_index,

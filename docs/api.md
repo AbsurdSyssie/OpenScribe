@@ -164,6 +164,9 @@ Browser navigation behavior:
 - `GET /api/v1/llm-selection/options`
 - `POST /api/v1/llm-selection`
 - `DELETE /api/v1/llm-selection`
+- `GET /api/v1/hallucination-check-selection`
+- `POST /api/v1/hallucination-check-selection`
+- `DELETE /api/v1/hallucination-check-selection`
 - `GET /api/v1/llm-preference`
 - `POST /api/v1/llm-preference`
 - `DELETE /api/v1/llm-preference`
@@ -181,6 +184,7 @@ Browser navigation behavior:
 - LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
 - persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
 - LLM selection options and selection writes require `setup_status=ready`, `is_active=true`, and a non-empty default `model_name`; pending provider drafts are hidden from leaders/users and rejected by ID
+- hallucination-check selection is system-admin-only and reuses ready active team LLM configs with an optional model override; no raw provider secrets are returned
 
 ### Shared NLP endpoint configuration
 
@@ -515,6 +519,11 @@ Current generation behavior:
   - strips markdown code fences
   - extracts the first balanced JSON object if the model wraps it in surrounding prose
 - if note JSON still fails, the raw redacted provider output is retained on the generated document for localhost dev-account debugging only
+- structured template generation may run a hallucination-check pass after first-pass structured JSON validation and before reidentification/final storage
+- hallucination check uses only redacted transcript, Working note, and dictation evidence plus the redacted first-pass note; template instructions are not sent to the checker
+- checker output is exact-substring JSON edits; invalid checker output retries once, then the first-pass note is saved as unchecked
+- checker failure does not fail the generated document; responses expose `hallucination_check_bucket` as `checked`, `unchecked`, or `not_applicable`
+- development debug output for first-pass note and checker edits is encrypted at rest and returned only to the owning user when `HALLUCINATION_CHECK_DEBUG_UI=1`
 - generation is now asynchronous:
   - `POST /api/v1/transcripts/{transcript_id}/generate-output` returns `202`
   - `POST /api/v1/transcripts/{transcript_id}/generate-followup` returns `202`

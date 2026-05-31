@@ -37,6 +37,7 @@ from app.models import (
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     LlmConfigSetupStatus,
+    TeamHallucinationCheckSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -1724,6 +1725,65 @@ def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(clien
     assert selection is not None
     assert selection.allowed_models_json == ["gpt-4.1-mini", "gpt-4.1"]
     assert selection.model_name_override == "gpt-4.1"
+
+
+def test_admin_pages_can_configure_hallucination_checker(client, db_session, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic Admin Checker UI")
+    admin = make_user(email="admin-checker-ui@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Checker LLM",
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini", "gpt-4.1-mini"],
+    )
+
+    client.post("/login", data={"email": "admin-checker-ui@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&tab=providers")
+    assert page.status_code == 200
+    assert "Hallucination checker" in page.text
+    assert 'action="/admin/hallucination-check-selection"' in page.text
+    assert 'data-hallucination-check-selection-form' in page.text
+    assert 'data-checker-model-select' in page.text
+    assert "Checker model override" not in page.text
+    assert "gpt-4.1-mini" in page.text
+    assert "No hallucination checker is set" in page.text
+
+    saved = client.post(
+        "/admin/hallucination-check-selection",
+        data={"team_id": str(team.id), "llm_config_id": str(config.id), "provider_model": "gpt-4.1-mini"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    selection = db_session.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+    assert selection is not None
+    assert selection.llm_config_id == config.id
+    assert selection.model_name_override == "gpt-4.1-mini"
+
+    admin2_page = client.get(f"/admin2?team_id={team.id}&tab=directory")
+    assert admin2_page.status_code == 200
+    assert "Hallucination checker" in admin2_page.text
+    assert "Clear hallucination checker" in admin2_page.text
+    assert 'data-checker-model-select' in admin2_page.text
+    assert 'data-selected-value="gpt-4.1-mini"' in admin2_page.text
+
+    cleared = client.post(
+        "/admin/hallucination-check-selection/clear",
+        data={"team_id": str(team.id)},
+        follow_redirects=False,
+    )
+    assert cleared.status_code == 303
+    assert db_session.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id)) is None
+
+
+def test_transcribe_documents_show_hallucination_check_panel():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
+
+    assert "Hallucination check" in documents_js
+    assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
+    assert "documents.js?v=20260530-hallucination-check-panel" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(

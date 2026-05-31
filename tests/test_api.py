@@ -3,6 +3,7 @@ import time
 import io
 import hashlib
 import subprocess
+from types import SimpleNamespace
 from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID, uuid4
@@ -33,6 +34,7 @@ from app.models import (
     GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
+    HallucinationCheckStatus,
     LlmAdapterKind,
     LlmAuthMode,
     LlmConfigSetupStatus,
@@ -57,6 +59,7 @@ from app.models import (
     Team,
     TeamClinicalNlpSelection,
     TeamLlmConfig,
+    TeamHallucinationCheckSelection,
     TeamLlmSelection,
     TeamRole,
     TeamDeidentificationProviderAssignment,
@@ -114,6 +117,8 @@ from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
     DICTATION_SOURCE_SPLIT_MARKER,
     GeneratedDocumentWaitingForTranscript,
+    _apply_hallucination_check_request_overrides,
+    _generate_freeform_output_openai,
     _generate_freeform_output_ollama,
     _parse_generated_note_json,
     delete_personal_template,
@@ -7403,6 +7408,259 @@ def test_structured_emis_template_generation_persists_sections(
     }
 
 
+def test_system_admin_can_manage_hallucination_check_selection(client, db_session, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic Hallucination Checker")
+    admin = make_user(email="admin-hcheck@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="leader-hcheck@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini", "gpt-4.1-mini"],
+        has_secret=False,
+    )
+
+    login(client, email="leader-hcheck@example.com", password="password-2")
+    forbidden = client.post(
+        "/api/v1/hallucination-check-selection",
+        json={"team_id": str(team.id), "llm_config_id": str(config.id), "model_name_override": "gpt-4.1-mini"},
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="System admin access required")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="admin-hcheck@example.com", password="password-1")
+    selected = client.post(
+        "/api/v1/hallucination-check-selection",
+        json={"team_id": str(team.id), "llm_config_id": str(config.id), "model_name_override": "gpt-4.1-mini"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["team_id"] == str(team.id)
+    assert selected.json()["resolved_model_name"] == "gpt-4.1-mini"
+    assert db_session.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id)) is not None
+
+    fetched = client.get(f"/api/v1/hallucination-check-selection?team_id={team.id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["llm_config_id"] == str(config.id)
+
+    cleared = client.delete(f"/api/v1/hallucination-check-selection?team_id={team.id}")
+    assert cleared.status_code == 204
+    assert db_session.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id)) is None
+
+
+def test_structured_hallucination_check_applies_exact_patch_and_records_debug(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "1")
+    team = make_team(name="Clinic Hallucination Runtime")
+    admin = make_user(email="admin-hcheck-runtime@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-hcheck-runtime@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    db_session.add(
+        TeamHallucinationCheckSelection(
+            team_id=team.id,
+            llm_config_id=config.id,
+            model_name_override="gpt-4o-mini",
+            selected_by_user_id=admin.id,
+        )
+    )
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS checker note",
+        prompt_text="Use source only.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
+                {"section_key": "tasks", "section_label": "Tasks", "instruction": "List the tasks.", "section_order": 2},
+            ],
+        },
+    )
+
+    calls = []
+
+    def fake_generate_openai(**kwargs):
+        calls.append(kwargs["request_body"])
+        if len(calls) == 1:
+            return (
+                '{"title":"Cough review","content":{"problem":"Cough improving. Diagnosed pneumonia.","tasks":"Continue fluids. Start antibiotics."}}',
+                {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25},
+            )
+        return (
+            '{"status":"corrected","edits":[{"section_key":"problem","original":" Diagnosed pneumonia.","replacement":""},{"section_key":"tasks","original":" Start antibiotics.","replacement":""}]}',
+            {"input_tokens": 11, "output_tokens": 12, "total_tokens": 23, "duration_ms": 15},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email="owner-hcheck-runtime@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Checker visit", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Patient says cough improving and will continue fluids."},
+    )
+    transcript_id = started.json()["id"]
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.hallucination_check_status is HallucinationCheckStatus.checked_corrected
+    assert processed.hallucination_check_applied_edit_count == 2
+    assert processed.hallucination_check_llm_config_id == config.id
+    assert "Template instructions" not in calls[1]["messages"][1]["content"]
+    assert "TRANSCRIPT" in calls[1]["messages"][1]["content"]
+
+    sections = {section.section_key: section for section in processed.sections}
+    assert decrypt_generated_document_section_field(db_session, owner_user_id=owner.id, section=sections["problem"], field="edited_text_encrypted") == "Cough improving."
+    assert decrypt_generated_document_section_field(db_session, owner_user_id=owner.id, section=sections["tasks"], field="edited_text_encrypted") == "Continue fluids."
+    assert "Diagnosed pneumonia" not in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
+    assert is_encrypted_envelope(processed.hallucination_check_debug_json_encrypted)
+
+    detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
+    assert detail.status_code == 200
+    assert detail.json()[0]["hallucination_check_bucket"] == "checked"
+    assert detail.json()[0]["hallucination_check_debug_json"]["initial_note"]["sections"][0]["content"] == "Cough improving. Diagnosed pneumonia."
+    assert detail.json()[0]["hallucination_check_debug_json"]["checker_edits"][1]["original"] == " Start antibiotics."
+
+
+def test_structured_hallucination_check_provider_failure_records_safe_debug(
+    client,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    db_session,
+):
+    monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "1")
+    team = make_team(name="Clinic Hallucination Provider Fail")
+    admin = make_user(email="admin-hcheck-fail@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-hcheck-fail@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    db_session.add(
+        TeamHallucinationCheckSelection(
+            team_id=team.id,
+            llm_config_id=config.id,
+            model_name_override="gpt-4o-mini",
+            selected_by_user_id=admin.id,
+        )
+    )
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="EMIS checker provider fail",
+        prompt_text="Use source only.",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{"section_key": "problem", "section_label": "Problem", "instruction": "Summarise.", "section_order": 1}]},
+    )
+
+    calls = []
+
+    def fake_generate_openai(**kwargs):
+        calls.append(kwargs["request_body"])
+        if len(calls) == 1:
+            return ('{"title":"Cough review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25})
+        raise AppError(
+            502,
+            "llm_generation_failed",
+            "The LLM provider rejected the generation request",
+            {"provider_http_status": 400, "provider_error_code": "bad_request"},
+        )
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
+
+    login(client, email="owner-hcheck-fail@example.com", password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Checker provider fail", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Patient says cough improving."},
+    )
+    transcript_id = started.json()["id"]
+    generated = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert generated.status_code == 202
+
+    document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
+    processed = process_generated_document(db_session, document_id=document.id)
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.hallucination_check_status is HallucinationCheckStatus.failed_provider
+
+    detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
+    debug = detail.json()[0]["hallucination_check_debug_json"]
+    assert detail.json()[0]["hallucination_check_bucket"] == "unchecked"
+    assert debug["failure_code"] == "llm_generation_failed"
+    assert debug["failure_message"] == "The LLM provider rejected the generation request"
+    assert debug["provider_http_status"] == 400
+    assert debug["provider_error_code"] == "bad_request"
+
+
+def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):
+    class FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=[
+                                {"type": "text", "text": '{"status":"unchanged"}'},
+                            ]
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4, total_tokens=7),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("app.services.templates.OpenAI", FakeClient)
+
+    text, usage = _generate_freeform_output_openai(
+        api_key="test-key",
+        base_url="https://llm.example.test/v1",
+        request_body={"model": "checker-model", "messages": []},
+    )
+
+    assert text == '{"status":"unchanged"}'
+    assert usage["input_tokens"] == 3
+    assert usage["output_tokens"] == 4
+
+
+def test_gpt_oss_hallucination_checker_uses_low_reasoning_and_larger_cap():
+    request_body = {"model": "openai.gpt-oss-120b", "temperature": 0.2, "max_completion_tokens": 1600}
+
+    _apply_hallucination_check_request_overrides(request_body, model_name="openai.gpt-oss-120b")
+
+    assert request_body["temperature"] == 0
+    assert request_body["reasoning_effort"] == "low"
+    assert request_body["max_completion_tokens"] == 4000
+
+
+def test_non_gpt_oss_hallucination_checker_keeps_existing_token_cap():
+    request_body = {"model": "deepseek.v3.2", "temperature": 0.2, "max_completion_tokens": 1600}
+
+    _apply_hallucination_check_request_overrides(request_body, model_name="deepseek.v3.2")
+
+    assert request_body["temperature"] == 0
+    assert "reasoning_effort" not in request_body
+    assert request_body["max_completion_tokens"] == 1600
+
+
 def test_structured_emis_generation_allows_blank_transcript_when_structured_context_is_present(
     client,
     monkeypatch,
@@ -9896,7 +10154,7 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
     assert "request" not in quick_action_payload
 
 
-def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(client, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template):
+def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(client, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):
     team = make_team(name="Clinic Locked LLM")
     admin = make_user(email="admin-llm-lock@example.com", password="password-1", is_system_admin=True)
     owner = make_user(email="owner-llm-lock@example.com", password="password-2", team=team, team_role=TeamRole.user)
@@ -9947,6 +10205,68 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
         code="conflict",
         message="Cannot delete this LLM config while generated documents are queued or processing",
     )
+
+    writes = []
+    monkeypatch.setattr(
+        "app.services.llm._list_openai_compatible_chat_models",
+        lambda *, provider_preset, api_key, base_url: ["gpt-4o-mini"],
+    )
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_bearer_token",
+        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/replacement",
+    )
+    corrected = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Incidental form edit ignored while in flight",
+            "adapter_kind": config.adapter_kind.value,
+            "base_url": config.base_url,
+            "auth_mode": config.auth_mode.value,
+            "bearer_token": "correct-key",
+            "credential_action": "replace",
+            "model_name": "gpt-4o-mini",
+            "is_active": False,
+        },
+    )
+    assert corrected.status_code == 200
+    assert "correct-key" not in str(corrected.json())
+    assert writes == ["correct-key"]
+    db_session.refresh(config)
+    assert config.label == "Provisioned LLM"
+    assert config.is_active is True
+    assert config.model_name == "gpt-4o-mini"
+
+    writes.clear()
+    replaced = client.post(
+        f"/api/v1/llm-configs/{config.id}/replace-credential",
+        json={"team_id": str(team.id), "config_id": str(config.id), "bearer_token": "correct-key-2"},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["config"]["setup_status"] == "ready"
+    assert replaced.json()["config"]["is_active"] is True
+    assert replaced.json()["config"]["model_name"] == "gpt-4o-mini"
+    assert writes == ["correct-key-2"]
+
+    config.setup_status = LlmConfigSetupStatus.pending_model_selection
+    config.is_active = False
+    db_session.add(config)
+    db_session.commit()
+    finalized = client.post(
+        f"/api/v1/llm-configs/{config.id}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": str(config.id),
+            "label": "Provisioned LLM",
+            "model_name": "gpt-4o-mini",
+            "is_active": True,
+        },
+    )
+    assert finalized.status_code == 200
+    assert finalized.json()["setup_status"] == "ready"
+    assert finalized.json()["is_active"] is True
 
 
 def test_generate_output_is_rate_limited_per_authenticated_user(

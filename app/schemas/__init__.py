@@ -40,6 +40,8 @@ from .deidentification import (
     DeidentificationSelectionUpsert,
 )
 from .llm import (
+    HallucinationCheckSelectionDetail,
+    HallucinationCheckSelectionUpsert,
     LlmConfigDraftCreate,
     LlmConfigDraftCreateResult,
     LlmConfigDraftReplaceCredential,
@@ -151,6 +153,8 @@ __all__ = [
     "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "HallucinationCheckSelectionDetail",
+    "HallucinationCheckSelectionUpsert",
     "LlmConfigDraftCreate",
     "LlmConfigDraftCreateResult",
     "LlmConfigDraftReplaceCredential",

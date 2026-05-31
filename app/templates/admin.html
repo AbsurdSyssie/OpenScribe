@@ -1719,7 +1719,7 @@
             </select>
           </label>
           <input type="hidden" name="adapter_kind" value="{{ llm_form.adapter_kind }}" data-llm-adapter-hidden>
-          <label>
+          <label data-llm-base-url-field>
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url or 'https://api.openai.com/v1' }}" data-llm-base-url>
           </label>
@@ -1730,6 +1730,7 @@
               <option value="{{ region }}" {% if (llm_form.bedrock_region or 'eu-west-2') == region %}selected{% endif %}>{{ region }}</option>
               {% endfor %}
             </select>
+            <small data-bedrock-derived-url hidden></small>
           </label>
           <p><small data-llm-adapter-note>{% if llm_form.adapter_kind == "bedrock_chat" %}Use the region selector for standard Bedrock HTTP gateway endpoints. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.{% elif llm_form.adapter_kind == "ollama_chat" %}Ollama uses `/api/tags` for model discovery and `/api/chat` for generation. Local Ollama usually runs at `http://localhost:11434`.{% else %}Changing a branded provider endpoint will save as Custom OpenAI-compatible.{% endif %}</small></p>
           <label>
@@ -1769,7 +1770,7 @@
           <input type="hidden" name="return_view" value="{{ admin_return_view }}">
           <input type="hidden" name="return_tab" value="providers">
           {% if not is_llm_pending_form %}
-          <label>
+          <label data-llm-base-url-field>
             Base URL
             <input type="url" name="base_url" value="{{ llm_form.base_url }}" data-llm-base-url>
           </label>
@@ -1780,6 +1781,7 @@
               <option value="{{ region }}" {% if (llm_form.bedrock_region or 'eu-west-2') == region %}selected{% endif %}>{{ region }}</option>
               {% endfor %}
             </select>
+            <small data-bedrock-derived-url hidden></small>
           </label>
           <p><small>Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</small></p>
           {% else %}
@@ -3207,7 +3209,7 @@
         syncSttSelectionForm(form);
       });
 
-      function applyLlmAdapterState(form) {
+      function applyLlmAdapterState(form, forceProviderDefault = false) {
         const providerSelect = form.querySelector('[data-llm-provider-select]');
         const adapterHidden = form.querySelector('[data-llm-adapter-hidden], input[name="adapter_kind"]');
         if (providerSelect && adapterHidden) {
@@ -3222,7 +3224,7 @@
             const previousDefault = baseUrlInput.dataset.lastDefaultBaseUrl || '';
             const isKnownDefault = knownDefaultBaseUrls.some((url) => url.replace(/\/+$/, '') === currentBaseUrl);
             const isBedrockDefault = /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value || '');
-            if (!baseUrlInput.value || currentBaseUrl === previousDefault.replace(/\/+$/, '') || isKnownDefault || isBedrockDefault) {
+            if (forceProviderDefault || !baseUrlInput.value || currentBaseUrl === previousDefault.replace(/\/+$/, '') || isKnownDefault || isBedrockDefault) {
               baseUrlInput.value = selected.dataset.defaultBaseUrl;
             }
             baseUrlInput.dataset.lastDefaultBaseUrl = selected.dataset.defaultBaseUrl;
@@ -3235,13 +3237,28 @@
         const syncBedrockBaseUrl = () => {
           const regionInput = form.querySelector('[data-bedrock-region-input]');
           const baseUrlInput = form.querySelector('[data-llm-base-url]');
+          const derivedBedrockUrl = form.querySelector('[data-bedrock-derived-url]');
           if (!regionInput || !baseUrlInput) return;
           const region = regionInput.value.trim().toLowerCase();
           if (!region) return;
-          if (!baseUrlInput.value || /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value)) {
+          if (forceProviderDefault || !baseUrlInput.value || /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value)) {
             baseUrlInput.value = buildBedrockBaseUrl(region);
           }
+          if (derivedBedrockUrl) {
+            derivedBedrockUrl.hidden = false;
+            derivedBedrockUrl.textContent = `Derived endpoint: ${baseUrlInput.value}`;
+          }
         };
+        const baseUrlField = form.querySelector('[data-llm-base-url-field]');
+        const isBedrock = adapter === 'bedrock_chat';
+        if (baseUrlField) {
+          baseUrlField.hidden = isBedrock;
+        }
+        const derivedBedrockUrl = form.querySelector('[data-bedrock-derived-url]');
+        if (!isBedrock && derivedBedrockUrl) {
+          derivedBedrockUrl.hidden = true;
+          derivedBedrockUrl.textContent = '';
+        }
         form.querySelectorAll('[data-show-for]').forEach((el) => {
           if (!el.closest('[data-llm-inspect-form], [data-llm-save-form]')) return;
           const targets = (el.getAttribute('data-show-for') || '').split(/\s+/).filter(Boolean);
@@ -3349,10 +3366,10 @@
         const adapterField = form.querySelector('[data-llm-adapter-select], input[name="adapter_kind"]');
         const providerSelect = form.querySelector('[data-llm-provider-select]');
         if (!adapterField) return;
-        providerSelect?.addEventListener('change', () => applyLlmAdapterState(form));
-        if (adapterField.tagName === 'SELECT') adapterField.addEventListener('change', () => applyLlmAdapterState(form));
+        providerSelect?.addEventListener('change', () => applyLlmAdapterState(form, true));
+        if (adapterField.tagName === 'SELECT') adapterField.addEventListener('change', () => applyLlmAdapterState(form, true));
         form.querySelectorAll('[data-bedrock-region-input]').forEach((input) => {
-          input.addEventListener('input', () => applyLlmAdapterState(form));
+          input.addEventListener('input', () => applyLlmAdapterState(form, true));
         });
         applyLlmAdapterState(form);
       });

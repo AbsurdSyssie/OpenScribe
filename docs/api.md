@@ -409,7 +409,7 @@ Current LLM-configuration behavior:
 - `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
 - if OpenAI model discovery fails, `openai_chat` inspection falls back to a built-in chat-model list and still returns `200`
 - `bedrock_chat` uses Amazon Bedrock's OpenAI-compatible Bedrock Mantle endpoint and the existing OpenAI SDK integration for both `/models` discovery and Chat Completions generation
-- `bedrock_chat` accepts an optional `bedrock_region`; when `base_url` is blank OpenScribe derives `https://bedrock-mantle.<region>.api.aws/v1`
+- `bedrock_chat` accepts an optional `bedrock_region`; when supplied, OpenScribe derives `https://bedrock-mantle.<region>.api.aws/v1` and treats the region as authoritative over stale submitted base URLs
 - `bedrock_chat` does not use a built-in fallback model list because the available models are region- and account-specific; admins may still save a model manually if discovery is unavailable
 - `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses streaming `POST /api/chat`
 - local Ollama may run without an API key; remote Ollama endpoints must still use `https`

@@ -202,7 +202,7 @@ def apply_provider_defaults(
         if resolved_base_url and not bedrock_region:
             resolved_region = bedrock_region_from_base_url(resolved_base_url)
         resolved_region = (resolved_region or preset.default_bedrock_region or DEFAULT_BEDROCK_CHAT_REGION).strip()
-        if not resolved_base_url:
+        if bedrock_region or not resolved_base_url:
             resolved_base_url = bedrock_chat_base_url(resolved_region)
     elif preset.default_base_url and not resolved_base_url:
         resolved_base_url = preset.default_base_url

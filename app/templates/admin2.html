@@ -695,7 +695,7 @@
               {% if is_expanded %}
                 <div class="expanded"><div class="expanded-inner">
                   <div class="inline-header"><div class="inline-title"><span class="dot purp">{{ config.label[:1]|upper }}</span><div><h2>{{ config.label }}</h2><div class="desc">Re-inspect uses saved Vault credential to refresh models.</div></div></div></div>
-                  <form method="post" action="{{ '/admin/llm-configs/' ~ config.id ~ '/finalize' if is_llm_pending else '/admin/llm-configs' }}">
+                  <form method="post" action="{{ '/admin/llm-configs/' ~ config.id ~ '/finalize' if is_llm_pending else '/admin/llm-configs' }}" data-llm-save-form>
                     {{ return_fields('llm') }}
                     <input type="hidden" name="config_id" value="{{ config.id }}">
                     <div class="inline-grid">
@@ -703,13 +703,13 @@
                         <div class="field"><label>Label</label><input class="input" name="label" value="{{ config.label }}" required></div>
                         <div class="field"><label>Team</label><select class="select" name="team_id">{% for team in teams_list %}<option value="{{ team.id }}" {% if config.team_id == team.id %}selected{% endif %}>{{ team.name }}</option>{% endfor %}</select></div>
                         <div class="field"><label>Provider</label><select class="select" name="provider_preset" data-llm-provider-select {% if is_llm_pending %}disabled{% endif %}><option value="openai" data-default-base-url="https://api.openai.com/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'openai' %}selected{% endif %}>OpenAI</option><option value="openrouter" data-default-base-url="https://openrouter.ai/api/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'openrouter' %}selected{% endif %}>OpenRouter</option><option value="xai" data-default-base-url="https://api.x.ai/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'xai' %}selected{% endif %}>xAI</option><option value="groq" data-default-base-url="https://api.groq.com/openai/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'groq' %}selected{% endif %}>Groq</option><option value="mistral" data-default-base-url="https://api.mistral.ai/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'mistral' %}selected{% endif %}>Mistral</option><option value="deepseek" data-default-base-url="https://api.deepseek.com" data-adapter-kind="openai_chat" {% if config.provider_preset == 'deepseek' %}selected{% endif %}>DeepSeek</option><option value="together" data-default-base-url="https://api.together.xyz/v1" data-adapter-kind="openai_chat" {% if config.provider_preset == 'together' %}selected{% endif %}>Together AI</option><option value="ollama" data-default-base-url="http://localhost:11434" data-adapter-kind="ollama_chat" {% if config.provider_preset == 'ollama' %}selected{% endif %}>Ollama</option><option value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1" data-adapter-kind="bedrock_chat" {% if config.provider_preset == 'bedrock_http_gateway' %}selected{% endif %}>Bedrock HTTP gateway</option><option value="custom_openai_compatible" data-default-base-url="" data-adapter-kind="openai_chat" {% if config.provider_preset == 'custom_openai_compatible' %}selected{% endif %}>Custom OpenAI-compatible · advanced</option></select><input type="hidden" name="provider_preset" value="{{ config.provider_preset }}"><input type="hidden" name="adapter_kind" value="{{ config.adapter_kind.value }}"></div>
-                        <div class="field"><label>Base URL</label><input class="input" name="base_url" value="{{ config.base_url }}" required data-llm-base-url-input><p class="desc">Changing a branded provider to a custom endpoint may save it as Custom OpenAI-compatible. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.</p></div>
+                        <div class="field" data-llm-base-url-field><label>Base URL</label><input class="input" name="base_url" value="{{ config.base_url }}" required data-llm-base-url-input data-llm-base-url><p class="desc" data-llm-adapter-note>Changing a branded provider to a custom endpoint may save it as Custom OpenAI-compatible. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.</p></div>
                       </section>
                       <section class="section"><div class="section-head"><h2>Model and auth</h2></div>
                         {% if is_llm_pending %}<p class="desc">Credential: saved</p>{% else %}<div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer" {% if config.auth_mode.value == 'bearer' %}selected{% endif %}>bearer</option><option value="none" {% if config.auth_mode.value == 'none' %}selected{% endif %}>none</option></select></div>
                         <div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password" placeholder="{{ 'Leave blank to keep saved Vault secret' if config.has_secret else 'Paste token' }}"></div>
                         <div class="field"><label>Credential action</label><select class="select" name="credential_action"><option value="keep" selected>keep</option><option value="replace">replace</option><option value="remove">remove</option></select></div>
-                        <div class="field"><label>Bedrock region</label><select class="select" name="bedrock_region" data-bedrock-region-input><option value="eu-west-2">eu-west-2</option><option value="us-east-1">us-east-1</option><option value="us-west-2">us-west-2</option><option value="eu-central-1">eu-central-1</option><option value="ap-southeast-2">ap-southeast-2</option></select><p class="desc">Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</p></div>
+                        <div class="field"><label>Bedrock region</label><select class="select" name="bedrock_region" data-bedrock-region-input>{% for region in llm_form.bedrock_regions %}<option value="{{ region }}" {% if ('bedrock-mantle.' ~ region ~ '.') in config.base_url %}selected{% endif %}>{{ region }}</option>{% endfor %}</select><p class="desc">Use the region selector for standard Bedrock HTTP gateway endpoints. Use Custom OpenAI-compatible for non-standard gateway URLs.</p><p class="desc" data-bedrock-derived-url hidden></p></div>
                         {% endif %}
                         <div class="field"><label>Model name</label>{% if is_llm_pending and not config.available_models_json %}<p class="desc">Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong.</p>{% endif %}<input class="input" name="provider_model" value="{{ config.model_name or '' }}"><p class="desc">If discovery cannot load models, enter the exact model ID manually.</p></div>
                         <label><input type="checkbox" name="is_active" value="true" {% if config.is_active %}checked{% endif %}> Available for team selection</label>
@@ -727,11 +727,11 @@
           {% if selected_llm_id == 'new' %}
             <div class="expanded"><div class="expanded-inner">
               <div class="inline-header"><div class="inline-title"><span class="dot purp">+</span><div><h2>New LLM provider</h2><div class="desc">Create reusable writing-assistant provider metadata. Secret is stored as Vault reference.</div></div></div></div>
-              <form method="post" action="/admin/llm-configs/drafts">
+              <form method="post" action="/admin/llm-configs/drafts" data-llm-inspect-form>
                 {{ return_fields('llm') }}
                 <div class="inline-grid">
-                  <section class="section"><div class="section-head"><h2>Provider</h2></div><div class="field"><label>Label</label><input class="input" name="label" required></div><div class="field"><label>Team</label><select class="select" name="team_id">{% for team in teams_list %}<option value="{{ team.id }}" {% if expanded_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}</select></div><div class="field"><label>Provider</label><select class="select" name="provider_preset" data-llm-provider-select><option value="openai" data-default-base-url="https://api.openai.com/v1" data-adapter-kind="openai_chat">OpenAI</option><option value="openrouter" data-default-base-url="https://openrouter.ai/api/v1" data-adapter-kind="openai_chat">OpenRouter</option><option value="xai" data-default-base-url="https://api.x.ai/v1" data-adapter-kind="openai_chat">xAI</option><option value="groq" data-default-base-url="https://api.groq.com/openai/v1" data-adapter-kind="openai_chat">Groq</option><option value="mistral" data-default-base-url="https://api.mistral.ai/v1" data-adapter-kind="openai_chat">Mistral</option><option value="deepseek" data-default-base-url="https://api.deepseek.com" data-adapter-kind="openai_chat">DeepSeek</option><option value="together" data-default-base-url="https://api.together.xyz/v1" data-adapter-kind="openai_chat">Together AI</option><option value="ollama" data-default-base-url="http://localhost:11434" data-adapter-kind="ollama_chat">Ollama</option><option value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1" data-adapter-kind="bedrock_chat">Bedrock HTTP gateway</option><option value="custom_openai_compatible" data-default-base-url="" data-adapter-kind="openai_chat">Custom OpenAI-compatible · advanced</option></select><input type="hidden" name="adapter_kind" value="openai_chat"></div><div class="field"><label>Base URL</label><input class="input" name="base_url" value="https://api.openai.com/v1" required data-llm-base-url-input><p class="desc">Changing a branded provider to a custom endpoint may save it as Custom OpenAI-compatible. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.</p></div></section>
-                  <section class="section"><div class="section-head"><h2>Model and auth</h2></div><div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer">bearer</option><option value="none">none</option></select></div><div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password"></div><div class="field"><label>Credential action</label><select class="select" name="credential_action"><option value="replace" selected>replace</option><option value="keep">keep</option><option value="remove">remove</option></select></div><div class="field"><label>Bedrock region</label><select class="select" name="bedrock_region" data-bedrock-region-input><option value="eu-west-2">eu-west-2</option><option value="us-east-1">us-east-1</option><option value="us-west-2">us-west-2</option><option value="eu-central-1">eu-central-1</option><option value="ap-southeast-2">ap-southeast-2</option></select></div><div class="field"><label>Model name</label><input class="input" name="provider_model" value="gpt-4o-mini"><p class="desc">If discovery cannot load models, enter the exact model ID manually.</p></div><label><input type="checkbox" name="is_active" value="true" checked> Active</label></section>
+                  <section class="section"><div class="section-head"><h2>Provider</h2></div><div class="field"><label>Label</label><input class="input" name="label" required></div><div class="field"><label>Team</label><select class="select" name="team_id">{% for team in teams_list %}<option value="{{ team.id }}" {% if expanded_team_id == team.id|string %}selected{% endif %}>{{ team.name }}</option>{% endfor %}</select></div><div class="field"><label>Provider</label><select class="select" name="provider_preset" data-llm-provider-select><option value="openai" data-default-base-url="https://api.openai.com/v1" data-adapter-kind="openai_chat">OpenAI</option><option value="openrouter" data-default-base-url="https://openrouter.ai/api/v1" data-adapter-kind="openai_chat">OpenRouter</option><option value="xai" data-default-base-url="https://api.x.ai/v1" data-adapter-kind="openai_chat">xAI</option><option value="groq" data-default-base-url="https://api.groq.com/openai/v1" data-adapter-kind="openai_chat">Groq</option><option value="mistral" data-default-base-url="https://api.mistral.ai/v1" data-adapter-kind="openai_chat">Mistral</option><option value="deepseek" data-default-base-url="https://api.deepseek.com" data-adapter-kind="openai_chat">DeepSeek</option><option value="together" data-default-base-url="https://api.together.xyz/v1" data-adapter-kind="openai_chat">Together AI</option><option value="ollama" data-default-base-url="http://localhost:11434" data-adapter-kind="ollama_chat">Ollama</option><option value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1" data-adapter-kind="bedrock_chat">Bedrock HTTP gateway</option><option value="custom_openai_compatible" data-default-base-url="" data-adapter-kind="openai_chat">Custom OpenAI-compatible · advanced</option></select><input type="hidden" name="adapter_kind" value="openai_chat" data-llm-adapter-hidden></div><div class="field" data-llm-base-url-field><label>Base URL</label><input class="input" name="base_url" value="https://api.openai.com/v1" required data-llm-base-url-input data-llm-base-url><p class="desc" data-llm-adapter-note>Changing a branded provider to a custom endpoint may save it as Custom OpenAI-compatible. Changing the generated Bedrock HTTP gateway URL to a non-Mantle endpoint will save this provider as Custom OpenAI-compatible.</p></div></section>
+                  <section class="section"><div class="section-head"><h2>Model and auth</h2></div><div class="field"><label>Auth mode</label><select class="select" name="auth_mode"><option value="bearer">bearer</option><option value="none">none</option></select></div><div class="field"><label>Bearer token</label><input class="input" name="bearer_token" type="password"></div><div class="field"><label>Credential action</label><select class="select" name="credential_action"><option value="replace" selected>replace</option><option value="keep">keep</option><option value="remove">remove</option></select></div><div class="field"><label>Bedrock region</label><select class="select" name="bedrock_region" data-bedrock-region-input>{% set selected_bedrock_region = llm_form.bedrock_region or llm_form.bedrock_regions[0] %}{% for region in llm_form.bedrock_regions %}<option value="{{ region }}" {% if selected_bedrock_region == region %}selected{% endif %}>{{ region }}</option>{% endfor %}</select><p class="desc" data-bedrock-derived-url hidden></p></div><div class="field"><label>Model name</label><input class="input" name="provider_model" value="gpt-4o-mini"><p class="desc">If discovery cannot load models, enter the exact model ID manually.</p></div><label><input type="checkbox" name="is_active" value="true" checked> Active</label></section>
                 </div>
                 <div class="control"><button class="btn blue" type="submit">Check API key and find models</button></div>
               </form>
@@ -1470,6 +1470,75 @@
         const adapter = form.querySelector('select[name="adapter_kind"]');
         adapter?.addEventListener("change", () => syncProviderCredentialAction(form));
         syncProviderCredentialAction(form);
+      });
+
+      function syncAdmin2LlmProviderForm(form, forceProviderDefault = false) {
+        const providerSelect = form.querySelector('[data-llm-provider-select]');
+        const baseUrlInput = form.querySelector('[data-llm-base-url-input], [data-llm-base-url]');
+        const adapterInput = form.querySelector('[data-llm-adapter-hidden], input[name="adapter_kind"]');
+        if (!providerSelect || !baseUrlInput || !adapterInput) return;
+
+        const selected = providerSelect.options[providerSelect.selectedIndex];
+        const adapter = selected?.dataset.adapterKind || "openai_chat";
+        const defaultBaseUrl = selected?.dataset.defaultBaseUrl || "";
+        const knownDefaultBaseUrls = Array.from(providerSelect.options)
+          .map((option) => option.dataset.defaultBaseUrl || "")
+          .filter(Boolean);
+        const currentBaseUrl = (baseUrlInput.value || "").replace(/\/+$/, "");
+        const previousDefault = (baseUrlInput.dataset.lastDefaultBaseUrl || "").replace(/\/+$/, "");
+        const isKnownDefault = knownDefaultBaseUrls.some((url) => url.replace(/\/+$/, "") === currentBaseUrl);
+        const isBedrockDefault = /^https:\/\/bedrock-mantle\.[a-z0-9-]+\.api\.aws\/v1$/i.test(baseUrlInput.value || "");
+
+        adapterInput.value = adapter;
+        const baseUrlField = form.querySelector('[data-llm-base-url-field]');
+        const isBedrock = adapter === "bedrock_chat";
+        baseUrlInput.readOnly = isBedrock;
+        baseUrlInput.setAttribute("aria-readonly", isBedrock ? "true" : "false");
+        if (baseUrlField) {
+          baseUrlField.hidden = isBedrock;
+          baseUrlField.classList.toggle("is-hidden", isBedrock);
+        }
+        if (defaultBaseUrl && (forceProviderDefault || !baseUrlInput.value || currentBaseUrl === previousDefault || isKnownDefault || isBedrockDefault)) {
+          baseUrlInput.value = defaultBaseUrl;
+        }
+        if (defaultBaseUrl) baseUrlInput.dataset.lastDefaultBaseUrl = defaultBaseUrl;
+
+        const buildBedrockBaseUrl = (region) => `https://bedrock-mantle.${region}.api.aws/v1`;
+        const regionInput = form.querySelector('[data-bedrock-region-input]');
+        const derivedBedrockUrl = form.querySelector('[data-bedrock-derived-url]');
+        if (isBedrock && regionInput) {
+          if (!regionInput.value.trim()) regionInput.value = "eu-west-2";
+          const region = regionInput.value.trim().toLowerCase();
+          baseUrlInput.value = buildBedrockBaseUrl(region);
+          baseUrlInput.dataset.lastDefaultBaseUrl = buildBedrockBaseUrl(region);
+          if (derivedBedrockUrl) {
+            derivedBedrockUrl.hidden = false;
+            derivedBedrockUrl.textContent = `Derived endpoint: ${baseUrlInput.value}`;
+          }
+        } else if (derivedBedrockUrl) {
+          derivedBedrockUrl.hidden = true;
+          derivedBedrockUrl.textContent = "";
+        }
+
+        const note = form.querySelector('[data-llm-adapter-note]');
+        if (!note) return;
+        if (adapter === "bedrock_chat") {
+          note.textContent = "Amazon Bedrock uses https://bedrock-mantle.<region>.api.aws/v1. Change region to update the standard gateway URL.";
+        } else if (adapter === "ollama_chat") {
+          note.textContent = "Ollama usually runs at http://localhost:11434 and does not require a bearer token for local setups.";
+        } else {
+          note.textContent = defaultBaseUrl
+            ? `${selected.textContent.trim()} uses ${defaultBaseUrl}. Changing this endpoint will save as Custom OpenAI-compatible.`
+            : "Custom OpenAI-compatible providers require an admin-supplied base URL.";
+        }
+      }
+
+      document.querySelectorAll("form").forEach((form) => {
+        const providerSelect = form.querySelector('[data-llm-provider-select]');
+        if (!providerSelect) return;
+        providerSelect.addEventListener("change", () => syncAdmin2LlmProviderForm(form, true));
+        form.querySelector('[data-bedrock-region-input]')?.addEventListener("change", () => syncAdmin2LlmProviderForm(form, true));
+        syncAdmin2LlmProviderForm(form);
       });
 
       function syncHallucinationCheckSelectionForm(form) {

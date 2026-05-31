@@ -6,13 +6,14 @@
 
 - Fixed optional structured hallucination-check Vault secret failures so they mark the checker `failed_provider` while saving the generated note as ready.
 - Fixed dictation-only follow-up generation so saved post-consultation dictation counts as a valid source when transcript text is empty.
+- Fixed the transcribe workspace follow-up availability gates so saved dictation enables the prompt and Generate controls.
 - Documented current hallucination-check provider policy: checker selection is resolved at worker processing time, not queue time.
 
 ### Checklist
 
 - Target behavior: checker-only provider/secret failures do not fail generated documents; follow-ups accept transcript, dictation, or Working-note sources.
-- Affected schema/modules/endpoints: `app/services/templates.py`, generation worker paths, generated-document metadata; no schema change.
-- Affected tests: hallucination-check Vault failure regression and dictation-only follow-up regression.
+- Affected schema/modules/endpoints: `app/services/templates.py`, `app/web/transcribe_workspace.py`, `app/static/js/transcribe/app.js`, generation worker/UI paths, generated-document metadata; no schema change.
+- Affected tests: hallucination-check Vault failure regression, dictation-only follow-up backend regression, and dictation-only follow-up UI regression.
 - Architecture risks: no ownership, privacy, deletion, encryption, provider resolution, or structured-note JSON contract redesign.
 - Docs referenced/updated: `docs/api.md`, `docs/testing.md`, `docs/progress.md`.
 - Reuse decision: reused existing checker failure metadata/audit event path and existing dictation source helper.
@@ -24,12 +25,15 @@
 ### Files changed
 
 - `app/services/templates.py`: catches checker Vault read failures as `failed_provider`, records safe debug/audit metadata, and lets dictation satisfy follow-up empty-source checks.
-- `tests/test_api.py`: adds regressions for checker secret-read failure and dictation-only follow-up generation.
+- `app/web/transcribe_workspace.py`, `app/static/js/transcribe/app.js`: allow saved dictation to enable follow-up controls on first render and after workspace sync.
+- `tests/test_api.py`, `tests/test_admin_ui.py`: add regressions for checker secret-read failure, dictation-only follow-up generation, and dictation-only follow-up UI enablement.
 - `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document source requirements, checker failure handling, runtime checker selection policy, and test coverage.
 
 ### Tests
 
 - `.venv/bin/pytest -q tests/test_api.py -k "structured_hallucination_check_vault_failure_does_not_fail_document or structured_hallucination_check_provider_failure_records_safe_debug or followup_generation_uses_saved_dictation_when_transcript_empty or followup_generation_uses_saved_working_note_when_transcript_empty"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_followups_enabled_for_saved_dictation or transcribe_quick_actions_enabled_for_saved_dictation or transcribe_create_button_enabled_for_saved_dictation or transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 4 tests.
+- `node --check app/static/js/transcribe/app.js`: passed.
 
 ### Architecture checkpoint summary
 

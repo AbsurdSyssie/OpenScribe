@@ -761,6 +761,8 @@ def resolve_transcribe_workspace(
         and (
             bool((active_draft_text or "").strip())
             or bool(active_structured_context)
+            or active_working_note_has_text
+            or bool(active_dictation_text.strip())
             or _generated_note_has_content(db, latest_generated_document)
         )
     )

@@ -2154,7 +2154,7 @@ let statusDetailsHideTimer = null;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
         const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
         const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));
-        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || transcriptWaitingForText));
+        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText));
         const canUseFollowupRequest = canGenerateFollowup || canRunQuickAction;
         const canUsePrimaryFollowupAction = selectedQuickActionId ? canRunQuickAction : canGenerateFollowup;
 

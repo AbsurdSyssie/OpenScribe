@@ -1206,7 +1206,7 @@ def _document_has_empty_allowed_source(db: Session, *, document: GeneratedDocume
     if structured_working_note:
         return True
     if (
-        document.generator_type in {GeneratedDocumentGeneratorType.template, GeneratedDocumentGeneratorType.quick_action}
+        document.generator_type in {GeneratedDocumentGeneratorType.template, GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
         and transcript is not None
         and _effective_dictation_text(db, transcript=transcript).strip()
     ):
@@ -2350,7 +2350,29 @@ def _run_hallucination_check(
 
     edit_cap = _hallucination_check_edit_cap(note_generation_options)
     output_token_cap = _note_generation_output_token_cap(note_generation_options)
-    bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+    try:
+        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+    except AppError as exc:
+        if debug_payload is not None:
+            debug_payload["failure_code"] = exc.code
+            debug_payload["failure_message"] = exc.message
+            debug_payload["provider_error_code"] = (exc.details or {}).get("provider_error_code")
+            debug_payload["provider_http_status"] = (exc.details or {}).get("provider_http_status")
+            set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        document.hallucination_check_llm_config_id = config.id
+        document.hallucination_check_model_name = model_name
+        document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+        _record_hallucination_check_usage_event(
+            db,
+            document=document,
+            config=config,
+            model_name=model_name,
+            usage=None,
+            status="failed_provider",
+            event_type=ProviderUsageEventType.failed,
+            error_code=exc.code,
+        )
+        return title, sections, HallucinationCheckStatus.failed_provider, None
     failure_code: str | None = None
     usage_events: list[tuple[GenerationUsage | None, str, ProviderUsageEventType, str | None]] = []
     for attempt in range(2):
@@ -2790,6 +2812,7 @@ def queue_followup_generation(
             waiting_for_transcript
             or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
+            or bool(_effective_dictation_text(db, transcript=transcript))
         ),
         mark_transcript_ready=not waiting_for_transcript,
     )

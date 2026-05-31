@@ -499,7 +499,7 @@ Current generation behavior:
   - `investigations`
 - structured template versions store per-section instructions in `template_versions.config_json`
 - structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
-- follow-up generation always uses saved transcript/dictation/Working-note sources plus the typed follow-up request; saved Working note content is redacted and included, not opt-in. At least transcript text or saved Working note content is required
+- follow-up generation always uses saved transcript/dictation/Working-note sources plus the typed follow-up request; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
 - quick action generation always uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
 - the current transcript session stores structured Working note content in `transcripts.structured_context_json`
 - legacy `PATCH /api/v1/transcripts/{transcript_id}` structured Working-note writes accept `expected_updated_at` and enforce the same stale-write guard as `/working-note`
@@ -521,8 +521,9 @@ Current generation behavior:
 - if note JSON still fails, the raw redacted provider output is retained on the generated document for localhost dev-account debugging only
 - structured template generation may run a hallucination-check pass after first-pass structured JSON validation and before reidentification/final storage
 - hallucination check uses only redacted transcript, Working note, and dictation evidence plus the redacted first-pass note; template instructions are not sent to the checker
+- hallucination-check selection is resolved at worker processing time, not snapshotted at queue time
 - checker output is exact-substring JSON edits; invalid checker output retries once, then the first-pass note is saved as unchecked
-- checker failure does not fail the generated document; responses expose `hallucination_check_bucket` as `checked`, `unchecked`, or `not_applicable`
+- checker provider, Vault secret, or invalid-response failure does not fail the generated document; responses expose `hallucination_check_bucket` as `checked`, `unchecked`, or `not_applicable`
 - development debug output for first-pass note and checker edits is encrypted at rest and returned only to the owning user when `HALLUCINATION_CHECK_DEBUG_UI=1`
 - generation is now asynchronous:
   - `POST /api/v1/transcripts/{transcript_id}/generate-output` returns `202`

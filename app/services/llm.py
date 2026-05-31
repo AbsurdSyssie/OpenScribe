@@ -597,6 +597,13 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
             bearer_token=payload.bearer_token,
         ),
     )
+    if has_in_flight_jobs and was_ready and existing_model_name and existing_model_name not in inspection.available_models:
+        raise AppError(
+            409,
+            "conflict",
+            "Replacement credential does not expose the model used by queued or processing generated documents",
+            {"field": "bearer_token", "model_name": existing_model_name, "config_id": str(config.id)},
+        )
     config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
     config.available_models_json = list(inspection.available_models)
     if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:

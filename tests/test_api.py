@@ -10384,6 +10384,29 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
     assert replaced.json()["config"]["model_name"] == "gpt-4o-mini"
     assert writes == ["correct-key-2"]
 
+    writes.clear()
+    db_session.refresh(config)
+    secret_ref_before_rejection = config.vault_secret_ref
+    monkeypatch.setattr(
+        "app.services.llm._list_openai_compatible_chat_models",
+        lambda *, provider_preset, api_key, base_url: ["other-model"],
+    )
+    incompatible = client.post(
+        f"/api/v1/llm-configs/{config.id}/replace-credential",
+        json={"team_id": str(team.id), "config_id": str(config.id), "bearer_token": "wrong-provider-key"},
+    )
+    assert_error(
+        incompatible,
+        status_code=409,
+        code="conflict",
+        message="Replacement credential does not expose the model used by queued or processing generated documents",
+    )
+    assert writes == []
+    db_session.refresh(config)
+    assert config.vault_secret_ref == secret_ref_before_rejection
+    assert config.model_name == "gpt-4o-mini"
+    assert config.setup_status == LlmConfigSetupStatus.ready
+
     config.setup_status = LlmConfigSetupStatus.pending_model_selection
     config.is_active = False
     db_session.add(config)

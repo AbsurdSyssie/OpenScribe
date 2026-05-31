@@ -1,5 +1,213 @@
 # Progress
 
+## 2026-05-30 Hallucination Checker Pipe Fix
+
+### Scope
+
+- Fixed OpenAI-compatible generation output extraction so checker/provider responses that return text as content-part dictionaries are treated as normal note text.
+- Added regression coverage for this provider response shape, which previously surfaced as `llm_generation_failed` / `LLM generation returned no note text`.
+- Reproduced the live Bedrock Mantle `openai.gpt-oss-120b` checker request with redacted inputs and confirmed the model can spend the 1600 completion-token cap on reasoning, returning `finish_reason=length` and no final note text.
+- Added gpt-oss-specific checker request overrides: `reasoning_effort=low` and minimum `max_completion_tokens=4000`.
+
+### Checklist
+
+- Target behavior: hallucination checker reads provider text from string, text-part object, text-part dictionary, and string-list content shapes; gpt-oss checker calls leave enough final-answer budget for JSON.
+- Affected schema/modules/endpoints: `app/services/templates.py` provider response extraction only; no schema or endpoint change.
+- Affected tests: focused API/service regressions added for OpenAI-compatible content-part dictionaries and gpt-oss checker request overrides.
+- Architecture risks: no ownership, privacy, deletion, provider selection, or structured-note contract redesign.
+- Docs referenced/updated: `docs/hallucination-check-design.md`, `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: refined existing `_generate_freeform_output_openai` helper rather than adding a new provider path.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: no fallback policy changed; non-gpt-oss models that return empty final content still report provider failure.
+
+### Files changed
+
+- `app/services/templates.py`: extracts OpenAI-compatible message content from dict/object text parts as well as strings, and applies gpt-oss checker request overrides.
+- `tests/test_api.py`: adds regression for content-part dictionary extraction, usage metadata preservation, and gpt-oss checker request shape.
+- `docs/testing.md`, `docs/progress.md`: record the regression coverage and architecture checklist.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "hallucination_check or openai_generation_extracts_text_from_content_part_dicts or gpt_oss_hallucination_checker"`: passed, 6 tests.
+- `python3 -m py_compile app/services/templates.py tests/test_api.py`: passed.
+- Live sandbox check against the failing redacted Bedrock Mantle checker payload returned final JSON through the patched helper with `reasoning_effort=low` and `max_completion_tokens=4000`.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema changes.
+- Auth/ownership checkpoint: generated-document access and owner-only debug gates unchanged.
+- Lifecycle/deletion checkpoint: no stored content lifecycle or cascade behavior changed.
+- Provider checkpoint: selected checker provider/model still used directly; no fallback to generation LLM added.
+- Structured-note contract: checker JSON/patch contract unchanged.
+- Privacy boundaries: no prompt, transcript, checker response, note text, or secret logging added.
+
+## 2026-05-30 Hallucination Check Design
+
+### Scope
+
+- Added design for structured-note hallucination check round using redacted source material, admin-only checker LLM selection, exact-substring JSON patches, one retry, and checked/unchecked metadata.
+- Added dev-only debug UI guidance for first-pass note and checker edits, gated by env flag and owner-only visibility.
+- Captured reuse-first implementation guidance to minimise churn and avoid new LLM/provider plumbing where existing services fit.
+
+### Checklist
+
+- Target behavior: checker reviews structured template notes against redacted transcript, Working note, and dictation sources, then saves checked or unchecked final note.
+- Affected schema/modules/endpoints: future selection table, generated-document metadata, admin-only selection routes/UI, generation service, generated-document responses.
+- Affected tests: future API, migration, admin UI, structured-output, redaction-boundary, provider-usage tests documented.
+- Architecture risks: plaintext boundary, provider fallback, content-bearing logs/storage, exact-patch fragility documented.
+- Development debug risk: first-pass note visibility allowed only behind explicit non-production env flag, owner-only generated-document access, encrypted at rest, and no logs.
+- Docs referenced/updated: `docs/hallucination-check-design.md`, `docs/progress.md`.
+- Reuse decision: reuse existing redaction, LLM config/provider runtime, encrypted generated-document storage, structured-note validation, and usage-event paths.
+- Code complete: design only; no application code changed.
+- Tests added/updated: not applicable for design-only change.
+- Docs added/updated: yes.
+- Open issues: implementation must verify exact insertion point before any reidentification.
+
+### Files changed
+
+- `docs/hallucination-check-design.md`: records resolved design decisions, patch contract, runtime flow, schema/API touch points, tests, and architecture checkpoints.
+- `docs/progress.md`: records checklist and architecture checkpoint for the design change.
+
+### Tests
+
+- Not run. Documentation-only change.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: design adds team-scoped checker selection and non-content generated-document metadata only.
+- Auth/ownership checkpoint: checker selection is admin-only; generated document access remains owner-only.
+- Lifecycle/deletion checkpoint: no separate content-bearing checker artifact; metadata remains under generated document/transcript-root lifecycle.
+- Provider checkpoint: design reuses existing team LLM configs and Vault-backed credentials; no silent fallback to active generation LLM.
+- Structured-note contract: checker only edits existing title/sections by exact substring replacement; no new sections.
+- Privacy boundaries: checker uses redacted sources only; no plaintext, raw checker response storage, or content logs.
+
+## 2026-05-30 Hallucination Check MVP
+
+### Scope
+
+- Implemented admin-only hallucination checker selection from ready active team LLM configs.
+- Added structured-template hallucination check pass using redacted transcript, Working note, and dictation evidence plus first-pass structured note.
+- Added exact-substring checker JSON edits, one retry on invalid checker output, checked/unchecked buckets, usage events, and owner-only dev debug payload behind `HALLUCINATION_CHECK_DEBUG_UI=1`.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: checker response format may have high invalid rate with some models; exact-patch retry gives early data before considering full-note fallback.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/s8t9u0v1w2x3_add_hallucination_check.py`: add checker selection table, generated-document metadata, encrypted debug JSON, and status enum.
+- `app/services/llm.py`, `app/schemas/llm.py`, `app/routes/api_routes.py`, `app/web/presentation.py`: add admin-only checker selection API and response helpers.
+- `app/services/templates.py`: run checker before reidentification/final persistence, validate/apply exact patches, record usage, and store dev debug only when enabled.
+- `app/schemas/templates.py`, `app/web/transcribe_workspace.py`, `app/static/js/transcribe/documents.js`, `app/static/js/transcribe/app.js`: expose check bucket and owner-only debug panel payload.
+- `tests/test_api.py`, `tests/test_migrations.py`, `app/api_route_audit.py`, `docs/api.md`, `docs/testing.md`, `docs/progress.md`: add coverage and documentation.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py tests/test_migrations.py tests/test_api_route_audit.py -k "hallucination_check or structured_emis_template_generation_persists_sections or alembic_upgrade_head_creates_expected_schema or alembic_head_adds_onboarding_and_session_tables or api_route_audit"`: passed, 7 tests.
+- `.venv/bin/python -m py_compile app/models.py app/schemas/llm.py app/schemas/templates.py app/schemas/__init__.py app/services/llm.py app/services/templates.py app/web/presentation.py app/web/transcribe_workspace.py app/routes/api_routes.py tests/test_api.py`: passed.
+- `node --check app/static/js/transcribe/documents.js && node --check app/static/js/transcribe/app.js`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: new checker selection is team-scoped; generated-document check/debug metadata remains under generated-document/transcript-root deletion.
+- Auth/ownership checkpoint: checker config routes are system-admin-only; generated-document debug content remains owner-only and env-gated.
+- Lifecycle/deletion checkpoint: no separate content-bearing checker artifact; deletion cascades remain rooted in transcript/generated document.
+- Provider checkpoint: checker reuses team LLM configs/Vault refs, has optional model override, and never silently falls back to generation LLM.
+- Structured-note contract: checker only edits existing title/sections by exact unique substring, cannot create sections, and omits empty sections after edits.
+- Privacy boundaries: checker prompt uses redacted sources only and excludes template instructions; raw checker response is not persisted or logged.
+
+## 2026-05-30 Hallucination Checker Model Dropdown
+
+### Scope
+
+- Changed admin hallucination checker model override from free text to provider-model dropdown in both admin UIs.
+- Reused saved LLM provider `available_models_json` and provider default metadata from existing default model selection pattern.
+
+### Checklist
+
+- Target behavior: system admin chooses checker provider, then chooses provider default or discovered available model from dropdown.
+- Affected schema/modules/endpoints: admin templates only; existing selection route/service validation reused.
+- Affected tests: admin UI checker configuration regression updated.
+- Architecture risks: none new; admin-only checker control, provider validation, and no writing-assistant fallback preserved.
+- Docs referenced/updated: `docs/progress.md`, `docs/testing.md`.
+- Reuse decision: reused existing provider model metadata and client-side dropdown sync pattern rather than adding new API or model discovery path.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: providers without discovered model lists still show provider default option only.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: controls remain system-admin-only; no transcript-derived content access changed.
+- Lifecycle/deletion checkpoint: no deletion behavior changed.
+- Provider checkpoint: checker still uses selected ready team LLM config and optional override from that provider's available model list.
+- Structured-note contract: no change to checker prompt, patch contract, or note validation.
+- Privacy boundaries: UI change only; no plaintext transcript/note data exposed.
+
+## 2026-05-30 Hallucination Check Visibility
+
+### Scope
+
+- Made hallucination check status/debug visible as an explicit generated-note panel instead of only a raw debug append near the LLM request slot.
+- Added UI hint when a note has check status but no debug payload because debug capture was not enabled before generation.
+
+### Checklist
+
+- Target behavior: owner can see checked/unchecked status and, when captured, first-pass/checker debug in the note document UI.
+- Affected schema/modules/endpoints: frontend document navigator only; generated-document API already returns status/debug.
+- Affected tests: static admin/UI regression checks for visible checker panel and cache-busted import.
+- Architecture risks: no new content exposure; debug payload still owner-only and env-gated by API.
+- Docs referenced/updated: `docs/progress.md`, `docs/testing.md`.
+- Reuse decision: reused existing document LLM/debug slot and generated-document response fields.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: checker still does not run for follow-ups/quick actions by design.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: API still returns debug only to document owner.
+- Lifecycle/deletion checkpoint: no content lifecycle change.
+- Provider checkpoint: no provider-selection behavior changed.
+- Structured-note contract: no checker runtime/patch contract changed.
+- Privacy boundaries: panel renders only API-provided owner-visible status/debug; no extra fetch or admin cross-owner content access.
+
+## 2026-05-30 Hallucination Checker Provider Failure Debug
+
+### Scope
+
+- Added safe provider failure metadata to hallucination-check debug payload: failure message, provider error code, and provider HTTP status.
+- Confirmed provider failure leaves generated note ready and marks only the checker as unchecked/failed provider.
+
+### Checklist
+
+- Target behavior: owner debug panel explains checker-provider failure without exposing transcript-derived content or secrets.
+- Affected schema/modules/endpoints: no schema/API shape change; existing debug JSON carries extra safe keys.
+- Affected tests: structured hallucination-check provider failure regression added.
+- Architecture risks: debug remains env-gated and owner-only; metadata only, no raw prompt/response/provider secret.
+- Docs referenced/updated: `docs/progress.md`, `docs/testing.md`.
+- Reuse decision: reused existing `AppError.details` and encrypted debug payload storage.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: generic provider exceptions may still have no HTTP/provider code from upstream SDK.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: generated-document debug remains owner-only via existing response gate.
+- Lifecycle/deletion checkpoint: debug remains encrypted on generated document and follows existing deletion lifecycle.
+- Provider checkpoint: no fallback change; checker still uses selected provider/model only.
+- Structured-note contract: no runtime checker contract change.
+- Privacy boundaries: only safe provider metadata persisted; no transcript text, note text beyond existing owner-only debug, prompt, raw response, or secret logged.
+
 ## 2026-05-30 Pending Transcript New Consult Fix
 
 ### Scope

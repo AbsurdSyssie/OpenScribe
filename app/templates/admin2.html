@@ -432,6 +432,18 @@
                           <div class="field"><label>Allowed models</label><div class="model-toggle-grid">{% set model_source = (llm_selection.config.available_models_json if llm_selection and llm_selection.config.available_models_json else (selectable_llm_configs[0].available_models_json if selectable_llm_configs else [])) %}{% for model in model_source %}<label class="model-toggle-card"><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if not llm_selection or not llm_selection.allowed_models_json or model in llm_selection.allowed_models_json %}checked{% endif %}> {{ model }}</label>{% else %}<span class="desc">No model list available; save provider defaults in Writing assistant first.</span>{% endfor %}</div></div>
                           <button class="btn blue" type="submit">Save writing assistant</button>
                         </form>
+                        {% if selectable_llm_configs or llm_configs %}
+                        <div class="control start">
+                          {% if hallucination_check_selection %}<form class="inline" method="post" action="/admin/hallucination-check-selection/clear" data-confirm-submit="Clear hallucination checker for this team?">{{ return_fields('directory', team.id) }}<input type="hidden" name="team_id" value="{{ team.id }}"><button class="btn small" type="submit">Clear hallucination checker</button></form>{% endif %}
+                        </div>
+                        <form method="post" action="/admin/hallucination-check-selection" data-hallucination-check-selection-form>
+                          {{ return_fields('directory', team.id) }}
+                          <input type="hidden" name="team_id" value="{{ team.id }}">
+                          <div class="setting"><div><div class="rtitle">Hallucination checker</div><div class="desc">Used only for structured note checks. Prompts receive redacted sources only.</div></div><select class="select" name="llm_config_id" data-checker-llm-config-select>{% for config in selectable_llm_configs or llm_configs or [] %}<option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if hallucination_check_selection and hallucination_check_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>{% endfor %}</select></div>
+                          <div class="setting"><div><div class="rtitle">Checker model</div><div class="desc">Choose discovered provider model, or provider default. No fallback to writing assistant.</div></div><select class="select" name="provider_model" data-checker-model-select data-selected-value="{{ hallucination_check_selection.model_name_override if hallucination_check_selection else '' }}">{% set selected_checker_config = hallucination_check_selection.config if hallucination_check_selection else ((selectable_llm_configs or llm_configs or [])[0] if (selectable_llm_configs or llm_configs or []) else None) %}{% if selected_checker_config %}<option value="">Provider default ({{ selected_checker_config.model_name or 'not set' }})</option>{% for model in selected_checker_config.available_models_json %}<option value="{{ model }}" {% if hallucination_check_selection and hallucination_check_selection.model_name_override == model %}selected{% endif %}>{{ model }}</option>{% endfor %}{% endif %}</select></div>
+                          <button class="btn blue" type="submit">Save hallucination checker</button>
+                        </form>
+                        {% endif %}
                       </section>
 
                       <section class="section">
@@ -1458,6 +1470,40 @@
         const adapter = form.querySelector('select[name="adapter_kind"]');
         adapter?.addEventListener("change", () => syncProviderCredentialAction(form));
         syncProviderCredentialAction(form);
+      });
+
+      function syncHallucinationCheckSelectionForm(form) {
+        const providerSelect = form.querySelector('[data-checker-llm-config-select]');
+        const modelSelect = form.querySelector('[data-checker-model-select]');
+        if (!providerSelect || !modelSelect) return;
+        const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+        const defaultModel = selectedOption?.dataset.defaultModel || '';
+        let models = [];
+        try {
+          models = JSON.parse(selectedOption?.dataset.models || '[]');
+        } catch (_) {
+          models = [];
+        }
+        const previousValue = modelSelect.value || modelSelect.dataset.selectedValue || '';
+        modelSelect.innerHTML = '';
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = defaultModel ? `Provider default (${defaultModel})` : 'Provider default';
+        modelSelect.appendChild(defaultOption);
+        models.forEach((model) => {
+          const option = document.createElement('option');
+          option.value = model;
+          option.textContent = model;
+          modelSelect.appendChild(option);
+        });
+        modelSelect.value = models.includes(previousValue) ? previousValue : '';
+      }
+
+      document.querySelectorAll('[data-hallucination-check-selection-form]').forEach((form) => {
+        const select = form.querySelector('[data-checker-llm-config-select]');
+        if (!select) return;
+        select.addEventListener('change', () => syncHallucinationCheckSelectionForm(form));
+        syncHallucinationCheckSelectionForm(form);
       });
 
       document.addEventListener("submit", (event) => {

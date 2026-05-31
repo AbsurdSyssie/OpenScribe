@@ -216,6 +216,33 @@ class LlmSelectionDetail(BaseModel):
     updated_at: datetime
 
 
+class HallucinationCheckSelectionUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    llm_config_id: UUID
+    model_name_override: str | None = Field(default=None, max_length=255)
+
+
+class HallucinationCheckSelectionDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    id: UUID
+    team_id: UUID
+    llm_config_id: UUID
+    selected_by_user_id: UUID
+    selected_config_label: str
+    selected_config_provider_preset: str
+    selected_config_provider_display_name: str
+    selected_config_adapter_kind: LlmAdapterKind
+    selected_config_base_url: str
+    provider_available_models_json: list[str]
+    model_name_override: str | None
+    resolved_model_name: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class UserLlmPreferenceUpsert(BaseModel):
     model_config = {"protected_namespaces": ()}
 

@@ -168,6 +168,20 @@ export function createDocumentNavigator({
     if (!slot) return;
     slot.innerHTML = '';
     if (!document) return;
+    const checkBucket = document.hallucination_check_bucket || 'not_applicable';
+    if (checkBucket !== 'not_applicable' || document.hallucination_check_debug_json) {
+      const checkWrapper = window.document.createElement('section');
+      checkWrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';
+      checkWrapper.dataset.hallucinationCheckDebugPanel = 'true';
+      const debugPayload = document.hallucination_check_debug_json
+        ? `<pre class="followup-llm-request-pre-v2">${escapeHtml(JSON.stringify(document.hallucination_check_debug_json, null, 2))}</pre>`
+        : '<p class="text-xs text-slate">Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note to capture first-pass output and checker edits.</p>';
+      checkWrapper.innerHTML = `
+        <div class="followup-output-card-v2__meta"><span class="followup-status">Hallucination check</span><span>${escapeHtml(checkBucket)}</span></div>
+        ${debugPayload}
+      `;
+      slot.appendChild(checkWrapper);
+    }
     const wrapper = window.document.createElement('section');
     wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';
     wrapper.dataset.llmRequestPanel = 'true';
@@ -260,7 +274,7 @@ export function createDocumentNavigator({
       noteMeta.textContent = selectedNote?.kind === "working_note"
         ? "Working note · Your own notes used as context for generation."
         : (selectedNote
-          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.created_at}`
+          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${selectedNote.created_at}`
           : "No note yet.");
     }
     renderDocumentSelector({

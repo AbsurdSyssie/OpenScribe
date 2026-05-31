@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260525-working-note-emis-sections';
+import { createDocumentNavigator } from './documents.js?v=20260530-hallucination-check-panel';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';

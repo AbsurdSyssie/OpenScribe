@@ -868,7 +868,7 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     return TranscriptDetail.model_validate(payload)
 
 
-def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> TranscribeWorkspaceDetail:
+def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, current_user: User | None = None) -> TranscribeWorkspaceDetail:
     active_transcript = workspace.get("active_transcript")
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     recent_transcripts = workspace.get("recent_transcripts") or []
@@ -893,7 +893,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object]) -> 
             else None
         ),
         active_working_note=workspace.get("active_working_note"),
-        generated_documents=[generated_document_response(db, document) for document in generated_documents],
+        generated_documents=[generated_document_response(db, document, actor=current_user) for document in generated_documents],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         smart_phrases=[smart_phrase_response(phrase) for phrase in available_smart_phrases],
@@ -935,7 +935,7 @@ def resolve_transcribe_workspace_detail(
         local_dev_emails=local_dev_emails,
         request_is_localhost_only=request_is_localhost_only,
     )
-    return transcribe_workspace_response(db, workspace)
+    return transcribe_workspace_response(db, workspace, current_user=current_user)
 
 
 def render_transcribe(
@@ -1005,7 +1005,7 @@ def render_transcribe(
         for phrase in available_smart_phrases
     ]
     if generated_documents:
-        generated_document_details = [generated_document_response(db, document) for document in generated_documents]
+        generated_document_details = [generated_document_response(db, document, actor=current_user) for document in generated_documents]
         workspace["generated_documents"] = generated_document_details
         note_documents = [document for document in generated_document_details if document.generator_type is GeneratedDocumentGeneratorType.template]
         followup_documents = [

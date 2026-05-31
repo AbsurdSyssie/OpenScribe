@@ -1,5 +1,50 @@
 # Progress
 
+## 2026-05-31 Admin2 Bedrock Provider URL Sync
+
+### Scope
+
+- Fixed admin2 LLM provider setup so changing provider presets updates default base URLs, and selecting Bedrock or changing Bedrock region derives `https://bedrock-mantle.<region>.api.aws/v1`.
+- Applied the same provider-change and Bedrock region sync to the current `/admin` LLM provider form, hiding its editable Base URL while Bedrock is selected.
+- Fixed server-side Bedrock preset defaults so an explicit Bedrock region overrides stale browser base URLs such as Ollama localhost during draft/create inspection.
+- Hid the editable Base URL field while Bedrock is selected, show the derived Mantle endpoint beside the region selector, and moved admin2 Bedrock region options to the shared backend preset list.
+- Matched provider-change behavior with the working admin form: changing provider now force-applies that provider's default URL, so Bedrock no longer waits for manual Base URL clearing.
+- Preserved custom endpoint behavior: non-standard edited URLs remain admin-entered and still save as Custom OpenAI-compatible by backend rules.
+
+### Checklist
+
+- Target behavior: provider and region controls keep the submitted LLM base URL in sync during setup/edit; provider changes overwrite stale defaults; Bedrock shows a derived endpoint instead of an editable Base URL; backend corrects stale submitted base URL when Bedrock region is explicit.
+- Affected schema/modules/endpoints: `app/templates/admin.html`, `app/templates/admin2.html`, `app/services/llm_presets.py`, admin LLM draft path; no schema change.
+- Affected tests: admin UI template regression, admin2 stale localhost Bedrock draft regression, provider-default unit assertion.
+- Architecture risks: no ownership, privacy, deletion, encryption, provider resolution, or structured-note contract redesign.
+- Docs referenced/updated: `docs/llm-providers.md`, `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: reused existing provider/base-url/region data hooks from the admin form.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: broader LLM provider setup should become a stepper: Provider -> Credential/model discovery -> Default model.
+
+### Files changed
+
+- `app/templates/admin.html`, `app/templates/admin2.html`: add provider/base URL/Bedrock region sync and dynamic helper note, with provider changes force-applying defaults, Bedrock always overwriting URL from selected region, hidden editable Bedrock URL, derived endpoint label, and backend-rendered region options.
+- `app/services/llm_presets.py`: makes explicit Bedrock region derive the standard Mantle URL even if stale base URL is submitted.
+- `tests/test_admin_ui.py`, `tests/test_api.py`: cover admin2 sync hooks, stale localhost Bedrock draft correction, and provider-default derivation.
+- `docs/llm-providers.md`, `docs/api.md`, `docs/testing.md`, `docs/progress.md`: document expected Bedrock URL derivation and coverage.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_provider_preset_catalog_and_inference"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "admin_llm_provider_dropdown_syncs_base_url_and_note or admin2_llm_provider_dropdown_syncs_base_url_and_bedrock_region or admin2_bedrock_draft_ignores_stale_localhost_base_url or admin2_exposes_admin_lifecycle_and_provider_controls"`: passed, 4 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema changes.
+- Auth/ownership checkpoint: system-admin provider page remains the only affected surface; no transcript-derived content access changes.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: runtime provider resolution unchanged; save-time defaults now treat explicit Bedrock region as source of truth before classification.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no raw secrets, prompts, transcript text, or note text exposed/logged.
+
 ## 2026-05-30 Hallucination Checker Pipe Fix
 
 ### Scope

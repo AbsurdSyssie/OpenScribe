@@ -330,6 +330,7 @@ What it does:
 - admin page team-scoped STT config form
 - admin page team-scoped STT inspection flow
 - admin page LLM team policy rendering visible-model tiles with default model dropdown limited to visible models
+- admin/admin2 LLM provider forms syncing branded default base URLs, rendering Bedrock regions from backend preset metadata, hiding the editable Bedrock base URL in favor of a derived endpoint label, and correcting stale localhost base URL submission server-side
 - admin page default template management and default quick-action management
 - admin team creation seeding active default templates and quick actions into team-owned assets
 - admin team hard delete removing team users, team-owned configs, team assets, transcript-derived rows, account requests, and team usage metadata

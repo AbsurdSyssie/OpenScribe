@@ -3290,6 +3290,7 @@ def test_llm_provider_preset_catalog_and_inference():
     assert infer_llm_provider_preset(LlmAdapterKind.ollama_chat, "http://localhost:11434") == "ollama"
     assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://llm.example.com/v1") == "custom_openai_compatible"
     assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="", bedrock_region="us-east-1")[2] == "https://bedrock-mantle.us-east-1.api.aws/v1"
+    assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="http://localhost:11434", bedrock_region="us-west-2")[2] == "https://bedrock-mantle.us-west-2.api.aws/v1"
     assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="https://bedrock-mantle.eu-west-2.api.aws/v1", bedrock_region=None)[3] == "eu-west-2"
 
 
@@ -10267,6 +10268,26 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
     assert finalized.status_code == 200
     assert finalized.json()["setup_status"] == "ready"
     assert finalized.json()["is_active"] is True
+
+    config.is_active = False
+    db_session.add(config)
+    db_session.commit()
+    activated = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Provisioned LLM",
+            "adapter_kind": config.adapter_kind.value,
+            "base_url": config.base_url,
+            "auth_mode": config.auth_mode.value,
+            "model_name": "gpt-4o-mini",
+            "is_active": True,
+        },
+    )
+    assert activated.status_code == 200
+    assert activated.json()["setup_status"] == "ready"
+    assert activated.json()["is_active"] is True
 
 
 def test_generate_output_is_rate_limited_per_authenticated_user(

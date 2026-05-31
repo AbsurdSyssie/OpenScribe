@@ -655,6 +655,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         )
     )
     has_in_flight_jobs = config is not None and _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    submitted_model_name = (payload.model_name or "").strip()
     credential_correction_during_in_flight = (
         has_in_flight_jobs
         and config is not None
@@ -662,7 +663,17 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         and not removing_secret
         and not provider_endpoint_changed
     )
-    if has_in_flight_jobs and not credential_correction_during_in_flight:
+    availability_only_update_during_in_flight = (
+        has_in_flight_jobs
+        and config is not None
+        and not replacing_secret
+        and not removing_secret
+        and not provider_endpoint_changed
+        and label == config.label
+        and submitted_model_name == (config.model_name or "")
+        and payload.is_active != config.is_active
+    )
+    if has_in_flight_jobs and not (credential_correction_during_in_flight or availability_only_update_during_in_flight):
         raise AppError(
             409,
             "conflict",
@@ -743,7 +754,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     if credential_correction_during_in_flight and config is not None:
         model_name = config.model_name
     else:
-        model_name = payload.model_name.strip() if payload.model_name else (available_models_json[0] if available_models_json else None)
+        model_name = submitted_model_name if submitted_model_name else (available_models_json[0] if available_models_json else None)
     if not model_name:
         raise AppError(422, "business_rule_violation", "Model name is required. Inspect models successfully or enter a model name manually.", {"field": "model_name"})
     manual_required_without_models = discovery_metadata.get("discovery_status") == "manual_required" and len(available_models_json) == 0

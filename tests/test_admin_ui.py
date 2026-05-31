@@ -1640,6 +1640,7 @@ def test_admin2_exposes_admin_lifecycle_and_provider_controls(
     assert 'value="together" data-default-base-url="https://api.together.xyz/v1"' in llm.text
     assert 'value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1"' in llm.text
     assert 'name="bedrock_region" data-bedrock-region-input' in llm.text
+    assert 'value="ap-southeast-1"' in llm.text
     assert 'value="custom_openai_compatible" data-default-base-url=""' in llm.text
     assert "Custom OpenAI-compatible · advanced" in llm.text
     assert "If discovery cannot load models, enter the exact model ID manually." in llm.text
@@ -6344,12 +6345,42 @@ def test_admin_llm_provider_dropdown_syncs_base_url_and_note():
     admin_html = Path("app/templates/admin.html").read_text()
 
     assert "knownDefaultBaseUrls" in admin_html
+    assert "function applyLlmAdapterState(form, forceProviderDefault = false)" in admin_html
     assert "baseUrlInput.dataset.lastDefaultBaseUrl" in admin_html
+    assert "forceProviderDefault || !baseUrlInput.value" in admin_html
     assert "baseUrlInput.value = selected.dataset.defaultBaseUrl;" in admin_html
+    assert "baseUrlField.hidden = isBedrock;" in admin_html
+    assert "Derived endpoint:" in admin_html
+    assert "data-bedrock-derived-url" in admin_html
+    assert "applyLlmAdapterState(form, true)" in admin_html
     assert "selectedProviderName" in admin_html
     assert "selected.dataset.defaultBaseUrl" in admin_html
     assert "Changing this endpoint will save as Custom OpenAI-compatible." in admin_html
     assert "The official OpenAI chat adapter uses https://api.openai.com/v1." not in admin_html
+
+
+def test_admin2_llm_provider_dropdown_syncs_base_url_and_bedrock_region():
+    admin2_html = Path("app/templates/admin2.html").read_text()
+
+    assert "function syncAdmin2LlmProviderForm(form, forceProviderDefault = false)" in admin2_html
+    assert "knownDefaultBaseUrls" in admin2_html
+    assert "baseUrlInput.dataset.lastDefaultBaseUrl" in admin2_html
+    assert "baseUrlInput.readOnly = isBedrock;" in admin2_html
+    assert "baseUrlField.hidden = isBedrock;" in admin2_html
+    assert 'baseUrlField.classList.toggle("is-hidden", isBedrock);' in admin2_html
+    assert "forceProviderDefault || !baseUrlInput.value" in admin2_html
+    assert "syncAdmin2LlmProviderForm(form, true)" in admin2_html
+    assert "data-llm-inspect-form" in admin2_html
+    assert "data-llm-save-form" in admin2_html
+    assert "data-llm-base-url" in admin2_html
+    assert "Derived endpoint:" in admin2_html
+    assert "data-bedrock-derived-url" in admin2_html
+    assert "buildBedrockBaseUrl(region)" in admin2_html
+    assert "Change region to update the standard gateway URL." in admin2_html
+    assert 'data-llm-adapter-note' in admin2_html
+    assert "{% for region in llm_form.bedrock_regions %}" in admin2_html
+    assert "{% if ('bedrock-mantle.' ~ region ~ '.') in config.base_url %}selected{% endif %}" in admin2_html
+    assert '<option value="us-east-1">us-east-1</option><option value="us-west-2">us-west-2</option>' not in admin2_html
 
 
 def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, make_user):
@@ -6570,6 +6601,38 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     assert save.status_code == 303
     assert saved_config.adapter_kind.value == "bedrock_chat"
     assert saved_config.base_url == "https://bedrock-mantle.us-east-1.api.aws/v1"
+
+
+def test_admin2_bedrock_draft_ignores_stale_localhost_base_url(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Admin2 Bedrock")
+    make_user(email="admin2-bedrock-stale@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm._list_bedrock_chat_models",
+        lambda **kwargs: ["amazon.nova-micro-v1:0"],
+    )
+
+    client.post("/login", data={"email": "admin2-bedrock-stale@example.com", "password": "password-1"}, follow_redirects=False)
+    draft = client.post(
+        "/admin/llm-configs/drafts",
+        data={
+            "team_id": str(team.id),
+            "label": "Admin2 Bedrock",
+            "provider_preset": "bedrock_http_gateway",
+            "base_url": "http://localhost:11434",
+            "bedrock_region": "us-west-2",
+            "bearer_token": "bedrock-api-key",
+            "return_view": "admin2",
+            "return_tab": "llm",
+        },
+        follow_redirects=False,
+    )
+
+    assert draft.status_code == 303
+    saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
+    assert saved_config is not None
+    assert saved_config.provider_preset == "bedrock_http_gateway"
+    assert saved_config.adapter_kind == LlmAdapterKind.bedrock_chat
+    assert saved_config.base_url == "https://bedrock-mantle.us-west-2.api.aws/v1"
 
 
 def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(client, db_session, make_team, make_user, monkeypatch):

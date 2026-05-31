@@ -36,7 +36,7 @@ The admin UI exposes branded presets:
 
 If a branded OpenAI-compatible preset is saved with a changed base URL, OpenScribe stores it as `custom_openai_compatible`. Bedrock remains the existing HTTP gateway path; native AWS Bedrock Converse/IAM is not part of this slice.
 
-For Bedrock HTTP gateway, use the region selector for standard `bedrock-mantle.<region>.api.aws` endpoints. A non-Mantle custom Bedrock URL is saved as Custom OpenAI-compatible so runtime adapter semantics stay explicit.
+For Bedrock HTTP gateway, use the region selector for standard `bedrock-mantle.<region>.api.aws` endpoints. The admin UI force-applies provider defaults when the selected provider changes, derives the standard base URL from the selected Bedrock region, hides the editable Base URL field while the Bedrock preset is selected, and shows the derived endpoint beside the region selector. The server treats an explicit Bedrock region as the source of truth even if the browser submits a stale base URL. A non-Mantle custom Bedrock URL is saved as Custom OpenAI-compatible so runtime adapter semantics stay explicit.
 
 ## Model Discovery
 
@@ -66,7 +66,7 @@ Required-token presets must have an existing or replacement Vault-backed token. 
 
 Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.
 
-Queued or processing generated documents block normal provider edits and provider deletion so runtime snapshots stay stable. Credential correction is the exception: a system admin may replace the Vault-backed key for the same provider endpoint while generated documents are queued or processing, because an invalid key can otherwise leave failed or stuck generation work blocking the fix. If the corrected key still exposes the saved default model, the provider remains `ready` and keeps its current availability instead of being moved back to incomplete setup. If the full edit form submits incidental label/model/availability changes during this correction, OpenScribe keeps those existing provider fields unchanged and updates only the credential/discovery metadata. A provider already left in `pending_model_selection` by an earlier credential correction may be finalized while generated documents remain queued or processing.
+Queued or processing generated documents block normal provider edits and provider deletion so runtime snapshots stay stable. Credential correction is the exception: a system admin may replace the Vault-backed key for the same provider endpoint while generated documents are queued or processing, because an invalid key can otherwise leave failed or stuck generation work blocking the fix. If the corrected key still exposes the saved default model, the provider remains `ready` and keeps its current availability instead of being moved back to incomplete setup. If the full edit form submits incidental label/model/availability changes during this correction, OpenScribe keeps those existing provider fields unchanged and updates only the credential/discovery metadata. A provider already left in `pending_model_selection` by an earlier credential correction may be finalized while generated documents remain queued or processing. A ready provider may also be toggled between available/unavailable during queued or processing generations when label, endpoint, and model stay unchanged.
 
 ## Generated Document Request Payloads
 

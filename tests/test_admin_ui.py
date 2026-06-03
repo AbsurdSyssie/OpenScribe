@@ -4324,6 +4324,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "card.className = 'structured-section-block';" in structured_js
     assert "copyButton.setAttribute('data-copy-structured-section', '');" in structured_js
     assert "collectStructuredSectionLines" in structured_js
+    assert "return collectSelectedNoteLines({ mode: 'structured' })" in structured_js
+    assert ".filter((line) => line.sectionKey === sectionKey)" in structured_js
     assert "dom.generatedStructuredPanel.addEventListener('click'" in actions_js
     assert "navigator.clipboard.writeText(textToCopy);" in actions_js
     assert "data-structured-copy-review-sentinel" not in structured_js

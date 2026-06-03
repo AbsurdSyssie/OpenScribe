@@ -1,5 +1,43 @@
 # Progress
 
+## 2026-06-02 Section Copy Selection Fix
+
+### Scope
+
+- Fixed single structured-section copy so it respects checked/unchecked UI line selections, matching whole-note copy behavior.
+
+### Checklist
+
+- Target behavior: copying one structured section copies only selected nonblank lines from that section.
+- Affected schema/modules/endpoints: `app/static/js/transcribe/structured.js`; no schema or endpoint change.
+- Affected tests: transcribe frontend regression coverage in `tests/test_admin_ui.py`.
+- Architecture risks: no ownership, privacy, deletion, encryption, provider resolution, or structured-note JSON contract redesign.
+- Docs referenced/updated: `docs/progress.md`.
+- Reuse decision: reused existing `collectSelectedNoteLines({ mode: 'structured' })` whole-copy collector and filtered by section key.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/static/js/transcribe/structured.js`: section copy now delegates to selected-line collection used by whole-note copy.
+- `tests/test_admin_ui.py`: asserts section copy path reuses selected-line collector.
+- `docs/progress.md`: records scope, checklist, tests, docs, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_frontend_uses_global_template_selector_for_generation_controls"`: passed, 1 test.
+- `node --check app/static/js/transcribe/structured.js`: passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; copy operates only on already-visible owner UI text.
+- Ownership rules: unchanged; no backend access path added.
+- Deletion semantics: unchanged; no persistence or lifecycle behavior changed.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged; section keys/labels stay same, copied text now follows existing UI selection contract.
+
 ## 2026-05-31 Generation Regression Fixes
 
 ### Scope

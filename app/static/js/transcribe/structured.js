@@ -1404,9 +1404,10 @@ export function createStructuredEditor({
     if (!(section instanceof HTMLElement)) {
       return [];
     }
-    return [...section.querySelectorAll('[data-structured-statement-row]')]
-      .map((row) => row.querySelector('[data-structured-line-input]')?.value?.trim() || '')
-      .filter((text) => text.length > 0);
+    const sectionKey = section.dataset.sectionKey || '';
+    return collectSelectedNoteLines({ mode: 'structured' })
+      .filter((line) => line.sectionKey === sectionKey)
+      .map((line) => line.text);
   };
 
   const hasNoteInputContent = () => {

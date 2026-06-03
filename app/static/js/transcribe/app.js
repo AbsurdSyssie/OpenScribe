@@ -1876,6 +1876,44 @@ let statusDetailsHideTimer = null;
 
       const maskedPiiText = (value) => value.replace(/\S/g, '•');
 
+      let lastDraftRenderSignature = null;
+      let deferredDraftRenderText = null;
+
+      const draftRenderSignature = (text, entities = [], options = {}) => {
+        const highlightSignature = uniquePiiEntities(entities)
+          .map((entity) => [
+            entity.source || 'detected',
+            String(entity.entity_type || 'PII').toLowerCase(),
+            entity.value || '',
+          ].join('\u0000'))
+          .sort()
+          .join('\u0001');
+        return JSON.stringify({
+          transcriptId: transcriptId || '',
+          text: text || '',
+          maskPii: Boolean(options.maskPii),
+          highlights: highlightSignature,
+        });
+      };
+
+      const selectionTouchesActiveDraft = () => {
+        if (!activeDraft || activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) return false;
+        const selection = window.getSelection?.();
+        if (!selection || selection.isCollapsed) return false;
+        const { anchorNode, focusNode } = selection;
+        return Boolean(
+          (anchorNode && activeDraft.contains(anchorNode))
+          || (focusNode && activeDraft.contains(focusNode))
+        );
+      };
+
+      const flushDeferredDraftRender = () => {
+        if (deferredDraftRenderText === null || selectionTouchesActiveDraft()) return;
+        const text = deferredDraftRenderText;
+        deferredDraftRenderText = null;
+        renderDraft(text, { force: true });
+      };
+
       const renderHighlightedTranscript = (text, entities = [], options = {}) => {
         if (!activeDraft) return;
         const maskPii = Boolean(options.maskPii);
@@ -1905,19 +1943,42 @@ let statusDetailsHideTimer = null;
           .join('');
       };
 
-      const renderDraft = (text) => {
+      const renderDraft = (text, options = {}) => {
         if (!activeDraft) return;
         const nextText = text || '';
+        const force = Boolean(options.force);
         currentDraftText = nextText;
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
+          if (!force && activeDraft.value === nextText) {
+            renderTranscriptStats(nextText);
+            return;
+          }
           activeDraft.value = nextText;
           activeDraft.placeholder = 'No transcript text yet. Upload a recording or use the microphone to begin.';
           renderTranscriptStats(nextText);
           return;
         }
+
+        const nextSignature = draftRenderSignature(nextText, workspaceTranscriptPiiEntities, { maskPii: piiMasked });
+        if (!force && nextSignature === lastDraftRenderSignature) {
+          renderTranscriptStats(nextText);
+          return;
+        }
+        if (!force && selectionTouchesActiveDraft()) {
+          deferredDraftRenderText = nextText;
+          renderTranscriptStats(nextText);
+          return;
+        }
+        deferredDraftRenderText = null;
         renderHighlightedTranscript(nextText, workspaceTranscriptPiiEntities, { maskPii: piiMasked });
+        lastDraftRenderSignature = nextSignature;
         renderTranscriptStats(nextText);
       };
+
+      document.addEventListener('selectionchange', flushDeferredDraftRender);
+      document.addEventListener('mouseup', () => window.setTimeout(flushDeferredDraftRender, 0));
+      document.addEventListener('keyup', flushDeferredDraftRender);
+      activeDraft?.addEventListener?.('blur', flushDeferredDraftRender);
 
       const canUseWholeFileInput = () => Boolean(transcriptId && hasSttSelection && sttAvailable && activeIngestionMode === 'whole_file');
 
@@ -2816,7 +2877,7 @@ let statusDetailsHideTimer = null;
           : rows.map((entity) => ({ ...entity, value: '' }));
         currentPiiEntities = displayRows;
         if (updateTranscriptHighlights) {
-          renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });
+          renderDraft(currentDraftText);
         }
         if (piiVisibilityToggle) {
           piiVisibilityToggle.textContent = piiMasked ? 'Show PII' : 'Hide PII';
@@ -2891,7 +2952,8 @@ let statusDetailsHideTimer = null;
 
       piiVisibilityToggle?.addEventListener('click', () => {
         piiMasked = !piiMasked;
-        renderPiiEntities(currentPiiEntities, { includeWorkspaceManual: false });
+        renderPiiEntities(currentPiiEntities, { includeWorkspaceManual: false, updateTranscriptHighlights: false });
+        renderDraft(currentDraftText, { force: true });
       });
 
       piiAddForm?.addEventListener('submit', async (event) => {
@@ -3205,10 +3267,13 @@ let statusDetailsHideTimer = null;
         const followupDocuments = generatedDocuments.filter((document) => document.generator_type === 'followup' || document.generator_type === 'quick_action');
         const sidebarTranscripts = Array.isArray(workspace.recent_transcripts) ? workspace.recent_transcripts : [];
         const nextTranscriptId = transcript?.id || null;
-        if (nextTranscriptId !== lastRenderedTranscriptId) {
+        const activeTranscriptChanged = nextTranscriptId !== lastRenderedTranscriptId;
+        if (activeTranscriptChanged) {
           micIssue = null;
           localStatusLabel = null;
           lastRenderedTranscriptId = nextTranscriptId;
+          lastDraftRenderSignature = null;
+          deferredDraftRenderText = null;
         }
         transcriptId = transcript?.id || null;
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
@@ -3260,8 +3325,8 @@ let statusDetailsHideTimer = null;
         if (transcript) {
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           const draftText = transcript.current_draft_text || '';
-          renderDraft(draftText);
-          renderPiiEntities(workspaceTranscriptPiiEntities);
+          renderDraft(draftText, { force: activeTranscriptChanged });
+          renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });
           syncGenerationAvailability(draftText);
           if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
           if (renameTitleInput) renameTitleInput.value = transcript.title || '';
@@ -3275,8 +3340,8 @@ let statusDetailsHideTimer = null;
           syncRecordingModeControl(transcript.ingestion_mode);
         } else {
           currentTranscriptStatus = null;
-          renderDraft('');
-          renderPiiEntities([]);
+          renderDraft('', { force: activeTranscriptChanged });
+          renderPiiEntities([], { updateTranscriptHighlights: false });
           syncGenerationAvailability('');
           if (sessionTitleDisplay) sessionTitleDisplay.value = '';
           if (renameTitleInput) renameTitleInput.value = '';

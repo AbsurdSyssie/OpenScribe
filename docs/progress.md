@@ -7656,3 +7656,15 @@
 - Added focused runtime regression coverage for persisted `openai_cloud` rows on the Deepgram host staying on the OpenAI adapter path.
 - Updated `docs/stt-config.md`.
 - Architecture checkpoint: privacy boundaries unchanged; provider resolution now preserves stored adapter semantics for existing rows while keeping new Deepgram admin writes on the known `generic_rest` contract; no ownership, deletion cascade, encryption-key, or structured-note contract changes.
+
+# 2026-06-03 Transcript Render Guard
+
+- Added a single guarded transcript render path in the transcribe workspace so no-op workspace refreshes no longer rebuild transcript DOM and clear text selection.
+- Deferred real transcript/highlight redraws while user selection touches the transcript, keeping only the latest pending update; transcript switches and PII visibility changes force redraw immediately.
+- Stopped PII table refreshes from bypassing the transcript render guard, and bumped the transcribe app asset version.
+- Added focused static regression coverage for the guarded render path and cache-busting asset version.
+- Tests: `node --check app/static/js/transcribe/app.js` passed.
+- Tests: `.venv/bin/pytest -q tests/test_web_refactor.py -k "transcribe_transcript_render_guard"` passed, 1 test.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility or user_transcribe_page_shows_workspace_shell"` passed, 2 tests.
+- Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_reorder_blocks_blank_note_lines"` passed, 1 test.
+- Architecture checkpoint: privacy boundaries preserved by forcing redraw on active transcript changes and PII visibility changes; ownership rules unchanged; deletion semantics unchanged; provider rules unchanged; structured-note contract unchanged.

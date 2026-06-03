@@ -148,3 +148,21 @@ def test_note_editor_empty_state_tracks_existing_note_content():
     assert "display: none;" in head_assets
     assert "dom.generatedStructuredPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js
     assert "dom.generatedFreeformPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js
+
+
+def test_transcribe_transcript_render_guard_owns_transcript_dom_updates():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    assert "let lastDraftRenderSignature = null;" in app_js
+    assert "let deferredDraftRenderText = null;" in app_js
+    assert "const draftRenderSignature = (text, entities = [], options = {}) =>" in app_js
+    assert "const selectionTouchesActiveDraft = () =>" in app_js
+    assert "document.addEventListener('selectionchange', flushDeferredDraftRender);" in app_js
+    assert "document.addEventListener('keyup', flushDeferredDraftRender);" in app_js
+    assert "lastDraftRenderSignature = null;" in app_js
+    assert "deferredDraftRenderText = null;" in app_js
+    assert "renderDraft(draftText, { force: activeTranscriptChanged });" in app_js
+    assert "renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in app_js
+    assert "renderDraft(currentDraftText, { force: true });" in app_js
+    assert "renderHighlightedTranscript(currentDraftText" not in app_js
+    assert app_js.count("renderHighlightedTranscript(nextText, workspaceTranscriptPiiEntities, { maskPii: piiMasked });") == 1

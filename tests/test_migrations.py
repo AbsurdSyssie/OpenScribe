@@ -329,6 +329,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "follow_up_prompt_text",
         "prompt_snapshot_text",
         "structured_context_json",
+        "generation_snapshot_json",
         "structured_section_definitions_json",
         "llm_request_payload_json_encrypted",
         "original_output_text_encrypted",

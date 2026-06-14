@@ -291,9 +291,12 @@ Note options
 {% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
 {% if allowed_llm_models|length > 1 %}
 <select id="note-options-model" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm" data-note-options-model-select>
-<option value="">Team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or "none" }})</option>
+<option value="">Team default</option>
+{% set team_default_llm_model = llm_selection.model_name_override or llm_selection.config.model_name %}
 {% for model in allowed_llm_models %}
+{% if model != team_default_llm_model %}
 <option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
+{% endif %}
 {% endfor %}
 </select>
 {% else %}

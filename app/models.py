@@ -1326,6 +1326,7 @@ class GeneratedDocument(Base):
     follow_up_prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    generation_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode_snapshot: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
     freeform_working_note_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_working_note_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

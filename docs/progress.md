@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-06-14 Redaction Fail-Closed Regression
+
+### Scope
+
+- Fixed full-suite regressions in transcribe PII refresh, LLM model display, and generated-document redaction fail-closed behavior.
+
+### Checklist
+
+- Target behavior: workspace refresh re-renders PII highlights/entities; user-selected LLM model displays without leaking team default model text into the transcribe page; redaction failures do not leave a provider request payload stored.
+- Affected schema/modules/endpoints: `generated_documents` schema/model, generated-document queue/process service, transcribe workspace JS/template; no endpoint contract change.
+- Affected tests: failing admin UI regressions, API redaction fail-closed regressions, migration expected-schema check.
+- Architecture risks: `llm_request_payload_json_encrypted` is transcript-derived provider payload; it must remain empty until redacted prompt construction succeeds.
+- Docs referenced/updated: `docs/progress.md` and daily note in `docs/progress/`.
+- Reuse decision: reused existing generated-document snapshot flow and added a narrow metadata JSON column instead of overloading the encrypted provider payload field.
+- Code complete: yes.
+- Tests added/updated: migration expected-schema updated for the new column.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/models.py`, `alembic/versions/t9u0v1w2x3y4_add_generation_snapshot_to_generated_documents.py`: add nullable `generation_snapshot_json`.
+- `app/services/templates.py`: store wait/options queue metadata in `generation_snapshot_json`; keep provider request payload empty until redacted request build succeeds.
+- `app/static/js/transcribe/app.js`: refresh PII table and transcript highlights from workspace PII entities.
+- `app/templates/transcribe/_workspace.html`: hide team-default model name from the user note-options selector while preserving default selection.
+- `tests/test_migrations.py`: include new schema column.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Redaction Fail Closed Regression.md`: record work and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py tests/test_api.py -k "transcribe_workspace_refresh_renders_updated_pii_entities or user_transcribe_page_shows_resolved_user_llm_model or transcribe_frontend_uses_global_template_selector_for_generation_controls or generated_document_pii_no_reveal_mode_strips_cached_values or template_generation_fails_closed_when_working_note_redaction_fails or quick_action_generation_fails_closed_when_working_note_redaction_fails"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_migrations.py -k "expected_schema"`: passed, 1 test.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: preserved; failed redaction no longer leaves provider payload in the LLM request field.
+- Ownership rules: unchanged; generated documents and transcript content remain owner-scoped.
+- Deletion semantics: unchanged; generated-document metadata still follows transcript-root retention/cascade.
+- Provider rules: unchanged; LLM resolution still uses user preference with team fallback.
+- Structured-note contract: unchanged.
+
 ## 2026-06-02 Section Copy Selection Fix
 
 ### Scope

@@ -145,6 +145,8 @@ def _note_generation_options_for_user(db: Session, *, user_id: UUID) -> NoteGene
 
 
 def _note_generation_options_from_document(db: Session, *, document: GeneratedDocument) -> NoteGenerationOptions:
+    if isinstance(document.generation_snapshot_json, dict):
+        return _normalize_note_generation_options(document.generation_snapshot_json.get(NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY))
     payload = generated_document_llm_request_payload(db, document=document)
     if isinstance(payload, dict):
         return _normalize_note_generation_options(payload.get(NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY))
@@ -152,6 +154,8 @@ def _note_generation_options_from_document(db: Session, *, document: GeneratedDo
 
 
 def _document_waits_for_transcript(db: Session, *, document: GeneratedDocument) -> bool:
+    if isinstance(document.generation_snapshot_json, dict):
+        return document.generation_snapshot_json.get(GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY) is True
     payload = generated_document_llm_request_payload(db, document=document)
     return isinstance(payload, dict) and payload.get(GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY) is True
 
@@ -2742,6 +2746,10 @@ def queue_document_generation_from_template(
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
         structured_context_json=None,
+        generation_snapshot_json={
+            NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id),
+            GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript,
+        },
         working_note_mode_snapshot=working_note_mode,
         freeform_working_note_snapshot_encrypted=None,
         structured_working_note_snapshot_json=None,
@@ -2770,14 +2778,6 @@ def queue_document_generation_from_template(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    set_generated_document_llm_request_payload(
-        db,
-        document=generated_document,
-        plaintext={
-            NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id),
-            GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript,
-        },
-    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -2833,6 +2833,7 @@ def queue_followup_generation(
         llm_config_id=config.id,
         source_template_name="Follow-up",
         follow_up_prompt_text=None,
+        generation_snapshot_json={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
         working_note_mode_snapshot=working_note_mode,
         freeform_working_note_snapshot_encrypted=None,
         structured_working_note_snapshot_json=None,
@@ -2861,11 +2862,6 @@ def queue_followup_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    set_generated_document_llm_request_payload(
-        db,
-        document=generated_document,
-        plaintext={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
-    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)
@@ -2925,6 +2921,7 @@ def queue_quick_action_generation(
         source_template_name="Quick action",
         source_quick_action_name=quick_action.name,
         prompt_snapshot_text=prompt_snapshot_text,
+        generation_snapshot_json={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
         working_note_mode_snapshot=working_note_mode,
         freeform_working_note_snapshot_encrypted=None,
         structured_working_note_snapshot_json=None,
@@ -2952,11 +2949,6 @@ def queue_quick_action_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    set_generated_document_llm_request_payload(
-        db,
-        document=generated_document,
-        plaintext={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
-    )
     db.add(generated_document)
     db.commit()
     db.refresh(generated_document)

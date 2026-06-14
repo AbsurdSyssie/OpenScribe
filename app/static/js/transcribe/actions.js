@@ -404,8 +404,7 @@ export function attachTranscribeActions({
         }
         return;
       }
-      const body = lines.join('\n');
-      const textToCopy = label ? `${label}:\n${body}` : body;
+      const textToCopy = lines.join('\n');
       try {
         await navigator.clipboard.writeText(textToCopy);
         if (dom.structuredCopyStatus) {

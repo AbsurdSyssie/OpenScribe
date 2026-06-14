@@ -371,7 +371,7 @@ Implemented now for manual browser testing:
   - the owner edit API also rejects duplicate structured `section_key` values in one save payload so rendered note text and persisted section rows cannot diverge
   - renders the full note text onto the generated document
   - persists individual section rows for section-by-section display
-  - the workspace shows line-selectable EMIS section output with clearer row separation and a copy-selected-lines action, including after workspace API refreshes and polling
+  - the workspace shows line-selectable EMIS section output with clearer row separation, a copy-selected-lines action, and section-header copy that copies only section body text, including after workspace API refreshes and polling
   - generated-note copy controls now require the owner to view the relevant generated content first: structured section copy unlocks per section after its bottom is visible, reaching a later structured section bottom marks earlier sections reviewed, and generated freeform copy unlocks after the note bottom is visible; changing the copyable note text revokes the review state until the updated bottom is visible; hidden output panes do not count as reviewed; blocked copy controls remain clickable and surface a toast instead of an inline alert
 - when the owner edits a generated note in the browser and switches to another note version before autosave fires, the UI now saves the dirty note first and only switches versions if that save succeeds
 - before the worker sends transcript-derived text to an external LLM:

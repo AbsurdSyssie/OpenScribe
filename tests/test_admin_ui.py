@@ -1451,6 +1451,29 @@ def test_leader_home_can_delete_team_user(client, db_session, make_team, make_us
     assert db_session.get(type(member), member.id) is None
 
 
+def test_user_delete_reassigns_hallucination_check_selection(client, db_session, make_team, make_user, make_llm_config):
+    team = make_team(name="Clinic Hallucination Delete User")
+    leader = make_user(email="leader-delete-checker@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    member = make_user(email="member-delete-checker@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    llm_config = make_llm_config(team=team, actor=leader, label="Checker LLM", available_models_json=["gpt-4o-mini"])
+    selection = TeamHallucinationCheckSelection(
+        team_id=team.id,
+        llm_config_id=llm_config.id,
+        model_name_override="gpt-4o-mini",
+        selected_by_user_id=member.id,
+    )
+    db_session.add(selection)
+    db_session.commit()
+
+    client.post("/login", data={"email": "leader-delete-checker@example.com", "password": "password-1"}, follow_redirects=False)
+    delete_response = client.post(f"/home/users/{member.id}/delete", follow_redirects=False)
+
+    assert delete_response.status_code == 303
+    assert db_session.get(User, member.id) is None
+    db_session.refresh(selection)
+    assert selection.selected_by_user_id == leader.id
+
+
 def test_home_restyled_team_management_uses_member_menu_without_duplicate_user_table(client, make_team, make_user):
     team = make_team(name="Clinic Restyled Team Management")
     make_user(email="leader-restyled-team@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -4327,6 +4350,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "return collectSelectedNoteLines({ mode: 'structured' })" in structured_js
     assert ".filter((line) => line.sectionKey === sectionKey)" in structured_js
     assert "dom.generatedStructuredPanel.addEventListener('click'" in actions_js
+    assert "const textToCopy = lines.join('\\n');" in actions_js
+    assert "const textToCopy = label ? `${label}:\\n${body}` : body;" not in actions_js
     assert "navigator.clipboard.writeText(textToCopy);" in actions_js
     assert "data-structured-copy-review-sentinel" not in structured_js
     assert "data-freeform-copy-review-sentinel" not in structured_js
@@ -5904,6 +5929,14 @@ def test_admin_page_can_delete_team_and_owned_records(
     )
     llm_config = make_llm_config(team=team, actor=admin, label="Team LLM", available_models_json=["gpt-4o-mini"])
     make_llm_selection(config=llm_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
+    db_session.add(
+        TeamHallucinationCheckSelection(
+            team_id=team.id,
+            llm_config_id=llm_config.id,
+            model_name_override="gpt-4o-mini",
+            selected_by_user_id=admin.id,
+        )
+    )
     deidentification_provider = make_deidentification_provider(actor=admin, label="Team Deid", adapter_kind=DeidentificationAdapterKind.generic_rest, base_url="https://deid.example.com", detect_path="/detect")
     make_deidentification_provider_assignment(team=team, provider=deidentification_provider, actor=admin)
     make_deidentification_selection(team=team, provider=deidentification_provider, actor=leader)
@@ -5948,6 +5981,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     assert db_session.get(TeamLlmConfig, llm_config.id) is None
     assert db_session.scalar(select(func.count()).select_from(TeamSttSelection).where(TeamSttSelection.team_id == team.id)) == 0
     assert db_session.scalar(select(func.count()).select_from(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id)) == 0
+    assert db_session.scalar(select(func.count()).select_from(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id)) == 0
     assert db_session.scalar(select(func.count()).select_from(TeamDeidentificationProviderAssignment).where(TeamDeidentificationProviderAssignment.team_id == team.id)) == 0
     assert db_session.scalar(select(func.count()).select_from(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id)) == 0
     assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.team_id == team.id)) == 0

@@ -173,7 +173,7 @@ User can change:
 
 How:
 - toggle line selection in structured output
-- use a section header copy button
+- use a section header copy button; this copies only that section body, not the section heading
 - for LLM-generated notes, scroll to the bottom of a structured section before copying that section
 - for LLM-generated freeform notes, scroll to the bottom of the generated note before copying selected note lines
 - if the copyable generated-note text changes after review, scroll to the updated bottom again before copying

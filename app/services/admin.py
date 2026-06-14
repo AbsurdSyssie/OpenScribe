@@ -31,6 +31,7 @@ from app.models import (
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
+    TeamHallucinationCheckSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -1334,6 +1335,11 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
         selection.selected_by_user_id = actor.id
         db.add(selection)
 
+    hallucination_check_selections = db.scalars(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.selected_by_user_id == user.id))
+    for selection in hallucination_check_selections:
+        selection.selected_by_user_id = actor.id
+        db.add(selection)
+
     deidentification_providers_created = db.scalars(select(DeidentificationProvider).where(DeidentificationProvider.created_by_user_id == user.id))
     for provider in deidentification_providers_created:
         provider.created_by_user_id = actor.id
@@ -1452,6 +1458,9 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         llm_selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
         if llm_selection is not None:
             db.delete(llm_selection)
+        hallucination_check_selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+        if hallucination_check_selection is not None:
+            db.delete(hallucination_check_selection)
         deidentification_selection = db.scalar(select(TeamDeidentificationSelection).where(TeamDeidentificationSelection.team_id == team.id))
         if deidentification_selection is not None:
             db.delete(deidentification_selection)

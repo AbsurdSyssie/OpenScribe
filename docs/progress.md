@@ -7591,6 +7591,52 @@
 - Updated static web regression coverage and `docs/transcribe_brief.md`.
 - Architecture checkpoint: privacy boundaries, ownership, deletion semantics, provider rules, and structured-note contract unchanged; existing owner-only generation endpoints remain the only execution path.
 
+## 2026-06-07 Hallucination Checker Delete Cleanup
+
+### Scope
+
+- Fixed user deletion cleanup for `TeamHallucinationCheckSelection.selected_by_user_id` so deleting the selecting user reassigns attribution to the deleting actor.
+- Added explicit hallucination-check selection cleanup in team hard-delete before team LLM configs are removed.
+
+### Checklist
+
+- Target behavior: admin/team user deletion no longer leaves hallucination-check selection FKs pointing at deleted users.
+- Affected schema/modules/endpoints: `app/services/admin.py`; no schema or endpoint contract change.
+- Affected tests: admin deletion regressions in `tests/test_admin_ui.py`.
+- Architecture risks: deletion semantics/provider selection cleanup only; no content visibility, ownership, encryption, provider resolution, or structured-note contract redesign.
+- Docs referenced/updated: `docs/progress.md`.
+- Reuse decision: reused existing STT, LLM, de-identification, and clinical NLP selection reassignment pattern.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/admin.py`: reassigns hallucination-check selection attribution during user deletion and deletes team checker selection during team hard-delete.
+- `tests/test_admin_ui.py`: covers user deletion reassignment and team deletion cleanup.
+- `docs/progress.md`: records scope, checklist, tests, docs, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "delete_team_and_owned_records or user_delete_reassigns_hallucination_check_selection"`: passed, 2 tests.
+
+### Documentation
+
+- Added this progress note; no API/user documentation needed because behavior is internal deletion cleanup.
+
+### Risks / assumptions
+
+- Assumes reassigning selection attribution to the deleting actor remains intended for admin-managed provider selection rows, matching existing provider cleanup.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access added.
+- Ownership rules: unchanged; selection attribution changes only to satisfy deletion cleanup.
+- Deletion semantics: strengthened by covering the new hallucination-check provider-selection FK.
+- Provider rules: unchanged; active checker provider/model selection remains intact unless the team itself is deleted.
+- Structured-note contract: unchanged.
+
 # 2026-05-19 Working Note Correction Plan Critique
 
 - Reviewed `working_note_corrections.md` against current Working note UI/backend code and `docs/working_note_implementation.md`.

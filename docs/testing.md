@@ -90,7 +90,7 @@ What it does:
 - the GLM 2 note pane prioritises the latest generated note above the note-input area and allows structured note generation from EMIS context alone when the selected template is structured
 - the GLM 2 structured-note output exposes both the `Copy Selected` control and its status hook so line-selection copy remains wired after live workspace refreshes
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
-- structured-note section headers expose individual copy buttons for copying a whole section without changing selected-line state
+- structured-note section headers expose individual copy buttons for copying a whole section body without prepending the section heading
 - generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft and is revoked when the copyable note text changes; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
 - generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules

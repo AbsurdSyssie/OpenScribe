@@ -44,6 +44,7 @@ Quick start:
 - run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker, and launch the dev server
 - local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`; copy the current `.env.example` if these are missing
 - production must set `APP_ENV=production` and `COOKIE_SECURE_MODE=always`; CSRF secret material is read from `CSRF_SECRET`/`SECRET_KEY` when set, otherwise the app creates or reuses a stable Vault KV secret
+- production must choose HSTS ownership: keep `HSTS_SOURCE=app` when OpenScribe emits `Strict-Transport-Security`, set `HSTS_SOURCE=proxy` when Cloudflare/reverse proxy emits HSTS for all responses, or set `HSTS_SOURCE=proxy_static_fallback` when the proxy covers dynamic pages but misses `/static/` assets
 - `./start-dev.sh` now bootstraps a persistent local Vault, stores the local root token and unseal key under `.local/vault/`, and keeps Postgres/Vault state aligned across restarts
 - by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly
 - the default dev bind exposes FastAPI on `0.0.0.0` so a reverse proxy or another machine can reach the frontend
@@ -85,6 +86,7 @@ Troubleshooting:
 
 - If startup fails with `COOKIE_SECURE_MODE=always is required in production`, either set `APP_ENV=local` for local development or set `COOKIE_SECURE_MODE=always` for production HTTPS.
 - If startup fails with `CSRF_SECRET`/`SECRET_KEY` or Vault mentioned, either set a strong `CSRF_SECRET` or make Vault available with KV-v2 mounted at `VAULT_KV_MOUNT`.
+- If ZAP or browser tooling reports multiple HSTS headers, ensure only one layer owns HSTS for that response. For Cloudflare/proxy-owned HSTS, set `HSTS_SOURCE=proxy`; if only static assets lack HSTS, set `HSTS_SOURCE=proxy_static_fallback`; otherwise keep `HSTS_SOURCE=app`.
 - If the smoke test says mail is disabled, confirm `MAIL_TRANSPORT=resend` is in the active `.env` used by the running process.
 - If Resend rejects the sender, confirm `MAIL_FROM_ADDRESS` uses the verified domain exactly.
 - If reset/setup links point at localhost, set `APP_PUBLIC_URL` to the public HTTPS URL users use to reach this instance.

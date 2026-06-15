@@ -16,6 +16,47 @@ from ..main import (
 from ..models import UserOnboardingState
 
 
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    return Response(
+        "\n".join(
+            [
+                "User-agent: *",
+                "Disallow: /api/",
+                "Disallow: /admin",
+                "Disallow: /home",
+                "Disallow: /transcribe",
+                "Disallow: /settings",
+                "Disallow: /account",
+                "Allow: /",
+                "",
+            ]
+        ),
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.get("/.well-known/security.txt", include_in_schema=False)
+def security_txt():
+    return Response(
+        "\n".join(
+            [
+                "Contact: mailto:oscar@meddleapp.com",
+                "Expires: 2027-06-01T00:00:00Z",
+                "Preferred-Languages: en",
+                "Canonical: https://openscribe.co.uk/.well-known/security.txt",
+                "",
+            ]
+        ),
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml():
+    return Response("Sitemap not published.\n", status_code=status.HTTP_404_NOT_FOUND, media_type="text/plain; charset=utf-8")
+
+
 @app.get("/", response_class=HTMLResponse)
 def splash_page(request: Request, db: Session = Depends(get_db)):
     context = _current_context_optional(request, db)

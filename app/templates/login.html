@@ -410,6 +410,7 @@
         <p class="muted">This option only appears before anyone has used the system.</p>
       </div>
       <form method="post" action="/bootstrap/system-admin">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <label>
           Email
           <input type="email" name="email" required autocomplete="email">
@@ -430,6 +431,7 @@
         <p class="muted">If this is a new account, you may be asked to finish setup or enter a code from your authenticator app.</p>
       </div>
       <form method="post" action="/login">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <label>
           Email
           <input type="email" name="email" required autocomplete="email">

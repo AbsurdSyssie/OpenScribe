@@ -147,8 +147,20 @@ Cookie security uses:
 - `CSRF_SECRET` or `SECRET_KEY` for an explicit CSRF signing secret
 - `CSRF_SECRET_VAULT_REF` optional, defaulting to `secret:openscribe/platform/csrf` when Vault auto-bootstrap is used
 - `COOKIE_SECURE_MODE=auto` by default
+- `HSTS_SOURCE=app|proxy|proxy_static_fallback`, defaulting to `app`
 - production startup requires `COOKIE_SECURE_MODE=always`
 - local development should use `APP_ENV=local` with `COOKIE_SECURE_MODE=auto`
+
+Security header ownership:
+
+- OpenScribe always emits `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, CSP, COOP, CORP, COEP, and `Permissions-Policy`.
+- `HSTS_SOURCE=app` makes OpenScribe emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` on all HTTPS responses.
+- `HSTS_SOURCE=proxy` disables app HSTS emission so Cloudflare, nginx, Caddy, or another trusted edge can be the only HSTS source for every response.
+- `HSTS_SOURCE=proxy_static_fallback` keeps dynamic responses proxy-owned but adds app HSTS to `/static/` responses. Use this when ZAP shows dynamic pages have one proxy HSTS header but static assets lack HSTS.
+- Use exactly one HSTS owner per response. Duplicate HSTS is non-compliant and was flagged by ZAP.
+- If Cloudflare has HSTS enabled for all responses, set `HSTS_SOURCE=proxy` in the OpenScribe runtime environment.
+- If Cloudflare covers dynamic pages but static assets lack HSTS, set `HSTS_SOURCE=proxy_static_fallback`.
+- If no proxy/edge emits HSTS, keep `HSTS_SOURCE=app`.
 
 Production CSRF secret behavior:
 
@@ -170,6 +182,13 @@ For production HTTPS, set:
 ```env
 APP_ENV=production
 COOKIE_SECURE_MODE=always
+# Use exactly one HSTS owner.
+# If Cloudflare/reverse proxy emits HSTS for every response:
+HSTS_SOURCE=proxy
+# If Cloudflare/reverse proxy emits HSTS for dynamic pages but not /static/ assets:
+# HSTS_SOURCE=proxy_static_fallback
+# If OpenScribe should emit HSTS instead:
+# HSTS_SOURCE=app
 ```
 
 If production cannot use Vault auto-bootstrap, also set:

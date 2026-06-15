@@ -25,6 +25,8 @@ For OpenScribe, the evidence pack should also track **AI and clinical-scribe saf
 | --- | --- |
 | [`00-scope-and-evidence-pack.md`](00-scope-and-evidence-pack.md) | Defines the authorised testing scope, evidence structure, current repo-backed evidence, and known gaps. |
 | [`01-information-gathering.md`](01-information-gathering.md) | First operational workstream: OWASP WSTG information gathering, tool usage, and evidence outputs. |
+| [`OWASP_Context.md`](OWASP_Context.md) | Carry-forward context for future agents: folder structure, evidence rules, naming conventions, and current phase status. |
+| [`security-evidence/owasp/2026-06-14/`](security-evidence/owasp/2026-06-14/) | Initial dated OWASP evidence pack seeded from repo evidence. |
 
 ## Evidence status labels
 

@@ -356,7 +356,7 @@ required>
 value="{{ template.id }}"
 data-template-name="{{ template.name }}"
 data-template-mode="{{ latest_version.mode.value }}"
-{% if latest_version.mode.value == "structured" and template_sections %}data-template-sections='{{ template_sections | tojson }}'{% endif %}
+{% if latest_version.mode.value == "structured" and template_sections %}data-template-sections='{{ template_sections | tojson | forceescape }}'{% endif %}
 data-settings-url="/home/templates/editor?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
 {{ template.name }} ({{ latest_version.mode.value }})
 </option>

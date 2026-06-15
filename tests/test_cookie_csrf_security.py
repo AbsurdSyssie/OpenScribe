@@ -1,14 +1,26 @@
 import re
 from pathlib import Path
 
+import pyotp
 import pytest
 
 from app.cookie_security import enforce_production_cookie_security
 from app.main import CSRF_COOKIE_NAME
 from app.errors import AppError
+from app.models import MfaMethodType, UserMfaMethod, utcnow
 from app.services import csrf as csrf_service
 from app.services.csrf import CSRF_ANON_COOKIE_NAME, csrf_secret_configured_for_environment
-from app.services.auth import SESSION_COOKIE_NAME
+from app.services.auth import SESSION_COOKIE_NAME, TRUSTED_DEVICE_COOKIE_NAME
+
+
+def _set_cookie_headers(response) -> list[str]:
+    return response.headers.get_list("set-cookie")
+
+
+def _cookie_header(response, cookie_name: str) -> str:
+    matches = [header for header in _set_cookie_headers(response) if header.startswith(f"{cookie_name}=")]
+    assert len(matches) == 1
+    return matches[0]
 
 
 def test_production_requires_cookie_secure_always(monkeypatch):
@@ -56,6 +68,176 @@ def test_hsts_added_for_https(raw_client):
     assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+
+def test_hsts_can_be_delegated_to_proxy(raw_client, monkeypatch):
+    monkeypatch.setenv("HSTS_SOURCE", "proxy")
+
+    response = raw_client.get("/login", headers={"x-forwarded-proto": "https"})
+
+    assert "Strict-Transport-Security" not in response.headers
+
+
+def test_hsts_proxy_static_fallback_only_adds_static_hsts(raw_client, monkeypatch):
+    monkeypatch.setenv("HSTS_SOURCE", "proxy_static_fallback")
+
+    dynamic_response = raw_client.get("/login", headers={"x-forwarded-proto": "https"})
+    static_response = raw_client.get(
+        "/static/vendor/lucide/1.8.0/lucide.min.js",
+        headers={"x-forwarded-proto": "https"},
+    )
+
+    assert "Strict-Transport-Security" not in dynamic_response.headers
+    assert static_response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
+
+
+def test_browser_security_headers_added(raw_client):
+    response = raw_client.get("/login")
+
+    assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert response.headers["Cross-Origin-Embedder-Policy"] == "credentialless"
+    assert response.headers["Permissions-Policy"] == (
+        "camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)"
+    )
+
+
+def test_public_auth_pages_are_no_store(raw_client):
+    for path in ["/", "/login", "/forgot-password", "/request-access"]:
+        response = raw_client.get(path)
+
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Pragma"] == "no-cache"
+        assert response.headers["Expires"] == "0"
+
+
+def test_api_responses_are_no_store(raw_client):
+    response = raw_client.get("/api/")
+    slashless_response = raw_client.get("/api")
+
+    assert response.status_code == 404
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Pragma"] == "no-cache"
+    assert response.headers["Expires"] == "0"
+    assert slashless_response.headers["Cache-Control"] == "no-store"
+    assert slashless_response.headers["Pragma"] == "no-cache"
+    assert slashless_response.headers["Expires"] == "0"
+
+
+def test_csrf_cookie_is_readable_signed_and_paired_with_httponly_anon_nonce(raw_client):
+    response = raw_client.get("/login")
+
+    csrf_cookie = _cookie_header(response, CSRF_COOKIE_NAME)
+    anon_cookie = _cookie_header(response, CSRF_ANON_COOKIE_NAME)
+    csrf_value = response.cookies[CSRF_COOKIE_NAME]
+    anon_nonce = response.cookies[CSRF_ANON_COOKIE_NAME]
+
+    assert "HttpOnly" not in csrf_cookie
+    assert "SameSite=lax" in csrf_cookie
+    assert "HttpOnly" in anon_cookie
+    assert "SameSite=lax" in anon_cookie
+    assert csrf_service.verify_csrf_token(
+        submitted_token=csrf_value,
+        raw_session_token=None,
+        anon_nonce=anon_nonce,
+    )
+
+
+def test_csrf_cookie_alone_does_not_authenticate_api(raw_client):
+    raw_client.get("/login")
+
+    response = raw_client.get("/api/v1/auth/me")
+
+    assert response.status_code == 401
+    assert SESSION_COOKIE_NAME not in raw_client.cookies
+
+
+def test_session_cookie_is_httponly_and_csrf_cookie_remains_readable(raw_client, make_user):
+    make_user(email="cookie-session@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    response = raw_client.post("/api/v1/auth/login", json={"email": "cookie-session@example.com", "password": "password-1"})
+
+    session_cookie = _cookie_header(response, SESSION_COOKIE_NAME)
+    csrf_cookie = _cookie_header(response, CSRF_COOKIE_NAME)
+    csrf_value = response.cookies[CSRF_COOKIE_NAME]
+    session_value = response.cookies[SESSION_COOKIE_NAME]
+
+    assert response.status_code == 200
+    assert "HttpOnly" in session_cookie
+    assert "SameSite=lax" in session_cookie
+    assert "HttpOnly" not in csrf_cookie
+    assert csrf_service.verify_csrf_token(
+        submitted_token=csrf_value,
+        raw_session_token=session_value,
+        anon_nonce=None,
+    )
+
+
+def test_trusted_device_cookie_is_httponly(raw_client, db_session, make_user):
+    user = make_user(email="cookie-trusted@example.com", password="password-1", mfa_required=True, mfa_enabled=True)
+    secret = "JBSWY3DPEHPK3PXP"
+    db_session.add(
+        UserMfaMethod(
+            user_id=user.id,
+            method_type=MfaMethodType.totp,
+            secret=secret,
+            is_primary=True,
+            is_active=True,
+            verified_at=utcnow(),
+        )
+    )
+    db_session.commit()
+
+    login_response = raw_client.post("/api/v1/auth/login", json={"email": "cookie-trusted@example.com", "password": "password-1"})
+    csrf = raw_client.cookies.get(CSRF_COOKIE_NAME)
+    mfa_response = raw_client.post(
+        "/api/v1/auth/mfa/totp",
+        json={"code": pyotp.TOTP(secret).now(), "remember_device": True},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+    )
+
+    trusted_cookie = _cookie_header(mfa_response, TRUSTED_DEVICE_COOKIE_NAME)
+
+    assert login_response.status_code == 200
+    assert login_response.json()["auth_level"] == "pending_mfa"
+    assert mfa_response.status_code == 200
+    assert "HttpOnly" in trusted_cookie
+    assert "SameSite=lax" in trusted_cookie
+
+
+def test_public_metadata_routes_are_explicit_and_cookie_free(raw_client):
+    robots = raw_client.get("/robots.txt")
+    security_txt = raw_client.get("/.well-known/security.txt")
+    sitemap = raw_client.get("/sitemap.xml")
+
+    assert robots.status_code == 200
+    assert robots.headers["content-type"].startswith("text/plain")
+    assert "Disallow: /api/" in robots.text
+    assert "Allow: /" in robots.text
+    assert "Allow: /$" not in robots.text
+    assert "set-cookie" not in robots.headers
+    assert robots.headers["Cache-Control"] == "public, max-age=3600"
+
+    assert security_txt.status_code == 200
+    assert security_txt.headers["content-type"].startswith("text/plain")
+    assert "Contact: mailto:oscar@meddleapp.com" in security_txt.text
+    assert "Canonical: https://openscribe.co.uk/.well-known/security.txt" in security_txt.text
+    assert "set-cookie" not in security_txt.headers
+    assert security_txt.headers["Cache-Control"] == "public, max-age=3600"
+
+    assert sitemap.status_code == 404
+    assert sitemap.headers["content-type"].startswith("text/plain")
+    assert "Sitemap not published." in sitemap.text
+    assert "set-cookie" not in sitemap.headers
+    assert sitemap.headers["Cache-Control"] == "public, max-age=3600"
+
+
+def test_static_assets_do_not_issue_csrf_cookie(raw_client):
+    response = raw_client.get("/static/vendor/lucide/1.8.0/lucide.min.js")
+
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
+    assert response.headers["Cache-Control"] == "public, max-age=3600"
 
 
 def test_csp_header_added(raw_client):
@@ -111,6 +293,36 @@ def test_login_accepts_anonymous_csrf(raw_client, make_user):
     assert raw_client.cookies.get(SESSION_COOKIE_NAME)
     assert raw_client.cookies.get(CSRF_COOKIE_NAME)
     assert not raw_client.cookies.get(CSRF_ANON_COOKIE_NAME)
+
+
+def _hidden_csrf_token(html: str) -> str:
+    match = re.search(r'<input type="hidden" name="_csrf_token" value="([^"]+)">', html)
+    assert match is not None
+    return match.group(1)
+
+
+def test_public_forms_render_hidden_csrf_tokens(raw_client, make_user, monkeypatch):
+    monkeypatch.setenv("MAIL_TRANSPORT", "stdout")
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("APP_PUBLIC_URL", "http://testserver")
+    monkeypatch.setenv("MAIL_FROM_ADDRESS", "no-reply@example.com")
+    monkeypatch.setenv("MAIL_FROM_NAME", "OpenScribe")
+    make_user(email="public-csrf-form@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    login_page = raw_client.get("/login")
+    assert login_page.status_code == 200
+    assert _hidden_csrf_token(login_page.text) == login_page.cookies[CSRF_COOKIE_NAME]
+    assert '<form method="post" action="/login">' in login_page.text
+
+    reset_page = raw_client.get("/forgot-password")
+    assert reset_page.status_code == 200
+    assert _hidden_csrf_token(reset_page.text) == reset_page.cookies[CSRF_COOKIE_NAME]
+    assert '<form method="post" action="/forgot-password">' in reset_page.text
+
+    request_page = raw_client.get("/request-access")
+    assert request_page.status_code == 200
+    assert _hidden_csrf_token(request_page.text) == request_page.cookies[CSRF_COOKIE_NAME]
+    assert '<form method="post" action="/request-access">' in request_page.text
 
 
 def test_app_templates_and_js_do_not_use_public_cdns():

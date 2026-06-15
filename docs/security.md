@@ -114,10 +114,17 @@ Current implementation:
 - session and trusted-device cookies are `HttpOnly`
 - production startup requires `COOKIE_SECURE_MODE=always`
 - production startup requires either `CSRF_SECRET`/`SECRET_KEY` or successful Vault-backed CSRF secret bootstrap
-- HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, and `Cross-Origin-Resource-Policy: same-origin`
+- HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` when `HSTS_SOURCE=app` (default); deployments where the edge/proxy owns HSTS for every response should set `HSTS_SOURCE=proxy`; deployments where the edge/proxy covers dynamic pages but misses `/static/` assets should set `HSTS_SOURCE=proxy_static_fallback`
+- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`, and `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)`
 - all HTML responses include nonce-based `Content-Security-Policy`
+- public splash and auth/account forms (`/`, `/login`, `/forgot-password`, `/request-access`, `/reset-password`, `/activate-account`) use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0` because they create CSRF cookies or support account flows
+- `/api/` responses use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0`; sensitive transcript/generated-document API prefixes keep the same no-store contract
+- public metadata routes are explicit, short-cacheable (`Cache-Control: public, max-age=3600`), and do not issue CSRF cookies: `/robots.txt`, `/.well-known/security.txt`, and `/sitemap.xml` returning intentional `404` because no sitemap is published
+- static assets under `/static/` use short public caching (`Cache-Control: public, max-age=3600`) and do not issue CSRF cookies
 - the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`, but its value is HMAC-signed
+- the readable `openscribe_csrf` cookie is not an authentication bearer secret; it must match the `HttpOnly` anonymous nonce cookie before login or the current session token hash after login
+- passive scanners may identify `openscribe_csrf_anon`/`openscribe_csrf` as session-management cookies, but they are CSRF controls; only `openscribe_session` and `openscribe_trusted_device` are auth-bearing cookies
+- server-rendered browser forms include the same signed CSRF value in a hidden `_csrf_token` field so forms remain protected without depending on JavaScript injection
 - authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
 - when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
 - anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session

@@ -1,0 +1,35 @@
+Session scanner triage summary, 2026-06-14.
+
+Source evidence:
+- ZAP baseline retest: 07-tool-outputs/zap/zap-baseline-retest-cache-2026-06-14.md
+- Local regression suite: tests/test_cookie_csrf_security.py
+
+No cookie values, tokens, account data, transcript/note content, prompts, provider responses, or audio captured.
+
+ZAP alerts triaged:
+- Authentication Request Identified [10111]
+- Session Management Response Identified [10112]
+- Cookie No HttpOnly Flag [10010], already accepted as OWASP-2026-06-14-014 for readable openscribe_csrf
+
+Authentication Request Identified:
+- ZAP identified POST /login as an authentication request using fields email, password, and _csrf_token.
+- This is expected. /login is the public browser authentication endpoint.
+- ZAP itself documents this alert as informational with no fix required.
+
+Session Management Response Identified:
+- ZAP identified openscribe_csrf_anon and openscribe_csrf on anonymous public responses.
+- These cookies are CSRF controls, not auth bearer cookies.
+- openscribe_csrf_anon is HttpOnly and stores the anonymous nonce used before login.
+- openscribe_csrf is intentionally readable by same-origin JavaScript so browser calls can submit X-CSRF-Token.
+- openscribe_csrf is signed and non-authoritative: before login it must match the HttpOnly anonymous nonce; after login it must match the current session token hash.
+- Existing regression test proves CSRF cookies alone do not authenticate /api/v1/auth/me.
+
+Auth-bearing cookies:
+- openscribe_session remains HttpOnly.
+- openscribe_trusted_device remains HttpOnly.
+- Both use SameSite=Lax; Secure is enforced in production via COOKIE_SECURE_MODE=always.
+
+Decision:
+- Accept Authentication Request Identified and Session Management Response Identified as expected scanner auto-detection behavior.
+- Keep OWASP-2026-06-14-014 accepted for readable CSRF cookie warning.
+- No runtime code change required.

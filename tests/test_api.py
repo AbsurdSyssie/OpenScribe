@@ -19,7 +19,7 @@ from scripts.seed_dev_accounts import repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
-from app.main import CSRF_COOKIE_NAME, app as fastapi_app, get_db, require_full_context
+from app.main import CSRF_COOKIE_NAME, api, app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
@@ -12824,7 +12824,7 @@ def test_transcribe_workspace_stream_returns_owner_workspace_event(client, db_se
 def test_transcribe_workspace_stream_route_does_not_depend_on_request_scoped_db_session():
     route = next(
         route
-        for route in fastapi_app.routes
+        for route in api.routes
         if isinstance(route, APIRoute) and route.path == "/api/v1/transcribe/workspace/stream"
     )
     dependency_calls = {dependency.call for dependency in route.dependant.dependencies}

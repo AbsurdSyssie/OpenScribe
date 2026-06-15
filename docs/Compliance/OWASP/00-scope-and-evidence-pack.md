@@ -73,10 +73,10 @@ OpenScribe is treated as a web application with clinical-scribe functionality. T
 
 ## 6. Evidence-pack structure
 
-Store evidence under a dated folder using this pattern:
+Store evidence inside this OWASP directory under a dated folder using this pattern:
 
 ```text
-security-evidence/owasp/YYYY-MM-DD/
+docs/Compliance/OWASP/security-evidence/owasp/YYYY-MM-DD/
   00-scope.md
   01-route-inventory.csv
   02-role-access-matrix.csv
@@ -133,16 +133,16 @@ This section records what is already supported by checked-in documentation. Stat
 
 | Task | Owner | Output | Status |
 | --- | --- | --- | --- |
-| Confirm environments and authorised test window. | TBD | `security-evidence/owasp/YYYY-MM-DD/00-scope.md` | Gap |
-| Export API route inventory from repo and running app. | TBD | `01-route-inventory.csv` | Gap |
+| Confirm environments and authorised test window. | OWASP evidence agent | `security-evidence/owasp/2026-06-14/00-scope.md` | Repo-seeded; staging/prod windows remain gap |
+| Export API route inventory from repo and running app. | OWASP evidence agent | `01-route-inventory.csv` | Repo-seeded; live crawl remains gap |
 | Crawl public routes without authentication. | TBD | Proxy export and screenshot summary | Gap |
 | Crawl normal-user routes. | TBD | Proxy export and route matrix | Gap |
 | Crawl team-leader routes. | TBD | Proxy export and route matrix | Gap |
 | Crawl system-admin routes. | TBD | Proxy export and route matrix | Gap |
-| Produce architecture/trust-boundary map. | TBD | `03-architecture-map.md` | Gap |
-| Run passive search/recon checklist. | TBD | `04-passive-recon.md` | Gap |
-| Run approved server fingerprinting. | TBD | `05-server-fingerprinting.md` | Gap |
-| Seed OWASP Top 10 matrix from this document. | TBD | `owasp-top-10-matrix.md` | Gap |
+| Produce architecture/trust-boundary map. | OWASP evidence agent | `03-architecture-map.md` | Repo-seeded; diagram/export remains gap |
+| Run passive search/recon checklist. | OWASP evidence agent | `04-passive-recon.md` | Checklist seeded; external recon remains gap |
+| Run approved server fingerprinting. | OWASP evidence agent | `05-server-fingerprinting.md` | Local repo evidence seeded; live headers/TLS remain gap |
+| Seed OWASP Top 10 matrix from this document. | OWASP evidence agent | `owasp-top-10-matrix.md` | Repo-seeded |
 
 ## 10. Completion criteria for this phase
 

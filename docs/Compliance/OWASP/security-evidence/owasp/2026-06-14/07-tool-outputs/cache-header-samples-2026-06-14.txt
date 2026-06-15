@@ -1,0 +1,21 @@
+Production header sample after cache-control deploy, 2026-06-14.
+
+Command summary: Python stdlib urllib request to https://openscribe.co.uk with browser User-Agent and Cache-Control: no-cache.
+No cookie values, tokens, account data, transcript/note content, prompts, provider responses, or audio captured.
+
+Path | Status | Cache-Control | Pragma | Expires | Set-Cookie present | Cloudflare cache
+/ | 200 | no-store | no-cache | 0 | true | DYNAMIC
+/login | 200 | no-store | no-cache | 0 | true | DYNAMIC
+/forgot-password | 200 | no-store | no-cache | 0 | true | DYNAMIC
+/request-access | 200 | no-store | no-cache | 0 | true | DYNAMIC
+/api | 200 | no-store | no-cache | 0 | true | DYNAMIC
+/api/ | 404 | no-store | no-cache | 0 | true | DYNAMIC
+/robots.txt | 200 | max-age=14400 | none | none | false | HIT
+/.well-known/security.txt | 200 | public, max-age=3600 | none | none | false | DYNAMIC
+/sitemap.xml | 404 | public, max-age=3600 | none | none | false | DYNAMIC
+/static/vendor/lucide/1.8.0/lucide.min.js | 200 | max-age=14400 | none | Mon, 15 Jun 2026 00:30:00 GMT | false | HIT
+
+Interpretation:
+- Dynamic/root/auth/API routes that create CSRF cookies or may carry account/API context are no-store.
+- Metadata/static responses are public, cookie-free, and intentionally cacheable.
+- Cloudflare currently overrides some app cache lifetimes for cached public assets to 14400 seconds; accepted because those responses are cookie-free public metadata/static content.

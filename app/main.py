@@ -649,6 +649,70 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/api/v1/generated-documents",
     "/api/v1/post-consultation-dictation",
 )
+PUBLIC_NO_STORE_PATHS = {
+    "/login",
+    "/forgot-password",
+    "/request-access",
+    "/reset-password",
+    "/activate-account",
+}
+CSRF_COOKIE_SKIP_PATHS = {
+    "/robots.txt",
+    "/sitemap.xml",
+    "/.well-known/security.txt",
+}
+CSRF_COOKIE_SKIP_PREFIXES = ("/static/",)
+PUBLIC_CACHE_PATHS = {
+    "/robots.txt",
+    "/sitemap.xml",
+    "/.well-known/security.txt",
+}
+STATIC_CACHE_CONTROL = "public, max-age=3600"
+PUBLIC_METADATA_CACHE_CONTROL = "public, max-age=3600"
+NO_STORE_CACHE_CONTROL = "no-store"
+SECURITY_HEADER_HSTS_VALUE = "max-age=31536000; includeSubDomains"
+SECURITY_HEADER_PERMISSIONS_POLICY = (
+    "camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)"
+)
+HSTS_SOURCE_APP = "app"
+HSTS_SOURCE_PROXY = "proxy"
+HSTS_SOURCE_PROXY_STATIC_FALLBACK = "proxy_static_fallback"
+
+
+def _hsts_source() -> str:
+    return os.getenv("HSTS_SOURCE", HSTS_SOURCE_APP).strip().lower()
+
+
+def _should_set_hsts(request: Request) -> bool:
+    hsts_source = _hsts_source()
+    return hsts_source == HSTS_SOURCE_APP or (
+        hsts_source == HSTS_SOURCE_PROXY_STATIC_FALLBACK and request.url.path.startswith("/static/")
+    )
+
+
+def _should_issue_csrf_cookie(request: Request) -> bool:
+    path = request.url.path
+    return path not in CSRF_COOKIE_SKIP_PATHS and not path.startswith(CSRF_COOKIE_SKIP_PREFIXES)
+
+
+def _set_cache_headers(request: Request, response: Response) -> None:
+    path = request.url.path
+    if (
+        path == "/"
+        or path == "/api"
+        or path.startswith("/api/")
+        or path in PUBLIC_NO_STORE_PATHS
+        or path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES)
+    ):
+        response.headers["Cache-Control"] = NO_STORE_CACHE_CONTROL
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return
+    if path in PUBLIC_CACHE_PATHS:
+        response.headers.setdefault("Cache-Control", PUBLIC_METADATA_CACHE_CONTROL)
+        return
+    if path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", STATIC_CACHE_CONTROL)
 
 
 @app.middleware("http")
@@ -657,39 +721,46 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     is_https = _request_is_https(request)
 
-    if is_https:
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if is_https and _should_set_hsts(request):
+        response.headers.setdefault("Strict-Transport-Security", SECURITY_HEADER_HSTS_VALUE)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Embedder-Policy", "credentialless")
+    response.headers.setdefault("Permissions-Policy", SECURITY_HEADER_PERMISSIONS_POLICY)
     response.headers.setdefault(
         "Content-Security-Policy",
         content_security_policy(request.state.csp_nonce, upgrade_insecure_requests=is_https),
     )
-    if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Pragma"] = "no-cache"
+    _set_cache_headers(request, response)
 
     return response
 
 
 @app.middleware("http")
 async def ensure_csrf_cookie(request: Request, call_next):
+    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME) or new_anonymous_nonce()
+    request.state.csrf_token = (
+        session_csrf_token(raw_session_token)
+        if raw_session_token
+        else anonymous_csrf_token(anon_nonce)
+    )
+
     response = await call_next(request)
-    if request.method not in {"GET", "HEAD"}:
+    if request.method not in {"GET", "HEAD"} or not _should_issue_csrf_cookie(request):
         return response
 
     secure_cookie = should_set_secure_cookie(
         request_url=str(request.url),
         forwarded_proto=request.headers.get("x-forwarded-proto"),
     )
-    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if raw_session_token:
         response.set_cookie(
             key=CSRF_COOKIE_NAME,
-            value=session_csrf_token(raw_session_token),
+            value=request.state.csrf_token,
             httponly=False,
             secure=secure_cookie,
             samesite="lax",
@@ -698,7 +769,6 @@ async def ensure_csrf_cookie(request: Request, call_next):
         response.delete_cookie(CSRF_ANON_COOKIE_NAME, path="/")
         return response
 
-    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME) or new_anonymous_nonce()
     response.set_cookie(
         key=CSRF_ANON_COOKIE_NAME,
         value=anon_nonce,
@@ -709,7 +779,7 @@ async def ensure_csrf_cookie(request: Request, call_next):
     )
     response.set_cookie(
         key=CSRF_COOKIE_NAME,
-        value=anonymous_csrf_token(anon_nonce),
+        value=request.state.csrf_token,
         httponly=False,
         secure=secure_cookie,
         samesite="lax",

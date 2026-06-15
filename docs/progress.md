@@ -1,5 +1,447 @@
 # Progress
 
+## 2026-06-14 Auth Session Scanner Triage
+
+### Scope
+
+- Accepted ZAP `Authentication Request Identified` for `/login` as expected public auth endpoint detection.
+- Accepted ZAP `Session Management Response Identified` for `openscribe_csrf_anon`/`openscribe_csrf` as CSRF-cookie auto-detection, not auth-cookie exposure.
+- Added `OWASP-2026-06-14-016` evidence and remediation-plan entry.
+
+### Checklist
+
+- Target behavior: scanner warnings are tied to expected login/CSRF behavior; auth-bearing cookies remain protected.
+- Affected schema/modules/endpoints: docs/evidence only; no schema, route, cookie, or auth runtime change.
+- Affected tests: existing cookie/session boundary tests and API CSRF tests.
+- Architecture risks: avoid misclassifying CSRF controls as sessions; preserve clear auth-bearing cookie boundary.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP passive recon/findings/retest/remediation/context, progress/daily note.
+- Reuse decision: reused existing regression tests and latest ZAP retest output; no new scanner/tooling.
+- Code complete: no runtime code change.
+- Tests added/updated: no new tests needed; focused existing tests run.
+- Docs added/updated: yes.
+- Open issues: none for this scanner slice.
+
+### Files changed
+
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/07-tool-outputs/session-scanner-triage-2026-06-14.txt`: compact scanner triage evidence.
+- OWASP evidence docs: add `OWASP-2026-06-14-016` accepted finding, retest entry, and remediation-plan section.
+- `docs/security.md`, `docs/testing.md`: document scanner interpretation and test coverage.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Auth Session Scanner Triage.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "csrf_cookie_alone or session_cookie or trusted_device or anon_nonce"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "csrf"`: passed, 7 tests.
+- Note: first parallel API pytest attempt hit shared DB guard; sequential rerun passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth or ownership policy changed; auth-bearing cookies remain `HttpOnly`.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no cookie values, tokens, account data, transcript/note/prompt/provider/audio content committed.
+
+## 2026-06-14 Cache-Control Triage Fix
+
+### Scope
+
+- Classified ZAP cache-control warnings for public/auth/API/metadata/static routes.
+- Added explicit no-store for `/`, public auth/account pages, and `/api/` responses.
+- Added explicit short public caching for cookie-free metadata and static assets.
+
+### Checklist
+
+- Target behavior: pages that create CSRF cookies or may carry account/API context are not stored; public metadata/static assets are explicitly short-cacheable.
+- Affected schema/modules/endpoints: `app/main.py` cache header middleware; `/`, `/api/`, auth pages, metadata routes, and `/static/`; no schema changes.
+- Affected tests: `tests/test_cookie_csrf_security.py` cache/header regressions.
+- Architecture risks: avoid caching transcript-derived or user-specific responses; metadata/static cache accepted only because routes are public and cookie-free.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP passive recon/findings/retest/remediation/context, progress/daily note.
+- Reuse decision: reused shared security-header middleware; no new dependency or per-route duplication.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none for cache triage; residual ZAP cache alerts are accepted design/heuristic alerts after production retest.
+
+### Files changed
+
+- `app/main.py`: adds cache policy helper for no-store and short public-cache route classes.
+- `tests/test_cookie_csrf_security.py`: verifies no-store on `/`, auth pages, and `/api/`; verifies metadata/static cache headers and no CSRF cookies.
+- `docs/security.md`, `docs/testing.md`: document cache policy and test coverage.
+- OWASP evidence docs: add `OWASP-2026-06-14-015`, local retest evidence, and ready-for-production-retest state.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Cache-Control Triage Fix.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "cache or metadata or static_assets or no_store"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 26 tests.
+- `.venv/bin/python -m py_compile app/main.py`: passed.
+- Production header sample: root/auth/API routes `no-store`; metadata/static routes cookie-free and public-cacheable.
+- Production ZAP cache retest: `zap-baseline-retest-cache-2026-06-14.*`; residual cache alerts accepted as no-store/public-cache heuristics.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth policy or access scope changed; API responses are more conservative.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no transcript/note/prompt/provider/audio content exposed; public cache applies only to cookie-free metadata/static assets.
+
+## 2026-06-14 CSRF Cookie HttpOnly Scanner Decision
+
+### Scope
+
+- Accepted the ZAP `Cookie No HttpOnly Flag` warning for `openscribe_csrf` as an intentional readable CSRF token design.
+- Added regression tests proving auth-bearing cookies stay `HttpOnly` and CSRF cookie alone does not authenticate API access.
+
+### Checklist
+
+- Target behavior: `openscribe_csrf` may remain readable because browser JavaScript submits it as `X-CSRF-Token`; session/trusted-device cookies remain `HttpOnly`.
+- Affected schema/modules/endpoints: tests and docs only; no schema, route, or cookie behavior change.
+- Affected tests: `tests/test_cookie_csrf_security.py`; existing `tests/test_api.py` CSRF rejection tests referenced as evidence.
+- Architecture risks: readable CSRF token increases importance of CSP/XSS controls, but it is not auth-bearing and is signed/session-bound.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP passive recon/findings/retest/remediation/context, progress/daily note.
+- Reuse decision: reused existing CSRF signing/verification and cookie helpers; no new mechanism.
+- Code complete: no runtime code change.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: cache-control informational warnings and deeper authenticated role crawl remain separate slices.
+
+### Files changed
+
+- `tests/test_cookie_csrf_security.py`: adds cookie contract coverage for readable signed CSRF, `HttpOnly` nonce/session/trusted-device cookies, and CSRF-cookie-alone non-authentication.
+- `docs/security.md`, `docs/testing.md`: document accepted cookie design and test coverage.
+- OWASP evidence docs: add and accept `OWASP-2026-06-14-014` with test evidence.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 CSRF Cookie HttpOnly Scanner Decision.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "cookie or csrf_cookie or trusted_device"`: passed, 25 tests.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 25 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "csrf"`: passed, 7 tests.
+- `.venv/bin/python` CSRF cookie decision docs sanity check: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth policy or access scope changed; auth-bearing cookies remain `HttpOnly`.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no sensitive logging or evidence added.
+
+## 2026-06-14 Public Metadata Routes Fix
+
+### Scope
+
+- Added explicit public metadata routes for `/robots.txt`, `/.well-known/security.txt`, and `/sitemap.xml`.
+- Used `oscar@meddleapp.com` as the security contact.
+- Suppressed CSRF cookie issuance on metadata and static GETs.
+
+### Checklist
+
+- Target behavior: public metadata paths no longer redirect to login and do not set unnecessary CSRF cookies.
+- Affected schema/modules/endpoints: `app/routes/web_pages.py`, `app/main.py`; no schema or API contract changes.
+- Affected tests: cookie/CSRF security public metadata tests.
+- Architecture risks: public metadata only; no transcript-derived content, auth-bearing material, provider data, or secrets exposed.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP passive recon/findings/remediation/context, progress/daily note.
+- Reuse decision: used existing FastAPI response routes and CSRF middleware skip logic; no new dependency.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: deploy and retest production to close `OWASP-2026-06-14-013`.
+
+### Files changed
+
+- `app/routes/web_pages.py`: adds `robots.txt`, `security.txt`, and intentional `sitemap.xml` 404 routes.
+- `app/main.py`: skips CSRF cookie issuance for metadata and static safe GETs.
+- `tests/test_cookie_csrf_security.py`: covers metadata status/content/cookie behavior and static asset CSRF-cookie suppression.
+- `docs/security.md`, `docs/testing.md`: document metadata behavior and test coverage.
+- OWASP evidence docs: mark metadata finding remediated pending deploy/retest.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Public Metadata Routes Fix.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "metadata or static_assets or hsts or security_headers or no_store"`: passed, 8 tests.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 21 tests.
+- `.venv/bin/python -m py_compile app/main.py app/routes/web_pages.py`: passed.
+- `.venv/bin/python` metadata docs sanity check: passed.
+- Production metadata retest: metadata paths returned intended status/content and no cookies, but `Allow: /$` caused ZAP to crawl literal `/$`; changed robots rule to `Allow: /`.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "metadata or static_assets"`: passed, 2 tests after robots fix.
+- Metadata final retest attempt: Cloudflare still served cached `/robots.txt` with `Allow: /$` (`cf-cache-status: HIT`), so ZAP still crawled literal `/$`. Need purge `/robots.txt` cache or wait TTL, then rerun.
+- Metadata final retest after Cloudflare purge: `/robots.txt` returned `Allow: /`, ZAP no longer crawled literal `/$`, and `OWASP-2026-06-14-013` is resolved.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth policy or access scope changed.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: metadata contains only public crawl/contact data; no sensitive logging or evidence added.
+
+## 2026-06-14 Security Header Hardening Fix
+
+### Scope
+
+- Added missing browser hardening headers for `Permissions-Policy` and COEP.
+- Added public auth/account page `no-store` cache policy.
+- Added `HSTS_SOURCE=app|proxy|proxy_static_fallback` so production behind Cloudflare/reverse proxy can avoid duplicate HSTS while covering static assets.
+
+### Checklist
+
+- Target behavior: deployed pages declare capability, embedder, and cache policies; exactly one infrastructure layer owns HSTS.
+- Affected schema/modules/endpoints: `app/main.py` response middleware; public `/login`, `/forgot-password`, `/request-access`, `/reset-password`, `/activate-account`; no schema or API contract changes.
+- Affected tests: cookie/CSRF security header tests.
+- Architecture risks: COEP uses `credentialless` rather than stricter `require-corp` to reduce risk to public docs and same-origin browser assets; production must use the HSTS mode matching actual edge behavior.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP findings/remediation/context, progress/daily note.
+- Reuse decision: reused existing security-header middleware and tests; no new dependency or proxy-specific code.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: deploy, set production HSTS ownership as needed, and rerun ZAP baseline to close `OWASP-2026-06-14-010`/`012` evidence.
+
+### Files changed
+
+- `app/main.py`: adds hardening headers, public auth-page `no-store`, and configurable app/proxy HSTS ownership.
+- `tests/test_cookie_csrf_security.py`: covers header presence, HSTS proxy delegation, and public auth-page no-store.
+- `docs/security.md`, `docs/testing.md`: document header/cache/HSTS behavior and test coverage.
+- OWASP evidence docs: mark header/HSTS findings remediated pending deploy/retest and update remediation plan/context.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Security Header Hardening Fix.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "hsts or security_headers or no_store or csp"`: passed, 9 tests.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 19 tests.
+- Documentation follow-up: `.env.example`, `README.md`, and `docs/setup.md` now explain `HSTS_SOURCE=app|proxy` and single-owner HSTS setup.
+- Production ZAP header retest: `Permissions-Policy`/COEP checks passed and duplicate-HSTS warning disappeared; one static vendor JS path still lacks HSTS and needs follow-up.
+- Static HSTS follow-up: added `HSTS_SOURCE=proxy_static_fallback` so production can keep Cloudflare-owned dynamic HSTS while app adds HSTS to `/static/` assets only.
+- `.venv/bin/python` docs sanity check for `proxy_static_fallback`: passed.
+- Cloudflare HSTS retest: after enabling Cloudflare HSTS for 6 months with include subdomains and preload off, dynamic and static samples both returned one HSTS header and ZAP reported `PASS: Strict-Transport-Security Header [10035]`.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth policy or access scope changed.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no sensitive logging or evidence added.
+
+## 2026-06-14 OWASP Public Form CSRF Retest
+
+### Scope
+
+- Retested deployed public CSRF form fix on `https://openscribe.co.uk` with OWASP ZAP baseline.
+- Marked `OWASP-2026-06-14-011` resolved after ZAP reported `PASS: Absence of Anti-CSRF Tokens [10202]` and captured `_csrf_token` fields on public forms.
+
+### Checklist
+
+- Target behavior: deployed public forms expose hidden `_csrf_token` in scanner-visible HTML/form nodes.
+- Affected schema/modules/endpoints: documentation/evidence only in this step; production `/login`, `/forgot-password`, and `/request-access` retested.
+- Affected tests: ZAP baseline retest evidence, no app test changes.
+- Architecture risks: retest stayed anonymous/passive baseline; no authenticated crawl, active attack scan, transcript/note content, provider data, or secrets captured.
+- Docs referenced/updated: OWASP findings, retest log, remediation plan, OWASP context, progress note.
+- Reuse decision: reused existing ZAP baseline command/output folder rather than adding new tooling.
+- Code complete: not applicable; docs/evidence only.
+- Tests added/updated: ZAP retest evidence added.
+- Docs added/updated: yes.
+- Open issues: `OWASP-2026-06-14-010`, `OWASP-2026-06-14-012`, `OWASP-2026-06-14-013`, cache-control warnings, and CSRF cookie `HttpOnly` scanner warning remain separate work items.
+
+### Files changed
+
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/07-tool-outputs/zap/zap-baseline-retest-2026-06-14.*`: production ZAP retest outputs.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/09-findings-and-remediation.md`: marks `OWASP-2026-06-14-011` resolved.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/10-retest-log.md`: adds retest entry and evidence pointer.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/11-remediation-plan.md`: records R-002 deployed and ZAP-retested successfully.
+- `docs/Compliance/OWASP/OWASP_Context.md`: carries forward resolved CSRF retest state.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 OWASP Public Form CSRF Retest.md`: record checklist and checkpoints.
+
+### Tests
+
+- `docker run --rm -t -v ".../07-tool-outputs/zap:/zap/wrk:rw" zaproxy/zap-stable zap-baseline.py -t "https://openscribe.co.uk" -m 1 -r zap-baseline-retest-2026-06-14.html -J zap-baseline-retest-2026-06-14.json -w zap-baseline-retest-2026-06-14.md -I`: passed for `Absence of Anti-CSRF Tokens [10202]`; 12 URLs observed, 0 fail alerts, 9 warning alert types, 58 pass rules.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no authenticated user or owner content accessed; public anonymous form evidence only.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed or provider endpoint tested.
+- Structured-note contract: unchanged.
+- Privacy boundaries: ZAP evidence contains public route/form metadata only; no cookies, tokens, transcript/note/prompt/provider/audio content committed.
+
+## 2026-06-14 Public Form CSRF Rendering Fix
+
+### Scope
+
+- Fixed the OWASP/ZAP public-form CSRF evidence mismatch by rendering hidden `_csrf_token` fields server-side on public forms while keeping the existing JavaScript CSRF refresh/backstop.
+- Marked public `/docs` and `/openapi.json` exposure as accepted by project owner because OpenScribe is open source, with future review caveat.
+
+### Checklist
+
+- Target behavior: public forms expose CSRF tokens in initial HTML so no-JS scanners and browsers see the same protected form contract.
+- Affected schema/modules/endpoints: `app/main.py` CSRF cookie middleware state setup; public login/bootstrap, forgot-password, and request-access templates; no schema or endpoint contract change.
+- Affected tests: cookie/CSRF security tests, API CSRF tests, auth browser reset tests, admin/UI CSRF-related tests.
+- Architecture risks: CSRF token remains signed and validated by existing path; session/trusted-device cookies remain `HttpOnly`; public docs exposure accepted only because project is open source.
+- Docs referenced/updated: `docs/security.md`, `docs/auth.md`, `docs/testing.md`, OWASP evidence/remediation files.
+- Reuse decision: reused existing signed CSRF token generation/validation and `_csrf_script.html`; no new CSRF mechanism added.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: production deployment and ZAP retest still required; HSTS, `Permissions-Policy`/COEP, cache-control, and metadata-file remediations remain open.
+
+### Files changed
+
+- `app/main.py`: computes `request.state.csrf_token` before rendering and reuses it for the CSRF cookie.
+- `app/templates/login.html`, `app/templates/password_reset_request.html`, `app/templates/request_access.html`: render hidden `_csrf_token` fields in public POST forms.
+- `tests/test_cookie_csrf_security.py`: adds regression for server-rendered public-form CSRF fields matching the response cookie.
+- `docs/security.md`, `docs/auth.md`, `docs/testing.md`: document server-rendered CSRF fields and test coverage.
+- OWASP evidence files: update accepted/remediated statuses and remediation plan notes.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 Public Form CSRF Rendering Fix.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "csrf or csp or hsts"`: passed, 15 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "csrf"`: passed, 7 tests.
+- `.venv/bin/pytest -q tests/test_auth_email.py -k "password_reset_browser"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "csrf or login or request_access"`: passed, 10 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth policy or role scope changed; public forms now expose the same CSRF token server-side that validation already required.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no sensitive logging or evidence added; password/account-request fields remain normal form submissions only.
+
+## 2026-06-14 OWASP Remediation Planning
+
+### Scope
+
+- Added a remediation plan for public passive recon and server-fingerprinting findings from `openscribe.co.uk`.
+- Linked current OWASP findings to concrete remediation sections with target behavior, implementation plan, tests, and acceptance criteria.
+
+### Checklist
+
+- Target behavior: each public passive/ZAP section has a safe, testable remediation path without changing app behavior in this step.
+- Affected schema/modules/endpoints: documentation only under `docs/Compliance/OWASP`; no schema, endpoint, auth, provider, or storage code changed.
+- Affected tests: docs/file sanity only.
+- Architecture risks: public API docs and CSRF behavior require explicit owner/security decisions; plan avoids silently changing security model.
+- Docs referenced/updated: OWASP context, passive recon, server fingerprinting, findings/remediation log.
+- Reuse decision: reused existing findings and evidence, adding one plan doc rather than fragmenting remediation across files.
+- Code complete: yes.
+- Tests added/updated: not applicable; docs/evidence only.
+- Docs added/updated: yes.
+- Open issues: all remediation items remain open until code/config changes and retest evidence exist.
+
+### Files changed
+
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/11-remediation-plan.md`: remediation plan for API docs exposure, CSRF mismatch, HSTS, security headers, cache-control, metadata files, CSRF cookie scanner warning, and passive recon gaps.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/09-findings-and-remediation.md`: links findings to remediation plan sections.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/04-passive-recon.md`, `05-server-fingerprinting.md`: link to remediation plan.
+- `docs/Compliance/OWASP/OWASP_Context.md`: records remediation plan location.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 OWASP Remediation Planning.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/python` docs sanity check: passed; remediation plan exists, finding links target known section slugs, and CSV files still parse.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no runtime access behavior changed; plan preserves owner-only content boundaries.
+- Lifecycle/deletion checkpoint: no lifecycle behavior changed.
+- Provider checkpoint: no provider behavior changed or external provider tested.
+- Structured-note contract: unchanged.
+- Privacy boundaries: plan contains no sensitive raw evidence and keeps retest evidence redaction rules explicit.
+
+## 2026-06-14 OWASP Public Passive Recon
+
+### Scope
+
+- Captured public unauthenticated passive recon and server fingerprint evidence for `openscribe.co.uk`.
+- Ran OWASP ZAP Docker baseline in passive/baseline mode and stored outputs under the OWASP evidence folder.
+- Updated findings for public API docs exposure, public-form CSRF scanner mismatch, missing metadata files, header hardening, and HSTS duplicate-header triage.
+
+### Checklist
+
+- Target behavior: `04-passive-recon.md` and `05-server-fingerprinting.md` contain current public evidence for DNS, TLS, headers, metadata paths, docs exposure, and ZAP baseline results.
+- Affected schema/modules/endpoints: documentation/evidence only under `docs/Compliance/OWASP`; no app code changed.
+- Affected tests: evidence-file presence and CSV sanity only; no app runtime tests required.
+- Architecture risks: avoid committing secrets/cookies/tokens/content; ZAP outputs contain public route/form names only and no authenticated session material.
+- Docs referenced/updated: OWASP evidence pack, `OWASP_Context.md`, findings log, passive recon, server fingerprinting.
+- Reuse decision: used Python stdlib capture and ZAP baseline instead of adding custom scanners or active attack tooling.
+- Code complete: yes.
+- Tests added/updated: not applicable; docs/evidence only.
+- Docs added/updated: yes.
+- Open issues: manual triage required for public `/docs` and `/openapi.json`, ZAP CSRF alert, duplicate HSTS alert, missing `Permissions-Policy`/COEP, and `security.txt`/robots/sitemap redirects.
+
+### Files changed
+
+- `docs/Compliance/OWASP/OWASP_Context.md`: records public capture phase, tools, and findings.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/04-passive-recon.md`: adds public passive findings and ZAP summary.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/05-server-fingerprinting.md`: adds DNS/TLS/header/server fingerprint evidence.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/07-tool-outputs/`: stores redacted summary and ZAP outputs.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/09-findings-and-remediation.md`: adds new public evidence findings.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 OWASP Public Passive Recon.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/python` evidence sanity check: passed; required passive/fingerprint/ZAP files present, OWASP findings contain new IDs, route/role CSV files still parse.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no authenticated crawl or owner-content access occurred; public-only evidence captured.
+- Lifecycle/deletion checkpoint: no lifecycle behavior changed.
+- Provider checkpoint: no provider infrastructure tested; only public OpenScribe URL checked.
+- Structured-note contract: unchanged.
+- Privacy boundaries: committed summaries omit cookie values, CSP nonces, tokens, transcript/note/prompt content, provider responses, and audio.
+
+## 2026-06-14 OWASP Scope Evidence Pack
+
+### Scope
+
+- Implemented the initial OWASP scope and evidence-pack structure inside `docs/Compliance/OWASP`.
+- Seeded the dated `2026-06-14` evidence folder from repo-backed documentation, with gaps kept explicit until live test/crawl evidence exists.
+
+### Checklist
+
+- Target behavior: future OWASP work has a repeatable evidence structure, route inventory seed, role matrix, architecture map, recon/fingerprinting placeholders, findings log, retest log, Top 10 matrix, and carry-forward context.
+- Affected schema/modules/endpoints: documentation only under `docs/Compliance/OWASP`; no schema, endpoint, auth, provider, or storage code changed.
+- Affected tests: CSV structure/path sanity only; no app runtime tests required for docs-only evidence seed.
+- Architecture risks: evidence must not contain secrets, auth material, patient content, transcript text, note text, prompts, provider responses with clinical content, or audio.
+- Docs referenced/updated: `README.md`, `docs/api.md`, `docs/auth.md`, `docs/security.md`, `CONTEXT.md`, `docker-compose.yml`, OWASP pack docs.
+- Reuse decision: reused existing documentation and security/test design instead of inventing a new assurance model.
+- Code complete: yes.
+- Tests added/updated: not applicable; docs/evidence only.
+- Docs added/updated: yes.
+- Open issues: live route crawl, role proxy evidence, SSRF canary tests, dependency/SBOM evidence, TLS/header evidence, persistent audit-event remediation, and AI safety test plan remain open evidence tasks.
+
+### Files changed
+
+- `docs/Compliance/OWASP/README.md`: adds context and dated evidence-pack links.
+- `docs/Compliance/OWASP/00-scope-and-evidence-pack.md`: aligns evidence path with the OWASP directory and marks seeded first tasks.
+- `docs/Compliance/OWASP/OWASP_Context.md`: carry-forward structure, rules, status, and next tasks for future agents.
+- `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/*`: initial dated evidence pack.
+- `docs/progress.md`, `docs/progress/Daily Note 14-6-26 OWASP Scope Evidence Pack.md`: record checklist and checkpoints.
+
+### Tests
+
+- `.venv/bin/python` CSV sanity check for `01-route-inventory.csv` and `02-role-access-matrix.csv`: passed; consistent column counts.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no access behavior changed; evidence preserves owner-only transcript-derived content and metadata-only admin/leader boundaries.
+- Lifecycle/deletion checkpoint: no deletion behavior changed; evidence records immediate transcript/user/Working-note deletion semantics.
+- Provider checkpoint: no provider behavior changed; evidence records Vault-backed secrets, HTTPS/private-endpoint rules, and SSRF follow-up gaps.
+- Structured-note contract: no structured-note behavior changed; evidence records EMIS section contract and AI safety follow-up needs.
+- Privacy boundaries: no sensitive raw evidence committed; all files are repo-backed summaries/placeholders only.
+
 ## 2026-06-14 Redaction Fail-Closed Regression
 
 ### Scope

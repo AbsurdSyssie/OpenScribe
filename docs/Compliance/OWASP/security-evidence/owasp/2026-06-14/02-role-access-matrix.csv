@@ -1,0 +1,27 @@
+route_group,anonymous,onboarding,pending_mfa,normal_user,team_leader,system_admin,content_boundary,status,source,notes
+Public pages,Allow,Redirect/limited,Redirect/limited,Allow/redirect,Allow/redirect,Allow/redirect,No transcript content,Repo-evidenced,README.md docs/auth.md,Session users may redirect to post-login routes.
+Auth login/logout,Allow login/logout,Allow logout/me only,Allow logout/me/TOTP/trusted-device,Allow logout/me/trusted-device,Allow logout/me/trusted-device,Allow logout/me/trusted-device,No transcript content,Repo-evidenced,docs/api.md docs/auth.md,Public allowlist is explicit.
+Password reset/account activation,Allow,Limited/deny normal routes,Limited/deny normal routes,Deny unless token flow needed,Deny unless token flow needed,Deny unless token flow needed,Token material never stored plaintext,Repo-evidenced,docs/auth.md,Needs live token-flow tests.
+Onboarding API,Deny,Allow,Deny,Deny,Deny,Deny,No transcript content,Repo-evidenced,docs/api.md docs/auth.md,Onboarding-only sessions blocked from normal routes.
+MFA challenge API,Deny,Deny,Allow,Deny unless challenge required,Deny unless challenge required,Deny unless challenge required,No transcript content,Repo-evidenced,docs/api.md docs/auth.md,Pending-MFA sessions blocked from normal routes.
+Account request submission,Allow,Deny or allow only if no cookie authority,Deny or allow only if no cookie authority,Not needed,Not needed,Not needed,No transcript content,Repo-evidenced,docs/api.md docs/auth.md,Rate limited public flow.
+Account request review,Deny,Deny,Deny,Deny,Allow own-team,Allow all,Metadata only,Repo-evidenced,docs/api.md docs/auth.md,Leader scope own team.
+Team creation/list,Deny,Deny,Deny,Deny,Deny,Allow,Metadata only,Repo-evidenced,docs/api.md,System-admin-only in docs.
+User management,Deny,Deny,Deny,Deny,Allow own-team non-admin,Allow cross-team non-self,Metadata only no transcript readability,Repo-evidenced,docs/api.md docs/security.md,Self-delete/suspend blocked.
+Manager recovery,Deny,Deny,Deny,Deny,Allow own-team with constraints,Allow with constraints,No transcript/TOTP secret/recovery code reveal,Repo-evidenced,docs/auth.md,TOTP/reason/confirmation required for break-glass.
+Transcript routes,Deny,Deny,Deny,Allow own,Allow own only,Blocked from owning content by policy,Owner-only transcript-derived content,Repo-evidenced,docs/api.md docs/security.md,Leader/admin authority does not grant content access.
+Working-note routes,Deny,Deny,Deny,Allow own,Allow own only,Blocked from owning content by policy,Owner-only transcript-derived content,Repo-evidenced,CONTEXT.md docs/api.md,Follows transcript-root retention/deletion.
+Generated document routes,Deny,Deny,Deny,Allow own,Allow own only,No cross-owner read,Owner-only generated content,Repo-evidenced,docs/api.md,Debug payload owner-only and env/local gated.
+Template team routes,Deny,Deny,Deny,Deny for team writes; read available only,Allow own-team,Allow according to admin UI/config scope,Config not transcript content,Repo-evidenced,docs/api.md,Generated outputs retain prompt snapshots after template delete.
+Template personal routes,Deny,Deny,Deny,Allow own,Allow own personal,No personal ownership expected,Personal config,Repo-evidenced,docs/api.md,System admins do not own transcript-derived content.
+Smart phrases,Deny,Deny,Deny,Allow own,Allow own,No personal ownership expected,Personal config,Repo-evidenced,docs/api.md,Triggers unique per owner.
+STT provisioning,Deny,Deny,Deny,Deny,Deny,Allow,Vault secret refs only,Repo-evidenced,docs/api.md docs/security.md,System-admin provisioned per team.
+STT selection,Deny,Deny,Deny,Deny,Allow own-team,Allow explicit team,Provider metadata no secrets,Repo-evidenced,docs/api.md docs/security.md,Leader may select/clear only own team.
+LLM provisioning,Deny,Deny,Deny,Deny,Deny,Allow,Vault secret refs only,Repo-evidenced,docs/api.md,System-admin provisioned per team.
+LLM selection,Deny,Deny,Deny,Deny,Allow own-team,Allow explicit team,Provider metadata no secrets,Repo-evidenced,docs/api.md,Leader may select team default/allowed models.
+LLM/user preferences,Deny,Deny,Deny,Allow own,Allow own,No normal ownership expected,User preference metadata,Repo-evidenced,docs/api.md,Invalid preference falls back to team default.
+Hallucination-check selection,Deny,Deny,Deny,Deny,Deny,Allow,Provider metadata no content,Repo-evidenced,docs/api.md,Admin-only; no fallback to generation LLM.
+De-identification provider provisioning,Deny,Deny,Deny,Deny,Deny,Allow,Provider metadata/secret refs,Repo-evidenced,docs/api.md,SSRF review priority.
+De-identification selection,Deny,Deny,Deny,Deny,Allow own-team,Allow explicit team,Provider metadata no secrets,Repo-evidenced,docs/api.md,Built-in native fallback when no valid team selection.
+Clinical NLP selection,Deny,Deny,Deny,Deny,Allow own-team,Allow explicit team,Provider metadata no secrets,Repo-evidenced,docs/api.md,No built-in fallback.
+Admin usage telemetry,Deny,Deny,Deny,Deny,Deny or limited manager view,Allow,Metadata only; no transcript/note/prompt,Partially evidenced,docs/usage_tab.md docs/security.md,Persistent audit storage gap remains.

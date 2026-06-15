@@ -7,6 +7,15 @@ export function createStructuredEditor({
   syncGenerationAvailability,
   onNoteEditorChanged,
 }) {
+  const escapeHtml = (value) => {
+    if (value == null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  };
   let generatedStructuredDraft = null;
   let generatedFreeformDraft = null;
   let currentRenderedDocument = null;
@@ -1229,7 +1238,7 @@ export function createStructuredEditor({
       return;
     }
     if (generatedDocument.status === 'failed') {
-      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">The latest note could not be created${generatedDocument.error_message ? `: ${generatedDocument.error_message}` : ''}.</span>`;
+      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">The latest note could not be created${generatedDocument.error_message ? `: ${escapeHtml(generatedDocument.error_message)}` : ''}.</span>`;
       syncNoteEditorToolbar();
       return;
     }

@@ -105,6 +105,67 @@ def ensure_dev_user(
     return user
 
 
+def ensure_dev_system_admin(
+    db: Session,
+    *,
+    full_name: str,
+    email: str,
+    password: str,
+) -> User:
+    normalized_email = normalize_email(email)
+    user = db.scalar(select(User).where(User.email == normalized_email))
+    if user is None:
+        user = User(
+            full_name=full_name,
+            email=normalized_email,
+            password_hash=hash_password(password),
+            team_id=None,
+            team_role=None,
+            is_system_admin=True,
+            status=UserStatus.active,
+            must_change_password=False,
+            onboarding_state=UserOnboardingState.complete,
+            mfa_required=False,
+            mfa_enabled=False,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        if _user_has_transcript_content(db, user=user):
+            _reset_dev_user_transcript_content(db, user=user)
+            db.refresh(user)
+
+        user.full_name = full_name
+        user.email = normalized_email
+        user.password_hash = hash_password(password)
+        user.team_id = None
+        user.team_role = None
+        user.is_system_admin = True
+        user.status = UserStatus.active
+        user.must_change_password = False
+        user.onboarding_state = UserOnboardingState.complete
+        user.mfa_required = False
+        user.mfa_enabled = False
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    for method in list(user.mfa_methods):
+        db.delete(method)
+    for code in list(user.recovery_codes):
+        db.delete(code)
+    for device in db.scalars(select(UserTrustedDevice).where(UserTrustedDevice.user_id == user.id)):
+        db.delete(device)
+    for session in list(user.sessions):
+        db.delete(session)
+    for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
+        db.delete(key_record)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def repair_dev_user_content_key_if_needed(db: Session, *, user: User) -> None:
     key_record = get_active_user_key(db, user_id=user.id)
     if key_record is None:
@@ -154,10 +215,18 @@ def main() -> None:
     leader_password = _env("DEV_TEST_LEADER_PASSWORD", "test1234")
     user_email = _env("DEV_TEST_USER_EMAIL", "dev.user@example.com")
     user_password = _env("DEV_TEST_USER_PASSWORD", "test1234")
+    admin_email = _env("DEV_TEST_ADMIN_EMAIL", "dev.admin@example.com")
+    admin_password = _env("DEV_TEST_ADMIN_PASSWORD", "test1234")
 
     engine = create_engine(database_url, future=True)
     with Session(engine) as db:
         team = ensure_team(db, team_name=team_name)
+        admin = ensure_dev_system_admin(
+            db,
+            full_name="Dev Test Admin",
+            email=admin_email,
+            password=admin_password,
+        )
         leader = ensure_dev_user(
             db,
             full_name="Dev Test Leader",
@@ -176,11 +245,13 @@ def main() -> None:
         )
         ensure_builtin_team_assets(db, team=team, actor=leader)
         db.commit()
+        admin_email = admin.email
         leader_email = leader.email
         user_email = user.email
 
     print("Seeded dev test accounts:")
     print(f"team={team_name}")
+    print(f"admin_email={admin_email}")
     print(f"leader_email={leader_email}")
     print(f"user_email={user_email}")
 

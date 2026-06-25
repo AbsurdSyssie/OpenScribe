@@ -14,6 +14,7 @@ from ..main import (
     _set_trusted_device_cookie,
 )
 from ..models import UserOnboardingState
+from ..services.passwords import validate_password_strength
 
 
 @app.get("/robots.txt", include_in_schema=False)
@@ -86,15 +87,40 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
                 target=user,
                 request=request,
                 details={"recovery_mode": user.recovery_mode.value},
-            )
+        )
         _enforce_localhost_only_dev_account(request, user)
     except AppError as exc:
+        record_security_event(
+            db,
+            action="login_failure",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "failure",
+                "reason_code": exc.code,
+                "status_code": exc.status_code,
+                "subject_hash": audit_subject_hash(email),
+            },
+        )
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
     trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
     auth_level = login_auth_level(user, trusted_device)
     if trusted_device and auth_level is SessionAuthLevel.full:
         touch_trusted_device_seen(db, trusted_device)
     token = create_session(db, user, auth_level=auth_level)
+    record_security_event(
+        db,
+        action="login_success",
+        actor=user,
+        target=user,
+        request=request,
+        details={
+            "category": "auth",
+            "outcome": "success",
+            "auth_level": auth_level.value,
+            "trusted_device_used": bool(trusted_device and auth_level is SessionAuthLevel.full),
+        },
+    )
     redirect_to = "/onboarding" if auth_level is SessionAuthLevel.onboarding else ("/mfa/challenge" if auth_level is SessionAuthLevel.pending_mfa else _post_login_redirect_for_user(user))
     response = RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, token)
@@ -106,6 +132,7 @@ def logout_submit(request: Request, csrf_protected: BrowserCsrf = None, db: Sess
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         revoke_session_by_token(db, token, reason="logout")
+        record_security_event(db, action="logout", request=request, details={"category": "session", "outcome": "revoked", "reason_code": "logout"})
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     _clear_session_cookie(response)
     _clear_trusted_device_cookie(response)
@@ -160,9 +187,33 @@ def forgot_password_submit(request: Request, email: str = Form(...), csrf_protec
     try:
         message = request_password_reset_service(db, email=email)
         status_code = status.HTTP_200_OK
+        record_security_event(
+            db,
+            action="password_reset_requested",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "accepted",
+                "flow": "password_reset",
+                "subject_hash": audit_subject_hash(email),
+            },
+        )
     except AppError as exc:
         message = exc.message if exc.code == "mail_transport_disabled" else GENERIC_PASSWORD_RESET_MESSAGE
         status_code = exc.status_code if exc.code == "mail_transport_disabled" else status.HTTP_200_OK
+        record_security_event(
+            db,
+            action="password_reset_requested",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "failure" if exc.code == "mail_transport_disabled" else "accepted",
+                "reason_code": exc.code,
+                "status_code": exc.status_code,
+                "flow": "password_reset",
+                "subject_hash": audit_subject_hash(email),
+            },
+        )
     reset_enabled = email_password_reset_enabled_service()
     return templates.TemplateResponse(
         request,
@@ -198,8 +249,10 @@ def reset_password_page(request: Request, token: str = "", db: Session = Depends
 @app.post("/reset-password", response_class=HTMLResponse)
 def reset_password_submit(request: Request, token: str = Form(...), new_password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     try:
+        validate_password_strength(new_password)
         confirm_password_reset_service(db, raw_token=token, new_password=new_password)
     except AppError as exc:
+        record_security_event(db, action="auth_email_token_failure", request=request, details={"category": "auth", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code, "flow": "password_reset"})
         return templates.TemplateResponse(
             request,
             "password_reset_confirm.html",
@@ -214,6 +267,7 @@ def reset_password_submit(request: Request, token: str = Form(...), new_password
             },
             status_code=exc.status_code,
         )
+    record_security_event(db, action="password_reset_confirmed", request=request, details={"category": "auth", "outcome": "success"})
     return render_auth_page(request, db, message="Password reset complete. Sign in with your new password.", message_kind="success")
 
 
@@ -240,8 +294,10 @@ def activate_account_page(request: Request, token: str = "", db: Session = Depen
 @app.post("/activate-account", response_class=HTMLResponse)
 def activate_account_submit(request: Request, token: str = Form(...), new_password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     try:
+        validate_password_strength(new_password)
         user, session_token = confirm_account_activation_service(db, raw_token=token, new_password=new_password)
     except AppError as exc:
+        record_security_event(db, action="auth_email_token_failure", request=request, details={"category": "account", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code, "flow": "account_activation"})
         return templates.TemplateResponse(
             request,
             "password_reset_confirm.html",
@@ -256,6 +312,7 @@ def activate_account_submit(request: Request, token: str = Form(...), new_passwo
             },
             status_code=exc.status_code,
         )
+    record_security_event(db, action="account_activation_confirmed", actor=user, target=user, request=request, details={"category": "account", "outcome": "success", "auth_level": SessionAuthLevel.onboarding.value})
     response = RedirectResponse(url="/onboarding", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, session_token)
     return response
@@ -272,6 +329,7 @@ def bootstrap_system_admin(request: Request, email: str = Form(...), password: s
             status_code=status.HTTP_403_FORBIDDEN,
         )
     try:
+        validate_password_strength(password)
         user = create_bootstrap_admin(db, email=email, password=password)
     except AppError as exc:
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
@@ -329,7 +387,9 @@ def mfa_challenge_submit(
         )
         token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
     except AppError as exc:
+        record_security_event(db, action="mfa_challenge_failure", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code})
         return render_mfa_challenge(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    record_security_event(db, action="mfa_challenge_success", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success", "trusted_device_created": bool(trusted_device_token)})
     response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, token)
     if trusted_device_token:
@@ -343,9 +403,11 @@ def onboarding_password_submit(request: Request, new_password: str = Form(...), 
     if response is not None:
         return response
     try:
+        validate_password_strength(new_password)
         user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(new_password))
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    record_security_event(db, action="onboarding_password_changed", actor=user, target=user, request=request, details={"category": "account", "outcome": "success"})
     return render_onboarding(request, current_user=user, message="Password updated. Continue to TOTP enrollment.", message_kind="success")
 
 
@@ -358,6 +420,7 @@ def onboarding_totp_start_submit(request: Request, csrf_protected: BrowserCsrf =
         method = start_totp_enrollment(db, context.user)
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    record_security_event(db, action="totp_enrollment_started", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "success"})
     refreshed_user = db.get(User, context.user.id)
     return render_onboarding(
         request,
@@ -379,6 +442,7 @@ def onboarding_totp_verify_submit(request: Request, code: str = Form(...), csrf_
     try:
         user = verify_totp_enrollment(db, context.user, code=code)
     except AppError as exc:
+        record_security_event(db, action="totp_enrollment_failure", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code})
         return render_onboarding(
             request,
             current_user=context.user,
@@ -389,6 +453,7 @@ def onboarding_totp_verify_submit(request: Request, code: str = Form(...), csrf_
             message_kind="error",
             status_code=exc.status_code,
         )
+    record_security_event(db, action="totp_enrollment_verified", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
     return render_onboarding(request, current_user=user, message="TOTP verified. Generate recovery codes or skip this optional step.", message_kind="success")
 
 
@@ -403,6 +468,7 @@ def onboarding_recovery_codes_submit(request: Request, csrf_protected: BrowserCs
         token = rotate_session(db, context.token, refreshed_user, auth_level=determine_auth_level(refreshed_user))
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    record_security_event(db, action="recovery_codes_generated", actor=refreshed_user, target=refreshed_user, request=request, details={"category": "mfa", "outcome": "success", "count": len(codes)})
     response = templates.TemplateResponse(
         request,
         "onboarding.html",
@@ -431,6 +497,7 @@ def onboarding_skip_recovery_codes_submit(request: Request, csrf_protected: Brow
         token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
+    record_security_event(db, action="recovery_codes_skipped", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
     response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, token)
     return response

@@ -67,6 +67,12 @@ from ..services.admin import (
     list_users as list_users_service,
     user_count as user_count_service,
 )
+from ..services.audit_detection import (
+    audit_filter_options as audit_filter_options_service,
+    list_security_audit_events as list_security_audit_events_service,
+    parse_since as parse_audit_since,
+    summarize_security_audit_events as summarize_security_audit_events_service,
+)
 from ..services.auth_email import email_password_reset_enabled as email_password_reset_enabled_service
 from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
@@ -871,7 +877,7 @@ def render_admin(
     selected_default_quick_action = next((quick_action for quick_action in default_quick_actions if str(quick_action.id) == selected_default_quick_action_id), None)
     default_template_latest_version = _latest_template_version(selected_default_template) if selected_default_template is not None else None
     default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
-    available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults"}
+    available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults", "audit"}
     if extra_admin_tabs:
         available_admin_tabs = available_admin_tabs | extra_admin_tabs
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
@@ -898,6 +904,66 @@ def render_admin(
     }
     if resolved_admin_tab in {"usage", "failures"}:
         usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
+    audit_context = {
+        "audit_since": request.query_params.get("audit_since", "24h"),
+        "audit_action_filter": request.query_params.get("audit_action", ""),
+        "audit_category_filter": request.query_params.get("audit_category", ""),
+        "audit_outcome_filter": request.query_params.get("audit_outcome", ""),
+        "audit_request_ip_filter": request.query_params.get("audit_request_ip", ""),
+        "audit_team_id_filter": request.query_params.get("audit_team_id", ""),
+        "audit_actor_user_id_filter": request.query_params.get("audit_actor_user_id", ""),
+        "audit_report": {"event_count": 0, "action_counts": {}, "category_counts": {}, "outcome_counts": {}, "signals": []},
+        "audit_events": [],
+        "audit_filter_options": {"actions": [], "categories": [], "outcomes": [], "request_ips": []},
+    }
+    if resolved_admin_tab == "audit":
+        audit_since_value = audit_context["audit_since"]
+        try:
+            audit_since = parse_audit_since(audit_since_value)
+        except ValueError:
+            audit_since = parse_audit_since("24h")
+            audit_context["audit_since"] = "24h"
+
+        def query_uuid(name: str) -> UUID | None:
+            value = request.query_params.get(name)
+            if not value:
+                return None
+            try:
+                return UUID(value)
+            except ValueError:
+                return None
+
+        try:
+            audit_limit = int(request.query_params.get("audit_limit", "100"))
+        except ValueError:
+            audit_limit = 100
+        audit_report = summarize_security_audit_events_service(db, since=audit_since)
+        audit_report = {
+            **audit_report,
+            "signals": [
+                {**signal, "key": "subject_hash_present", "display_key": "subject_hash_present"}
+                if signal.get("signal") == "auth_failure_burst_by_subject"
+                else signal
+                for signal in audit_report["signals"]
+            ],
+        }
+        audit_context.update(
+            {
+                "audit_report": audit_report,
+                "audit_events": list_security_audit_events_service(
+                    db,
+                    since=audit_since,
+                    limit=audit_limit,
+                    action=request.query_params.get("audit_action") or None,
+                    category=request.query_params.get("audit_category") or None,
+                    outcome=request.query_params.get("audit_outcome") or None,
+                    request_ip=request.query_params.get("audit_request_ip") or None,
+                    team_id=query_uuid("audit_team_id"),
+                    actor_user_id=query_uuid("audit_actor_user_id"),
+                ),
+                "audit_filter_options": audit_filter_options_service(db),
+            }
+        )
     email_recovery_enabled = email_password_reset_enabled_service()
     context = {
         "request": request,
@@ -961,6 +1027,7 @@ def render_admin(
         "email_recovery_enabled": email_recovery_enabled,
         "break_glass_recovery_enabled": break_glass_recovery_enabled(),
         **usage_context,
+        **audit_context,
     }
     resolved_template_name = template_name or "admin.html"
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)

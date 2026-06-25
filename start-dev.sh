@@ -23,7 +23,8 @@ set +a
 : "${APP_PORT:=8080}"
 : "${DEV_ALLOW_REMOTE_BIND:=true}"
 : "${DEV_PURGE_CELERY_QUEUE:=true}"
-export APP_HOST APP_PORT DEV_ALLOW_REMOTE_BIND DEV_PURGE_CELERY_QUEUE
+: "${DEV_FORWARDED_ALLOW_IPS:=192.168.1.234}"
+export APP_HOST APP_PORT DEV_ALLOW_REMOTE_BIND DEV_PURGE_CELERY_QUEUE DEV_FORWARDED_ALLOW_IPS
 
 docker compose up -d
 
@@ -151,5 +152,9 @@ if [[ "${DEV_START_BRAVE:-true}" == "true" ]]; then
   BRAVE_PID=$!
 fi
 
-echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT}..."
-.venv/bin/fastapi dev app/main.py --host "${APP_BIND_HOST}" --port "${APP_PORT}"
+echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT} with trusted proxy ${DEV_FORWARDED_ALLOW_IPS}..."
+.venv/bin/fastapi dev app/main.py \
+  --host "${APP_BIND_HOST}" \
+  --port "${APP_PORT}" \
+  --proxy-headers \
+  --forwarded-allow-ips "${DEV_FORWARDED_ALLOW_IPS}"

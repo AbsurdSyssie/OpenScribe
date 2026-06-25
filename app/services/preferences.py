@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import PromptTemplate, QuickAction, TeamRole, TemplateScope, User, UserAppPreference
 from app.schemas.preferences import UserAppPreferencesUpsert
+from app.services.security_audit import record_security_event
 
 
 def _require_user_app_preference_scope(actor: User) -> None:
@@ -177,6 +178,14 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
     db.add(preference)
     db.commit()
     db.refresh(preference)
+    record_security_event(
+        db,
+        action="user_app_preferences_set",
+        actor=actor,
+        target=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "user_app_preferences", "object_id": str(preference.id), "keys": sorted(normalized.keys())},
+    )
     return preference
 
 
@@ -185,5 +194,7 @@ def clear_user_app_preferences(db: Session, actor: User) -> None:
     preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
     if preference is None:
         raise AppError(404, "not_found", "User app preferences not found", {"resource": "user_app_preferences", "user_id": str(actor.id)})
+    preference_id = preference.id
     db.delete(preference)
     db.commit()
+    record_security_event(db, action="user_app_preferences_cleared", actor=actor, target=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "user_app_preferences", "object_id": str(preference_id)})

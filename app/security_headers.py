@@ -15,7 +15,7 @@ def content_security_policy(nonce: str, *, upgrade_insecure_requests: bool = Fal
         "script-src": ["'self'", f"'nonce-{nonce}'", "'wasm-unsafe-eval'"],
         "script-src-attr": ["'none'"],
         "style-src": ["'self'", f"'nonce-{nonce}'"],
-        "style-src-attr": ["'unsafe-inline'"],
+        "style-src-attr": ["'none'"],
         "img-src": ["'self'", "data:", "blob:"],
         "font-src": ["'self'", "data:"],
         "connect-src": ["'self'"],

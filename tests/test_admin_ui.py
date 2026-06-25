@@ -32,6 +32,7 @@ from app.models import (
     QuickAction,
     QuickActionVersion,
     RedactionRunStatus,
+    SecurityAuditEvent,
     Team,
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
@@ -195,7 +196,7 @@ def test_dev_seed_account_browser_login_is_restricted_to_localhost(client, make_
 def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
     bootstrap_response = client.post(
         "/bootstrap/system-admin",
-        data={"email": "admin@example.com", "password": "password-1"},
+        data={"email": "admin@example.com", "password": "AdminPassword123"},
         follow_redirects=False,
     )
     assert bootstrap_response.status_code == 303
@@ -2102,6 +2103,110 @@ def test_admin2_failures_tab_loads_failure_rows(client, db_session, make_team, m
     assert 'data-admin-tab-panel="failures"' in page.text
     assert "LLM generation" in page.text
     assert "llm_timeout" in page.text
+
+
+def test_admin2_audit_tab_shows_metadata_only_security_events(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Admin2 Audit")
+    admin = make_user(email="admin2-audit@example.com", password="password-1", is_system_admin=True)
+    actor = make_user(email="audit-actor@example.com", password="password-2", team=team)
+    for _ in range(5):
+        db_session.add(
+            SecurityAuditEvent(
+                action="login_failure",
+                actor_user_id=actor.id,
+                target_user_id=actor.id,
+                team_id=team.id,
+                request_ip="8.8.8.8",
+                user_agent="pytest-agent",
+                details_json={
+                    "category": "auth",
+                    "outcome": "failure",
+                    "reason_code": "bad_credentials",
+                    "route": "/api/v1/auth/login",
+                    "subject_hash": "hidden-subject-hash",
+                    "password": "never-render-this",
+                    "prompt": "never-render-prompt",
+                    "transcript_text": "never-render-transcript",
+                },
+            )
+        )
+    db_session.add(
+        SecurityAuditEvent(
+            action="password_reset_requested",
+            team_id=team.id,
+            request_ip="1.1.1.1",
+            user_agent="pytest-agent",
+            details_json={
+                "category": "auth",
+                "outcome": "accepted",
+                "flow": "password_reset",
+                "subject_hash": "hidden-reset-subject-hash",
+            },
+        )
+    )
+    for _ in range(5):
+        db_session.add(
+            SecurityAuditEvent(
+                action="mfa_challenge_failure",
+                team_id=team.id,
+                request_ip="192.168.1.234",
+                user_agent="pytest-agent",
+                details_json={
+                    "category": "auth",
+                    "outcome": "failure",
+                    "reason_code": "bad_totp",
+                },
+            )
+        )
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin2?tab=audit&audit_since=24h")
+
+    assert page.status_code == 200
+    assert 'data-admin-tab-panel="audit"' in page.text
+    assert "Security audit" in page.text
+    assert "login_failure" in page.text
+    assert "8.8.8.8" in page.text
+    assert "Private/internal IP masked" in page.text
+    assert "192.168.1.234" not in page.text
+    assert "bad_credentials" in page.text
+    assert "auth_failure_burst_by_subject" in page.text
+    assert "subject_hash_present" in page.text
+    assert '<option value="login_failure"' in page.text
+    assert '<option value="password_reset_requested"' in page.text
+    assert '<option value="auth"' in page.text
+    assert '<option value="accepted"' in page.text
+    assert '<option value="8.8.8.8"' in page.text
+    assert '<option value="192.168.1.234"' not in page.text
+    assert "never-render-this" not in page.text
+    assert "never-render-prompt" not in page.text
+    assert "never-render-transcript" not in page.text
+    assert "hidden-subject-hash" not in page.text
+    assert "hidden-reset-subject-hash" not in page.text
+
+    legacy_page = client.get("/admin?tab=audit&audit_since=24h")
+    assert legacy_page.status_code == 200
+    assert "Private/internal IP masked" in legacy_page.text
+    assert "192.168.1.234" not in legacy_page.text
+    assert '<option value="192.168.1.234"' not in legacy_page.text
+
+    filtered = client.get("/admin2?tab=audit&audit_since=24h&audit_action=password_reset_requested&audit_category=auth&audit_outcome=accepted")
+    assert filtered.status_code == 200
+    assert "password_reset_requested" in filtered.text
+    assert "flow=password_reset" in filtered.text
+    assert "bad_credentials" not in filtered.text
+
+
+def test_non_admin_cannot_open_admin_audit_tab(client, make_team, make_user):
+    team = make_team(name="Clinic Audit Blocked")
+    make_user(email="audit-user@example.com", password="password-1", team=team)
+
+    client.post("/login", data={"email": "audit-user@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin2?tab=audit")
+
+    assert page.status_code == 403
+    assert "Security audit" not in page.text
 
 
 def test_admin_restyled_account_request_reject_preserves_preview_route(client, db_session, make_team, make_user, make_account_request):

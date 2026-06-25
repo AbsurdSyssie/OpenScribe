@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.normalization import normalize_team_name_key
 from app.schemas.templates import DefaultPromptTemplateUpsert, DefaultQuickActionUpsert
+from app.services.security_audit import record_security_event
 from app.services.templates import (
     _latest_quick_action_version,
     _latest_template_version,
@@ -327,6 +328,7 @@ def upsert_default_template(db: Session, actor: User, payload: DefaultPromptTemp
     template_name = _serialize_asset_name(payload.name)
     config_json = _serialize_template_config(payload)
     template = _resolve_default_template(db, template_id=payload.template_id) if payload.template_id else None
+    created = template is None
     _ensure_unique_default_template_name(db, name=template_name, current_template_id=template.id if template is not None else None)
     if template is None:
         template = DefaultPromptTemplate(
@@ -360,6 +362,19 @@ def upsert_default_template(db: Session, actor: User, payload: DefaultPromptTemp
         db.rollback()
         raise AppError(409, "conflict", "Default template changed during save. Retry.", {"resource": "default_template"}) from exc
     db.refresh(template)
+    record_security_event(
+        db,
+        action="default_template_created" if created else "default_template_updated",
+        actor=actor,
+        details={
+            "category": "template",
+            "outcome": "success",
+            "object_type": "default_prompt_template",
+            "object_id": str(template.id),
+            "mode": payload.mode.value,
+            "active": bool(template.is_active),
+        },
+    )
     return template
 
 
@@ -368,6 +383,7 @@ def upsert_default_quick_action(db: Session, actor: User, payload: DefaultQuickA
     prompt_text = _serialize_prompt_text(payload.prompt_text)
     quick_action_name = _serialize_asset_name(payload.name)
     quick_action = _resolve_default_quick_action(db, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
+    created = quick_action is None
     _ensure_unique_default_quick_action_name(db, name=quick_action_name, current_quick_action_id=quick_action.id if quick_action is not None else None)
     if quick_action is None:
         quick_action = DefaultQuickAction(
@@ -400,21 +416,38 @@ def upsert_default_quick_action(db: Session, actor: User, payload: DefaultQuickA
         db.rollback()
         raise AppError(409, "conflict", "Default quick action changed during save. Retry.", {"resource": "default_quick_action"}) from exc
     db.refresh(quick_action)
+    record_security_event(
+        db,
+        action="default_quick_action_created" if created else "default_quick_action_updated",
+        actor=actor,
+        details={
+            "category": "template",
+            "outcome": "success",
+            "object_type": "default_quick_action",
+            "object_id": str(quick_action.id),
+            "mode": TemplateMode.freeform.value,
+            "active": bool(quick_action.is_active),
+        },
+    )
     return quick_action
 
 
 def delete_default_template(db: Session, actor: User, *, template_id: UUID) -> None:
     _require_system_admin(actor)
     template = _resolve_default_template(db, template_id=template_id)
+    deleted_id = template.id
     db.delete(template)
     db.commit()
+    record_security_event(db, action="default_template_deleted", actor=actor, details={"category": "template", "outcome": "success", "object_type": "default_prompt_template", "object_id": str(deleted_id)})
 
 
 def delete_default_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> None:
     _require_system_admin(actor)
     quick_action = _resolve_default_quick_action(db, quick_action_id=quick_action_id)
+    deleted_id = quick_action.id
     db.delete(quick_action)
     db.commit()
+    record_security_event(db, action="default_quick_action_deleted", actor=actor, details={"category": "template", "outcome": "success", "object_type": "default_quick_action", "object_id": str(deleted_id)})
 
 
 def duplicate_default_template(db: Session, actor: User, *, template_id: UUID) -> DefaultPromptTemplate:

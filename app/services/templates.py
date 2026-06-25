@@ -64,6 +64,7 @@ from app.services.redaction import (
     redact_transient_text,
     reidentify_text,
 )
+from app.services.security_audit import record_security_event
 from app.services.transcripts import (
     manual_pii_entity_value,
     freeform_working_note_text,
@@ -633,6 +634,7 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
     config_json = _serialize_template_config(payload)
     template = _resolve_team_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
     _ensure_unique_template_name(db, actor, scope=TemplateScope.team, name=template_name, current_template_id=template.id if template is not None else None)
+    created = template is None
     if template is None:
         template = PromptTemplate(
             id=uuid4(),
@@ -671,6 +673,13 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
         db.rollback()
         raise
     db.refresh(template)
+    record_security_event(
+        db,
+        action="template_created" if created else "template_updated",
+        actor=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template.id), "scope": TemplateScope.team.value, "mode": payload.mode.value},
+    )
     return template
 
 
@@ -683,6 +692,7 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
     config_json = _serialize_template_config(payload)
     template = _resolve_personal_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
     _ensure_unique_template_name(db, actor, scope=TemplateScope.user, name=template_name, current_template_id=template.id if template is not None else None)
+    created = template is None
     if template is None:
         template = PromptTemplate(
             id=uuid4(),
@@ -721,6 +731,13 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
         db.rollback()
         raise
     db.refresh(template)
+    record_security_event(
+        db,
+        action="template_created" if created else "template_updated",
+        actor=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template.id), "scope": TemplateScope.user.value, "mode": payload.mode.value},
+    )
     return template
 
 
@@ -738,6 +755,7 @@ def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpser
         name=quick_action_name,
         current_quick_action_id=quick_action.id if quick_action is not None else None,
     )
+    created = quick_action is None
     if quick_action is None:
         quick_action = QuickAction(
             id=uuid4(),
@@ -775,6 +793,13 @@ def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpser
         db.rollback()
         raise
     db.refresh(quick_action)
+    record_security_event(
+        db,
+        action="quick_action_created" if created else "quick_action_updated",
+        actor=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action.id), "scope": TemplateScope.team.value},
+    )
     return quick_action
 
 
@@ -792,6 +817,7 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
         name=quick_action_name,
         current_quick_action_id=quick_action.id if quick_action is not None else None,
     )
+    created = quick_action is None
     if quick_action is None:
         quick_action = QuickAction(
             id=uuid4(),
@@ -829,6 +855,13 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
         db.rollback()
         raise
     db.refresh(quick_action)
+    record_security_event(
+        db,
+        action="quick_action_created" if created else "quick_action_updated",
+        actor=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action.id), "scope": TemplateScope.user.value},
+    )
     return quick_action
 
 
@@ -842,6 +875,7 @@ def delete_team_template(db: Session, actor: User, *, template_id: UUID) -> None
         db.flush()
     db.delete(template)
     db.commit()
+    record_security_event(db, action="template_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template_id), "scope": TemplateScope.team.value})
 
 
 def delete_personal_template(db: Session, actor: User, *, template_id: UUID) -> None:
@@ -854,6 +888,7 @@ def delete_personal_template(db: Session, actor: User, *, template_id: UUID) -> 
         db.flush()
     db.delete(template)
     db.commit()
+    record_security_event(db, action="template_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template_id), "scope": TemplateScope.user.value})
 
 
 def duplicate_team_template(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
@@ -902,6 +937,7 @@ def delete_team_quick_action(db: Session, actor: User, *, quick_action_id: UUID)
         db.flush()
     db.delete(quick_action)
     db.commit()
+    record_security_event(db, action="quick_action_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action_id), "scope": TemplateScope.team.value})
 
 
 def delete_personal_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> None:
@@ -914,6 +950,7 @@ def delete_personal_quick_action(db: Session, actor: User, *, quick_action_id: U
         db.flush()
     db.delete(quick_action)
     db.commit()
+    record_security_event(db, action="quick_action_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action_id), "scope": TemplateScope.user.value})
 
 
 def duplicate_team_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
@@ -971,11 +1008,19 @@ def delete_generated_document(db: Session, actor: User, *, generated_document_id
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    transcript_id = document.transcript_id
     for event in document.provider_usage_events:
         event.generated_document_id = None
         db.add(event)
     db.delete(document)
     db.commit()
+    record_security_event(
+        db,
+        action="generated_document_deleted",
+        actor=actor,
+        team_id=actor.team_id,
+        details={"category": "generated_document", "outcome": "success", "object_type": "generated_document", "object_id": str(generated_document_id), "transcript_id": str(transcript_id) if transcript_id else None},
+    )
 
 
 def _normalize_note_text(value: str | None) -> str:
@@ -2782,6 +2827,24 @@ def queue_document_generation_from_template(
     db.commit()
     db.refresh(generated_document)
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
+    record_security_event(
+        db,
+        action="generation_queued",
+        actor=actor,
+        target=actor,
+        team_id=transcript.team_id,
+        details={
+            "category": "generated_document",
+            "outcome": "success",
+            "object_type": "generated_document",
+            "object_id": str(generated_document.id),
+            "generator_type": GeneratedDocumentGeneratorType.template.value,
+            "transcript_id": str(transcript.id),
+            "template_id": str(template.id),
+            "llm_config_id": str(config.id),
+            "waiting_for_transcript": bool(waiting_for_transcript),
+        },
+    )
     return generated_document
 
 
@@ -2866,6 +2929,23 @@ def queue_followup_generation(
     db.commit()
     db.refresh(generated_document)
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
+    record_security_event(
+        db,
+        action="generation_queued",
+        actor=actor,
+        target=actor,
+        team_id=transcript.team_id,
+        details={
+            "category": "generated_document",
+            "outcome": "success",
+            "object_type": "generated_document",
+            "object_id": str(generated_document.id),
+            "generator_type": GeneratedDocumentGeneratorType.followup.value,
+            "transcript_id": str(transcript.id),
+            "llm_config_id": str(config.id),
+            "waiting_for_transcript": bool(waiting_for_transcript),
+        },
+    )
     return generated_document
 
 
@@ -2953,6 +3033,25 @@ def queue_quick_action_generation(
     db.commit()
     db.refresh(generated_document)
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
+    record_security_event(
+        db,
+        action="generation_queued",
+        actor=actor,
+        target=actor,
+        team_id=transcript.team_id,
+        details={
+            "category": "generated_document",
+            "outcome": "success",
+            "object_type": "generated_document",
+            "object_id": str(generated_document.id),
+            "generator_type": GeneratedDocumentGeneratorType.quick_action.value,
+            "transcript_id": str(transcript.id),
+            "quick_action_id": str(quick_action.id),
+            "llm_config_id": str(config.id),
+            "context_supplied": bool(clean_context_text),
+            "waiting_for_transcript": bool(waiting_for_transcript),
+        },
+    )
     return generated_document
 
 

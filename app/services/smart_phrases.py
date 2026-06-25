@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import SmartPhrase, User, utcnow
 from app.schemas.smart_phrases import SmartPhraseCreate, SmartPhraseUpdate
+from app.services.security_audit import record_security_event
 
 
 DEFAULT_SMART_PHRASE_TRIGGER = "CESRF"
@@ -129,6 +130,14 @@ def create_personal_smart_phrase(db: Session, actor: User, payload: SmartPhraseC
         db.rollback()
         raise
     db.refresh(phrase)
+    record_security_event(
+        db,
+        action="smart_phrase_created",
+        actor=actor,
+        target=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "smart_phrase", "object_id": str(phrase.id)},
+    )
     return phrase
 
 
@@ -158,13 +167,30 @@ def update_personal_smart_phrase(
         db.rollback()
         raise
     db.refresh(phrase)
+    record_security_event(
+        db,
+        action="smart_phrase_updated",
+        actor=actor,
+        target=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "smart_phrase", "object_id": str(phrase.id), "updated_fields": sorted(payload.model_fields_set)},
+    )
     return phrase
 
 
 def delete_personal_smart_phrase(db: Session, actor: User, *, smart_phrase_id: UUID) -> None:
     phrase = _resolve_phrase_for_owner(db, actor, smart_phrase_id=smart_phrase_id)
+    phrase_id = phrase.id
     db.delete(phrase)
     db.commit()
+    record_security_event(
+        db,
+        action="smart_phrase_deleted",
+        actor=actor,
+        target=actor,
+        team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "object_type": "smart_phrase", "object_id": str(phrase_id)},
+    )
 
 
 def mark_personal_smart_phrase_used(db: Session, actor: User, *, smart_phrase_id: UUID) -> SmartPhrase:

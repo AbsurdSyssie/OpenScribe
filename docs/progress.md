@@ -1,5 +1,89 @@
 # Progress
 
+## 2026-06-24 Pen Test Findings Retest
+
+### Scope
+
+- Retested F01-F11 against current code and live `openscribe.co.uk` where safe.
+- Fixed confirmed live/code-level gaps for CSRF cookie `HttpOnly`, validation-response minimisation, permanent password complexity, `Retry-After` on 429 responses, and CSP `style-src-attr`.
+- Confirmed `/docs` and `/openapi.json` are already production-gated to full system admins; live unauthenticated checks returned `401`.
+
+### Checklist
+
+- Target behavior: production docs not public; CSRF token cookie not JavaScript-readable; validation errors do not disclose schema internals; user-chosen permanent passwords have complexity; 429 includes `Retry-After`; CSP removes inline style attribute allowance where possible.
+- Affected schema/modules/endpoints: auth schemas, browser CSRF middleware/bootstrap, error handlers, CSP header builder, browser password routes, auth email/bootstrap services; no DB schema change.
+- Affected tests: cookie/CSRF, auth-email/password, error/rate-limit, API docs gate, security audit tests.
+- Architecture risks: preserve browser CSRF without exposing auth-bearing cookies or transcript-derived content; keep public account-request flow but rate-limited and CSRF-protected for browser form use.
+- Docs referenced/updated: `docs/security.md`, `docs/auth.md`, `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: reused existing CSRF signing/session binding and SlowAPI limiter; no captcha or custom crypto added.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: DNS/edge-only items remain operator tasks: SPF/DMARC and CAA records absent in live DNS; `www.openscribe.co.uk` returns Cloudflare `525`; `wasm-unsafe-eval` remains for ONNX Runtime/VAD unless VAD stack changes; `security.txt` contact disclosure accepted unless project wants alias-only contact.
+
+### Files changed
+
+- `app/main.py`, `app/templates/_csrf_script.html`, `app/static/js/csrf.js`: make CSRF cookie `HttpOnly`; source tokens from nonce-protected page state/hidden fields for browser requests.
+- `app/errors.py`: minimise validation details and add `Retry-After` to 429 responses.
+- `app/security_headers.py`: remove `style-src-attr 'unsafe-inline'`.
+- `app/services/passwords.py`, `app/schemas/auth.py`, `app/routes/web_pages.py`, `app/services/auth_email.py`, `app/services/admin.py`: enforce stronger user-chosen permanent passwords.
+- Tests in `tests/test_cookie_csrf_security.py`, `tests/test_auth_email.py`, `tests/test_errors.py`, `tests/test_security_audit.py`, `tests/test_admin_ui.py`: update/add regressions.
+- Docs in `docs/security.md`, `docs/auth.md`, `docs/testing.md`, `docs/progress.md`: record security behavior and test coverage.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py tests/test_auth_email.py tests/test_errors.py tests/test_security_audit.py tests/test_api.py -k "api_docs or csrf_cookie or csp_header or password_reset_confirm or account_activation or user_chosen_passwords or validation_error_response or rate_limit_response or invalid_email_token_failure"`: passed, 18 tests.
+- Live unauthenticated `curl` checks: `/openapi.json` and `/docs` returned `401`; `/login` set `openscribe_csrf` and `openscribe_csrf_anon` with `HttpOnly; Secure; SameSite=lax`; CSP includes `style-src-attr 'none'` and still includes `wasm-unsafe-eval`.
+- Live DNS/metadata checks: no TXT SPF, no `_dmarc` TXT, no CAA returned; `/.well-known/security.txt` exposes `mailto:oscar@meddleapp.com`; `https://www.openscribe.co.uk/` returns Cloudflare `525`.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: full system-admin docs gate preserved; auth/session cookies stay `HttpOnly`; CSRF remains same-origin and session/anonymous-nonce bound.
+- Lifecycle/deletion checkpoint: no deletion, retention, or transcript-root cascade behavior changed.
+- Provider checkpoint: no provider credential or provider resolution behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no transcript/note/prompt/provider response/provider secret content logged or exposed; validation responses now disclose less request schema detail.
+
+## 2026-06-24 Dev Reverse Proxy Client IP
+
+### Scope
+
+- Updated dev startup so FastAPI trusts forwarded proxy headers only from nginx/Nginx Proxy Manager at `192.168.1.234` by default.
+
+### Checklist
+
+- Target behavior: requests through local reverse proxy show the real client IP instead of the proxy host.
+- Affected schema/modules/endpoints: `start-dev.sh` only; no schema, API route, auth, or content endpoint change.
+- Affected tests: shell syntax check; no Python behavior changed.
+- Architecture risks: avoid trusting spoofable forwarded headers from arbitrary clients.
+- Docs referenced/updated: `docs/setup.md`, `.env.example`, `docs/progress.md`.
+- Reuse decision: reused FastAPI/Uvicorn `--proxy-headers` and `--forwarded-allow-ips`; no custom IP parser added.
+- Code complete: yes.
+- Tests added/updated: no new test needed for shell flag wiring.
+- Docs added/updated: yes.
+- Open issues: ensure app port is reachable only from trusted LAN/proxy hosts in deployment firewall.
+
+### Files changed
+
+- `start-dev.sh`: adds `DEV_FORWARDED_ALLOW_IPS` default and passes proxy trust flags to `fastapi dev`.
+- `.env.example`: documents dev trusted proxy IP knob.
+- `docs/setup.md`: documents local reverse-proxy forwarded-IP behavior and safety warning.
+- `docs/progress.md`: records checklist and checkpoints.
+
+### Tests
+
+- `bash -n start-dev.sh`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: no auth or ownership policy changed.
+- Lifecycle/deletion checkpoint: no deletion or retention behavior changed.
+- Provider checkpoint: no provider behavior changed.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no transcript, note, prompt, provider response, cookie, token, or secret content logged or exposed.
+
 ## 2026-06-14 Auth Session Scanner Triage
 
 ### Scope

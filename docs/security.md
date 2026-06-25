@@ -28,7 +28,7 @@ Repeatable XSS checks and the current probe plan are documented in [security-xss
 - forced TOTP enrollment
 - optional recovery-code generation
 
-New password hashes use Argon2id with OWASP baseline parameters.
+New password hashes use Argon2id with OWASP baseline parameters. User-chosen permanent passwords for onboarding, activation, and password reset must be at least 12 characters and include uppercase, lowercase, and number characters.
 Non-Argon2id local dev hashes are not accepted after the Argon2id cutover; rotate dev users with `scripts/force_argon2id_password_rotation.py`.
 
 Invite acceptance is not the active MVP onboarding path anymore.
@@ -48,7 +48,7 @@ Invite acceptance is not the active MVP onboarding path anymore.
 - auth email tokens are stored as hashes only and expire after a short window
 - setup/reset link plaintext is not logged or stored separately
 - public password-reset requests do not reveal whether an account exists
-- setup/reset confirmation validates token state before expensive password hashing
+- setup/reset confirmation validates token state before expensive password hashing and rejects weak permanent passwords
 - password reset never rotates, deletes, or rewraps the user DEK
 - successful password reset revokes active sessions and trusted devices
 - account setup links are restricted to first password setup and do not grant full access; users still complete TOTP onboarding
@@ -121,10 +121,11 @@ Current implementation:
 - `/api/` responses use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0`; sensitive transcript/generated-document API prefixes keep the same no-store contract
 - public metadata routes are explicit, short-cacheable (`Cache-Control: public, max-age=3600`), and do not issue CSRF cookies: `/robots.txt`, `/.well-known/security.txt`, and `/sitemap.xml` returning intentional `404` because no sitemap is published
 - static assets under `/static/` use short public caching (`Cache-Control: public, max-age=3600`) and do not issue CSRF cookies
-- the CSRF cookie is intentionally readable by browser JavaScript so browser flows can submit `X-CSRF-Token`, but its value is HMAC-signed
+- `/docs`, `/redoc`, and `/openapi.json` remain public in local/test by default, but production defaults to full system-admin authentication unless `PUBLIC_API_DOCS=true` is explicitly set
+- the signed CSRF cookie is `HttpOnly`; browser flows receive the same signed value through server-rendered hidden fields and the nonce-protected CSRF bootstrap script
 - the readable `openscribe_csrf` cookie is not an authentication bearer secret; it must match the `HttpOnly` anonymous nonce cookie before login or the current session token hash after login
 - passive scanners may identify `openscribe_csrf_anon`/`openscribe_csrf` as session-management cookies, but they are CSRF controls; only `openscribe_session` and `openscribe_trusted_device` are auth-bearing cookies
-- server-rendered browser forms include the same signed CSRF value in a hidden `_csrf_token` field so forms remain protected without depending on JavaScript injection
+- server-rendered browser forms include the same signed CSRF value in a hidden `_csrf_token` field so forms remain protected without depending on cookie reads from JavaScript
 - authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
 - when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
 - anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session
@@ -149,6 +150,7 @@ Current CSP goals:
 - script execution only from `'self'` and response nonces
 - no `script-src 'unsafe-inline'`
 - no third-party `script-src`, `style-src`, `font-src`, or `connect-src`
+- no `style-src-attr 'unsafe-inline'`
 - `frame-ancestors 'none'`
 - `object-src 'none'`
 - same-origin API/WebSocket/EventSource connections only
@@ -258,7 +260,7 @@ Implemented now:
 - manager-triggered delete is now implemented with the same team-scope and self-protection boundaries
 - delete is immediate hard delete, not soft-delete
 - delete currently removes user-owned transcript roots and transcript versions immediately
-- account-lifecycle actions now emit metadata-only logger audit entries through `openscribe.audit`
+- account-lifecycle actions now emit metadata-only durable audit rows in `security_audit_events`; runtime `openscribe.audit` logger entries may still be emitted for operational visibility
 
 Planned security rules:
 
@@ -277,15 +279,28 @@ Planned reinstatement simplification for MVP:
 
 Current implementation note:
 
-- audit persistence is currently logger-based metadata, not a dedicated DB audit-events write path
-- account-lifecycle audit should still move into persistent `audit_events` storage later so suspend, reactivate, and delete actions survive process restarts and log rotation
-- persisted security-audit request IPs use `request.client.host` by default; deployments may set `AUDIT_TRUST_X_FORWARDED_FOR=true` only when a trusted proxy sanitizes forwarded headers
+- `security_audit_events` is the durable application security-audit sink.
+- audit details are metadata-only and recursively drop sensitive keys such as password, token, cookie, session, authorization, secret, prompt, provider response, and transcript text.
+- persisted security-audit request IPs use `request.client.host` by default.
+- deployments may set `AUDIT_TRUST_X_FORWARDED_FOR=true` only when a trusted proxy sanitizes `X-Forwarded-For`.
+- Cloudflare deployments may set `AUDIT_TRUST_CLOUDFLARE=true` to store `CF-Connecting-IP`, but only when Cloudflare/proxy is the only path to origin and direct origin access is blocked.
+- if audit origin IP always shows the reverse proxy host, the proxy is not forwarding the original client IP or the app is not configured to trust the forwarded header.
+- CSRF rejection, authorization denial, rate-limit events, password reset request/confirm events, invalid reset/setup token failures, provider inspect/test events, template/default-asset/preference/smart-phrase events, generation queue events, and audio-ingestion queue events are persisted as metadata-only audit rows.
+- submitted CSRF values, cookies, tokens, passwords, request bodies, prompts, provider responses, smart-phrase text, transcript/note text, filenames, and audio content are not stored in audit rows.
+- audit retention is separate from transcript retention; deleting transcript-derived content does not delete metadata-only security audit rows.
+- MVP audit read access is DB/operations access plus the system-admin-only read-only Admin Audit tab.
+- the Admin Audit tab renders detection signals and recent metadata-only audit rows from an allowlist of safe fields; it does not dump raw `details_json`.
+- the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents.
+- future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
+- normal audit writes are fail-closed from the application perspective: an unexpected audit insert failure raises and should surface as a server error. Error-handler telemetry such as rate-limit and validation rejection audit is best-effort to avoid masking the original protection response.
+- manual detection is supported by `scripts/security/audit_events_report.py`, which summarizes metadata-only audit counts and signals for auth failures, access denials, abuse signals, high-risk admin/destructive actions, and provider configuration changes.
 
 Required safety checks:
 
 - do not allow deletion or suspension of the last active system-admin account
 - require clear scope checks before any leader action against a team user
 - record actor, target, reason, and scope metadata for suspend/reactivate/delete actions
+- keep audit-row retention/access policy separate from user transcript-retention policy
 - preserve enough metadata in audit records that a later review still makes sense after hard deletion removes the `users` row
 
 Design caution:
@@ -388,7 +403,7 @@ The current implementation uses DB-backed opaque sessions. Redis-backed server-s
   - login: `5 per 5 minutes`
   - TOTP challenge: `10 per 10 minutes`
   - public account requests: `3 per hour`
-- rate-limit hits are also logged through the server logger `openscribe.security`
+- rate-limit hits are persisted in `security_audit_events` and may also be logged through the server logger `openscribe.security`
 - HTML and JSON login routes share the same login bucket
 - HTML and JSON TOTP challenge routes share the same MFA bucket
 - HTML and JSON account-request submission routes share the same request bucket
@@ -397,7 +412,7 @@ Current limitations:
 
 - the implemented limiter is IP-based, not account-based
 - rotating-IP attacks are still a future hardening area
-- rate-limit events are logged but not yet persisted in a dedicated security-events table
+- rate-limit events are persisted in `security_audit_events`, not a separate security-events table
 - `Retry-After` is not yet emitted on 429 responses
 
 ## Planned next hardening: lockouts and unlock workflow

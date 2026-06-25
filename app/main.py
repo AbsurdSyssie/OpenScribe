@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
@@ -17,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
-from .cookie_security import enforce_production_cookie_security, should_set_secure_cookie
+from .cookie_security import app_environment, enforce_production_cookie_security, should_set_secure_cookie
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
 from .models import (
     DeidentificationAdapterKind,
@@ -322,7 +323,7 @@ from .services.auth_email import (
     send_manager_password_reset_email as send_manager_password_reset_email_service,
     send_password_reset_email as send_password_reset_email_service,
 )
-from .services.security_audit import record_security_event
+from .services.security_audit import audit_subject_hash, record_security_event
 from .services.transcripts import (
     attach_task_id_to_ingestion_job,
     can_create_new_session as can_create_new_session_service,
@@ -424,13 +425,14 @@ class AuthenticatedContext:
 
 enforce_production_cookie_security()
 csrf_secret_configured_for_environment()
-app = FastAPI(title="OpenScribe MVP")
+app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 def _local_only_dev_emails() -> set[str]:
     return {
+        os.getenv("DEV_TEST_ADMIN_EMAIL", "dev.admin@example.com").strip().lower(),
         os.getenv("DEV_TEST_LEADER_EMAIL", "dev.leader@example.com").strip().lower(),
         os.getenv("DEV_TEST_USER_EMAIL", "dev.user@example.com").strip().lower(),
     }
@@ -536,14 +538,54 @@ def _origin_allowed(request: Request) -> bool:
     return False
 
 
+def _audit_request_rejected(
+    db: Session,
+    request: Request,
+    *,
+    action: str,
+    category: str,
+    reason_code: str,
+    status_code: int,
+    actor: User | None = None,
+    team_id: UUID | None = None,
+    details: dict[str, object] | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "category": category,
+        "outcome": "denied" if status_code in {401, 403} else "failure",
+        "reason_code": reason_code,
+        "status_code": status_code,
+    }
+    if details:
+        payload.update(details)
+    record_security_event(
+        db,
+        action=action,
+        actor=actor,
+        target=actor,
+        team_id=team_id or (actor.team_id if actor else None),
+        request=request,
+        details=payload,
+    )
+
+
 async def require_browser_csrf(
     request: Request,
     csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+    db: Session = Depends(get_db),
 ) -> None:
     if request.method in CSRF_SAFE_METHODS:
         return
 
     if not _origin_allowed(request):
+        _audit_request_rejected(
+            db,
+            request,
+            action="csrf_rejected",
+            category="csrf",
+            reason_code="cross_origin",
+            status_code=403,
+        )
         raise AppError(403, "forbidden", "Cross-origin request rejected")
 
     submitted_token = csrf_header
@@ -559,6 +601,15 @@ async def require_browser_csrf(
         raw_session_token=raw_session_token,
         anon_nonce=anon_nonce,
     ):
+        _audit_request_rejected(
+            db,
+            request,
+            action="csrf_rejected",
+            category="csrf",
+            reason_code="invalid_or_missing_token",
+            status_code=403,
+            details={"auth_authority_present": bool(raw_session_token), "anon_nonce_present": bool(anon_nonce)},
+        )
         raise AppError(403, "forbidden", "CSRF verification failed")
 
 
@@ -568,6 +619,7 @@ BrowserCsrf = Annotated[None, Depends(require_browser_csrf)]
 async def require_api_csrf(
     request: Request,
     csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+    db: Session = Depends(get_db),
 ) -> None:
     if request.method in CSRF_SAFE_METHODS:
         return
@@ -579,7 +631,7 @@ async def require_api_csrf(
     if not has_cookie_backed_authority:
         return
 
-    await require_browser_csrf(request, csrf_header=csrf_header)
+    await require_browser_csrf(request, csrf_header=csrf_header, db=db)
 
 
 api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_csrf)])
@@ -655,6 +707,9 @@ PUBLIC_NO_STORE_PATHS = {
     "/request-access",
     "/reset-password",
     "/activate-account",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
 }
 CSRF_COOKIE_SKIP_PATHS = {
     "/robots.txt",
@@ -761,7 +816,7 @@ async def ensure_csrf_cookie(request: Request, call_next):
         response.set_cookie(
             key=CSRF_COOKIE_NAME,
             value=request.state.csrf_token,
-            httponly=False,
+            httponly=True,
             secure=secure_cookie,
             samesite="lax",
             path="/",
@@ -780,7 +835,7 @@ async def ensure_csrf_cookie(request: Request, call_next):
     response.set_cookie(
         key=CSRF_COOKIE_NAME,
         value=request.state.csrf_token,
-        httponly=False,
+        httponly=True,
         secure=secure_cookie,
         samesite="lax",
         path="/",
@@ -813,7 +868,7 @@ def _set_csrf_cookie_for_session(request: Request, response: Response, token: st
     response.set_cookie(
         key=CSRF_COOKIE_NAME,
         value=session_csrf_token(token),
-        httponly=False,
+        httponly=True,
         secure=secure_cookie,
         samesite="lax",
         path="/",
@@ -891,16 +946,31 @@ def _current_context_optional(request: Request, db: Session) -> AuthenticatedCon
 def require_authenticated_context(request: Request, db: Session = Depends(get_db)) -> AuthenticatedContext:
     context = _current_context_optional(request, db)
     if context is None:
+        _audit_request_rejected(
+            db,
+            request,
+            action="access_denied",
+            category="access_control",
+            reason_code="authentication_required",
+            status_code=401,
+        )
         raise AppError(401, "unauthorized", "Authentication required")
     return context
 
 
-def require_full_context(context: AuthenticatedContext = Depends(require_authenticated_context)) -> AuthenticatedContext:
+def require_full_context(
+    request: Request,
+    context: AuthenticatedContext = Depends(require_authenticated_context),
+    db: Session = Depends(get_db),
+) -> AuthenticatedContext:
     if context.session.auth_level.value == "pending_mfa":
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="mfa_required", status_code=403, actor=context.user)
         raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
     if context.session.auth_level is not determine_auth_level(context.user):
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="auth_level_mismatch", status_code=401, actor=context.user)
         raise AppError(401, "unauthorized", "Authentication required")
     if context.session.auth_level.value != "full":
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
         raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
     return context
 
@@ -929,47 +999,54 @@ def _require_full_context_from_token(request: Request, raw_session_token: str | 
 def require_local_dev_debug_context(
     request: Request,
     context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
 ) -> AuthenticatedContext:
     if context.user.email.lower() not in _local_only_dev_emails() or not _request_is_localhost_only(request):
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="local_dev_debug_required", status_code=403, actor=context.user)
         raise AppError(403, "forbidden", "Redaction debug is available only to localhost dev test accounts")
     return context
 
 
-def require_system_admin(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+def require_system_admin(request: Request, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)) -> AuthenticatedContext:
     if not context.user.is_system_admin:
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="system_admin_required", status_code=403, actor=context.user)
         raise AppError(403, "forbidden", "System admin access required")
     return context
 
 
-def require_stt_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+def require_stt_selector(request: Request, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
     if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
         return context
+    _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="stt_selector_required", status_code=403, actor=context.user)
     raise AppError(403, "forbidden", "STT selection access required")
 
 
-def require_llm_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+def require_llm_selector(request: Request, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
     if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
         return context
+    _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="llm_selector_required", status_code=403, actor=context.user)
     raise AppError(403, "forbidden", "LLM selection access required")
 
 
-def require_deidentification_selector(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+def require_deidentification_selector(request: Request, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
     if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
         return context
+    _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="deidentification_selector_required", status_code=403, actor=context.user)
     raise AppError(403, "forbidden", "De-identification selection access required")
 
 
-def require_user_manager(context: AuthenticatedContext = Depends(require_full_context)) -> AuthenticatedContext:
+def require_user_manager(request: Request, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)) -> AuthenticatedContext:
     if context.user.is_system_admin:
         return context
     if context.user.team_role is TeamRole.leader and context.user.team_id is not None:
         return context
+    _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="user_manager_required", status_code=403, actor=context.user)
     raise AppError(403, "forbidden", "User-management access required")
 
 
@@ -1006,6 +1083,70 @@ def _template_config_from_form(*, mode: TemplateMode, section_values: dict[str, 
     if mode is not TemplateMode.structured:
         return None
     return _structured_template_config_from_form(section_values=section_values)
+
+
+API_DOCS_PUBLIC_ENV = "PUBLIC_API_DOCS"
+PRODUCTION_ENVIRONMENTS = {"production", "prod"}
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _public_api_docs_enabled() -> bool:
+    configured = os.getenv(API_DOCS_PUBLIC_ENV)
+    if configured is not None:
+        value = configured.strip().lower()
+        if value in TRUE_ENV_VALUES:
+            return True
+        if value in FALSE_ENV_VALUES:
+            return False
+    return app_environment() not in PRODUCTION_ENVIRONMENTS
+
+
+def _require_api_docs_access(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AuthenticatedContext | None:
+    if _public_api_docs_enabled():
+        return None
+    context = _current_context_optional(request, db)
+    if context is None:
+        _audit_request_rejected(
+            db,
+            request,
+            action="access_denied",
+            category="access_control",
+            reason_code="api_docs_authentication_required",
+            status_code=401,
+        )
+        raise AppError(401, "unauthorized", "Authentication required")
+    if context.session.auth_level.value == "pending_mfa":
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="mfa_required", status_code=403, actor=context.user)
+        raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
+    if context.session.auth_level is not determine_auth_level(context.user):
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="auth_level_mismatch", status_code=401, actor=context.user)
+        raise AppError(401, "unauthorized", "Authentication required")
+    if context.session.auth_level.value != "full":
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
+        raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
+    if not context.user.is_system_admin:
+        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="api_docs_system_admin_required", status_code=403, actor=context.user)
+        raise AppError(403, "forbidden", "System admin access required")
+    return context
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_json(_context: AuthenticatedContext | None = Depends(_require_api_docs_access)):
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_docs(_context: AuthenticatedContext | None = Depends(_require_api_docs_access)):
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="OpenScribe MVP - API docs")
+
+
+@app.get("/redoc", include_in_schema=False)
+def redoc_docs(_context: AuthenticatedContext | None = Depends(_require_api_docs_access)):
+    return get_redoc_html(openapi_url="/openapi.json", title="OpenScribe MVP - ReDoc")
 
 
 @app.get("/health")

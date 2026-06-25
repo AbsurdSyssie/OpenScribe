@@ -10,7 +10,11 @@ export function readCookie(name) {
 }
 
 export function csrfToken() {
-  return readCookie('openscribe_csrf');
+  if (window.OpenScribeCSRF?.getToken) {
+    return window.OpenScribeCSRF.getToken();
+  }
+  const formToken = document.querySelector('input[name="_csrf_token"]')?.value;
+  return formToken || '';
 }
 
 export function csrfHeaders(existingHeaders = {}) {

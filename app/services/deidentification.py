@@ -36,10 +36,19 @@ from app.services.vault import (
     read_deidentification_bearer_token,
     write_deidentification_bearer_token,
 )
+from app.services.security_audit import record_security_event
 
 
 BUILTIN_DEIDENTIFICATION_PROVIDER_ID = UUID("00000000-0000-0000-0000-00000000d1d1")
 cleanup_logger = logging.getLogger("openscribe.cleanup")
+
+
+def _record_deid_audit(db: Session, *, action: str, actor: User, provider_id: UUID | None = None, team_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
+    payload: dict[str, Any] = {"category": "provider", "outcome": outcome, "provider_type": "deidentification"}
+    if provider_id is not None:
+        payload.update({"object_type": "deidentification_provider", "object_id": str(provider_id)})
+    payload.update(details)
+    record_security_event(db, action=action, actor=actor, team_id=team_id, details=payload)
 
 
 def _resolve_openapi_pointer(document: dict[str, Any], ref: str) -> dict[str, Any]:
@@ -758,6 +767,7 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
     pending_secret_ref = ""
     old_secret_ref = existing_vault_secret_ref
 
+    creating = provider is None
     if provider is None:
         provider = DeidentificationProvider(
             id=uuid4(),
@@ -838,6 +848,16 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
             event="deidentification_old_secret_delete_failed",
         )
     db.refresh(provider)
+    _record_deid_audit(
+        db,
+        action="deidentification_provider_created" if creating else "deidentification_provider_updated",
+        actor=actor,
+        provider_id=provider.id,
+        auth_mode=provider.auth_mode.value,
+        active=provider.is_active,
+        clinical_detection_enabled=provider.clinical_detection_enabled,
+        credential_present=bool(provider.vault_secret_ref),
+    )
     return provider
 
 
@@ -869,6 +889,7 @@ def delete_deidentification_provider(db: Session, actor: User, *, provider_id: U
             secret_ref=old_secret_ref,
             event="deidentification_deleted_provider_secret_delete_failed",
         )
+    _record_deid_audit(db, action="deidentification_provider_deleted", actor=actor, provider_id=provider_id)
 
 
 def list_team_deidentification_provider_assignments(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamDeidentificationProviderAssignment]:
@@ -908,6 +929,7 @@ def assign_deidentification_provider_to_team(
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
+    _record_deid_audit(db, action="deidentification_provider_assigned", actor=actor, provider_id=provider.id, team_id=team.id)
     return db.scalar(
         select(TeamDeidentificationProviderAssignment)
         .options(joinedload(TeamDeidentificationProviderAssignment.provider))
@@ -935,6 +957,7 @@ def remove_deidentification_provider_assignment(db: Session, actor: User, *, tea
         db.flush()
     db.delete(assignment)
     db.commit()
+    _record_deid_audit(db, action="deidentification_provider_assignment_removed", actor=actor, provider_id=provider_id, team_id=team_id)
 
 
 def list_selectable_deidentification_providers(db: Session, actor: User, *, team_id: UUID | None = None) -> list[DeidentificationProvider]:
@@ -985,6 +1008,7 @@ def set_team_deidentification_selection(db: Session, actor: User, payload: Deide
         db.add(selection)
     db.commit()
     db.refresh(selection)
+    _record_deid_audit(db, action="deidentification_selection_set", actor=actor, provider_id=payload.provider_id, team_id=team.id)
     return db.scalar(
         select(TeamDeidentificationSelection)
         .options(joinedload(TeamDeidentificationSelection.provider))
@@ -999,6 +1023,7 @@ def clear_team_deidentification_selection(db: Session, actor: User, *, team_id: 
         raise AppError(404, "not_found", "De-identification selection not found", {"resource": "deidentification_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+    _record_deid_audit(db, action="deidentification_selection_cleared", actor=actor, team_id=team.id)
 
 
 def list_selectable_clinical_nlp_providers(db: Session, actor: User, *, team_id: UUID | None = None) -> list[DeidentificationProvider]:
@@ -1046,6 +1071,7 @@ def set_team_clinical_nlp_selection(db: Session, actor: User, payload: ClinicalN
         db.add(selection)
     db.commit()
     db.refresh(selection)
+    _record_deid_audit(db, action="clinical_nlp_selection_set", actor=actor, provider_id=payload.provider_id, team_id=team.id, provider_type="clinical_nlp")
     return db.scalar(
         select(TeamClinicalNlpSelection)
         .options(joinedload(TeamClinicalNlpSelection.provider))
@@ -1060,6 +1086,7 @@ def clear_team_clinical_nlp_selection(db: Session, actor: User, *, team_id: UUID
         raise AppError(404, "not_found", "Clinical NLP selection not found", {"resource": "clinical_nlp_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+    _record_deid_audit(db, action="clinical_nlp_selection_cleared", actor=actor, team_id=team.id, provider_type="clinical_nlp")
 
 
 def active_team_clinical_nlp_provider(db: Session, *, team_id: UUID) -> DeidentificationProvider | None:

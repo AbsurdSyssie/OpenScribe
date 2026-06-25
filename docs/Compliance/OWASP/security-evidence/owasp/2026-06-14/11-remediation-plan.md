@@ -2,7 +2,7 @@
 
 Date: 2026-06-14  
 Scope: remediation plan for public passive recon and server fingerprinting findings from `openscribe.co.uk`.  
-Status: active remediation tracker. R-002 is implemented, deployed, and ZAP-retested successfully; authenticated role crawl evidence is now partial for local dev seeded accounts; audit logging remains open.
+Status: active remediation tracker. R-002 is implemented, deployed, and ZAP-retested successfully; authenticated role crawl is closed as local/test-evidenced; audit logging is closed as local/test-evidenced, not live/staging-proven. R-019 is implemented, deployed, and production-retested successfully after follow-up signal-key masking.
 
 ## Principles
 
@@ -17,8 +17,47 @@ Status: active remediation tracker. R-002 is implemented, deployed, and ZAP-rete
 | Priority | Finding | Reason |
 | --- | --- | --- |
 | 1 | `OWASP-2026-06-14-005` Audit event logging | Security events are logger-only, not durable audit records. |
-| 2 | `OWASP-2026-06-14-009` public `/docs` and `/openapi.json` | Public route/schema inventory helps attackers enumerate admin/provider/transcript surfaces. (Accepted for open source) |
-| 3 | `OWASP-2026-06-14-002` Auth role crawl | Local seeded normal-user/team-leader crawl complete; onboarding, pending-MFA, system-admin, and staging/production auth crawl remain. |
+| 2 | `OWASP-2026-06-14-009` public `/docs` and `/openapi.json` | Public route/schema inventory helps attackers enumerate admin/provider/transcript surfaces. Implemented and production-retested for unauthenticated exposure closure. |
+| 3 | `OWASP-2026-06-14-002` Auth role crawl | Local role crawl complete; staging/production auth crawl remains optional and requires explicit authorization. |
+| 4 | `OWASP-2026-06-14-019` Private IP disclosure in admin audit UI | External admin crawl found raw private audit origin metadata in system-admin HTML. Table/dropdown masking deployed, first retest found raw private IP in signal key text, follow-up signal-key masking deployed, final ZAP retest passed. |
+
+## R-019 Private IP Disclosure In Admin Audit UI
+
+Finding: `OWASP-2026-06-14-019`
+Severity: Low
+OWASP: A01 Broken Access Control, A05 Security Misconfiguration, A09 Security Logging and Monitoring
+
+Current status: resolved and production-retested on `https://openscribe.co.uk`.
+
+### Target Behavior
+
+- Admin audit pages should not render raw private, loopback, or link-local origin IPs in HTML.
+- Durable audit storage should retain raw request IP metadata for incident response.
+- Public origin IPs may remain visible/filterable to system admins.
+- Private/internal origin filtering should not require putting the raw private IP in form option values.
+
+### Implementation Plan
+
+1. Add a presentation helper around audit-event origin IP rendering.
+2. Mask private, loopback, and link-local addresses as `Private/internal IP masked`.
+3. Keep raw `security_audit_events.request_ip` unchanged for durable audit metadata and direct operator filtering.
+4. Use masked display values in both legacy and restyled admin audit tables.
+5. Omit private/internal origins from audit filter dropdown option values so raw private IPs are not emitted in HTML.
+6. Mask private/internal audit detection signal display keys while keeping internal grouping keyed on raw IP.
+7. Preserve subject-hash signal redaction placeholders in presentation code.
+8. Add a focused admin UI regression test proving the raw private IP is absent from the rendered page, including a private-IP burst signal.
+
+### Tests
+
+- Local focused test: `.venv/bin/pytest -q tests/test_admin_ui.py -k "audit"` passed on 2026-06-24.
+- Test verifies public origin IPs still render, private origin IP `192.168.1.234` is absent from table, dropdown, and signal HTML, and `Private/internal IP masked` is rendered.
+- First production ZAP retest after restart failed with 4 `Private IP Disclosure` alerts because signal text still used the raw private IP; evidence is in `07-tool-outputs/zap/zap-auth-crawl-external-admin-private-ip-retest-2026-06-24-summary.md`.
+- Final production ZAP retest after follow-up restart passed with 0 private-IP regex hits in audit HTML and 0 `Private IP Disclosure` alerts; evidence is in `07-tool-outputs/zap/zap-auth-crawl-external-admin-private-ip-retest-pass-2026-06-24-summary.md`.
+
+### Acceptance Criteria
+
+- Local regression test passes. Complete.
+- Production safe external system-admin ZAP GET-only crawl confirms `Private IP Disclosure` no longer appears for audit pages. Complete.
 
 ## R-001 Public API Docs And OpenAPI Schema
 
@@ -26,35 +65,38 @@ Finding: `OWASP-2026-06-14-009`
 Severity: Medium  
 OWASP: A05 Security Misconfiguration, A09 Security Logging and Monitoring
 
-Current decision: accepted by project owner because OpenScribe is open source. Keep as an accepted risk only while `/docs` and `/openapi.json` contain no secrets, internal-only examples, deployment-only routes, or sensitive environment details.
+Current status: resolved and production-retested for unauthenticated exposure closure. Project owner initially accepted public docs because OpenScribe is open source, then chose to require auth in production to raise the recon barrier.
 
 ### Target Behavior
 
 Production should not expose development/API documentation unless explicitly accepted by product/security owners. If this acceptance changes, preferred behavior is:
 
 - Local/dev: `/docs`, `/redoc`, and `/openapi.json` remain available for developer use.
-- Production: `/docs`, `/redoc`, and `/openapi.json` return `404` or an authenticated/admin-only response.
-- If the project intentionally keeps public OpenAPI, document the accepted risk and confirm no internal-only routes, models, or sensitive examples are exposed.
+- Production: `/docs`, `/redoc`, and `/openapi.json` require full system-admin authentication by default.
+- Explicit override: `PUBLIC_API_DOCS=true` can expose docs when a deployment intentionally accepts public schema exposure.
 
 ### Implementation Plan
 
-1. Inspect FastAPI app construction and docs/openapi configuration.
-2. Add environment-aware docs settings, likely using existing `APP_ENV` or a new explicit `EXPOSE_API_DOCS`/`PUBLIC_API_DOCS` flag.
-3. Default production to disabled unless explicitly enabled.
-4. Ensure route audit/test tooling can still access OpenAPI in local/test mode.
-5. Update `README.md`, `docs/security.md`, and OWASP evidence with the production policy.
+1. Done: inspected FastAPI app construction and docs/openapi configuration.
+2. Done: disabled built-in public docs routes and added custom `/docs`, `/redoc`, and `/openapi.json`.
+3. Done: local/test default to public docs; production defaults to full system-admin auth.
+4. Done: added explicit `PUBLIC_API_DOCS=true|false` override.
+5. Done: ensured route audit/test tooling can still access OpenAPI in local/test mode.
+6. Done: updated setup/security docs and OWASP evidence with the production policy.
 
 ### Tests
 
-- Add/adjust unit/API tests for app startup/docs behavior by environment.
-- Assert local/test mode exposes `/docs` and `/openapi.json` if needed by developer tooling.
-- Assert production config disables or restricts `/docs`, `/redoc`, and `/openapi.json`.
-- Retest `https://openscribe.co.uk/docs` and `/openapi.json` after deployment.
+- Done: local focused test `.venv/bin/pytest -q tests/test_api.py -k "api_docs"`.
+- Assert local/test mode exposes `/docs`, `/redoc`, and `/openapi.json` for developer tooling.
+- Assert production mode denies unauthenticated docs/schema, denies normal user, allows full system admin, and respects explicit `PUBLIC_API_DOCS=true`.
+- Done: production unauthenticated retest confirmed `/docs`, `/redoc`, and `/openapi.json` return `401`.
+- Note: configured OWASP admin session was invalid during the 2026-06-25 live check, so authenticated docs usability can be retested later with a fresh full-admin session if needed.
 
 ### Acceptance Criteria
 
-- Public production URL no longer exposes API docs/schema, or this accepted open-source posture remains documented and reviewed each OWASP cycle.
-- Retest evidence in `10-retest-log.md` shows final status.
+- Local/test regression passes. Complete.
+- Production URL no longer exposes API docs/schema to unauthenticated users after deploy. Complete.
+- Retest evidence in `10-retest-log.md` shows final status. Complete for unauthenticated exposure closure.
 
 ## R-002 Public Form CSRF Evidence Mismatch
 
@@ -273,7 +315,7 @@ Findings: `OWASP-2026-06-14-001`, `OWASP-2026-06-14-002`, passive recon checklis
 Severity: Info  
 OWASP: A01, A05, A09
 
-Current status: partially closed on 2026-06-14. Search engine and Wayback archive checks are complete with evidence (zero indexed pages, zero historical captures). External passive DNS confirms Cloudflare-only edge with effective origin IP protection. Shodan and Censys require authenticated sessions so are marked `Not in scope` for this public passive cycle. `OWASP-2026-06-14-001` is closed because public passive search/archive/DNS recon is evidenced. `OWASP-2026-06-14-002` (authenticated role crawl) remains open pending synthetic accounts and authorised test window. Evidence: `07-tool-outputs/passive-recon-search-archive-exposure-2026-06-14.md`.
+Current status: closed for passive recon evidence. Search engine and Wayback archive checks are complete with evidence (zero indexed pages, zero historical captures). External passive DNS confirms Cloudflare-only edge with effective origin IP protection. Shodan and Censys require authenticated sessions so are marked `Not in scope` for this public passive cycle. `OWASP-2026-06-14-001` is closed because public passive search/archive/DNS recon is evidenced. `OWASP-2026-06-14-002` (authenticated role crawl) is separately closed as local/test-evidenced; staging/production role crawl remains optional and requires explicit authorisation. Evidence: `07-tool-outputs/passive-recon-search-archive-exposure-2026-06-14.md`.
 
 ### Target Behavior
 
@@ -439,21 +481,41 @@ Finding: `OWASP-2026-06-14-005`
 Severity: Medium
 OWASP: A09 Security Logging and Monitoring
 
-Current status: open. `security_audit_events` table and `record_security_event()` service exist but only cover recovery flows (15 call sites). Infrastructure ready for expansion.
+Current status: closed as local/test-evidenced. `security_audit_events` table and `record_security_event()` now cover representative auth/session/MFA/account/provider/template/default-asset/preference/smart-phrase/generation/upload/deletion events plus invalid reset/setup token failures, team-delete blockers, high-signal provider/de-ID validation failures, and CSRF/authz/rate-limit abuse signals. Retention/access and write-failure policies are documented. System-admin read-only Audit UI now shows detection signals and recent allowlisted metadata-only events. External aggregation/SIEM and automatic alerting are deferred/out of MVP scope.
 
 ### Implementation Plan
 
-1. Extend `record_security_event()` to: login success/failure, session creation/revocation, MFA enrollment/verification/failure, account creation, account lifecycle events (migrate from logger), template/quick-action CRUD, provider config changes, asset sharing/fork/watch, team membership changes.
-2. Migrate account-lifecycle events from logger (`_log_account_lifecycle_event`) to `record_security_event()`.
-3. Add audit retention policy (align with transcript retention).
-4. Ensure no transcript/note content, secrets, or PII reach audit table.
+Detailed plan: `12-audit-logging-plan.md`.
+
+1. Complete first slice: `record_security_event()` recursive sensitive-key redaction, CR/LF sanitization, length caps, safe request metadata.
+2. Complete first slice: durable audit events for login success/failure, logout, MFA challenge success/failure, onboarding TOTP/recovery-code flows, password reset/activation completion.
+3. Complete first slice: account lifecycle durable audit for user create/suspend/reactivate/delete, account request create/approve/reject, bootstrap admin, team create/delete.
+4. Complete first slice: provider/security config durable audit for STT/LLM/de-identification config/selection/assignment changes, metadata only.
+5. Complete first slice: template/quick-action CRUD, transcript-root deletion, generated-document deletion, metadata only.
+6. Complete first slice: abuse-signal audit for authorization failures, CSRF failures, and rate-limit events.
+7. Complete follow-up slice: invalid reset/setup token failures, provider inspect/test, default assets, preferences, smart phrases, generation queue, and audio ingestion queue.
+8. Complete high-signal validation-failure audit for remote non-HTTPS provider URLs and secret-bearing de-ID header/body rejection.
+9. Define audit retention/access policy. Do not assume transcript retention applies to security audit metadata.
+10. Ensure no transcript/note/prompt/provider response/audio content, cookies, tokens, passwords, MFA codes, TOTP secrets, recovery codes, Vault secret values, raw provider credentials, filenames, or smart-phrase content reach audit table or runtime logs.
 
 ### Acceptance Criteria
 
-- [ ] All security-relevant events persisted to `security_audit_events`.
-- [ ] Account lifecycle events migrated from logger.
-- [ ] Login success/failure recorded.
-- [ ] Audit retention policy defined.
+- [x] Representative security-relevant events persisted to `security_audit_events`; remaining event families are accepted/deferred for MVP.
+- [x] System-admin read-only Audit UI exposes detection signals and recent allowlisted metadata-only event rows.
+- [x] Account lifecycle events migrated from logger for create/suspend/reactivate/delete.
+- [x] Login success/failure recorded.
+- [x] Auth/session/MFA first-slice events recorded without raw credentials, session IDs, MFA codes, or tokens.
+- [x] Provider config/credential first-slice events recorded without raw provider secrets or Vault secret payloads.
+- [x] Template/action first-slice events recorded without prompt/template body text.
+- [x] Transcript/generated-document deletion events recorded without transcript/note content.
+- [x] Redaction/sanitization and representative event tests added.
+- [x] CSRF/authz/rate-limit abuse-signal first-slice events recorded without cookies, tokens, or request bodies.
+- [x] Invalid reset/setup token failures recorded without raw token or password.
+- [x] Provider inspect/test events recorded without provider responses, sample transcript, bearer tokens, or raw secrets.
+- [x] Default asset, preference, smart-phrase, generation queue, and upload queue events recorded without prompt, transcript, filename, audio, or smart-phrase content.
+- [x] Team-delete blocker events recorded.
+- [x] High-signal provider/de-ID validation failures recorded without submitted secret values.
+- [x] Audit retention and access-control policy defined.
 
 ## R-015 AI Safety Plan
 
@@ -486,7 +548,7 @@ Finding: `OWASP-2026-06-14-002`
 Severity: Info  
 OWASP: A01 Broken Access Control, A07 Identification and Authentication Failures
 
-Current status: partially complete. Local ZAP authenticated crawl completed 2026-06-15 for anonymous, seeded normal user, and seeded team leader. Evidence is in `06-proxy-crawl-summary.md` and `07-tool-outputs/zap/zap-auth-crawl-local-2026-06-15-summary.md`.
+Current status: closed as local/test-evidenced, with external production system-admin GET-only evidence added on 2026-06-24. Local ZAP authenticated crawl completed for anonymous, onboarding-only, pending-MFA, seeded normal user, seeded team leader, and seeded system admin. A shallow ZAP AJAX Spider JS browser crawl also completed. Evidence is in `06-proxy-crawl-summary.md`, `07-tool-outputs/zap/zap-auth-crawl-local-2026-06-15-summary.md`, `07-tool-outputs/zap/zap-auth-crawl-local-admin-2026-06-23-summary.md`, `07-tool-outputs/zap/zap-auth-crawl-local-onboarding-mfa-2026-06-23-summary.md`, `07-tool-outputs/zap/zap-js-browser-crawl-local-2026-06-23-summary.md`, and `07-tool-outputs/zap/zap-auth-crawl-external-admin-2026-06-24-summary.md`.
 
 ### Target Behavior
 
@@ -504,14 +566,18 @@ Current status: partially complete. Local ZAP authenticated crawl completed 2026
 - Seeded normal user was denied account requests, team/user management, team asset write surfaces, provider selections/configs, and `/admin`.
 - Seeded team leader reached account requests, own-team users, provider selections/options, team assets, own transcript/workspace surfaces.
 - Seeded team leader was denied system team listing, `/admin`, and system provider config lists.
+- Seeded system admin reached admin browser shell, teams/users/account requests, and team-scoped provider metadata/config surfaces.
+- Seeded system admin was denied personal/team user-library ownership surfaces; browser content surfaces redirected to `/admin`; transcript list returned `0` items and workspace had `active_transcript = null`.
+- Synthetic onboarding-only session reached `/onboarding` and self/status APIs, while normal/admin/content routes redirected or returned `403`.
+- Synthetic pending-MFA session reached `/mfa/challenge` and self/status APIs, while normal/admin/content routes redirected or returned `403`.
+- ZAP AJAX Spider executed a shallow JavaScript browser crawl from `/home` and discovered expected home/static JavaScript and local vendor asset paths.
+- External production system-admin GET-only crawl verified admin shell/API metadata access, user-library denial, content browser redirects to `/admin`, empty transcript list, and null workspace active transcript.
 
 ### Remaining Work
 
-1. Add or identify synthetic onboarding-only, pending-MFA, and system-admin sessions.
-2. Repeat safe local crawl for those sessions.
-3. Run browser-driven JS crawl if form/SPA coverage is needed beyond GET/API checks.
-4. Run staging/production authenticated crawl only with explicit authorisation and synthetic accounts.
-5. Add focused authorization tests if any crawl result conflicts with the role matrix.
+1. Run additional staging/production authenticated crawls only with explicit authorisation and synthetic accounts for normal user, team leader, onboarding-only, and pending-MFA roles.
+2. Run broader browser workflow crawl only if explicitly needed; current JS evidence is shallow and intentionally conservative.
+3. Add focused authorization tests if any future crawl result conflicts with the role matrix.
 
 ### Scanner Triage
 
@@ -523,7 +589,7 @@ Current status: partially complete. Local ZAP authenticated crawl completed 2026
 
 | Plan ID | Finding(s) | Owner | Target evidence | Status |
 | --- | --- | --- | --- | --- |
-| R-001 | `OWASP-2026-06-14-009` | TBD | Production docs/OpenAPI retest | Accepted |
+| R-001 | `OWASP-2026-06-14-009` | TBD | Production docs/OpenAPI retest | Resolved and production-retested |
 | R-002 | `OWASP-2026-06-14-011` | TBD | CSRF focused tests + ZAP retest | Resolved |
 | R-003 | `OWASP-2026-06-14-012` | TBD | Header capture + ZAP retest | Resolved |
 | R-004 | `OWASP-2026-06-14-010` | TBD | Header tests + browser compatibility smoke | Resolved |
@@ -536,6 +602,7 @@ Current status: partially complete. Local ZAP authenticated crawl completed 2026
 | R-011 | `OWASP-2026-06-14-006` | TBD | pip-audit scan + dependency upgrades + SBOM evidence | Closed (direct vulns fixed; starlette tracked as R-010) |
 | R-012 | `OWASP-2026-06-14-003` | TBD | XSS surface audit + bug fixes + regression tests | Closed (2 bugs fixed, 28 tests pass) |
 | R-013 | `OWASP-2026-06-14-004` | TBD | SSRF canary tests + URL validation audit | Closed (23 tests pass, no host allowlist by design) |
-| R-014 | `OWASP-2026-06-14-005` | TBD | Extend record_security_event() to all security-relevant actions | Open |
+| R-014 | `OWASP-2026-06-14-005` | TBD | Extend record_security_event() to all security-relevant actions | Closed local/test-evidenced |
 | R-015 | `OWASP-2026-06-14-008` | TBD | AI safety threat model documentation | Closed (6 threat cases documented) |
-| R-016 | `OWASP-2026-06-14-002` | TBD | Authenticated role crawl with synthetic accounts | Partial (anonymous, normal user, team leader covered locally) |
+| R-016 | `OWASP-2026-06-14-002` | TBD | Authenticated role crawl with synthetic accounts | Closed local/test-evidenced |
+| R-017 | A04 lifecycle/deletion evidence | TBD | Live-safe synthetic lifecycle/deletion probe | Closed local/test-evidenced |

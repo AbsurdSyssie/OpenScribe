@@ -62,7 +62,22 @@ def _break_glass_allowed() -> bool:
 @api.post("/auth/login", response_model=LoginResponse, responses=error_responses)
 @LOGIN_RATE_LIMIT
 def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    user = authenticate_user(db, payload.email, payload.password)
+    try:
+        user = authenticate_user(db, payload.email, payload.password)
+    except AppError as exc:
+        record_security_event(
+            db,
+            action="login_failure",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "failure",
+                "reason_code": exc.code,
+                "status_code": exc.status_code,
+                "subject_hash": audit_subject_hash(str(payload.email)),
+            },
+        )
+        raise
     if user.recovery_mode is not None and user.must_change_password:
         record_security_event(
             db,
@@ -78,6 +93,19 @@ def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get
     if trusted_device and auth_level is SessionAuthLevel.full:
         touch_trusted_device_seen(db, trusted_device)
     token = create_session(db, user, auth_level=auth_level)
+    record_security_event(
+        db,
+        action="login_success",
+        actor=user,
+        target=user,
+        request=request,
+        details={
+            "category": "auth",
+            "outcome": "success",
+            "auth_level": auth_level.value,
+            "trusted_device_used": bool(trusted_device and auth_level is SessionAuthLevel.full),
+        },
+    )
     body = LoginResponse(
         authenticated=True,
         auth_level=auth_level,
@@ -93,6 +121,12 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         revoke_session_by_token(db, token, reason="logout")
+        record_security_event(
+            db,
+            action="logout",
+            request=request,
+            details={"category": "session", "outcome": "revoked", "reason_code": "logout"},
+        )
     response = JSONResponse(LoginResponse(authenticated=False).model_dump(mode="json"))
     _clear_session_cookie(response)
     return response
@@ -101,18 +135,68 @@ def api_logout(request: Request, db: Session = Depends(get_db)):
 @api.post("/auth/password-reset/request", response_model=GenericMessageResponse, responses=error_responses)
 @LOGIN_RATE_LIMIT
 def api_password_reset_request(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
-    return GenericMessageResponse(message=request_password_reset_service(db, email=str(payload.email)))
+    email = str(payload.email)
+    try:
+        message = request_password_reset_service(db, email=email)
+        record_security_event(
+            db,
+            action="password_reset_requested",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "accepted",
+                "flow": "password_reset",
+                "subject_hash": audit_subject_hash(email),
+            },
+        )
+    except AppError as exc:
+        record_security_event(
+            db,
+            action="password_reset_requested",
+            request=request,
+            details={
+                "category": "auth",
+                "outcome": "failure" if exc.code == "mail_transport_disabled" else "accepted",
+                "reason_code": exc.code,
+                "status_code": exc.status_code,
+                "flow": "password_reset",
+                "subject_hash": audit_subject_hash(email),
+            },
+        )
+        raise
+    return GenericMessageResponse(message=message)
 
 
 @api.post("/auth/password-reset/confirm", response_model=GenericMessageResponse, responses=error_responses)
-def api_password_reset_confirm(payload: PasswordResetConfirmRequest, db: Session = Depends(get_db)):
-    confirm_password_reset_service(db, raw_token=payload.token, new_password=payload.new_password)
+def api_password_reset_confirm(payload: PasswordResetConfirmRequest, request: Request, db: Session = Depends(get_db)):
+    try:
+        confirm_password_reset_service(db, raw_token=payload.token, new_password=payload.new_password)
+    except AppError as exc:
+        record_security_event(db, action="auth_email_token_failure", request=request, details={"category": "auth", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code, "flow": "password_reset"})
+        raise
+    record_security_event(
+        db,
+        action="password_reset_confirmed",
+        details={"category": "auth", "outcome": "success"},
+    )
     return GenericMessageResponse(message="Password reset complete")
 
 
 @api.post("/auth/account-activation/confirm", response_model=LoginResponse, responses=error_responses)
 def api_account_activation_confirm(payload: AccountActivationConfirmRequest, request: Request, db: Session = Depends(get_db)):
-    user, token = confirm_account_activation_service(db, raw_token=payload.token, new_password=payload.new_password)
+    try:
+        user, token = confirm_account_activation_service(db, raw_token=payload.token, new_password=payload.new_password)
+    except AppError as exc:
+        record_security_event(db, action="auth_email_token_failure", request=request, details={"category": "account", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code, "flow": "account_activation"})
+        raise
+    record_security_event(
+        db,
+        action="account_activation_confirmed",
+        actor=user,
+        target=user,
+        request=request,
+        details={"category": "account", "outcome": "success", "auth_level": SessionAuthLevel.onboarding.value},
+    )
     response = JSONResponse(
         LoginResponse(authenticated=True, auth_level=SessionAuthLevel.onboarding, redirect_to="/onboarding").model_dump(mode="json")
     )
@@ -130,14 +214,33 @@ def api_login_mfa_totp(
 ):
     if context.session.auth_level is not SessionAuthLevel.pending_mfa:
         raise AppError(409, "conflict", "MFA challenge is not pending for this session")
-    user, trusted_device_token = verify_login_totp(
-        db,
-        context.user,
-        code=payload.code,
-        remember_device=payload.remember_device,
-        device_label=request.headers.get("user-agent"),
-    )
+    try:
+        user, trusted_device_token = verify_login_totp(
+            db,
+            context.user,
+            code=payload.code,
+            remember_device=payload.remember_device,
+            device_label=request.headers.get("user-agent"),
+        )
+    except AppError as exc:
+        record_security_event(
+            db,
+            action="mfa_challenge_failure",
+            actor=context.user,
+            target=context.user,
+            request=request,
+            details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code},
+        )
+        raise
     token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
+    record_security_event(
+        db,
+        action="mfa_challenge_success",
+        actor=user,
+        target=user,
+        request=request,
+        details={"category": "mfa", "outcome": "success", "trusted_device_created": bool(trusted_device_token)},
+    )
     response = JSONResponse(
         LoginResponse(
             authenticated=True,
@@ -197,8 +300,9 @@ def reject_account_request(request_id: UUID, payload: AccountRequestReject, cont
 
 
 @api.post("/onboarding/password", response_model=CurrentUserResponse, responses=error_responses)
-def api_onboarding_password(payload: PasswordChangeRequest, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
+def api_onboarding_password(payload: PasswordChangeRequest, request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
     user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(payload.new_password))
+    record_security_event(db, action="onboarding_password_changed", actor=user, target=user, request=request, details={"category": "account", "outcome": "success"})
     return CurrentUserResponse(
         id=str(user.id),
         full_name=user.full_name,
@@ -212,8 +316,9 @@ def api_onboarding_password(payload: PasswordChangeRequest, context: Authenticat
 
 
 @api.post("/onboarding/totp/start", response_model=TotpEnrollmentStartResponse, responses=error_responses)
-def api_onboarding_totp_start(context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
+def api_onboarding_totp_start(request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
     method = start_totp_enrollment(db, context.user)
+    record_security_event(db, action="totp_enrollment_started", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "success"})
     uri = provisioning_uri(context.user, method)
     return TotpEnrollmentStartResponse(
         secret=method.secret,
@@ -223,8 +328,13 @@ def api_onboarding_totp_start(context: AuthenticatedContext = Depends(require_au
 
 
 @api.post("/onboarding/totp/verify", response_model=CurrentUserResponse, responses=error_responses)
-def api_onboarding_totp_verify(payload: TotpVerifyRequest, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
-    user = verify_totp_enrollment(db, context.user, code=payload.code)
+def api_onboarding_totp_verify(payload: TotpVerifyRequest, request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
+    try:
+        user = verify_totp_enrollment(db, context.user, code=payload.code)
+    except AppError as exc:
+        record_security_event(db, action="totp_enrollment_failure", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code})
+        raise
+    record_security_event(db, action="totp_enrollment_verified", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
     return CurrentUserResponse(
         id=str(user.id),
         full_name=user.full_name,
@@ -242,6 +352,7 @@ def api_onboarding_recovery_codes(request: Request, context: AuthenticatedContex
     codes = generate_recovery_codes(db, context.user)
     refreshed_user = db.get(User, context.user.id)
     token = rotate_session(db, context.token, refreshed_user, auth_level=determine_auth_level(refreshed_user))
+    record_security_event(db, action="recovery_codes_generated", actor=refreshed_user, target=refreshed_user, request=request, details={"category": "mfa", "outcome": "success", "count": len(codes)})
     response = JSONResponse(RecoveryCodesResponse(codes=codes).model_dump(mode="json"))
     _set_session_cookie(request, response, token)
     return response
@@ -251,6 +362,7 @@ def api_onboarding_recovery_codes(request: Request, context: AuthenticatedContex
 def api_skip_recovery_codes(request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
     user = skip_recovery_codes(db, context.user)
     token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
+    record_security_event(db, action="recovery_codes_skipped", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
     response = JSONResponse(
         LoginResponse(authenticated=True, auth_level=determine_auth_level(user), redirect_to="/admin" if user.is_system_admin else "/home").model_dump(mode="json")
     )
@@ -443,7 +555,13 @@ def get_stt_config(config_id: UUID, team_id: UUID | None = None, context: Authen
 
 @api.post("/stt-configs/inspect", response_model=SttInspectResult, responses=error_responses)
 def inspect_stt_config(payload: SttInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return inspect_stt_contract_service(db, context.user, payload)
+    try:
+        result = inspect_stt_contract_service(db, context.user, payload)
+    except AppError as exc:
+        record_security_event(db, action="stt_config_inspect_failed", actor=context.user, team_id=payload.team_id, details={"category": "provider", "outcome": "failure", "provider_type": "stt", "reason_code": exc.code, "status_code": exc.status_code})
+        raise
+    record_security_event(db, action="stt_config_inspected", actor=context.user, team_id=payload.team_id, details={"category": "provider", "outcome": "success", "provider_type": "stt", "available_model_count": len(result.available_models)})
+    return result
 
 
 def _stt_draft_result(config, inspection):
@@ -466,7 +584,9 @@ def create_stt_config_draft(payload: SttConfigDraftCreate, context: Authenticate
 
 @api.post("/stt-configs/{config_id}/inspect", response_model=SttConfigDetail, responses=error_responses)
 def reinspect_stt_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return stt_config_response(reinspect_stt_config_service(db, context.user, config_id=config_id, team_id=team_id))
+    config = reinspect_stt_config_service(db, context.user, config_id=config_id, team_id=team_id)
+    record_security_event(db, action="stt_config_reinspected", actor=context.user, team_id=config.team_id, details={"category": "provider", "outcome": "success", "provider_type": "stt", "object_type": "team_stt_config", "object_id": str(config.id), "credential_status": config.credential_status.value})
+    return stt_config_response(config)
 
 
 @api.post("/stt-configs/{config_id}/finalize", response_model=SttConfigDetail, responses=error_responses)
@@ -530,7 +650,13 @@ def list_llm_configs(team_id: UUID | None = None, context: AuthenticatedContext 
 
 @api.post("/llm-configs/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
 def inspect_llm_config(payload: LlmInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return inspect_llm_contract_service(db, context.user, payload)
+    try:
+        result = inspect_llm_contract_service(db, context.user, payload)
+    except AppError as exc:
+        record_security_event(db, action="llm_config_inspect_failed", actor=context.user, team_id=payload.team_id, details={"category": "provider", "outcome": "failure", "provider_type": "llm", "reason_code": exc.code, "status_code": exc.status_code})
+        raise
+    record_security_event(db, action="llm_config_inspected", actor=context.user, team_id=payload.team_id, details={"category": "provider", "outcome": "success", "provider_type": "llm", "available_model_count": len(result.available_models), "discovery_status": result.discovery_status})
+    return result
 
 
 def _llm_draft_result(config, inspection):
@@ -554,7 +680,9 @@ def create_llm_config_draft(payload: LlmConfigDraftCreate, context: Authenticate
 
 @api.post("/llm-configs/{config_id}/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
 def inspect_saved_llm_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return inspect_saved_llm_config_service(db, context.user, config_id=config_id, team_id=team_id)
+    result = inspect_saved_llm_config_service(db, context.user, config_id=config_id, team_id=team_id)
+    record_security_event(db, action="llm_config_reinspected", actor=context.user, team_id=team_id, details={"category": "provider", "outcome": "success", "provider_type": "llm", "object_type": "team_llm_config", "object_id": str(config_id), "available_model_count": len(result.available_models), "discovery_status": result.discovery_status})
+    return result
 
 
 @api.post("/llm-configs/{config_id}/finalize", response_model=LlmConfigDetail, responses=error_responses)
@@ -629,7 +757,13 @@ def upsert_deidentification_provider(payload: DeidentificationProviderUpsert, co
 
 @api.post("/deidentification-providers/inspect", response_model=DeidentificationInspectResult, responses=error_responses)
 def inspect_deidentification_provider(payload: DeidentificationProviderInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    return inspect_deidentification_provider_service(db, context.user, payload)
+    try:
+        result = inspect_deidentification_provider_service(db, context.user, payload)
+    except AppError as exc:
+        record_security_event(db, action="deidentification_provider_inspect_failed", actor=context.user, details={"category": "provider", "outcome": "failure", "provider_type": "deidentification", "object_type": "deidentification_provider", "object_id": str(payload.provider_id) if payload.provider_id else None, "reason_code": exc.code, "status_code": exc.status_code})
+        raise
+    record_security_event(db, action="deidentification_provider_inspected", actor=context.user, details={"category": "provider", "outcome": "success", "provider_type": "deidentification", "object_type": "deidentification_provider", "object_id": str(payload.provider_id) if payload.provider_id else None, "entity_count": len(result.entities)})
+    return result
 
 
 @api.delete("/deidentification-providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)

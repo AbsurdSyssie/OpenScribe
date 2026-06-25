@@ -2,6 +2,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerificationError, VerifyMismatchError
 from argon2.low_level import Type
 
+from app.errors import AppError
+
 
 ARGON2_MEMORY_COST_KIB = 19 * 1024
 ARGON2_TIME_COST = 2
@@ -35,3 +37,21 @@ def password_needs_rehash(password_hash: str) -> bool:
         return _password_hasher.check_needs_rehash(password_hash)
     except Argon2Error:
         return True
+
+
+def validate_password_strength(password: str) -> str:
+    checks = (
+        (len(password) >= 12, "at least 12 characters"),
+        (any(char.islower() for char in password), "a lowercase letter"),
+        (any(char.isupper() for char in password), "an uppercase letter"),
+        (any(char.isdigit() for char in password), "a number"),
+    )
+    missing = [message for passed, message in checks if not passed]
+    if missing:
+        raise AppError(
+            422,
+            "weak_password",
+            "Password must be at least 12 characters and include uppercase, lowercase, and number characters.",
+            {"requirements": [message for _, message in checks]},
+        )
+    return password

@@ -62,7 +62,8 @@ from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_f
 from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
 from app.services.llm import delete_team_llm_bearer_token
-from app.services.passwords import hash_password
+from app.services.passwords import hash_password, validate_password_strength
+from app.services.security_audit import record_security_event
 from app.services.smart_phrases import ensure_default_smart_phrase_for_user
 from app.services.stt import delete_team_stt_bearer_token
 from app.services.transcripts import delete_retry_sources_for_transcripts
@@ -1093,6 +1094,13 @@ def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
         db.rollback()
         raise AppError(409, "conflict", "Team already exists", {"resource": "team", "field": "name"}) from exc
     db.refresh(team)
+    record_security_event(
+        db,
+        action="team_created",
+        actor=actor,
+        team_id=team.id,
+        details={"category": "account", "outcome": "success", "object_type": "team", "object_id": str(team.id), "status": team.status.value},
+    )
     return team
 
 
@@ -1181,6 +1189,21 @@ def create_user(db: Session, payload: UserCreate, *, actor: User | None = None) 
         db.rollback()
         raise
     db.refresh(user)
+    record_security_event(
+        db,
+        action="user_created",
+        actor=actor,
+        target=user,
+        team_id=user.team_id,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "target_user_id": str(user.id),
+            "target_team_role": user.team_role.value if user.team_role else None,
+            "target_status": user.status.value,
+            "target_is_system_admin": user.is_system_admin,
+        },
+    )
     return user
 
 
@@ -1211,7 +1234,7 @@ def _active_system_admin_count(db: Session) -> int:
     )
 
 
-def _log_account_lifecycle_event(*, actor: User, target: User, event: str) -> None:
+def _log_account_lifecycle_event(*, db: Session, actor: User, target: User, event: str) -> None:
     audit_logger.info(
         "account_lifecycle",
         extra={
@@ -1222,6 +1245,21 @@ def _log_account_lifecycle_event(*, actor: User, target: User, event: str) -> No
             "target_user_id": str(target.id),
             "target_email": target.email,
             "target_team_id": str(target.team_id) if target.team_id else None,
+            "target_team_role": target.team_role.value if target.team_role else None,
+            "target_status": target.status.value,
+            "target_is_system_admin": target.is_system_admin,
+        },
+    )
+    record_security_event(
+        db,
+        action=event,
+        actor=actor,
+        target=target,
+        team_id=target.team_id,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "target_user_id": str(target.id),
             "target_team_role": target.team_role.value if target.team_role else None,
             "target_status": target.status.value,
             "target_is_system_admin": target.is_system_admin,
@@ -1259,7 +1297,7 @@ def suspend_user(db: Session, actor: User, user_id) -> User:
     revoke_sessions_for_user(db, user, reason="user_suspended")
     revoke_trusted_devices_for_user(db, user, reason="user_suspended")
     db.refresh(user)
-    _log_account_lifecycle_event(actor=actor, target=user, event="account_suspended")
+    _log_account_lifecycle_event(db=db, actor=actor, target=user, event="account_suspended")
     return user
 
 
@@ -1283,13 +1321,11 @@ def reactivate_user(db: Session, actor: User, user_id) -> User:
     revoke_sessions_for_user(db, user, reason="user_reactivated_reset")
     revoke_trusted_devices_for_user(db, user, reason="user_reactivated_reset")
     db.refresh(user)
-    _log_account_lifecycle_event(actor=actor, target=user, event="account_reactivated")
+    _log_account_lifecycle_event(db=db, actor=actor, target=user, event="account_reactivated")
     return user
 
 
 def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
-    _log_account_lifecycle_event(actor=actor, target=user, event="account_deleted")
-
     linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
     for request in linked_requests:
         request.linked_user_id = None
@@ -1430,16 +1466,65 @@ def delete_user(db: Session, actor: User, user_id) -> None:
 
     revoke_sessions_for_user(db, user, reason="user_deleted")
     revoke_trusted_devices_for_user(db, user, reason="user_deleted")
+    target_user_id = user.id
+    target_team_id = user.team_id
+    target_team_role = user.team_role.value if user.team_role else None
+    target_is_system_admin = user.is_system_admin
     _delete_user_rows(db, actor, user=user)
     db.commit()
+    audit_logger.info(
+        "account_lifecycle",
+        extra={
+            "event": "account_deleted",
+            "actor_user_id": str(actor.id),
+            "actor_is_system_admin": actor.is_system_admin,
+            "actor_team_id": str(actor.team_id) if actor.team_id else None,
+            "target_user_id": str(target_user_id),
+            "target_team_id": str(target_team_id) if target_team_id else None,
+            "target_team_role": target_team_role,
+            "target_status": "deleted",
+            "target_is_system_admin": target_is_system_admin,
+        },
+    )
+    record_security_event(
+        db,
+        action="account_deleted",
+        actor=actor,
+        team_id=target_team_id,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "target_user_id": str(target_user_id),
+            "target_team_role": target_team_role,
+            "target_status": "deleted",
+            "target_is_system_admin": target_is_system_admin,
+        },
+    )
 
 
 def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
     team = _resolve_team_for_admin_delete(db, actor, team_id=team_id)
     team_users = list(db.scalars(select(User).where(User.team_id == team.id).order_by(User.created_at.asc(), User.id.asc())))
     team_user_ids = [user.id for user in team_users]
+    team_id_for_audit = team.id
+    team_user_count = len(team_users)
     for user in team_users:
         if user.is_system_admin:
+            record_security_event(
+                db,
+                action="team_delete_blocked",
+                actor=actor,
+                team_id=team.id,
+                details={
+                    "category": "account",
+                    "outcome": "blocked",
+                    "reason_code": "team_contains_system_admin",
+                    "object_type": "team",
+                    "object_id": str(team.id),
+                    "blocked_user_id": str(user.id),
+                    "team_user_count": team_user_count,
+                },
+            )
             raise AppError(409, "conflict", "Cannot delete a team that still contains a system-admin account", {"team_id": str(team.id), "user_id": str(user.id)})
 
     stt_secret_deletions: list[tuple[UUID, UUID, str]] = []
@@ -1516,6 +1601,13 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
                 "team_llm_secret_delete_failed",
                 extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
             )
+    record_security_event(
+        db,
+        action="team_deleted",
+        actor=actor,
+        team_id=None,
+        details={"category": "account", "outcome": "success", "object_type": "team", "object_id": str(team_id_for_audit), "team_user_count": team_user_count},
+    )
 
 
 def user_count(db: Session) -> int:
@@ -1523,6 +1615,7 @@ def user_count(db: Session) -> int:
 
 
 def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
+    validate_password_strength(password)
     payload = UserCreate(
         email=email,
         temporary_password=password,
@@ -1542,6 +1635,13 @@ def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
         db.rollback()
         raise AppError(409, "conflict", "User already exists", {"resource": "user", "field": "email"}) from exc
     db.refresh(user)
+    record_security_event(
+        db,
+        action="bootstrap_system_admin_created",
+        actor=user,
+        target=user,
+        details={"category": "account", "outcome": "success", "target_user_id": str(user.id), "target_is_system_admin": True},
+    )
     return user
 
 
@@ -1574,6 +1674,18 @@ def create_account_request(db: Session, payload: AccountRequestCreate) -> Accoun
     db.add(request)
     db.commit()
     db.refresh(request)
+    record_security_event(
+        db,
+        action="account_request_created",
+        team_id=None,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "object_type": "account_request",
+            "object_id": str(request.id),
+            "requested_team_name_key": request.requested_team_name_key,
+        },
+    )
     return request
 
 
@@ -1646,6 +1758,21 @@ def approve_account_request(db: Session, actor: User, request_id, payload: Accou
         raise
     db.refresh(request)
     db.refresh(user)
+    record_security_event(
+        db,
+        action="account_request_approved",
+        actor=actor,
+        target=user,
+        team_id=user.team_id,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "object_type": "account_request",
+            "object_id": str(request.id),
+            "target_user_id": str(user.id),
+            "target_team_role": user.team_role.value if user.team_role else None,
+        },
+    )
     return request, user
 
 
@@ -1660,4 +1787,10 @@ def reject_account_request(db: Session, actor: User, request_id, payload: Accoun
     db.add(request)
     db.commit()
     db.refresh(request)
+    record_security_event(
+        db,
+        action="account_request_rejected",
+        actor=actor,
+        details={"category": "account", "outcome": "success", "object_type": "account_request", "object_id": str(request.id), "requested_team_name_key": request.requested_team_name_key},
+    )
     return request

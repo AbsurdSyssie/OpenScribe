@@ -1,0 +1,158 @@
+{
+  "base_url": "http://127.0.0.1:8092",
+  "cleanup": [
+    {
+      "detail": "Synthetic user delete attempted.",
+      "name": "delete_leader_user",
+      "ok": true,
+      "status_code": 204
+    },
+    {
+      "detail": "Synthetic user delete attempted.",
+      "name": "delete_peer_user",
+      "ok": true,
+      "status_code": 204
+    },
+    {
+      "detail": "Synthetic user delete attempted.",
+      "name": "delete_owner_user",
+      "ok": true,
+      "status_code": 204
+    },
+    {
+      "detail": "Synthetic team delete attempted.",
+      "name": "delete_synthetic_team",
+      "ok": true,
+      "status_code": 303
+    }
+  ],
+  "completed_at": "2026-06-24T11:43:15.985628+00:00",
+  "dry_run": false,
+  "ok": true,
+  "production_guard": "non_production",
+  "run_id": "owasp-local-20260624-6",
+  "started_at": "2026-06-24T11:43:13.581260+00:00",
+  "steps": [
+    {
+      "detail": "auth_level=full",
+      "name": "admin_login",
+      "ok": true,
+      "status_code": null
+    },
+    {
+      "detail": "Synthetic team created.",
+      "name": "team_created",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "Synthetic user created and password onboarding completed.",
+      "name": "owner_created_and_onboarded",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "Synthetic user created and password onboarding completed.",
+      "name": "peer_created_and_onboarded",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "Synthetic user created and password onboarding completed.",
+      "name": "leader_created_and_onboarded",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "Synthetic transcript root created.",
+      "name": "owner_created_transcript",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "Transcript version committed.",
+      "name": "owner_committed_transcript_version",
+      "ok": true,
+      "status_code": 200
+    },
+    {
+      "detail": "Working note created.",
+      "name": "owner_created_working_note",
+      "ok": true,
+      "status_code": 200
+    },
+    {
+      "detail": "expected [403, 404], got 403",
+      "name": "peer_cannot_read_owner_transcript",
+      "ok": true,
+      "status_code": 403
+    },
+    {
+      "detail": "expected [403, 404], got 403",
+      "name": "peer_cannot_delete_owner_transcript",
+      "ok": true,
+      "status_code": 403
+    },
+    {
+      "detail": "expected [403, 404], got 403",
+      "name": "leader_cannot_read_owner_transcript",
+      "ok": true,
+      "status_code": 403
+    },
+    {
+      "detail": "expected [403, 404], got 403",
+      "name": "admin_cannot_read_owner_transcript",
+      "ok": true,
+      "status_code": 403
+    },
+    {
+      "detail": "expected [204], got 204",
+      "name": "owner_deleted_transcript_root",
+      "ok": true,
+      "status_code": 204
+    },
+    {
+      "detail": "expected [404], got 404",
+      "name": "deleted_transcript_not_readable",
+      "ok": true,
+      "status_code": 404
+    },
+    {
+      "detail": "Second transcript created before suspension.",
+      "name": "owner_created_lock_check_transcript",
+      "ok": true,
+      "status_code": 201
+    },
+    {
+      "detail": "expected [200], got 200",
+      "name": "leader_suspended_owner",
+      "ok": true,
+      "status_code": 200
+    },
+    {
+      "detail": "expected [401, 403], got 401",
+      "name": "suspended_owner_session_revoked",
+      "ok": true,
+      "status_code": 401
+    },
+    {
+      "detail": "expected [200], got 200",
+      "name": "leader_reactivated_owner",
+      "ok": true,
+      "status_code": 200
+    },
+    {
+      "detail": "Reactivation preserves content but resets account onboarding; cleanup will delete user via admin.",
+      "name": "reactivation_requires_onboarding",
+      "ok": true,
+      "status_code": null
+    }
+  ],
+  "synthetic_team_id": "0e3205eb-61f7-4fc2-b380-3f324abbb991",
+  "synthetic_user_ids": {
+    "leader": "5157cc7c-d1b0-44fd-9fcb-109b2138320a",
+    "owner": "1c6faca0-c611-4c61-adc9-adb07d4a529e",
+    "peer": "edfcf8bb-3236-4ee2-8245-51202c46fcb4"
+  },
+  "transcript_id": "94a06ad0-ee41-4673-84bb-4d91d0ee39a4"
+}

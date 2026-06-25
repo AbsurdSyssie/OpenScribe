@@ -72,9 +72,10 @@ Important:
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
 
-By default, `./start-dev.sh` also seeds a reusable dev team and two dev accounts into the app database:
+By default, `./start-dev.sh` also seeds a reusable dev team and three dev accounts into the app database:
 
 - team: `Dev Test Team`
+- admin: `dev.admin@example.com` / `test1234`
 - leader: `dev.leader@example.com` / `test1234`
 - user: `dev.user@example.com` / `test1234`
 
@@ -85,6 +86,7 @@ These seeded accounts are:
 - `mfa_required = false`
 - `mfa_enabled = false`
 - restricted to localhost requests only; non-local login attempts are rejected and any reused non-local session is revoked immediately
+- the seeded admin is system-admin-only, has no team, and does not receive a user content encryption key
 - on localhost, these seeded dev accounts also get a `/transcribe` redaction-debug view for the latest note/follow-up so PHI placeholdering can be verified during development without exposing that view to normal users
 - `Sectioned EMIS note`, `Patient follow-up message`, and `Referral letter` team assets are hard-coded into the dev seed and recreated if missing
 
@@ -97,6 +99,8 @@ DEV_SEED_TEST_ACCOUNTS=false
 You can override the defaults with:
 
 - `DEV_TEST_TEAM_NAME`
+- `DEV_TEST_ADMIN_EMAIL`
+- `DEV_TEST_ADMIN_PASSWORD`
 - `DEV_TEST_LEADER_EMAIL`
 - `DEV_TEST_LEADER_PASSWORD`
 - `DEV_TEST_USER_EMAIL`
@@ -148,6 +152,7 @@ Cookie security uses:
 - `CSRF_SECRET_VAULT_REF` optional, defaulting to `secret:openscribe/platform/csrf` when Vault auto-bootstrap is used
 - `COOKIE_SECURE_MODE=auto` by default
 - `HSTS_SOURCE=app|proxy|proxy_static_fallback`, defaulting to `app`
+- `PUBLIC_API_DOCS=true|false`, optional; unset means public outside production and system-admin-only in production
 - production startup requires `COOKIE_SECURE_MODE=always`
 - local development should use `APP_ENV=local` with `COOKIE_SECURE_MODE=auto`
 
@@ -182,6 +187,7 @@ For production HTTPS, set:
 ```env
 APP_ENV=production
 COOKIE_SECURE_MODE=always
+PUBLIC_API_DOCS=false
 # Use exactly one HSTS owner.
 # If Cloudflare/reverse proxy emits HSTS for every response:
 HSTS_SOURCE=proxy
@@ -190,6 +196,8 @@ HSTS_SOURCE=proxy
 # If OpenScribe should emit HSTS instead:
 # HSTS_SOURCE=app
 ```
+
+For local reverse-proxy access through nginx/Nginx Proxy Manager, `start-dev.sh` passes `--proxy-headers` and trusts only `DEV_FORWARDED_ALLOW_IPS`, defaulting to `192.168.1.234`. Set this to the reverse proxy host IP if it changes. Do not use `*` unless the FastAPI port is unreachable except from the proxy.
 
 If production cannot use Vault auto-bootstrap, also set:
 

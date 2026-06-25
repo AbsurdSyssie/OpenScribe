@@ -990,6 +990,7 @@
         <button type="button" class="tab-shell__tab" data-tab-target="defaults" role="tab" aria-selected="false">Defaults</button>
         <button type="button" class="tab-shell__tab" data-tab-target="directory" role="tab" aria-selected="false">Directory</button>
         <button type="button" class="tab-shell__tab" data-tab-target="usage" role="tab" aria-selected="false">Usage</button>
+        <button type="button" class="tab-shell__tab" data-tab-target="audit" role="tab" aria-selected="false">Audit</button>
         <button type="button" class="tab-shell__tab" data-tab-target="requests" role="tab" aria-selected="false">Requests</button>
       </nav>
     </aside>
@@ -2528,6 +2529,104 @@
         </table>
         {% else %}
         <p><small>No default quick actions yet.</small></p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="admin-section" data-tab-panel="audit">
+      <div class="panel">
+        <div class="section-header">
+          <div>
+            <h2>Security audit</h2>
+            <p>Metadata-only security events, detection signals, and recent rows. No transcript, note, prompt, token, cookie, or provider secret content is shown.</p>
+          </div>
+        </div>
+        <form method="get" action="{{ admin_page_route }}">
+          <input type="hidden" name="tab" value="audit">
+          <label>Window <input type="text" name="audit_since" value="{{ audit_since }}" placeholder="24h"></label>
+          <label>Action
+            <select name="audit_action">
+              <option value="">All actions</option>
+              {% for action in audit_filter_options.actions %}
+              <option value="{{ action }}" {% if audit_action_filter == action %}selected{% endif %}>{{ action }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Category
+            <select name="audit_category">
+              <option value="">All categories</option>
+              {% for category in audit_filter_options.categories %}
+              <option value="{{ category }}" {% if audit_category_filter == category %}selected{% endif %}>{{ category }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Outcome
+            <select name="audit_outcome">
+              <option value="">All outcomes</option>
+              {% for outcome in audit_filter_options.outcomes %}
+              <option value="{{ outcome }}" {% if audit_outcome_filter == outcome %}selected{% endif %}>{{ outcome }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Origin IP
+            <select name="audit_request_ip">
+              <option value="">All origin IPs</option>
+              {% for request_ip in audit_filter_options.request_ips %}
+              <option value="{{ request_ip.value }}" {% if audit_request_ip_filter == request_ip.value %}selected{% endif %}>{{ request_ip.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Limit <input type="number" name="audit_limit" min="1" max="250" value="{{ request.query_params.get('audit_limit', '100') }}"></label>
+          <button type="submit">Filter audit</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Detection signals</h2>
+        <p><small>{{ audit_report.event_count }} events in window.</small></p>
+        {% if audit_report.signals %}
+        <table>
+          <thead><tr><th>Signal</th><th>Severity</th><th>Count</th><th>Action</th><th>Key</th><th>Route</th><th>Seen</th></tr></thead>
+          <tbody>
+            {% for signal in audit_report.signals %}
+            <tr>
+              <td>{{ signal.signal }}</td>
+              <td><span class="pill">{{ signal.severity }}</span></td>
+              <td>{{ signal.count }}</td>
+              <td>{{ signal.action or '' }}</td>
+              <td><small>{{ signal.display_key }}</small></td>
+              <td><small>{{ signal.route or '' }}</small></td>
+              <td><small>{{ signal.first_seen or '' }}{% if signal.last_seen and signal.last_seen != signal.first_seen %}<br>{{ signal.last_seen }}{% endif %}</small></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No detection signals in this window.</small></p>
+        {% endif %}
+      </div>
+
+      <div class="panel">
+        <h2>Recent audit events</h2>
+        {% if audit_events %}
+        <table>
+          <thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Target</th><th>Team</th><th>Origin IP</th><th>Safe details</th></tr></thead>
+          <tbody>
+            {% for event in audit_events %}
+            <tr>
+              <td><small>{{ event.created_at }}</small></td>
+              <td>{{ event.action }}</td>
+              <td><small>{{ event.actor_user_id or '' }}</small></td>
+              <td><small>{{ event.target_user_id or '' }}</small></td>
+              <td><small>{{ event.team_id or '' }}</small></td>
+              <td><small>{{ event.display_request_ip or '' }}</small></td>
+              <td><small>{% for key, value in event.details.items() %}{{ key }}={{ value }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</small></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p><small>No audit events in this window.</small></p>
         {% endif %}
       </div>
     </section>

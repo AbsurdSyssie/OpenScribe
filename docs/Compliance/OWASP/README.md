@@ -27,6 +27,8 @@ For OpenScribe, the evidence pack should also track **AI and clinical-scribe saf
 | [`01-information-gathering.md`](01-information-gathering.md) | First operational workstream: OWASP WSTG information gathering, tool usage, and evidence outputs. |
 | [`OWASP_Context.md`](OWASP_Context.md) | Carry-forward context for future agents: folder structure, evidence rules, naming conventions, and current phase status. |
 | [`security-evidence/owasp/2026-06-14/`](security-evidence/owasp/2026-06-14/) | Initial dated OWASP evidence pack seeded from repo evidence. |
+| [`security-evidence/owasp/2026-06-14/13-audit-logging-test-protocol.md`](security-evidence/owasp/2026-06-14/13-audit-logging-test-protocol.md) | Repeatable protocol and evidence template for every A09 audit logging retest. |
+| [`security-evidence/owasp/2026-06-14/14-audit-detection-response-playbook.md`](security-evidence/owasp/2026-06-14/14-audit-detection-response-playbook.md) | Manual detection and response playbook using durable audit events. |
 
 ## Evidence status labels
 

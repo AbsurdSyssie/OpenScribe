@@ -1,20 +1,13 @@
 <script nonce="{{ request.state.csp_nonce }}">
   (() => {
-    const COOKIE_NAME = "openscribe_csrf";
+    const CSRF_TOKEN = "{{ request.state.csrf_token }}";
 
-    function readCookie(name) {
-      const prefix = `${name}=`;
-      for (const part of document.cookie.split(";")) {
-        const trimmed = part.trim();
-        if (trimmed.startsWith(prefix)) {
-          return decodeURIComponent(trimmed.slice(prefix.length));
-        }
-      }
-      return "";
+    function currentToken() {
+      return CSRF_TOKEN;
     }
 
     function applyCsrfToken() {
-      const token = readCookie(COOKIE_NAME);
+      const token = currentToken();
       if (!token) {
         return;
       }
@@ -31,14 +24,14 @@
       window.OpenScribeCSRF = {
         ...(window.OpenScribeCSRF || {}),
         getToken() {
-          return readCookie(COOKIE_NAME);
+          return currentToken();
         },
       };
     }
 
     function csrfHeaders(existingHeaders) {
       const headers = new Headers(existingHeaders || {});
-      const token = readCookie(COOKIE_NAME);
+      const token = currentToken();
       if (token) {
         headers.set("X-CSRF-Token", token);
       }
@@ -75,7 +68,7 @@
         fetchInstalled: true,
         fetch: csrfFetch,
         getToken() {
-          return readCookie(COOKIE_NAME);
+          return currentToken();
         },
       };
     }

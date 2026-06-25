@@ -102,6 +102,92 @@ def test_alembic_upgrade_head_creates_expected_schema():
 
 
 @pytest.mark.migration
+def test_security_audit_event_user_and_team_references_set_null_on_delete():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000101',
+                    'Audit Delete Team',
+                    'audit delete team',
+                    'active',
+                    30,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, email, password_hash, full_name, team_id, team_role,
+                    is_system_admin, status, must_change_password, onboarding_state,
+                    mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000102',
+                    'audit-delete@example.com',
+                    'hash',
+                    'Audit Delete',
+                    '00000000-0000-0000-0000-000000000101',
+                    'user',
+                    false,
+                    'active',
+                    false,
+                    'complete',
+                    false,
+                    false,
+                    NOW(),
+                    NOW(),
+                    NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO security_audit_events (
+                    id, action, actor_user_id, target_user_id, team_id, details_json, created_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000103',
+                    'account_deleted',
+                    '00000000-0000-0000-0000-000000000102',
+                    '00000000-0000-0000-0000-000000000102',
+                    '00000000-0000-0000-0000-000000000101',
+                    '{}'::jsonb,
+                    NOW()
+                )
+                """
+            )
+        )
+        connection.execute(text("DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000102'"))
+        connection.execute(text("DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000101'"))
+        audit_row = connection.execute(
+            text(
+                """
+                SELECT actor_user_id, target_user_id, team_id
+                FROM security_audit_events
+                WHERE id = '00000000-0000-0000-0000-000000000103'
+                """
+            )
+        ).mappings().one()
+
+    assert audit_row["actor_user_id"] is None
+    assert audit_row["target_user_id"] is None
+    assert audit_row["team_id"] is None
+
+
+@pytest.mark.migration
 def test_alembic_head_uses_normalized_uniqueness_rules():
     reset_public_schema()
     command.upgrade(alembic_config(), "head")

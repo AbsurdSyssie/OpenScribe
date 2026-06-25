@@ -124,7 +124,7 @@ def test_api_responses_are_no_store(raw_client):
     assert slashless_response.headers["Expires"] == "0"
 
 
-def test_csrf_cookie_is_readable_signed_and_paired_with_httponly_anon_nonce(raw_client):
+def test_csrf_cookie_is_httponly_signed_and_paired_with_httponly_anon_nonce(raw_client):
     response = raw_client.get("/login")
 
     csrf_cookie = _cookie_header(response, CSRF_COOKIE_NAME)
@@ -132,7 +132,7 @@ def test_csrf_cookie_is_readable_signed_and_paired_with_httponly_anon_nonce(raw_
     csrf_value = response.cookies[CSRF_COOKIE_NAME]
     anon_nonce = response.cookies[CSRF_ANON_COOKIE_NAME]
 
-    assert "HttpOnly" not in csrf_cookie
+    assert "HttpOnly" in csrf_cookie
     assert "SameSite=lax" in csrf_cookie
     assert "HttpOnly" in anon_cookie
     assert "SameSite=lax" in anon_cookie
@@ -152,7 +152,7 @@ def test_csrf_cookie_alone_does_not_authenticate_api(raw_client):
     assert SESSION_COOKIE_NAME not in raw_client.cookies
 
 
-def test_session_cookie_is_httponly_and_csrf_cookie_remains_readable(raw_client, make_user):
+def test_session_cookie_and_csrf_cookie_are_httponly(raw_client, make_user):
     make_user(email="cookie-session@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
 
     response = raw_client.post("/api/v1/auth/login", json={"email": "cookie-session@example.com", "password": "password-1"})
@@ -165,7 +165,7 @@ def test_session_cookie_is_httponly_and_csrf_cookie_remains_readable(raw_client,
     assert response.status_code == 200
     assert "HttpOnly" in session_cookie
     assert "SameSite=lax" in session_cookie
-    assert "HttpOnly" not in csrf_cookie
+    assert "HttpOnly" in csrf_cookie
     assert csrf_service.verify_csrf_token(
         submitted_token=csrf_value,
         raw_session_token=session_value,
@@ -254,6 +254,7 @@ def test_csp_header_added(raw_client):
     assert "connect-src 'self'" in csp
     assert "upgrade-insecure-requests" not in csp
     assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    assert "style-src-attr 'none'" in csp
     assert re.search(r"'nonce-[A-Za-z0-9_-]+'", csp)
 
 

@@ -31,6 +31,7 @@ from app.services.audio import (
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import ensure_redaction_run_for_transcript_version
+from app.services.security_audit import record_security_event
 from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
@@ -1073,9 +1074,17 @@ def delete_transcripts(
     ]
     delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcripts])
     deleted_count = len(transcripts)
+    deleted_ids = [str(transcript.id) for transcript in transcripts]
     for transcript in transcripts:
         db.delete(transcript)
     db.commit()
+    record_security_event(
+        db,
+        action="transcript_root_deleted",
+        actor=owner,
+        team_id=owner.team_id,
+        details={"category": "transcript", "outcome": "success", "object_type": "transcript", "object_ids": deleted_ids, "deleted_count": deleted_count},
+    )
     return deleted_count
 
 
@@ -1187,6 +1196,23 @@ def queue_audio_chunk_ingestion(
         raise
     db.refresh(transcript)
     db.refresh(job)
+    record_security_event(
+        db,
+        action="audio_ingestion_queued",
+        actor=owner,
+        target=owner,
+        team_id=transcript.team_id,
+        details={
+            "category": "upload",
+            "outcome": "success",
+            "object_type": "transcript_ingestion_job",
+            "object_id": str(job.id),
+            "transcript_id": str(transcript.id),
+            "job_kind": job.job_kind.value,
+            "source_audio_size_bytes": job.source_audio_size_bytes,
+            "duration_seconds": round(measured_duration_seconds, 3),
+        },
+    )
     return transcript, job
 
 
@@ -1319,6 +1345,23 @@ def queue_audio_file_ingestion(
         raise
     db.refresh(transcript)
     db.refresh(job)
+    record_security_event(
+        db,
+        action="audio_ingestion_queued",
+        actor=owner,
+        target=owner,
+        team_id=transcript.team_id,
+        details={
+            "category": "upload",
+            "outcome": "success",
+            "object_type": "transcript_ingestion_job",
+            "object_id": str(job.id),
+            "transcript_id": str(transcript.id),
+            "job_kind": job.job_kind.value,
+            "source_audio_size_bytes": job.source_audio_size_bytes,
+            "duration_seconds": round(resolved_source_audio_duration_seconds, 3) if resolved_source_audio_duration_seconds is not None else None,
+        },
+    )
     return transcript, job
 
 

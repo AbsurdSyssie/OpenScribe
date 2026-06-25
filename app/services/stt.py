@@ -36,6 +36,7 @@ from app.services.stt_presets import (
     is_deepgram_stt_base_url,
     resolve_stt_provider_preset,
 )
+from app.services.security_audit import record_security_event
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
 from app.services.provider_inspection import (
     dereference_openapi_document,
@@ -68,6 +69,14 @@ logger = logging.getLogger("openscribe.stt")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
 STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
+
+
+def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
+    payload: dict[str, Any] = {"category": "provider", "outcome": outcome, "provider_type": "stt"}
+    if config_id is not None:
+        payload.update({"object_type": "team_stt_config", "object_id": str(config_id)})
+    payload.update(details)
+    record_security_event(db, action=action, actor=actor, team_id=team_id, details=payload)
 
 
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
@@ -295,6 +304,7 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "stt_config_secret_cleanup_failed",
             extra={"config_id": str(secret_config_id), "team_id": str(secret_team_id), "error_code": exc.code},
         )
+    _record_stt_audit(db, action="stt_config_deleted", actor=actor, team_id=secret_team_id, config_id=secret_config_id)
 
 
 def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
@@ -390,6 +400,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
 
     db.commit()
     db.refresh(selection)
+    _record_stt_audit(db, action="stt_selection_set", actor=actor, team_id=team.id, config_id=config.id, purpose=payload.purpose.value)
     return db.scalar(
         select(TeamSttSelection)
         .options(joinedload(TeamSttSelection.config))
@@ -420,6 +431,7 @@ def clear_team_stt_selection(
         )
     db.delete(selection)
     db.commit()
+    _record_stt_audit(db, action="stt_selection_cleared", actor=actor, team_id=team.id, purpose=purpose.value)
 
 
 def active_team_stt_selection(
@@ -1646,7 +1658,7 @@ def run_saved_stt_config_test(
                 content_type="audio/wav",
             )
         )
-        return {
+        result = {
             "success": True,
             "health_status": health_status,
             "sample_filename": sample_path.name,
@@ -1662,9 +1674,21 @@ def run_saved_stt_config_test(
             "provider_status_code": None,
             "provider_error_code": None,
         }
+        _record_stt_audit(
+            db,
+            action="stt_config_tested",
+            actor=actor,
+            team_id=config.team_id,
+            config_id=config.id,
+            outcome="success",
+            duration_ms=result["duration_ms"],
+            sample_size_bytes=result["sample_size_bytes"],
+            provider_status_code=None,
+        )
+        return result
     except AppError as exc:
         details = exc.details or {}
-        return {
+        result = {
             "success": False,
             "health_status": health_status,
             "sample_filename": sample_path.name,
@@ -1680,6 +1704,20 @@ def run_saved_stt_config_test(
             "provider_status_code": details.get("provider_status_code") or details.get("status_code"),
             "provider_error_code": details.get("provider_error_code"),
         }
+        _record_stt_audit(
+            db,
+            action="stt_config_tested",
+            actor=actor,
+            team_id=config.team_id,
+            config_id=config.id,
+            outcome="failure",
+            duration_ms=result["duration_ms"],
+            sample_size_bytes=result["sample_size_bytes"],
+            reason_code=exc.code,
+            provider_status_code=result["provider_status_code"],
+            provider_error_code=result["provider_error_code"],
+        )
+        return result
 
 
 def _verify_generic_stt_config_with_sample(
@@ -1808,6 +1846,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
                 logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         raise
     db.refresh(config)
+    _record_stt_audit(db, action="stt_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
     return config, inspection
 
 
@@ -1852,6 +1891,7 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
         _raise_stt_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
+    _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
     return config
 
 
@@ -1911,6 +1951,7 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
         except AppError as cleanup_exc:
             logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
     db.refresh(config)
+    _record_stt_audit(db, action="stt_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, credential_status=config.credential_status.value)
     return config, inspection
 
 
@@ -2157,6 +2198,17 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         except AppError as exc:
             logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(config)
+    _record_stt_audit(
+        db,
+        action="stt_config_created" if creating else "stt_config_updated",
+        actor=actor,
+        team_id=team.id,
+        config_id=config.id,
+        credential_action=payload.credential_action,
+        credential_status=config.credential_status.value,
+        setup_status=config.setup_status.value,
+        active=config.is_active,
+    )
     return config
 
 

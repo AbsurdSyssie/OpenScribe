@@ -149,6 +149,7 @@ For users whose onboarding is already complete:
 - password reset changes password auth material only; it does not rotate or delete the user DEK
 - password reset revokes sessions and trusted devices
 - password reset/setup confirmation validates the token before running Argon2id password hashing
+- user-chosen permanent passwords for onboarding, activation, and reset must be at least 12 characters and include uppercase, lowercase, and number characters
 - password hashes use Argon2id with OWASP baseline parameters; non-Argon2id local dev hashes can be rotated with `scripts/force_argon2id_password_rotation.py`
 - activation/setup links are only valid before first password setup; they set the user's first real password and then force TOTP onboarding before full access
 - manager recovery actions are metadata-only and never expose transcript-derived content:
@@ -177,8 +178,8 @@ For users whose onboarding is already complete:
 
 - browser state-changing routes now require a CSRF token in addition to the normal session cookie
 - the app issues a separate `openscribe_csrf` cookie for browser flows
-- browser forms render and submit the CSRF token as `_csrf_token`; the shared CSRF script refreshes or adds the field as a client-side fallback
-- browser JavaScript requests submit the token as `X-CSRF-Token`
+- browser forms render and submit the CSRF token as `_csrf_token`; the shared nonce-protected CSRF script refreshes or adds the field as a client-side fallback
+- browser JavaScript requests submit the token as `X-CSRF-Token` from server-rendered page state, not from a JavaScript-readable cookie
 - JSON API routes remain session-authenticated but are not using this browser CSRF check
 - CSRF protection reduces cross-site request forgery risk; it does not prevent an already-authenticated user from scripting their own browser
 

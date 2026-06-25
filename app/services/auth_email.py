@@ -12,7 +12,7 @@ from app.models import AuthEmailToken, AuthEmailTokenPurpose, MfaMethodType, Tea
 from app.normalization import normalize_email
 from app.services.auth import create_session, opaque_token_hash, revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.mail import MAIL_TRANSPORT_DISABLED, MailMessage, load_mail_config_from_env, send_transactional_email, validate_mail_config
-from app.services.passwords import hash_password
+from app.services.passwords import hash_password, validate_password_strength
 
 
 AUTH_EMAIL_TOKEN_LIFETIME = timedelta(hours=1)
@@ -219,6 +219,7 @@ def _account_activation_allowed(user: User) -> bool:
 
 
 def confirm_account_activation(db: Session, *, raw_token: str, new_password: str) -> tuple[User, str]:
+    validate_password_strength(new_password)
     token = _consume_token(db, raw_token=raw_token, allowed_purposes={AuthEmailTokenPurpose.account_activation})
     user = token.user
     if not _account_activation_allowed(user):
@@ -237,6 +238,7 @@ def confirm_account_activation(db: Session, *, raw_token: str, new_password: str
 
 
 def confirm_password_reset(db: Session, *, raw_token: str, new_password: str) -> User:
+    validate_password_strength(new_password)
     token = _consume_token(
         db,
         raw_token=raw_token,

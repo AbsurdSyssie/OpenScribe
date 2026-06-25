@@ -15,7 +15,7 @@ import pyotp
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from scripts.seed_dev_accounts import repair_dev_user_content_key_if_needed
+from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
@@ -51,6 +51,8 @@ from app.models import (
     QuickActionVersion,
     RedactionRun,
     RedactionRunStatus,
+    SessionAuthLevel,
+    SessionStatus,
     SttAdapterKind,
     SttAuthMode,
     SttConfigSetupStatus,
@@ -80,6 +82,7 @@ from app.models import (
     UserEncryptionKey,
     UserAppPreference,
     UserLlmPreference,
+    UserOnboardingState,
     UserRecoveryCode,
     UserSession,
     UserStatus,
@@ -205,6 +208,56 @@ def assert_error(response, *, status_code: int, code: str, message: str):
 
 def login(client, *, email: str, password: str):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
+
+
+def test_api_docs_public_in_test_environment_by_default(client, monkeypatch):
+    monkeypatch.delenv("PUBLIC_API_DOCS", raising=False)
+    monkeypatch.setenv("APP_ENV", "test")
+
+    schema = client.get("/openapi.json")
+    docs = client.get("/docs")
+    redoc = client.get("/redoc")
+
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "OpenScribe MVP"
+    assert docs.status_code == 200
+    assert "SwaggerUIBundle" in docs.text
+    assert redoc.status_code == 200
+    assert "ReDoc" in redoc.text
+
+
+def test_api_docs_require_system_admin_in_production(client, make_team, make_user, monkeypatch):
+    monkeypatch.delenv("PUBLIC_API_DOCS", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    team = make_team(name="Docs Gate Clinic")
+    make_user(email="docs-user@example.com", password="password-1", team=team)
+    admin = make_user(email="docs-admin@example.com", password="password-2", is_system_admin=True)
+
+    unauthenticated = client.get("/openapi.json")
+    assert_error(unauthenticated, status_code=401, code="unauthorized", message="Authentication required")
+
+    login(client, email="docs-user@example.com", password="password-1")
+    forbidden = client.get("/docs")
+    assert_error(forbidden, status_code=403, code="forbidden", message="System admin access required")
+
+    login(client, email=admin.email, password="password-2")
+    schema = client.get("/openapi.json")
+    docs = client.get("/docs")
+
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "OpenScribe MVP"
+    assert docs.status_code == 200
+    assert "SwaggerUIBundle" in docs.text
+
+
+def test_api_docs_public_override_can_expose_docs(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PUBLIC_API_DOCS", "true")
+
+    schema = client.get("/openapi.json")
+
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "OpenScribe MVP"
 
 
 def finish_onboarding(client):
@@ -561,25 +614,27 @@ def test_api_login_is_rate_limited_after_repeated_attempts(client, make_user, ca
     )
 
 
-def test_dev_seed_account_api_login_is_restricted_to_localhost(client, make_user):
-    make_user(email="dev.user@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+@pytest.mark.parametrize(("email", "is_system_admin"), [("dev.user@example.com", False), ("dev.admin@example.com", True)])
+def test_dev_seed_account_api_login_is_restricted_to_localhost(client, make_user, email, is_system_admin):
+    make_user(email=email, password="password-1", is_system_admin=is_system_admin, mfa_required=False, mfa_enabled=False)
 
-    local = client.post("/api/v1/auth/login", json={"email": "dev.user@example.com", "password": "password-1"})
+    local = client.post("/api/v1/auth/login", json={"email": email, "password": "password-1"})
     assert local.status_code == 200
     assert local.json()["authenticated"] is True
 
     remote = client.post(
         "/api/v1/auth/login",
-        json={"email": "dev.user@example.com", "password": "password-1"},
+        json={"email": email, "password": "password-1"},
         headers={"host": "192.168.1.77:8080", "origin": "http://192.168.1.77:8080"},
     )
     assert_error(remote, status_code=403, code="forbidden", message="Dev test accounts are available only from localhost")
 
 
-def test_dev_seed_account_session_is_revoked_on_non_local_request(client, make_user):
-    make_user(email="dev.user@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+@pytest.mark.parametrize(("email", "is_system_admin"), [("dev.user@example.com", False), ("dev.admin@example.com", True)])
+def test_dev_seed_account_session_is_revoked_on_non_local_request(client, make_user, email, is_system_admin):
+    make_user(email=email, password="password-1", is_system_admin=is_system_admin, mfa_required=False, mfa_enabled=False)
 
-    login_response = client.post("/api/v1/auth/login", json={"email": "dev.user@example.com", "password": "password-1"})
+    login_response = client.post("/api/v1/auth/login", json={"email": email, "password": "password-1"})
     assert login_response.status_code == 200
 
     remote_me = client.get(
@@ -11698,6 +11753,53 @@ def test_dev_seed_repair_resets_transcript_content_when_active_key_cannot_be_unw
     assert db_session.get(Transcript, transcript.id) is None
     repaired_key = db_session.query(UserEncryptionKey).filter(UserEncryptionKey.user_id == user.id, UserEncryptionKey.is_active.is_(True)).one()
     assert repaired_key.wrapped_dek != old_wrapped_dek
+
+
+def test_dev_seed_system_admin_is_teamless_full_auth_and_content_key_free(
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Dev Admin Seed Team")
+    stale_user = make_user(email="dev.admin@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    stale_key = ensure_user_dek(db_session, user=stale_user)
+    session = UserSession(
+        user_id=stale_user.id,
+        session_token_hash="stale-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    trusted_device = UserTrustedDevice(
+        user_id=stale_user.id,
+        device_token_hash="stale-device",
+        label="old crawl device",
+        expires_at=utcnow() + timedelta(hours=1),
+        last_mfa_verified_at=utcnow(),
+    )
+    db_session.add_all([session, trusted_device])
+    db_session.commit()
+
+    admin = ensure_dev_system_admin(
+        db_session,
+        full_name="Dev Test Admin",
+        email="dev.admin@example.com",
+        password="test1234",
+    )
+
+    assert admin.id == stale_user.id
+    assert admin.email == "dev.admin@example.com"
+    assert admin.team_id is None
+    assert admin.team_role is None
+    assert admin.is_system_admin is True
+    assert admin.status is UserStatus.active
+    assert admin.must_change_password is False
+    assert admin.onboarding_state is UserOnboardingState.complete
+    assert admin.mfa_required is False
+    assert admin.mfa_enabled is False
+    assert db_session.get(UserSession, session.id) is None
+    assert db_session.get(UserTrustedDevice, trusted_device.id) is None
+    assert db_session.get(UserEncryptionKey, stale_key.id) is None
 
 
 def test_reset_unreadable_owner_content_dry_run_and_apply(

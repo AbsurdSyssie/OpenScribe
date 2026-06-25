@@ -1,8 +1,10 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.errors import AppError
 from app.models import SessionAuthLevel, UserOnboardingState
+from app.services.passwords import validate_password_strength
 
 
 class LoginRequest(BaseModel):
@@ -19,6 +21,14 @@ class LoginResponse(BaseModel):
 class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        try:
+            return validate_password_strength(value)
+        except AppError as exc:
+            raise ValueError("password does not meet strength requirements") from exc
+
 
 class PasswordResetRequest(BaseModel):
     email: EmailStr
@@ -28,10 +38,26 @@ class PasswordResetConfirmRequest(BaseModel):
     token: str = Field(min_length=16)
     new_password: str = Field(min_length=8)
 
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        try:
+            return validate_password_strength(value)
+        except AppError as exc:
+            raise ValueError("password does not meet strength requirements") from exc
+
 
 class AccountActivationConfirmRequest(BaseModel):
     token: str = Field(min_length=16)
     new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        try:
+            return validate_password_strength(value)
+        except AppError as exc:
+            raise ValueError("password does not meet strength requirements") from exc
 
 
 class GenericMessageResponse(BaseModel):

@@ -18,10 +18,19 @@ from app.services.llm_presets import (
     infer_llm_provider_preset,
     reclassify_preset_for_base_url,
 )
+from app.services.security_audit import record_security_event
 from app.services.vault import delete_team_llm_bearer_token, read_team_llm_bearer_token, write_team_llm_bearer_token
 
 
 logger = logging.getLogger("openscribe.llm")
+
+
+def _record_llm_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details) -> None:
+    payload = {"category": "provider", "outcome": outcome, "provider_type": "llm"}
+    if config_id is not None:
+        payload.update({"object_type": "team_llm_config", "object_id": str(config_id)})
+    payload.update(details)
+    record_security_event(db, action=action, actor=actor, team_id=team_id, details=payload)
 
 
 def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
@@ -536,6 +545,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         _raise_llm_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
+    _record_llm_audit(db, action="llm_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
     return config, inspection
 
 
@@ -574,6 +584,7 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         _raise_llm_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
+    _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
     return config
 
 
@@ -620,6 +631,7 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     db.add(config)
     db.commit()
     db.refresh(config)
+    _record_llm_audit(db, action="llm_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
     return config, inspection
 
 
@@ -855,6 +867,16 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                 logger.warning("llm_config_secret_restore_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
         raise
     db.refresh(config)
+    _record_llm_audit(
+        db,
+        action="llm_config_created" if creating else "llm_config_updated",
+        actor=actor,
+        team_id=team.id,
+        config_id=config.id,
+        credential_action=payload.credential_action,
+        setup_status=config.setup_status.value,
+        active=config.is_active,
+    )
     return config
 
 
@@ -881,6 +903,7 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             delete_team_llm_bearer_token(team_id=team_id, config_id=deleted_config_id)
         except AppError as exc:
             logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(deleted_config_id), "team_id": str(team_id), "error_code": exc.code})
+    _record_llm_audit(db, action="llm_config_deleted", actor=actor, team_id=team_id, config_id=deleted_config_id)
 
 
 def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:
@@ -967,6 +990,7 @@ def set_team_llm_selection(db: Session, actor: User, payload: LlmSelectionUpsert
         db.add(selection)
     db.commit()
     db.refresh(selection)
+    _record_llm_audit(db, action="llm_selection_set", actor=actor, team_id=team.id, config_id=config.id, allowed_model_count=len(allowed_models))
     return db.scalar(select(TeamLlmSelection).options(joinedload(TeamLlmSelection.config)).where(TeamLlmSelection.id == selection.id)) or selection
 
 
@@ -977,6 +1001,7 @@ def clear_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None =
         raise AppError(404, "not_found", "LLM selection not found", {"resource": "llm_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+    _record_llm_audit(db, action="llm_selection_cleared", actor=actor, team_id=team.id)
 
 
 def _resolve_checker_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:
@@ -1029,6 +1054,7 @@ def set_team_hallucination_check_selection(db: Session, actor: User, payload: Ha
     db.add(selection)
     db.commit()
     db.refresh(selection)
+    _record_llm_audit(db, action="hallucination_check_selection_set", actor=actor, team_id=team.id, config_id=config.id)
     return db.scalar(
         select(TeamHallucinationCheckSelection)
         .options(joinedload(TeamHallucinationCheckSelection.config))
@@ -1043,6 +1069,7 @@ def clear_team_hallucination_check_selection(db: Session, actor: User, *, team_i
         raise AppError(404, "not_found", "Hallucination checker selection not found", {"resource": "hallucination_check_selection", "team_id": str(team.id)})
     db.delete(selection)
     db.commit()
+    _record_llm_audit(db, action="hallucination_check_selection_cleared", actor=actor, team_id=team.id)
 
 
 def active_team_hallucination_check_selection(db: Session, *, team_id: UUID) -> TeamHallucinationCheckSelection | None:
@@ -1115,6 +1142,7 @@ def set_user_llm_preference(db: Session, actor: User, payload: UserLlmPreference
         db.add(preference)
     db.commit()
     db.refresh(preference)
+    record_security_event(db, action="user_llm_preference_set", actor=actor, target=actor, team_id=actor.team_id, details={"category": "provider", "outcome": "success", "provider_type": "llm", "object_type": "user_llm_preference", "object_id": str(preference.id), "preferred_model_set": bool(preferred_model_name)})
     return preference
 
 
@@ -1125,6 +1153,7 @@ def clear_user_llm_preference(db: Session, actor: User) -> None:
         raise AppError(404, "not_found", "User LLM preference not found", {"resource": "user_llm_preference", "user_id": str(actor.id)})
     db.delete(preference)
     db.commit()
+    record_security_event(db, action="user_llm_preference_cleared", actor=actor, target=actor, team_id=actor.team_id, details={"category": "provider", "outcome": "success", "provider_type": "llm", "object_type": "user_llm_preference", "object_id": str(preference.id)})
 
 
 def resolve_user_llm(db: Session, actor: User) -> tuple[TeamLlmSelection, TeamLlmConfig, str | None, UserLlmPreference | None]:

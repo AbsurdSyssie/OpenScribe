@@ -25,7 +25,7 @@ from app.models import (
     utcnow,
 )
 from app.services.auth import create_session, session_token_hash, trusted_device_token_hash, verify_password
-from app.services.security_audit import request_ip
+from app.services.security_audit import audit_subject_hash, request_ip
 
 
 def _disable_mail(monkeypatch):
@@ -70,6 +70,23 @@ def test_password_reset_request_is_generic_and_uses_hashed_token(client, db_sess
     token_row = db_session.scalar(select(AuthEmailToken).where(AuthEmailToken.purpose == AuthEmailTokenPurpose.password_reset))
     assert token_row is not None
     assert token_row.token_hash != raw_token
+
+
+def test_password_reset_request_is_audited_without_raw_email(client, db_session, make_user, monkeypatch):
+    _enable_stdout_mail(monkeypatch)
+    monkeypatch.setattr("app.services.auth_email.send_transactional_email", lambda message: None)
+    make_user(email="audit-reset@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    response = client.post("/api/v1/auth/password-reset/request", json={"email": "audit-reset@example.com"})
+
+    assert response.status_code == 200
+    event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "password_reset_requested"))
+    assert event is not None
+    assert event.details_json["category"] == "auth"
+    assert event.details_json["outcome"] == "accepted"
+    assert event.details_json["flow"] == "password_reset"
+    assert event.details_json["subject_hash"] == audit_subject_hash("audit-reset@example.com")
+    assert "audit-reset@example.com" not in str(event.details_json)
 
 
 def test_auth_email_idempotency_key_does_not_include_raw_token(client, db_session, make_user, monkeypatch):
@@ -189,11 +206,11 @@ def test_password_reset_confirm_changes_password_and_revokes_sessions(client, db
     client.post("/api/v1/auth/password-reset/request", json={"email": "reset-confirm@example.com"})
     raw_token = _extract_token_from_message(captured[0])
 
-    confirmed = client.post("/api/v1/auth/password-reset/confirm", json={"token": raw_token, "new_password": "new-password-1"})
+    confirmed = client.post("/api/v1/auth/password-reset/confirm", json={"token": raw_token, "new_password": "NewPassword123"})
 
     db_session.refresh(user)
     assert confirmed.status_code == 200
-    assert verify_password("new-password-1", user.password_hash)
+    assert verify_password("NewPassword123", user.password_hash)
     assert db_session.scalar(select(AuthEmailToken).where(AuthEmailToken.user_id == user.id)).used_at is not None
     assert db_session.scalar(select(AuthEmailToken).where(AuthEmailToken.user_id == user.id)).token_hash != raw_token
     old_session_row = db_session.scalar(select(UserSession).where(UserSession.session_token_hash == session_token_hash(old_session)))
@@ -210,13 +227,25 @@ def test_password_reset_confirm_rejects_invalid_token_before_hashing(client, mon
 
     invalid_token = "invalid-token-0000"
 
-    api_response = client.post("/api/v1/auth/password-reset/confirm", json={"token": invalid_token, "new_password": "new-password-1"})
-    browser_response = client.post("/reset-password", data={"token": invalid_token, "new_password": "new-password-1"})
+    api_response = client.post("/api/v1/auth/password-reset/confirm", json={"token": invalid_token, "new_password": "NewPassword123"})
+    browser_response = client.post("/reset-password", data={"token": invalid_token, "new_password": "NewPassword123"})
 
     assert api_response.status_code == 422
     assert api_response.json()["error"]["code"] == "token_invalid"
     assert browser_response.status_code == 422
     assert "Reset or setup link is invalid" in browser_response.text
+
+
+def test_user_chosen_passwords_require_complexity(client):
+    response = client.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={"token": "invalid-token-0000", "new_password": "lowercase-123"},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["details"] == {"issue_count": 1}
 
 
 def test_account_activation_sets_password_and_creates_onboarding_session(client, db_session, make_user, monkeypatch):
@@ -235,13 +264,13 @@ def test_account_activation_sets_password_and_creates_onboarding_session(client,
     send_account_activation_email(db_session, user)
     raw_token = _extract_token_from_message(captured[0])
 
-    activated = client.post("/api/v1/auth/account-activation/confirm", json={"token": raw_token, "new_password": "new-password-1"})
+    activated = client.post("/api/v1/auth/account-activation/confirm", json={"token": raw_token, "new_password": "NewPassword123"})
 
     db_session.refresh(user)
     assert activated.status_code == 200
     assert activated.json()["redirect_to"] == "/onboarding"
     assert client.cookies.get("openscribe_session")
-    assert verify_password("new-password-1", user.password_hash)
+    assert verify_password("NewPassword123", user.password_hash)
     assert user.must_change_password is False
     assert user.onboarding_state is UserOnboardingState.pending_totp_enrollment
 
@@ -274,7 +303,7 @@ def test_account_activation_is_restricted_to_first_password_setup(client, db_ses
     monkeypatch.setattr("app.services.auth_email.hash_password", fail_hash)
 
     page = client.get(f"/activate-account?token={raw_token}")
-    response = client.post("/api/v1/auth/account-activation/confirm", json={"token": raw_token, "new_password": "new-password-1"})
+    response = client.post("/api/v1/auth/account-activation/confirm", json={"token": raw_token, "new_password": "NewPassword123"})
 
     db_session.refresh(user)
     assert exc.value.status_code == 409
@@ -333,7 +362,7 @@ def test_manager_email_recovery_sends_token_and_audits(client, db_session, make_
     assert event is not None
     assert event.actor_user_id == leader.id
     assert event.target_user_id == target.id
-    assert event.details_json == {"reason": "user called support"}
+    assert event.details_json["reason"] == "user called support"
 
 
 def test_manager_email_recovery_blocks_inactive_targets(client, db_session, make_team, make_user, monkeypatch):
@@ -424,7 +453,7 @@ def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(
     assert login.status_code == 200
     assert login.json()["redirect_to"] == "/onboarding"
 
-    changed = client.post("/api/v1/onboarding/password", json={"new_password": "new-password-1"})
+    changed = client.post("/api/v1/onboarding/password", json={"new_password": "NewPassword123"})
 
     db_session.refresh(target)
     assert changed.status_code == 200
@@ -653,7 +682,7 @@ def test_browser_temporary_recovery_password_login_is_audited(client, db_session
     assert login.status_code == 303
     event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "temporary_recovery_password_login", SecurityAuditEvent.target_user_id == target.id))
     assert event is not None
-    assert event.details_json == {"recovery_mode": "break_glass_password_reset"}
+    assert event.details_json["recovery_mode"] == "break_glass_password_reset"
 
 
 def test_browser_recovery_menu_shows_break_glass_when_mail_coexistence_allowed(client, make_team, make_user, monkeypatch):

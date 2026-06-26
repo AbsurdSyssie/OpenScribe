@@ -1,5 +1,51 @@
 # Progress
 
+## 2026-06-26 Merge Regression Audit Hardening
+
+### Scope
+
+- Validated `merge_regression.md` against OWASP intent docs and current code.
+- Fixed confirmed security-regression risks in audit persistence, audit sanitisation bounds, audit detection query bounds, API CSRF handling, realtime/token access-denial auditing, CSP-compatible 429 HTML, and password schema metadata.
+
+### Checklist
+
+- Target behavior: audit writes do not commit/rollback caller work or break primary flows; audit metadata remains bounded and secret-free; audit detection queries are bounded; API CSRF requires header tokens; token-based full-context denials are audited.
+- Affected schema/modules/endpoints: `app/services/security_audit.py`, `app/services/audit_detection.py`, `app/main.py`, `app/errors.py`, `app/schemas/auth.py`; no DB schema change.
+- Affected tests: audit, audit detection, cookie/CSRF, API docs/rate-limit focused tests.
+- Architecture risks: preserve transcript privacy, owner-only content access, deletion semantics, provider secret boundaries, and structured-note contract.
+- Docs referenced/updated: OWASP README/context/findings/audit protocol/playbook, `docs/security.md`, `docs/progress.md`.
+- Reuse decision: refined existing audit/CSRF/detection helpers; no new persistence layer, route, or custom crypto primitive beyond standard-library HMAC/IP parsing.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: several `merge_regression.md` items are broader backlog/accepted-risk items rather than immediate regressions, including forced legacy password rotation, SIEM/alerting, cleanup queues, and route-inventory/browser smoke expansion.
+
+### Files changed
+
+- `app/services/security_audit.py`: dedicated best-effort audit session, HMAC subject hashes, request-IP bounds/parsing, and audit detail/list/dict size caps.
+- `app/services/audit_detection.py`: bounded lookback/summary reads and SQL-side category/outcome filtering for event listings.
+- `app/main.py`: API CSRF header-only validation, env-gated forwarded origin trust, and token-helper access-denial audit coverage.
+- `app/errors.py`: removed inline 429 CSS blocked by strict CSP.
+- `app/schemas/auth.py`: aligned new-password schema minimums and documented permissive login password minimum.
+- `tests/test_security_audit.py`, `tests/test_audit_detection.py`, `tests/test_cookie_csrf_security.py`: regression coverage for confirmed fixes.
+- `docs/security.md`, `docs/progress.md`: records current security behavior and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_security_audit.py tests/test_audit_detection.py tests/test_cookie_csrf_security.py tests/test_api.py -k "api_docs or csrf or login_is_rate_limited"`: passed, 42 tests.
+- `.venv/bin/pytest -q tests/test_security_audit.py tests/test_audit_detection.py tests/test_auth_email.py -k "audit or password_reset_request or security_audit_request_ip"`: passed, 35 tests.
+- `.venv/bin/python -m py_compile app/errors.py app/main.py app/services/security_audit.py app/services/audit_detection.py app/schemas/auth.py`: passed.
+- `git diff --check`: passed.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no migration or schema change.
+- Auth/ownership checkpoint: no route privileges expanded; token-based denials now add metadata-only audit rows.
+- Lifecycle/deletion checkpoint: deletion semantics and audit retention separation unchanged.
+- Provider checkpoint: provider credential storage, cleanup, and resolution unchanged.
+- Structured-note contract: unchanged.
+- Privacy boundaries: audit rows remain metadata-only; sensitive keys, long payloads, request bodies, transcript/note/prompt/provider response content, tokens, cookies, and secrets remain excluded or bounded.
+
 ## 2026-06-24 Pen Test Findings Retest
 
 ### Scope

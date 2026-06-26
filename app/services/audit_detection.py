@@ -71,6 +71,8 @@ AUDIT_EVENT_DETAIL_ALLOWLIST = {
     "trusted_device_used",
 }
 MASKED_INTERNAL_IP_LABEL = "Private/internal IP masked"
+MAX_AUDIT_LOOKBACK = timedelta(days=30)
+MAX_SUMMARY_EVENTS = 10000
 
 
 @dataclass(frozen=True)
@@ -89,15 +91,17 @@ class AuditSignal:
 
 
 def parse_since(value: str | None) -> datetime:
+    earliest = utcnow() - MAX_AUDIT_LOOKBACK
     if not value:
         return utcnow() - timedelta(hours=24)
     text = value.strip().lower()
     if text.endswith("h") and text[:-1].isdigit():
-        return utcnow() - timedelta(hours=int(text[:-1]))
+        return max(utcnow() - timedelta(hours=int(text[:-1])), earliest)
     if text.endswith("d") and text[:-1].isdigit():
-        return utcnow() - timedelta(days=int(text[:-1]))
+        return max(utcnow() - timedelta(days=int(text[:-1])), earliest)
     parsed = datetime.fromisoformat(text.replace("z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=utcnow().tzinfo)
+    since = parsed if parsed.tzinfo else parsed.replace(tzinfo=utcnow().tzinfo)
+    return max(since, earliest)
 
 
 def _string_id(value: UUID | None) -> str | None:
@@ -145,6 +149,7 @@ def _fetch_events(db: Session, *, since: datetime) -> list[SecurityAuditEvent]:
             select(SecurityAuditEvent)
             .where(SecurityAuditEvent.created_at >= since)
             .order_by(SecurityAuditEvent.created_at.asc(), SecurityAuditEvent.id.asc())
+            .limit(MAX_SUMMARY_EVENTS)
         )
     )
 
@@ -336,16 +341,15 @@ def list_security_audit_events(
         statement = statement.where(SecurityAuditEvent.team_id == team_id)
     if actor_user_id:
         statement = statement.where(SecurityAuditEvent.actor_user_id == actor_user_id)
+    if category:
+        statement = statement.where(SecurityAuditEvent.details_json["category"].as_string() == category)
+    if outcome:
+        statement = statement.where(SecurityAuditEvent.details_json["outcome"].as_string() == outcome)
     events = list(
         db.scalars(
-            statement.order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc())
+            statement.order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc()).limit(bounded_limit)
         )
     )
-    if category:
-        events = [event for event in events if str(_details(event).get("category") or "uncategorized") == category]
-    if outcome:
-        events = [event for event in events if str(_details(event).get("outcome") or "unknown") == outcome]
-    events = events[:bounded_limit]
     return [
         {
             "id": str(event.id),

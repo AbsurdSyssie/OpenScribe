@@ -1,7 +1,7 @@
 from app.models import TeamRole, utcnow
 from app.schemas import UserCreate
 from app.services.admin import create_user, delete_team
-from app.services.audit_detection import parse_since, summarize_security_audit_events
+from app.services.audit_detection import list_security_audit_events, parse_since, summarize_security_audit_events
 from app.services.security_audit import audit_subject_hash, record_security_event
 
 
@@ -97,3 +97,24 @@ def test_parse_since_accepts_relative_and_iso_values():
     assert parse_since("24h") < utcnow()
     assert parse_since("7d") < utcnow()
     assert parse_since("2026-06-15T12:00:00+00:00").isoformat() == "2026-06-15T12:00:00+00:00"
+
+
+def test_parse_since_clamps_extreme_lookback():
+    assert parse_since("3650d") > utcnow().replace(year=utcnow().year - 1)
+
+
+def test_audit_event_listing_filters_category_and_outcome_in_query(db_session):
+    record_security_event(db_session, action="audit_filter_probe", details={"category": "auth", "outcome": "success"})
+    record_security_event(db_session, action="audit_filter_probe", details={"category": "provider", "outcome": "failure"})
+
+    events = list_security_audit_events(
+        db_session,
+        since=utcnow().replace(year=utcnow().year - 1),
+        action="audit_filter_probe",
+        category="provider",
+        outcome="failure",
+    )
+
+    assert len(events) == 1
+    assert events[0]["details"]["category"] == "provider"
+    assert events[0]["details"]["outcome"] == "failure"

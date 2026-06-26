@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from app.models import SecurityAuditEvent, TeamRole
+from app.models import SecurityAuditEvent, Team, TeamRole, TeamStatus
 from app.schemas import UserCreate
 from app.schemas.preferences import UserAppPreferencesUpsert
 from app.schemas.smart_phrases import SmartPhraseCreate, SmartPhraseUpdate
@@ -44,6 +44,33 @@ def test_record_security_event_redacts_nested_sensitive_values_and_sanitizes_str
     assert "token" not in event.details_json["nested"]["items"][0]
     assert event.details_json["nested"]["items"][0]["value"] == "visible"
     assert "secret" not in str(event.details_json)
+
+
+def test_record_security_event_does_not_commit_unrelated_pending_changes(db_session):
+    team = Team(name="Pending Audit Team", name_key="pending-audit-team", status=TeamStatus.active)
+    db_session.add(team)
+
+    record_security_event(db_session, action="audit_transaction_probe", details={"category": "auth"})
+    db_session.rollback()
+
+    assert _audit_events(db_session, "audit_transaction_probe")
+    assert db_session.scalar(select(Team).where(Team.name == "Pending Audit Team")) is None
+
+
+def test_record_security_event_write_failure_is_best_effort(db_session, monkeypatch):
+    def failing_sessionmaker(*args, **kwargs):
+        class FailingSession:
+            def __enter__(self):
+                raise RuntimeError("audit database unavailable")
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        return FailingSession
+
+    monkeypatch.setattr("app.services.security_audit.sessionmaker", failing_sessionmaker)
+
+    record_security_event(db_session, action="audit_failure_probe", details={"category": "auth"})
 
 
 def test_api_login_success_and_failure_are_durable_metadata_only(client, db_session, make_user):
@@ -100,6 +127,43 @@ def test_cloudflare_origin_ip_is_env_gated(client, db_session, make_user, monkey
     failures = _audit_events(db_session, "login_failure")
     assert failures[0].request_ip != "203.0.113.10"
     assert failures[1].request_ip == "203.0.113.11"
+
+
+def test_trusted_audit_origin_ip_is_bounded(client, db_session, make_user, monkeypatch):
+    monkeypatch.setenv("AUDIT_TRUST_CLOUDFLARE", "true")
+    make_user(email="audit-long-ip@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "audit-long-ip@example.com", "password": "wrong-password"},
+        headers={"CF-Connecting-IP": "x" * 500},
+    )
+
+    event = _audit_events(db_session, "login_failure")[0]
+    assert response.status_code == 401
+    assert event.request_ip is not None
+    assert len(event.request_ip) <= 255
+
+
+def test_audit_subject_hash_uses_keyed_hmac(monkeypatch):
+    monkeypatch.setenv("AUDIT_SUBJECT_HASH_SECRET", "first-secret")
+    first = audit_subject_hash("person@example.com")
+    monkeypatch.setenv("AUDIT_SUBJECT_HASH_SECRET", "second-secret")
+    second = audit_subject_hash("person@example.com")
+
+    assert first is not None and first.startswith("hmac-sha256:")
+    assert first != second
+
+
+def test_large_audit_details_are_bounded(db_session):
+    record_security_event(
+        db_session,
+        action="audit_large_details_probe",
+        details={"category": "auth", "items": [{"value": "x" * 1024} for _ in range(200)]},
+    )
+
+    event = _audit_events(db_session, "audit_large_details_probe")[0]
+    assert len(str(event.details_json)) < 9000
 
 
 def test_csrf_rejection_is_audited_without_token_or_cookie(raw_client, db_session, make_user):

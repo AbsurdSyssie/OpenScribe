@@ -129,7 +129,8 @@ Current implementation:
 - authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
 - when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
 - anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session
-- unsafe `/api/v1` requests require same-origin `Origin` or `Referer` plus `X-CSRF-Token` when a session or trusted-device cookie is present
+- unsafe `/api/v1` requests require same-origin `Origin` or `Referer` plus `X-CSRF-Token` when a session or trusted-device cookie is present; API CSRF validation does not parse form bodies for fallback tokens
+- CSRF origin checks trust direct request host/scheme by default; deployments may set `TRUST_FORWARDED_ORIGIN_HEADERS=true` only when the proxy sanitizes forwarded host/proto headers
 - `_csrf_script.html` also wraps same-origin unsafe `/api/v1` `fetch` calls for legacy inline browser pages
 - safe `/api/v1` methods (`GET`, `HEAD`, `OPTIONS`) do not require CSRF verification
 - public login, password-reset, activation, and account-request API endpoints stay callable without CSRF only when no cookie-backed authority is present
@@ -281,7 +282,7 @@ Current implementation note:
 
 - `security_audit_events` is the durable application security-audit sink.
 - audit details are metadata-only and recursively drop sensitive keys such as password, token, cookie, session, authorization, secret, prompt, provider response, and transcript text.
-- persisted security-audit request IPs use `request.client.host` by default.
+- persisted security-audit request IPs use `request.client.host` by default and are bounded to the database column length.
 - deployments may set `AUDIT_TRUST_X_FORWARDED_FOR=true` only when a trusted proxy sanitizes `X-Forwarded-For`.
 - Cloudflare deployments may set `AUDIT_TRUST_CLOUDFLARE=true` to store `CF-Connecting-IP`, but only when Cloudflare/proxy is the only path to origin and direct origin access is blocked.
 - if audit origin IP always shows the reverse proxy host, the proxy is not forwarding the original client IP or the app is not configured to trust the forwarded header.
@@ -292,7 +293,8 @@ Current implementation note:
 - the Admin Audit tab renders detection signals and recent metadata-only audit rows from an allowlist of safe fields; it does not dump raw `details_json`.
 - the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents.
 - future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
-- normal audit writes are fail-closed from the application perspective: an unexpected audit insert failure raises and should surface as a server error. Error-handler telemetry such as rate-limit and validation rejection audit is best-effort to avoid masking the original protection response.
+- normal audit writes use a short-lived best-effort database session so audit persistence cannot commit, roll back, or fail unrelated application work. Error-handler telemetry such as rate-limit and validation rejection audit remains best-effort to avoid masking the original protection response.
+- audit subject hashes use keyed HMAC-SHA256 (`AUDIT_SUBJECT_HASH_SECRET`, falling back to the app secret in configured environments) rather than plain SHA-256.
 - manual detection is supported by `scripts/security/audit_events_report.py`, which summarizes metadata-only audit counts and signals for auth failures, access denials, abuse signals, high-risk admin/destructive actions, and provider configuration changes.
 
 Required safety checks:

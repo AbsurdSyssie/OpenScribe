@@ -296,6 +296,43 @@ def test_login_accepts_anonymous_csrf(raw_client, make_user):
     assert not raw_client.cookies.get(CSRF_ANON_COOKIE_NAME)
 
 
+def test_api_csrf_requires_header_and_ignores_form_fallback(raw_client, make_user):
+    make_user(email="api-csrf-header@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert raw_client.post("/api/v1/auth/login", json={"email": "api-csrf-header@example.com", "password": "password-1"}).status_code == 200
+    csrf = raw_client.cookies[CSRF_COOKIE_NAME]
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        data={"title": "CSRF form fallback", "ingestion_mode": "whole_file", "_csrf_token": csrf},
+        headers={"Origin": "http://testserver"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "CSRF verification failed"
+
+
+def test_csrf_origin_ignores_forwarded_headers_without_trust(raw_client, make_user, monkeypatch):
+    monkeypatch.delenv("TRUST_FORWARDED_ORIGIN_HEADERS", raising=False)
+    make_user(email="api-csrf-forwarded@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+    assert raw_client.post("/api/v1/auth/login", json={"email": "api-csrf-forwarded@example.com", "password": "password-1"}).status_code == 200
+    csrf = raw_client.cookies[CSRF_COOKIE_NAME]
+
+    response = raw_client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Forwarded origin", "ingestion_mode": "whole_file"},
+        headers={
+            "Origin": "http://forwarded.example",
+            "Host": "testserver",
+            "X-Forwarded-Host": "forwarded.example",
+            "X-Forwarded-Proto": "http",
+            "X-CSRF-Token": csrf,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Cross-origin request rejected"
+
+
 def _hidden_csrf_token(html: str) -> str:
     match = re.search(r'<input type="hidden" name="_csrf_token" value="([^"]+)">', html)
     assert match is not None

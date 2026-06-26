@@ -177,31 +177,6 @@ async def rate_limit_error_handler(request: Request, exc: RateLimitExceeded) -> 
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <title>Too Many Requests</title>
-              <style>
-                body {{
-                  margin: 0;
-                  min-height: 100vh;
-                  display: grid;
-                  place-items: center;
-                  padding: 24px;
-                  font-family: "Iowan Old Style", "Palatino Linotype", serif;
-                  background: linear-gradient(180deg, #f8f3ea 0%, #f3efe6 100%);
-                  color: #1b1d1f;
-                }}
-                main {{
-                  width: min(620px, 100%);
-                  background: #fffaf0;
-                  border: 1px solid #d4c7ab;
-                  border-radius: 24px;
-                  padding: 28px;
-                  box-shadow: 0 18px 60px rgba(76, 54, 30, 0.08);
-                }}
-                a {{
-                  display: inline-block;
-                  margin-top: 12px;
-                  color: #7f251b;
-                }}
-              </style>
             </head>
             <body>
               <main>

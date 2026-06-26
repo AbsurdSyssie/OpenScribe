@@ -9,7 +9,7 @@ from app.services.passwords import validate_password_strength
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=8, description="Existing account password. New permanent passwords use the stronger 12-character policy.")
 
 
 class LoginResponse(BaseModel):
@@ -19,7 +19,7 @@ class LoginResponse(BaseModel):
 
 
 class PasswordChangeRequest(BaseModel):
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=12)
 
     @field_validator("new_password")
     @classmethod
@@ -36,7 +36,7 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     token: str = Field(min_length=16)
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=12)
 
     @field_validator("new_password")
     @classmethod
@@ -49,7 +49,7 @@ class PasswordResetConfirmRequest(BaseModel):
 
 class AccountActivationConfirmRequest(BaseModel):
     token: str = Field(min_length=16)
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=12)
 
     @field_validator("new_password")
     @classmethod

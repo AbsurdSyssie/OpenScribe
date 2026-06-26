@@ -520,8 +520,12 @@ def _origin_allowed(request: Request) -> bool:
 
     origin = request.headers.get("origin")
     referer = request.headers.get("referer")
-    expected_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
-    expected_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    trust_forwarded_origin = os.getenv("TRUST_FORWARDED_ORIGIN_HEADERS", "false").lower() in {"1", "true", "yes"}
+    expected_scheme = request.url.scheme
+    expected_host = request.headers.get("host")
+    if trust_forwarded_origin:
+        expected_scheme = request.headers.get("x-forwarded-proto", expected_scheme).split(",", 1)[0].strip()
+        expected_host = request.headers.get("x-forwarded-host") or expected_host
 
     if not expected_host:
         return False
@@ -631,7 +635,34 @@ async def require_api_csrf(
     if not has_cookie_backed_authority:
         return
 
-    await require_browser_csrf(request, csrf_header=csrf_header, db=db)
+    if not _origin_allowed(request):
+        _audit_request_rejected(
+            db,
+            request,
+            action="csrf_rejected",
+            category="csrf",
+            reason_code="cross_origin",
+            status_code=403,
+        )
+        raise AppError(403, "forbidden", "Cross-origin request rejected")
+
+    raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    anon_nonce = request.cookies.get(CSRF_ANON_COOKIE_NAME)
+    if not csrf_header or not verify_csrf_token(
+        submitted_token=csrf_header,
+        raw_session_token=raw_session_token,
+        anon_nonce=anon_nonce,
+    ):
+        _audit_request_rejected(
+            db,
+            request,
+            action="csrf_rejected",
+            category="csrf",
+            reason_code="invalid_or_missing_token",
+            status_code=403,
+            details={"auth_authority_present": bool(raw_session_token), "anon_nonce_present": bool(anon_nonce)},
+        )
+        raise AppError(403, "forbidden", "CSRF verification failed")
 
 
 api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_csrf)])
@@ -977,21 +1008,28 @@ def require_full_context(
 
 def _require_full_context_from_token(request: Request, raw_session_token: str | None) -> AuthenticatedContext:
     if not raw_session_token:
+        with _open_realtime_workspace_db_session(request) as db:
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="authentication_required", status_code=401)
         raise AppError(401, "unauthorized", "Authentication required")
     with _open_realtime_workspace_db_session(request) as db:
         resolved = resolve_authenticated_session(db, raw_session_token)
         if resolved is None:
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="authentication_required", status_code=401)
             raise AppError(401, "unauthorized", "Authentication required")
         user, session = resolved
         if user.email.lower() in _local_only_dev_emails() and not _request_is_localhost_only(request):
             revoke_session_by_token(db, raw_session_token, reason="dev_account_non_local")
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="local_dev_debug_required", status_code=403, actor=user)
             raise AppError(401, "unauthorized", "Authentication required")
         context = AuthenticatedContext(user=user, session=session, token=raw_session_token)
         if context.session.auth_level.value == "pending_mfa":
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="mfa_required", status_code=403, actor=context.user)
             raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
         if context.session.auth_level is not determine_auth_level(context.user):
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="auth_level_mismatch", status_code=401, actor=context.user)
             raise AppError(401, "unauthorized", "Authentication required")
         if context.session.auth_level.value != "full":
+            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
             raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
         return context
 

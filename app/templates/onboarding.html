@@ -13,7 +13,7 @@
     h1,h2{margin:0;font-family:"Fraunces",serif;font-weight:500;letter-spacing:-.02em;color:var(--ink)}h1{font-size:clamp(2rem,4vw,2.9rem);line-height:1.04}h2{font-size:1.5rem;line-height:1.12}p{margin:0;color:var(--muted)}.hero-copy{display:grid;gap:16px}.meta{padding-top:14px;border-top:1px solid rgba(226,222,214,.9);font-size:.92rem;color:var(--muted);overflow-wrap:anywhere}
     .steps{display:grid;gap:10px;margin-top:4px}.step{display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:start;padding:12px;border:1px solid rgba(226,222,214,.75);border-radius:14px;background:rgba(255,255,255,.68)}.step-number{display:grid;place-items:center;width:30px;height:30px;border-radius:999px;background:var(--accent-pale);color:var(--accent);font-weight:700}.step strong{display:block;color:var(--ink);font-size:.95rem}.step span{color:var(--muted);font-size:.9rem}.step.is-active{border-color:rgba(61,122,140,.32);background:#fff}.step.is-active .step-number{background:var(--accent);color:#fff}.step.is-complete .step-number{background:rgba(47,133,90,.12);color:var(--success)}
     .content{display:grid;gap:20px}.card-top{display:grid;gap:8px;padding-bottom:16px;border-bottom:1px solid rgba(226,222,214,.9)}section.panel form{display:grid;gap:14px;margin-top:18px}label{display:grid;gap:7px;color:var(--slate);font-size:.95rem;font-weight:500}input{width:100%;border:1px solid var(--border);border-radius:10px;padding:12px 14px;font:inherit;color:var(--ink);background:var(--parchment);transition:border-color .15s ease,background-color .15s ease,box-shadow .15s ease}input:focus{outline:none;border-color:rgba(61,122,140,.55);background:#fff;box-shadow:var(--shadow-focus)}
-    button,.button{width:fit-content;border:1px solid transparent;border-radius:10px;padding:11px 16px;font:inherit;font-weight:500;background:var(--accent);color:#fff;cursor:pointer;transition:all .15s ease;text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;min-height:44px}button:hover,.button:hover{background:var(--accent-soft);transform:translateY(-1px)}.secondary{background:#fff;color:var(--ink);border-color:var(--border)}.secondary:hover{background:rgba(29,79,94,.04);border-color:rgba(61,122,140,.28)}.actions{display:flex;gap:12px;flex-wrap:wrap}.signout-form{margin-top:0!important;padding-top:16px;border-top:1px solid rgba(226,222,214,.9)}
+    button,.button{width:fit-content;border:1px solid transparent;border-radius:10px;padding:11px 16px;font:inherit;font-weight:500;background:var(--accent);color:#fff;cursor:pointer;transition:all .15s ease;text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;min-height:44px}button:hover,.button:hover{background:var(--accent-soft);transform:translateY(-1px)}.secondary{background:#fff;color:var(--ink);border-color:var(--border)}.secondary:hover{background:rgba(29,79,94,.04);border-color:rgba(61,122,140,.28)}.actions{display:flex;gap:12px;flex-wrap:wrap}.actions--spaced{margin-top:18px}.signout-form{margin-top:0!important;padding-top:16px;border-top:1px solid rgba(226,222,214,.9)}
     .flash{padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(245,241,235,.7)}.flash.success{color:var(--success);border-color:rgba(47,133,90,.2);background:rgba(47,133,90,.06)}.flash.error{color:var(--error);border-color:rgba(197,48,48,.2);background:rgba(197,48,48,.06)}.toast-container{position:fixed;top:24px;right:24px;z-index:120;display:flex;flex-direction:column;gap:10px;pointer-events:none}.toast{pointer-events:auto;padding:12px 16px;border:1px solid var(--border);border-radius:12px;background:#fff;font-size:.9rem;font-weight:500;box-shadow:0 18px 32px rgba(15,23,42,.12);animation:toastSlideIn .25s ease;max-width:360px}.toast.success{color:var(--success);border-color:rgba(47,133,90,.2);background:rgba(47,133,90,.06)}.toast.error{color:var(--error);border-color:rgba(197,48,48,.2);background:rgba(197,48,48,.06)}@keyframes toastSlideIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}@keyframes toastSlideOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-12px)}}.toast.hiding{animation:toastSlideOut .2s ease forwards}
     .qr{display:grid;gap:12px;justify-items:start;margin-top:16px}.qr img{width:220px;height:220px;border:1px solid var(--border);border-radius:18px;background:#fff;padding:12px;box-shadow:var(--shadow-soft)}.secret{display:grid;gap:6px;padding:12px;border:1px solid rgba(226,222,214,.9);border-radius:12px;background:var(--parchment);overflow-wrap:anywhere}.secret strong,.secret small{color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}.code-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}.code-list div{border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--parchment);color:var(--ink)}
     @media (max-width:820px){body{padding:18px}main{grid-template-columns:1fr}.hero{position:static}.panel{padding:22px}button,.button,.actions{width:100%}.actions{display:grid}button,.button{justify-content:center}.toast-container{left:18px;right:18px}.toast{max-width:none}}
@@ -104,7 +104,7 @@
           <h2>Recovery codes</h2>
           <p>Save one-time backup codes now, or skip this optional step.</p>
         </div>
-        <div class="actions" style="margin-top:18px">
+        <div class="actions actions--spaced">
           <form method="post" action="/onboarding/recovery-codes">
             <button type="submit">Create recovery codes</button>
           </form>
@@ -120,7 +120,7 @@
           <h2>Onboarding complete</h2>
           <p>Your account is ready to use.</p>
         </div>
-        <div class="actions" style="margin-top:18px">
+        <div class="actions actions--spaced">
           <a class="button" href="/home">Go to home</a>
         </div>
       </section>
@@ -138,7 +138,7 @@
           <div>{{ code }}</div>
           {% endfor %}
         </div>
-        <div class="actions" style="margin-top:18px">
+        <div class="actions actions--spaced">
           <a class="button" href="/home">Continue</a>
         </div>
       </section>

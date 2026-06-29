@@ -971,6 +971,9 @@
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       }
     }
+    .stacked-action-form { margin-top: 10px; }
+    .usage-table-wrap--spaced { margin-top: 16px; }
+    .request-review-form { margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -2356,20 +2359,20 @@
                 {% else %}
                 <span class="pill">Security state</span>
                 {% endif %}
-                <form method="post" action="/admin/users/{{ user.id }}/send-activation" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/send-activation">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Send setup link</button>
                 </form>
                 {% if email_recovery_enabled %}
-                <form method="post" action="/admin/users/{{ user.id }}/send-password-reset" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/send-password-reset">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Send password reset email</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/send-account-recovery" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/send-account-recovery">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2377,7 +2380,7 @@
                 </form>
                 {% endif %}
                 {% if break_glass_recovery_enabled %}
-                <form method="post" action="/admin/users/{{ user.id }}/break-glass-password-reset" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/break-glass-password-reset">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2386,7 +2389,7 @@
                   <label><input type="checkbox" name="confirm_email_unavailable" value="true" required> Email recovery unavailable</label>
                   <button type="submit">Generate break-glass temp password</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/break-glass-account-recovery" data-confirm-submit="Generate a break-glass password and reset MFA for this user?" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/break-glass-account-recovery" data-confirm-submit="Generate a break-glass password and reset MFA for this user?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2396,13 +2399,13 @@
                   <button type="submit">Break-glass password + reset MFA</button>
                 </form>
                 {% endif %}
-                <form method="post" action="/admin/users/{{ user.id }}/reset-mfa" data-confirm-submit="Reset MFA for this user and revoke sessions?" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/reset-mfa" data-confirm-submit="Reset MFA for this user and revoke sessions?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
                   <button type="submit">Reset MFA</button>
                 </form>
-                <form method="post" action="/admin/users/{{ user.id }}/delete" data-confirm-submit="Delete this user and all owned transcript content immediately?" style="margin-top: 10px;">
+                <form class="stacked-action-form" method="post" action="/admin/users/{{ user.id }}/delete" data-confirm-submit="Delete this user and all owned transcript content immediately?">
                   <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                   <input type="hidden" name="return_tab" value="directory">
                   <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -2714,7 +2717,7 @@
               {% for point in usage_trend_points %}
               <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_completed_count }} completed generations">
                 <div class="usage-chart__stack">
-                  <div class="usage-chart__bar usage-chart__bar--generation" style="height: {{ point.generation_height_pct }}%;"></div>
+                  <div class="usage-chart__bar usage-chart__bar--generation" data-style-height-pct="{{ point.generation_height_pct }}"></div>
                 </div>
                 <div class="usage-chart__label">{{ point.short_label }}</div>
               </div>
@@ -2733,7 +2736,7 @@
               {% for point in usage_trend_points %}
               <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_input_tokens }} input tokens">
                 <div class="usage-chart__stack">
-                  <div class="usage-chart__bar usage-chart__bar--token" style="height: {{ point.input_token_height_pct }}%;"></div>
+                  <div class="usage-chart__bar usage-chart__bar--token" data-style-height-pct="{{ point.input_token_height_pct }}"></div>
                 </div>
                 <div class="usage-chart__label">{{ point.short_label }}</div>
               </div>
@@ -2752,7 +2755,7 @@
               {% for point in usage_trend_points %}
               <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_output_tokens }} output tokens">
                 <div class="usage-chart__stack">
-                  <div class="usage-chart__bar usage-chart__bar--token" style="height: {{ point.output_token_height_pct }}%;"></div>
+                  <div class="usage-chart__bar usage-chart__bar--token" data-style-height-pct="{{ point.output_token_height_pct }}"></div>
                 </div>
                 <div class="usage-chart__label">{{ point.short_label }}</div>
               </div>
@@ -2771,7 +2774,7 @@
               {% for point in usage_trend_points %}
               <div class="usage-chart__column" title="{{ point.label }}: {{ point.ingestion_job_count }} ingestion jobs">
                 <div class="usage-chart__stack">
-                  <div class="usage-chart__bar usage-chart__bar--ingestion" style="height: {{ point.ingestion_height_pct }}%;"></div>
+                  <div class="usage-chart__bar usage-chart__bar--ingestion" data-style-height-pct="{{ point.ingestion_height_pct }}"></div>
                 </div>
                 <div class="usage-chart__label">{{ point.short_label }}</div>
               </div>
@@ -2790,7 +2793,7 @@
               {% for point in usage_trend_points %}
               <div class="usage-chart__column" title="{{ point.label }}: {{ point.provider_failed_count + point.ingestion_failed_count }} total failures">
                 <div class="usage-chart__stack">
-                  <div class="usage-chart__bar usage-chart__bar--failure" style="height: {{ point.failure_height_pct }}%;"></div>
+                  <div class="usage-chart__bar usage-chart__bar--failure" data-style-height-pct="{{ point.failure_height_pct }}"></div>
                 </div>
                 <div class="usage-chart__label">{{ point.short_label }}</div>
               </div>
@@ -2840,7 +2843,7 @@
                 <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB<br><small>{{ "%.2f"|format(row.ingested_hours) }} hours</small></td>
                 <td>
                   {{ row.activity_share_pct }}%
-                  <div class="usage-meter" aria-hidden="true"><span style="width: {{ row.activity_share_pct }}%;"></span></div>
+                  <div class="usage-meter" aria-hidden="true"><span data-style-width-pct="{{ row.activity_share_pct }}"></span></div>
                 </td>
               </tr>
               {% endfor %}
@@ -2979,7 +2982,7 @@
           </article>
           {% endfor %}
         </div>
-        <div class="usage-table-wrap" style="margin-top: 16px;">
+        <div class="usage-table-wrap usage-table-wrap--spaced">
           <table>
             <thead>
               <tr>
@@ -3003,7 +3006,7 @@
                 <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB<br><small>{{ "%.2f"|format(row.ingested_hours) }} hours</small></td>
                 <td>
                   {{ row.activity_share_pct }}%
-                  <div class="usage-meter" aria-hidden="true"><span style="width: {{ row.activity_share_pct }}%;"></span></div>
+                  <div class="usage-meter" aria-hidden="true"><span data-style-width-pct="{{ row.activity_share_pct }}"></span></div>
                 </td>
               </tr>
               {% endfor %}
@@ -3042,7 +3045,7 @@
             <td>
               <span class="pill">{{ account_request.status.value }}</span>
               {% if account_request.status.value == "pending" %}
-              <form method="post" action="/admin/account-requests/{{ account_request.id }}/approve" style="margin-top: 12px;">
+              <form class="request-review-form" method="post" action="/admin/account-requests/{{ account_request.id }}/approve">
                 <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                 <input type="hidden" name="return_tab" value="requests">
                 <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -3071,7 +3074,7 @@
                 </label>
                 <button type="submit">Approve and create user</button>
               </form>
-              <form method="post" action="/admin/account-requests/{{ account_request.id }}/reject" style="margin-top: 12px;">
+              <form class="request-review-form" method="post" action="/admin/account-requests/{{ account_request.id }}/reject">
                 <input type="hidden" name="return_view" value="{{ admin_return_view }}">
                 <input type="hidden" name="return_tab" value="requests">
                 <input type="hidden" name="return_team_id" value="{{ selected_team_id or '' }}">
@@ -3095,6 +3098,15 @@
   <div class="toast-container" data-toast-container></div>
   <script nonce="{{ request.state.csp_nonce }}">
     (() => {
+      const applyPercentageStyle = (selector, property, dataKey) => {
+        document.querySelectorAll(selector).forEach((element) => {
+          const value = Number(element.dataset[dataKey]);
+          element.style[property] = `${Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0}%`;
+        });
+      };
+      applyPercentageStyle('[data-style-height-pct]', 'height', 'styleHeightPct');
+      applyPercentageStyle('[data-style-width-pct]', 'width', 'styleWidthPct');
+
       const toastContainer = document.querySelector('[data-toast-container]');
       const showToast = (message, kind = 'success', duration = 4000) => {
         if (!toastContainer || !message) return;

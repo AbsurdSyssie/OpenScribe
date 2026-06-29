@@ -157,14 +157,17 @@ Current CSP goals:
 - same-origin API/WebSocket/EventSource connections only
 - WASM allowed only through narrow ONNX Runtime requirement
 
+Templates must not use `style` attributes. Static presentation belongs in same-origin stylesheets or nonce-approved `<style>` blocks. Server-calculated visual percentages are rendered as escaped `data-*` values, clamped to `0..100`, then applied by nonce-approved JavaScript through direct CSSOM property assignment. Do not use `setAttribute("style", ...)` or `element.style.cssText`; both create CSP-blocked style attributes.
+
 Before merging this area:
 
 ```bash
-pytest tests/test_cookie_csrf_security.py
+.venv/bin/pytest -q tests/test_cookie_csrf_security.py tests/test_xss_coverage.py
+rg "\bstyle\s*=" app/templates
 rg "cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com" app/templates app/static/js
 ```
 
-Expected search result: no matches.
+Expected search results: no matches.
 
 ## Local infrastructure exposure
 

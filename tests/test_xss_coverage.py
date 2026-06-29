@@ -5,7 +5,9 @@ Verifies:
 - _workspace.html tojson | forceescape in single-quoted attribute
 - Jinja2 auto-escaping on all user-editable text fields
 - CSP headers include script-src-attr 'none'
+- CSP headers include style-src-attr 'none'
 - No |safe filter in any template
+- No inline style attributes in any template
 - innerHTML uses escapeHtml for user values
 """
 
@@ -141,6 +143,12 @@ class TestCspContract:
         csp = content_security_policy("test-nonce")
         assert "script-src-attr 'none'" in csp
 
+    def test_style_src_attr_none_in_csp(self):
+        from app.security_headers import content_security_policy
+
+        csp = content_security_policy("test-nonce")
+        assert "style-src-attr 'none'" in csp
+
     def test_object_src_none_in_csp(self):
         from app.security_headers import content_security_policy
 
@@ -173,6 +181,26 @@ class TestNoUnsafeRendering:
                     if "|safe" in stripped and not stripped.startswith("{#"):
                         safe_usages.append(f"{html_file}:{i}: {stripped[:100]}")
         assert safe_usages == [], f"Found |safe filter usages: {safe_usages}"
+
+    def test_no_inline_style_attributes_in_templates(self):
+        inline_styles = []
+        for html_file in Path("app/templates").rglob("*.html"):
+            for line_number, line in enumerate(html_file.read_text().splitlines(), 1):
+                if re.search(r"\bstyle\s*=", line, flags=re.IGNORECASE):
+                    inline_styles.append(f"{html_file}:{line_number}")
+        assert inline_styles == [], f"Found CSP-blocked inline style attributes: {inline_styles}"
+
+    def test_dynamic_percentage_styles_use_clamped_cssom_properties(self):
+        template = Path("app/templates/admin.html").read_text()
+
+        assert 'data-style-height-pct="{{ point.generation_height_pct }}"' in template
+        assert 'data-style-width-pct="{{ row.activity_share_pct }}"' in template
+        assert "Number.isFinite(value)" in template
+        assert "Math.max(0, Math.min(100, value))" in template
+        assert "element.style[property]" in template
+        assert ".style.cssText" not in template
+        assert "setAttribute('style'" not in template
+        assert 'setAttribute("style"' not in template
 
     def test_error_message_escaped_in_structured_js(self):
         """Verify the XSS fix: structured.js uses escapeHtml for error_message."""

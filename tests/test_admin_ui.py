@@ -1142,7 +1142,8 @@ def test_template_editor_page_uses_dedicated_full_page_layout(client, db_session
     assert 'class="action-bar"' in page.text
     assert 'class="section-list"' in page.text
     assert 'class="section-row"' in page.text
-    assert 'const COOKIE_NAME = "openscribe_csrf"' in page.text
+    assert 'const CSRF_TOKEN = "' in page.text
+    assert 'const COOKIE_NAME = "openscribe_csrf"' not in page.text
     assert 'Problem guidance' not in page.text
     assert '>Open<' not in page.text
     assert 'Personal template' in page.text
@@ -1578,7 +1579,8 @@ def test_admin2_preview_route_renders_for_system_admin(client, make_team, make_u
     assert 'href="/admin2?tab=directory"' in page.text
     assert 'name="return_view" value="admin2"' in page.text
     assert 'style="' not in page.text
-    assert 'const COOKIE_NAME = "openscribe_csrf";' in page.text
+    assert 'const CSRF_TOKEN = "' in page.text
+    assert 'const COOKIE_NAME = "openscribe_csrf"' not in page.text
     assert 'Clinical NLP' in page.text
     assert '/static/vendor/lucide/1.8.0/lucide.min.js' in page.text
     assert 'body[data-admin-theme="light"]' in page.text

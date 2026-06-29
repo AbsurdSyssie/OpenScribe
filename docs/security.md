@@ -294,11 +294,12 @@ Current implementation note:
 - audit retention is separate from transcript retention; deleting transcript-derived content does not delete metadata-only security audit rows.
 - MVP audit read access is DB/operations access plus the system-admin-only read-only Admin Audit tab.
 - the Admin Audit tab renders detection signals and recent metadata-only audit rows from an allowlist of safe fields; it does not dump raw `details_json`.
-- the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents.
+- the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents, with category/outcome values deduplicated in SQL rather than loading every event's JSON.
 - future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
 - normal audit writes use a short-lived best-effort database session so audit persistence cannot commit, roll back, or fail unrelated application work. Error-handler telemetry such as rate-limit and validation rejection audit remains best-effort to avoid masking the original protection response.
 - audit subject hashes use keyed HMAC-SHA256 (`AUDIT_SUBJECT_HASH_SECRET`, falling back to the app secret in configured environments) rather than plain SHA-256.
 - manual detection is supported by `scripts/security/audit_events_report.py`, which summarizes metadata-only audit counts and signals for auth failures, access denials, abuse signals, high-risk admin/destructive actions, and provider configuration changes.
+- when a detection window exceeds the 10,000-event summary cap, detection analyzes the newest events so recent attacks and destructive actions remain visible.
 
 Required safety checks:
 

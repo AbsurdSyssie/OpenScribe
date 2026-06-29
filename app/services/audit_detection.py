@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import SecurityAuditEvent, utcnow
@@ -148,7 +148,7 @@ def _fetch_events(db: Session, *, since: datetime) -> list[SecurityAuditEvent]:
         db.scalars(
             select(SecurityAuditEvent)
             .where(SecurityAuditEvent.created_at >= since)
-            .order_by(SecurityAuditEvent.created_at.asc(), SecurityAuditEvent.id.asc())
+            .order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc())
             .limit(MAX_SUMMARY_EVENTS)
         )
     )
@@ -367,14 +367,16 @@ def list_security_audit_events(
     ]
 
 
+def _distinct_audit_detail_values(db: Session, *, key: str, default: str) -> list[str]:
+    value = func.coalesce(func.nullif(SecurityAuditEvent.details_json[key].as_string(), ""), default)
+    return list(db.scalars(select(value).distinct().order_by(value.asc())))
+
+
 def audit_filter_options(db: Session) -> dict[str, list[str]]:
-    rows = list(db.scalars(select(SecurityAuditEvent.details_json)))
-    categories = {str(row.get("category") or "uncategorized") for row in rows if isinstance(row, dict)}
-    outcomes = {str(row.get("outcome") or "unknown") for row in rows if isinstance(row, dict)}
     return {
         "actions": list(db.scalars(select(SecurityAuditEvent.action).distinct().order_by(SecurityAuditEvent.action.asc()))),
-        "categories": sorted(categories),
-        "outcomes": sorted(outcomes),
+        "categories": _distinct_audit_detail_values(db, key="category", default="uncategorized"),
+        "outcomes": _distinct_audit_detail_values(db, key="outcome", default="unknown"),
         "request_ips": [
             {"value": value, "label": value}
             for value in db.scalars(

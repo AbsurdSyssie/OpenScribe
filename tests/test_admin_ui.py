@@ -2200,9 +2200,15 @@ def test_admin2_audit_tab_shows_metadata_only_security_events(client, db_session
     page = client.get("/admin2?tab=audit&audit_since=24h")
 
     assert page.status_code == 200
+    audit_section = page.text.split('data-admin-tab-panel="audit"', 1)[1].split("<!-- FAILURES -->", 1)[0]
     assert 'data-admin-tab-panel="audit"' in page.text
     assert "Security audit" in page.text
     assert "login_failure" in page.text
+    assert "audit-actor@example.com" in audit_section
+    assert "Target: audit-actor@example.com" in audit_section
+    assert "Clinic Admin2 Audit" in audit_section
+    assert str(actor.id) not in audit_section
+    assert str(team.id) not in audit_section
     assert "8.8.8.8" in page.text
     assert "Private/internal IP masked" in page.text
     assert "192.168.1.234" not in page.text
@@ -2223,6 +2229,11 @@ def test_admin2_audit_tab_shows_metadata_only_security_events(client, db_session
 
     legacy_page = client.get("/admin?tab=audit&audit_since=24h")
     assert legacy_page.status_code == 200
+    legacy_audit_section = legacy_page.text.split("Recent audit events", 1)[1].split('data-tab-panel="usage"', 1)[0]
+    assert "audit-actor@example.com" in legacy_audit_section
+    assert "Clinic Admin2 Audit" in legacy_audit_section
+    assert str(actor.id) not in legacy_audit_section
+    assert str(team.id) not in legacy_audit_section
     assert "Private/internal IP masked" in legacy_page.text
     assert "192.168.1.234" not in legacy_page.text
     assert '<option value="192.168.1.234"' not in legacy_page.text

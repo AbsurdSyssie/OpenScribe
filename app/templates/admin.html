@@ -2619,9 +2619,9 @@
             <tr>
               <td><small>{{ event.created_at }}</small></td>
               <td>{{ event.action }}</td>
-              <td><small>{{ event.actor_user_id or '' }}</small></td>
-              <td><small>{{ event.target_user_id or '' }}</small></td>
-              <td><small>{{ event.team_id or '' }}</small></td>
+              <td><small>{{ event.actor_email or event.actor_user_id or '' }}</small></td>
+              <td><small>{{ event.target_email or event.target_user_id or '' }}</small></td>
+              <td><small>{{ event.team_name or event.team_id or '' }}</small></td>
               <td><small>{{ event.display_request_ip or '' }}</small></td>
               <td><small>{% for key, value in event.details.items() %}{{ key }}={{ value }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</small></td>
             </tr>

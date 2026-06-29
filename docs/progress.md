@@ -1,5 +1,57 @@
 # Progress
 
+## 2026-06-29 CSP Style Attribute Migration
+
+### Scope
+
+- Removed all 69 CSP-blocked `style` attributes from browser templates while preserving static layout and dynamic admin usage charts.
+- Kept strict `style-src-attr 'none'` enforcement.
+
+### Checklist
+
+- Target behavior: templates render without inline style attributes under strict CSP.
+- Affected schema/modules/endpoints: `admin.html`, `home.html`, `onboarding.html`, and `password_reset_request.html`; no schema or endpoint change.
+- Affected tests: CSP/XSS static coverage plus focused home, onboarding, admin, and password-reset rendering.
+- Architecture risks: prevent template values becoming arbitrary CSS; dynamic percentages are parsed, finite-checked, and clamped to `0..100` before direct CSSOM assignment.
+- Docs referenced/updated: `docs/security.md`, `docs/progress.md`.
+- Reuse decision: reused existing nonce-approved style/script blocks and existing template classes; no new library or style-injection mechanism.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: visual browser smoke remains recommended before deployment; no known code or test blocker.
+
+### Files changed
+
+- `app/templates/{admin,home,onboarding,password_reset_request}.html`: replace static style attributes with classes; move dynamic chart/meter percentages to escaped data attributes and a clamped CSSOM initializer.
+- `tests/test_xss_coverage.py`: enforce zero template style attributes and verify strict CSP/dynamic-style contract.
+- `docs/security.md`, `docs/progress.md`: document CSP-compatible styling rules and verification.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_xss_coverage.py tests/test_cookie_csrf_security.py -k "csp or inline_style or dynamic_percentage or unsafe_rendering"`: passed, 9 tests.
+- `.venv/bin/pytest -q tests/test_xss_coverage.py tests/test_cookie_csrf_security.py`: passed, 59 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py tests/test_auth_email.py -k "bootstrap_redirects_to_onboarding or user_home_shows_team_stt_selection_when_configured or admin_page_uses_flat_sidebar_workspace_layout or password_reset_request_disabled_tells_user_to_contact_admin"`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_csrf_browser.py -k "home_styles_apply_under_strict_style_attribute_csp"`: browser module skipped because Playwright Python package is unavailable in current virtualenv; regression test added for browser-enabled CI.
+- `rg -n 'style[[:space:]]*=' app/templates --glob '*.html'`: no matches.
+
+### Documentation
+
+- Added template and dynamic CSSOM rules to browser CSP guidance.
+
+### Risks / assumptions
+
+- Direct `element.style[property]` assignment is intentionally retained for validated runtime geometry; CSP blocks style attributes and `cssText`, not direct CSSOM property updates.
+- Visual browser smoke remains advisable before deployment because focused server-render tests cannot compare computed layout.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no auth, role, content visibility, or ownership change.
+- Lifecycle/deletion checkpoint: no retention, deletion, or cascade change.
+- Provider checkpoint: no provider configuration, credential, or resolution change.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no transcript-derived content, secrets, or user-entered text added to CSS; only bounded aggregate percentages drive dynamic presentation.
+
 ## 2026-06-26 Merge Regression Audit Hardening
 
 ### Scope

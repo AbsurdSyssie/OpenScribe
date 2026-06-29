@@ -1548,6 +1548,25 @@ padding: 1rem 0;
     {% if home_style_variant == "home2" %}
     {% include "_home2_admin2_style.html" %}
     {% endif %}
+    .overview-copy { margin-top: 8px; color: var(--muted); font-size: 0.92rem; }
+    .overview-notice { margin-top: 14px; }
+    .overview-primary-action { margin-top: 18px; }
+    .overview-guide-action { margin-top: 10px; }
+    .preference-grid { display: grid; gap: 20px; margin-top: 16px; }
+    .preference-heading { margin-bottom: 8px; }
+    .preference-detail { font-size: 0.88rem; color: var(--slate); }
+    .preference-model-field { margin-top: 4px; }
+    .preference-field-label { display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px; }
+    .preference-options-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 12px; }
+    .preference-submit { margin-top: 12px; }
+    .form-flush { margin: 0; }
+    .form-row--spaced-sm { margin-top: 12px; }
+    .form-row--spaced { margin-top: 1rem; }
+    .form-label--spaced { margin-top: 0.75rem; }
+    .form-checkbox--aligned { margin-top: 1.5rem; }
+    .provider-help { margin-bottom: 12px; }
+    .inline-icon-label { display: flex; align-items: center; gap: 8px; }
+    .tour-actions-buttons { display: flex; align-items: center; gap: 8px; }
   </style>
 </head>
 <body{% if home_style_variant == "home2" %} data-admin-theme="dark" class="home2"{% endif %}>
@@ -1691,38 +1710,38 @@ padding: 1rem 0;
 <section class="overview-grid" data-tab-panel="overview">
 <div class="panel" data-tour-target="workspace-start">
 <div class="section-kicker">Consultations</div><h2>Start a consultation</h2>
-<p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Open a new consultation so you can capture the conversation and create notes.</p>
+<p class="overview-copy">Open a new consultation so you can capture the conversation and create notes.</p>
 {% if not is_manager and not team_leader_email %}
-<p style="margin-top: 14px;"><small>Your team does not have a leader set up yet. Ask a system admin to finish the speech service setup first.</small></p>
+<p class="overview-notice"><small>Your team does not have a leader set up yet. Ask a system admin to finish the speech service setup first.</small></p>
 {% elif current_user.team_role and current_user.team_role.value == "leader" and not stt_selection %}
-<p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Choose one in the Team tab first.</small></p>
+<p class="overview-notice"><small>Your team has no speech service selected yet. Choose one in the Team tab first.</small></p>
 {% elif not stt_selection %}
-<p style="margin-top: 14px;"><small>Your team has no speech service selected yet. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to set it up.</small></p>
+<p class="overview-notice"><small>Your team has no speech service selected yet. Ask your team leader{% if team_leader_email %} {{ team_leader_email }}{% endif %} to set it up.</small></p>
 {% endif %}
-<div style="margin-top: 18px;"><a href="/transcribe"><button type="button" class="btn-primary">Open scribe</button></a></div>
-<div style="margin-top: 10px;"><button type="button" class="btn-secondary btn-sm" data-home-guide>Guide</button></div>
+<div class="overview-primary-action"><a href="/transcribe"><button type="button" class="btn-primary">Open scribe</button></a></div>
+<div class="overview-guide-action"><button type="button" class="btn-secondary btn-sm" data-home-guide>Guide</button></div>
 </div>
 <div class="panel">
 <div class="section-kicker">Preferences</div><h2>Your writing assistant preference</h2>
-<p style="margin-top: 8px; color: var(--muted); font-size: 0.92rem;">Choose which speech and writing services to use for your consultations.</p>
+<p class="overview-copy">Choose which speech and writing services to use for your consultations.</p>
 {% if not stt_selection and not llm_selection %}
-<p style="margin-top: 14px;"><small>Your team has no services configured yet. Contact your team leader to set them up.</small></p>
+<p class="overview-notice"><small>Your team has no services configured yet. Contact your team leader to set them up.</small></p>
 {% else %}
-<div style="display: grid; gap: 20px; margin-top: 16px;">
+<div class="preference-grid">
 {% if stt_selection %}
 <div>
-<h3 style="margin-bottom: 8px;">Speech service</h3>
-<p style="font-size: 0.88rem; color: var(--slate);"><strong>{{ stt_selection.config.label }}</strong>{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}</p>
+<h3 class="preference-heading">Speech service</h3>
+<p class="preference-detail"><strong>{{ stt_selection.config.label }}</strong>{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}</p>
 </div>
 {% endif %}
 {% if llm_selection %}
 <div>
-<h3 style="margin-bottom: 8px;">Writing assistant</h3>
+<h3 class="preference-heading">Writing assistant</h3>
 <form method="post" action="/home/llm-preference">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="overview">
-<label style="margin-top: 4px;">
-<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Model</span>
+<label class="preference-model-field">
+<span class="preference-field-label">Model</span>
 {% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
 {% if allowed_llm_models|length > 1 %}
 <select name="preferred_model_name">
@@ -1738,9 +1757,9 @@ padding: 1rem 0;
 <input type="hidden" name="preferred_model_name" value="">
 {% endif %}
 </label>
-<div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 12px;">
+<div class="preference-options-grid">
 <label>
-<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Length</span>
+<span class="preference-field-label">Length</span>
 <select name="note_generation_length">
 {% set home_note_length = user_app_preferences_json.get('note_generation_length', 'normal') %}
 <option value="short" {% if home_note_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option>
@@ -1749,7 +1768,7 @@ padding: 1rem 0;
 </select>
 </label>
 <label>
-<span style="display: block; font-size: 0.78rem; font-weight: 700; color: var(--slate); margin-bottom: 4px;">Detail</span>
+<span class="preference-field-label">Detail</span>
 <select name="llm_detail_level">
 {% set home_detail_level = user_app_preferences_json.get('llm_detail_level', 'balanced') %}
 <option value="concise" {% if home_detail_level == 'concise' %}selected{% endif %}>Concise</option>
@@ -1758,12 +1777,12 @@ padding: 1rem 0;
 </select>
 </label>
 </div>
-<div style="margin-top: 12px;">
+<div class="preference-submit">
 <button type="submit" class="btn-primary btn-sm">Save preference</button>
 </div>
 </form>
 {% if user_llm_preference %}
-<form method="post" action="/home/llm-preference/clear" data-confirm-submit="Clear your personal writing assistant preference?" style="margin: 0;">
+<form class="form-flush" method="post" action="/home/llm-preference/clear" data-confirm-submit="Clear your personal writing assistant preference?">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="overview">
 <button type="submit" class="btn-ghost btn-sm">Use team default</button>
@@ -1772,8 +1791,8 @@ padding: 1rem 0;
 </div>
 {% else %}
 <div>
-<h3 style="margin-bottom: 8px;">Writing assistant</h3>
-<p style="font-size: 0.88rem; color: var(--slate);">No LLM provider configured</p>
+<h3 class="preference-heading">Writing assistant</h3>
+<p class="preference-detail">No LLM provider configured</p>
 </div>
 {% endif %}
 </div>
@@ -1811,8 +1830,8 @@ padding: 1rem 0;
 <div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if template.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if template.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
 <a href="/home/templates/editor?scope=personal&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
-<form method="post" action="/home/personal-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/personal-templates/{{ template.id }}/delete" data-confirm-submit="Delete this personal template permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
+<form class="form-flush" method="post" action="/home/personal-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
+<form class="form-flush" method="post" action="/home/personal-templates/{{ template.id }}/delete" data-confirm-submit="Delete this personal template permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1827,8 +1846,8 @@ padding: 1rem 0;
 <div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if template.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if template.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
 <a href="/home/templates/editor?scope=team&template_id={{ template.id }}{% if home_return_view %}&return_view={{ home_return_view }}{% endif %}{% if queued_transcript_id %}&queued_transcript_id={{ queued_transcript_id }}{% endif %}{% if transcribe_return_tab %}&transcribe_tab={{ transcribe_return_tab }}{% endif %}" class="asset-action-button" title="Edit template" aria-label="Edit template"><i data-lucide="pencil"></i></a>
-<form method="post" action="/home/team-templates/{{ template.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/team-templates/{{ template.id }}/delete" data-confirm-submit="Delete this team template permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
+<form class="form-flush" method="post" action="/home/team-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy template" aria-label="Copy template"><i data-lucide="copy"></i></button></form>
+<form class="form-flush" method="post" action="/home/team-templates/{{ template.id }}/delete" data-confirm-submit="Delete this team template permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="templates"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete template" aria-label="Delete template"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1862,8 +1881,8 @@ padding: 1rem 0;
 <div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
-<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+<form class="form-flush" method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+<form class="form-flush" method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1877,8 +1896,8 @@ padding: 1rem 0;
 <div class="asset-row__status"><span class="asset-status-pill {{ 'asset-status-pill--enabled' if quick_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</span></div>
 <div class="asset-row__actions">
 <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
-<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-<form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+<form class="form-flush" method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+<form class="form-flush" method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
 </div>
 </div>
 {% endfor %}
@@ -1913,8 +1932,8 @@ padding: 1rem 0;
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div class="asset-table-actions">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
-                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-                <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+                <form class="form-flush" method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+                <form class="form-flush" method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -1952,8 +1971,8 @@ padding: 1rem 0;
               <td><small>{{ latest_version.prompt_text[:120] }}{% if latest_version.prompt_text|length > 120 %}...{% endif %}</small></td>
               <td><div class="asset-table-actions">
                 <a href="{{ home_page_route }}?tab=quick-actions&modal=team-quick-action&team_quick_action_id={{ quick_action.id }}" class="asset-action-button" title="Edit quick action" aria-label="Edit quick action"><i data-lucide="pencil"></i></a>
-                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
-                <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?" style="margin:0;"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
+                <form class="form-flush" method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button" title="Copy quick action" aria-label="Copy quick action"><i data-lucide="copy"></i></button></form>
+                <form class="form-flush" method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?"><input type="hidden" name="return_view" value="{{ home_return_view }}"><input type="hidden" name="return_tab" value="quick-actions"><input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}"><input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}"><button type="submit" class="asset-action-button asset-action-button--danger" title="Delete quick action" aria-label="Delete quick action"><i data-lucide="trash-2"></i></button></form>
               </div></td>
             </tr>
             {% endfor %}
@@ -2054,7 +2073,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if stt_selection %}
-<form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove the current speech service?" style="margin:0;">
+<form class="form-flush" method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove the current speech service?">
 <input type="hidden" name="purpose" value="conversation">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
@@ -2062,7 +2081,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </form>
 {% endif %}
 {% if stt_dictation_selection %}
-<form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current dictation speech service?" style="margin:0;">
+<form class="form-flush" method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current dictation speech service?">
 <input type="hidden" name="purpose" value="post_consultation_dictation">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
@@ -2129,7 +2148,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if llm_selection %}
-<form method="post" action="/home/llm-selection/clear" data-confirm-submit="Remove the current writing assistant?" style="margin:0;">
+<form class="form-flush" method="post" action="/home/llm-selection/clear" data-confirm-submit="Remove the current writing assistant?">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Clear</button>
@@ -2163,7 +2182,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 <label class="form-checkbox"><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}><span>{{ model }}</span></label>
 {% endfor %}
 </div>
-<div class="form-row" style="margin-top:12px;">
+<div class="form-row form-row--spaced-sm">
 <label class="form-label">
 <span class="form-label__text">Team default</span>
 {% for model in config.available_models_json %}
@@ -2200,7 +2219,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if deidentification_selection %}
-<form method="post" action="/home/deidentification-selection/clear" data-confirm-submit="Clear the current de-identification selection? The team will fall back to Built-in Native Presidio." style="margin:0;">
+<form class="form-flush" method="post" action="/home/deidentification-selection/clear" data-confirm-submit="Clear the current de-identification selection? The team will fall back to Built-in Native Presidio.">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Clear</button>
@@ -2224,7 +2243,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </select>
 </label>
 </div>
-<p class="form-empty" style="margin-bottom:12px;">This controls which assigned provider lazy redaction uses for your team. Clearing the selection falls back to Built-in Native Presidio.</p>
+<p class="form-empty provider-help">This controls which assigned provider lazy redaction uses for your team. Clearing the selection falls back to Built-in Native Presidio.</p>
 <button type="submit" class="btn-primary-sm">Save</button>
 </form>
 {% else %}
@@ -2250,7 +2269,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </div>
 <div class="service-row__actions">
 {% if clinical_nlp_selection %}
-<form method="post" action="/home/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP for your team?" style="margin:0;">
+<form class="form-flush" method="post" action="/home/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP for your team?">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="ai-services">
 <button type="submit" class="btn-ghost-sm">Disable</button>
@@ -2274,7 +2293,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 </select>
 </label>
 </div>
-<p class="form-empty" style="margin-bottom:12px;">This enables assigned disease and symptom extraction for transcript highlights. PII redaction provider choice stays separate.</p>
+<p class="form-empty provider-help">This enables assigned disease and symptom extraction for transcript highlights. PII redaction provider choice stays separate.</p>
 <button type="submit" class="btn-primary-sm">Enable</button>
 </form>
 {% else %}
@@ -2293,7 +2312,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 <section class="member-panel">
 <details class="create-member-details">
 <summary class="create-member-toggle">
-<span style="display:flex;align-items:center;gap:8px;">
+<span class="inline-icon-label">
 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
 Create a new team member
 </span>
@@ -2328,7 +2347,7 @@ Create a new team member
 <span class="form-label__text">Status</span>
 <select name="status" class="form-select"><option value="active">active</option><option value="suspended">suspended</option><option value="locked">locked</option><option value="disabled">disabled</option></select>
 </label>
-<label class="form-checkbox" style="margin-top:1.5rem;"><input type="checkbox" name="mfa_required" value="true" checked><span>Require MFA</span></label>
+<label class="form-checkbox form-checkbox--aligned"><input type="checkbox" name="mfa_required" value="true" checked><span>Require MFA</span></label>
 </div>
 <button type="submit" class="btn-primary-sm">Create</button>
 </form>
@@ -2443,7 +2462,7 @@ Create a new team member
 </div>
 {% if account_request.status.value == "pending" %}
 <div class="asset-row__body">
-<div class="form-row" style="margin-top:1rem;">
+<div class="form-row form-row--spaced">
 <form method="post" action="/home/account-requests/{{ account_request.id }}/approve" class="flex-1">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="account-requests">
@@ -2451,14 +2470,14 @@ Create a new team member
 <label class="form-label"><span class="form-label__text">Temporary password</span><input type="password" name="temporary_password" required minlength="8" class="form-input"></label>
 <label class="form-label"><span class="form-label__text">Team role</span><select name="team_role" class="form-select"><option value="user">user</option><option value="leader">leader</option></select></label>
 </div>
-<label class="form-label" style="margin-top:0.75rem;"><span class="form-label__text">Review notes</span><textarea name="review_notes" class="form-input" rows="2"></textarea></label>
-<button type="submit" class="btn-primary-sm" style="margin-top:0.75rem;">Approve</button>
+<label class="form-label form-label--spaced"><span class="form-label__text">Review notes</span><textarea name="review_notes" class="form-input" rows="2"></textarea></label>
+<button type="submit" class="btn-primary-sm form-label--spaced">Approve</button>
 </form>
 <form method="post" action="/home/account-requests/{{ account_request.id }}/reject" class="flex-1">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="account-requests">
 <label class="form-label"><span class="form-label__text">Rejection notes</span><textarea name="review_notes" required class="form-input" rows="3"></textarea></label>
-<button type="submit" class="btn-danger-sm" style="margin-top:0.75rem;">Reject</button>
+<button type="submit" class="btn-danger-sm form-label--spaced">Reject</button>
 </form>
 </div>
 </div>
@@ -2485,7 +2504,7 @@ Create a new team member
     <div class="tour-overlay__body" data-tour-body></div>
     <div class="tour-overlay__actions">
       <div class="tour-overlay__progress" data-tour-progress></div>
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div class="tour-actions-buttons">
         <button type="button" class="btn-secondary btn-sm" data-tour-back>Back</button>
         <button type="button" class="btn-secondary btn-sm" data-tour-close-button>Close</button>
         <button type="button" class="btn-primary btn-sm" data-tour-next>Next</button>

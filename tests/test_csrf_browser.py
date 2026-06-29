@@ -87,3 +87,48 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
     finally:
         browser.close()
         playwright.stop()
+
+
+def test_home_styles_apply_under_strict_style_attribute_csp(live_server, make_team, make_user):
+    team = make_team(name="Browser CSP Clinic")
+    make_user(
+        email="browser-csp@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+
+    try:
+        playwright = playwright_sync.sync_playwright().start()
+        browser = playwright.chromium.launch()
+    except Exception as exc:
+        pytest.skip(f"Playwright browser unavailable: {exc}")
+
+    try:
+        context = browser.new_context(base_url=live_server)
+        page = context.new_page()
+        csp_errors = []
+        page.on(
+            "console",
+            lambda message: csp_errors.append(message.text)
+            if "content security policy" in message.text.lower()
+            else None,
+        )
+
+        page.goto("/login")
+        page.locator('form[action="/login"] input[name="email"]').fill("browser-csp@example.com")
+        page.locator('form[action="/login"] input[name="password"]').fill("password-1")
+        page.get_by_role("button", name="Sign in").click()
+        page.wait_for_url("**/home")
+
+        response = page.goto("/home")
+        assert response is not None
+        assert "style-src-attr 'none'" in response.headers["content-security-policy"]
+        assert page.locator(".overview-copy").first.evaluate("element => getComputedStyle(element).marginTop") == "8px"
+        assert page.locator(".overview-primary-action").evaluate("element => getComputedStyle(element).marginTop") == "18px"
+        assert csp_errors == []
+    finally:
+        browser.close()
+        playwright.stop()

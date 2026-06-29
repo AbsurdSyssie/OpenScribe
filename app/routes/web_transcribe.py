@@ -421,6 +421,7 @@ def transcribe_generate_output(
             context.user,
             transcript_id=transcript_id,
             template_id=template_id,
+            request=request,
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
@@ -459,7 +460,7 @@ def transcribe_generate_followup(
         return response
     document = None
     try:
-        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=prompt_text)
+        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=prompt_text, request=request)
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
@@ -508,6 +509,7 @@ def transcribe_run_quick_action(
             transcript_id=transcript_id,
             quick_action_id=quick_action_id,
             context_text=clean_context_text,
+            request=request,
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))

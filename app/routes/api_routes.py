@@ -1498,6 +1498,7 @@ def generate_transcript_output(
             context.user,
             transcript_id=transcript_id,
             template_id=payload.template_id,
+            request=request,
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
@@ -1522,7 +1523,7 @@ def generate_transcript_followup(
 ):
     document = None
     try:
-        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=payload.prompt_text)
+        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=payload.prompt_text, request=request)
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError:
@@ -1552,6 +1553,7 @@ def run_transcript_quick_action(
             transcript_id=transcript_id,
             quick_action_id=payload.quick_action_id,
             context_text=payload.context_text,
+            request=request,
         )
         task_result = main_module.enqueue_generated_document_job(document_id=document.id)
         attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))

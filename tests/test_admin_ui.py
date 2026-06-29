@@ -4152,17 +4152,25 @@ def test_user_transcribe_page_can_generate_note_output_from_template(
         id = "generated-task-ui"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setenv("AUDIT_TRUST_CLOUDFLARE", "true")
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
     generated = client.post(
         "/transcribe/generate-output",
         data={"transcript_id": str(transcript.id), "template_id": str(template.id)},
+        headers={"CF-Connecting-IP": "203.0.113.51", "User-Agent": "pytest-generation-web"},
         follow_redirects=False,
     )
 
     assert generated.status_code == 303
     assert f"transcript_id={transcript.id}" in generated.headers["location"]
     assert "tab=output" in generated.headers["location"]
+    audit_event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "generation_queued"))
+    assert audit_event is not None
+    assert audit_event.request_ip == "203.0.113.51"
+    assert audit_event.user_agent == "pytest-generation-web"
+    assert audit_event.details_json["method"] == "POST"
+    assert audit_event.details_json["route"] == "/transcribe/generate-output"
 
     page = client.get(generated.headers["location"])
     assert page.status_code == 200

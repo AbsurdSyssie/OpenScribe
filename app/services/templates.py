@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 import httpx
+from fastapi import Request
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -2749,6 +2750,7 @@ def queue_document_generation_from_template(
     *,
     transcript_id: UUID,
     template_id: UUID,
+    request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -2833,6 +2835,7 @@ def queue_document_generation_from_template(
         actor=actor,
         target=actor,
         team_id=transcript.team_id,
+        request=request,
         details={
             "category": "generated_document",
             "outcome": "success",
@@ -2854,6 +2857,7 @@ def queue_followup_generation(
     *,
     transcript_id: UUID,
     prompt_text: str,
+    request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -2935,6 +2939,7 @@ def queue_followup_generation(
         actor=actor,
         target=actor,
         team_id=transcript.team_id,
+        request=request,
         details={
             "category": "generated_document",
             "outcome": "success",
@@ -2956,6 +2961,7 @@ def queue_quick_action_generation(
     transcript_id: UUID,
     quick_action_id: UUID,
     context_text: str | None = None,
+    request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
     transcript = db.get(Transcript, transcript_id)
@@ -3039,6 +3045,7 @@ def queue_quick_action_generation(
         actor=actor,
         target=actor,
         team_id=transcript.team_id,
+        request=request,
         details={
             "category": "generated_document",
             "outcome": "success",

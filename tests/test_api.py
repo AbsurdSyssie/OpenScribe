@@ -51,6 +51,7 @@ from app.models import (
     QuickActionVersion,
     RedactionRun,
     RedactionRunStatus,
+    SecurityAuditEvent,
     SessionAuthLevel,
     SessionStatus,
     SttAdapterKind,
@@ -6123,9 +6124,11 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     preview_redaction_run = db_session.scalar(select(RedactionRun).where(RedactionRun.transcript_id == UUID(transcript_id)))
     assert preview_redaction_run is not None
 
+    monkeypatch.setenv("AUDIT_TRUST_CLOUDFLARE", "true")
     generated = client.post(
         f"/api/v1/transcripts/{transcript_id}/generate-output",
         json={"template_id": team_template_id},
+        headers={"CF-Connecting-IP": "203.0.113.50", "User-Agent": "pytest-generation-api"},
     )
     assert generated.status_code == 202
     body = generated.json()
@@ -6134,6 +6137,12 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
     assert body["status"] == "queued"
     assert body["edited_output_text"] == ""
     assert body["model_used"] == "gpt-4o-mini"
+    audit_event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "generation_queued"))
+    assert audit_event is not None
+    assert audit_event.request_ip == "203.0.113.50"
+    assert audit_event.user_agent == "pytest-generation-api"
+    assert audit_event.details_json["method"] == "POST"
+    assert audit_event.details_json["route"] == f"/api/v1/transcripts/{transcript_id}/generate-output"
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None

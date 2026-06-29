@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-06-29 Generation Audit Origin Metadata
+
+### Scope
+
+- Generation queue audit events now capture request IP, user agent, method, and route for API and browser generation starts.
+
+### Checklist
+
+- Target behavior: `generation_queued` audit rows include origin metadata like other request-triggered audit events.
+- Affected schema/modules/endpoints: `app/services/templates.py`, `app/routes/api_routes.py`, `app/routes/web_transcribe.py`; no schema or endpoint contract change.
+- Affected tests: API and browser generation route tests now assert audit IP/user-agent/route capture.
+- Architecture risks: low; metadata-only audit enrichment, no transcript, prompt, or model response content exposed.
+- Docs referenced/updated: `docs/progress.md`.
+- Reuse decision: reused existing `record_security_event(request=...)` sanitizer and trusted-proxy handling; no new IP parsing code.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: async worker-side events still cannot know client IP unless the enqueue path records it first.
+
+### Files changed
+
+- `app/services/templates.py`: accepts optional `request` for template, follow-up, and quick-action queue audit events.
+- `app/routes/api_routes.py`: passes request into API generation queue services.
+- `app/routes/web_transcribe.py`: passes request into browser generation queue services.
+- `tests/test_api.py`: verifies API `generation_queued` origin metadata.
+- `tests/test_admin_ui.py`: verifies browser `generation_queued` origin metadata.
+- `docs/progress.md`: records checklist, verification, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py tests/test_admin_ui.py tests/test_audit_detection.py -k "team_and_personal_template_routes_enforce_scope_and_allow_generation or user_transcribe_page_can_generate_note_output_from_template or audit"`: passed, 12 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: existing full-session and owner checks unchanged.
+- Lifecycle/deletion checkpoint: no retention, deletion, or cascade change.
+- Provider checkpoint: no provider configuration, credential, or resolution change.
+- Structured-note contract: unchanged.
+- Privacy boundaries: only request metadata added to audit rows; safe details still exclude transcript, prompt, note, and provider response content.
+
 ## 2026-06-29 Audit UI Email And Team Display
 
 ### Scope

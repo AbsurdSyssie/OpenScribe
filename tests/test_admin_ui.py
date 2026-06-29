@@ -311,6 +311,40 @@ def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, ma
     assert "Choose speech and writing services for your team." in leader_response.text
 
 
+def test_home_tab_navigation_updates_url_and_rejects_missing_panels():
+    home_html = Path("app/templates/home.html").read_text()
+
+    class HomeTabShellParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.panels_inside_shell = []
+
+        def handle_starttag(self, tag, attrs):
+            attr_map = dict(attrs)
+            in_shell = any(frame["is_shell"] for frame in self.stack)
+            panel = attr_map.get("data-tab-panel")
+            if panel and in_shell:
+                self.panels_inside_shell.append(panel)
+            self.stack.append({"tag": tag, "is_shell": "data-tab-shell" in attr_map})
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index]["tag"] == tag:
+                    del self.stack[index:]
+                    break
+
+    parser = HomeTabShellParser()
+    parser.feed(home_html)
+
+    assert "[hidden] { display: none !important; }" in home_html
+    assert parser.panels_inside_shell == ["overview", "templates", "quick-actions", "smart-phrases", "ai-services", "team-management", "account-requests"]
+    assert "const panelNames = new Set(panels.map((panel) => panel.dataset.tabPanel));" in home_html
+    assert "if (!panelNames.has(name)) return;" in home_html
+    assert "window.history.pushState({ homeTab: name }, '', selectedTab.dataset.tabUrl);" in home_html
+    assert "window.addEventListener('popstate'" in home_html
+
+
 def test_home2_blocks_system_admins_from_user_home(client, make_user):
     make_user(email="home2-admin@example.com", password="password-1", is_system_admin=True)
 

@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-06-29 Audit UI Email And Team Display
+
+### Scope
+
+- Audit event rows in admin audit UI now show actor/target email addresses and team names instead of raw UUIDs when linked rows still exist.
+
+### Checklist
+
+- Target behavior: human-readable actor/target/team values in audit event tables while keeping UUID filters and service fields available.
+- Affected schema/modules/endpoints: `app/services/audit_detection.py`, `app/templates/admin.html`, `app/templates/admin2.html`; no schema or endpoint change.
+- Affected tests: audit listing service and admin audit UI rendering tests.
+- Architecture risks: low; email is account metadata on system-admin audit surface, not transcript-derived content.
+- Docs referenced/updated: `docs/progress.md`.
+- Reuse decision: reused existing `SecurityAuditEvent.actor`, `SecurityAuditEvent.target`, and `SecurityAuditEvent.team` relationships with joined loading; no new lookup service or denormalized snapshot.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: deleted users/teams with nulled audit FKs cannot display historical email/name.
+
+### Files changed
+
+- `app/services/audit_detection.py`: joined actor/target users and teams, then added `actor_email`, `target_email`, and `team_name` display fields to listed audit events.
+- `app/templates/admin.html`: legacy audit table prefers actor/target email and team name with UUID fallback.
+- `app/templates/admin2.html`: audit table prefers actor/target emails and team name with UUID fallback.
+- `tests/test_audit_detection.py`: verifies service returns actor/target emails and team name while retaining IDs.
+- `tests/test_admin_ui.py`: verifies audit sections render email/team name and not raw UUIDs.
+- `docs/progress.md`: records checklist, verification, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_audit_detection.py tests/test_admin_ui.py -k "audit"`: passed, 10 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: audit UI remains admin-only; no ownership boundary change.
+- Lifecycle/deletion checkpoint: user deletion/null FK behavior unchanged; no email snapshot added.
+- Provider checkpoint: no provider configuration, credential, or resolution change.
+- Structured-note contract: unchanged.
+- Privacy boundaries: safe details allowlist unchanged; no transcript, prompt, note, or model-response content exposed.
+
 ## 2026-06-29 Home Tab Navigation Fix
 
 ### Scope

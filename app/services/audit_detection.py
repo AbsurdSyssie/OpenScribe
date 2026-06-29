@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import String, and_, cast, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import SecurityAuditEvent, utcnow
 
@@ -373,7 +373,11 @@ def list_security_audit_events(
     actor_user_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     bounded_limit = max(1, min(limit, 250))
-    statement = select(SecurityAuditEvent).where(SecurityAuditEvent.created_at >= since)
+    statement = (
+        select(SecurityAuditEvent)
+        .options(joinedload(SecurityAuditEvent.actor), joinedload(SecurityAuditEvent.target), joinedload(SecurityAuditEvent.team))
+        .where(SecurityAuditEvent.created_at >= since)
+    )
     if action:
         statement = statement.where(SecurityAuditEvent.action == action)
     if request_ip:
@@ -397,8 +401,11 @@ def list_security_audit_events(
             "created_at": event.created_at.isoformat(),
             "action": event.action,
             "actor_user_id": _string_id(event.actor_user_id),
+            "actor_email": event.actor.email if event.actor else None,
             "target_user_id": _string_id(event.target_user_id),
+            "target_email": event.target.email if event.target else None,
             "team_id": _string_id(event.team_id),
+            "team_name": event.team.name if event.team else None,
             "request_ip": event.request_ip,
             "display_request_ip": audit_event_display_ip(event.request_ip),
             "user_agent": event.user_agent[:160] if event.user_agent else None,

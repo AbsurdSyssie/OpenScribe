@@ -160,6 +160,33 @@ def test_audit_event_listing_filters_category_and_outcome_in_query(db_session):
     assert events[0]["details"]["outcome"] == "failure"
 
 
+def test_audit_event_listing_includes_actor_and_target_email_for_display(db_session, make_team, make_user):
+    team = make_team(name="Audit Display Identity Team")
+    actor = make_user(email="audit-list-actor@example.com", team=team)
+    target = make_user(email="audit-list-target@example.com", team=team)
+    record_security_event(
+        db_session,
+        action="audit_display_identity_probe",
+        actor=actor,
+        target=target,
+        details={"category": "auth", "outcome": "success"},
+    )
+
+    events = list_security_audit_events(
+        db_session,
+        since=utcnow().replace(year=utcnow().year - 1),
+        action="audit_display_identity_probe",
+    )
+
+    assert len(events) == 1
+    assert events[0]["actor_user_id"] == str(actor.id)
+    assert events[0]["actor_email"] == "audit-list-actor@example.com"
+    assert events[0]["target_user_id"] == str(target.id)
+    assert events[0]["target_email"] == "audit-list-target@example.com"
+    assert events[0]["team_id"] == str(team.id)
+    assert events[0]["team_name"] == "Audit Display Identity Team"
+
+
 def test_audit_filter_options_select_distinct_json_values_in_sql(db_session):
     record_security_event(
         db_session,

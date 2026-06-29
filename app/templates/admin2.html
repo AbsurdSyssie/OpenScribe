@@ -1088,14 +1088,17 @@
             </div></div>
           </section>
           <div class="table">
-            <div class="trow head usage"><span>Time</span><span>Action</span><span>Actor</span><span>Origin IP</span><span>Safe details</span><span></span></div>
+            <div class="trow head usage"><span>Time</span><span>Action</span><span>Actor / target</span><span>Team</span><span>Origin IP / details</span><span></span></div>
             {% for event in audit_events or [] %}
               <div class="trow usage">
                 <span>{{ event.created_at }}</span>
                 <span>{{ event.action }}</span>
-                <span class="desc">{{ event.actor_user_id or '' }}</span>
-                <span>{{ event.display_request_ip or '' }}</span>
-                <span class="desc">{% for key, value in event.details.items() %}{{ key }}={{ value }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</span>
+                <span class="desc">
+                  {{ event.actor_email or event.actor_user_id or '' }}
+                  {% if event.target_email or event.target_user_id %}<br>Target: {{ event.target_email or event.target_user_id }}{% endif %}
+                </span>
+                <span class="desc">{{ event.team_name or event.team_id or '' }}</span>
+                <span class="desc">{{ event.display_request_ip or '' }}<br>{% for key, value in event.details.items() %}{{ key }}={{ value }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</span>
                 <span class="status">Logged</span>
               </div>
             {% else %}

@@ -8648,3 +8648,60 @@
 - Auth/ownership checkpoint: no scope expansion or content access.
 - Lifecycle/deletion checkpoint: no lifecycle path changed.
 - Docs/tests checkpoint: query-shape regression and security documentation updated.
+
+# 2026-06-29 Exact Full-Window Audit Detection
+
+### Scope
+
+- Replaced capped in-memory audit summaries with exact SQL aggregation across the full selected window.
+- Added a creation-time index for bounded audit-window queries.
+
+### Checklist
+
+- Target behavior: event/category/outcome counts and all detection signals include every event in the selected window, including windows above the former 10,000-event cap.
+- Affected schema/modules/endpoints: `security_audit_events` index, `app/services/audit_detection.py`; existing Admin Audit pages consume the unchanged report shape.
+- Affected tests: `tests/test_audit_detection.py`, `tests/test_migrations.py`, existing admin audit UI tests.
+- Architecture risks: audit metadata query cost and migration write blocking; migration builds the index concurrently.
+- Reuse decision: reused existing signal contract, action sets, SQLAlchemy JSON extraction, masking, and selected-window bound.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: `docs/security.md`, OWASP audit plan, and this note.
+- Open issues: exact per-event destructive/provider signals can produce large response sets if those specific event classes become unusually numerous.
+
+### Files changed
+
+- `app/services/audit_detection.py`: SQL-side exact counts, burst aggregation, and full-window destructive/provider event selection.
+- `app/models.py`: declares creation-time audit index.
+- `alembic/versions/v3w4x5y6z7a8_index_security_audit_events_created_at.py`: creates/drops index concurrently.
+- `tests/test_audit_detection.py`: 10,001-event regression verifies exact totals and older destructive-event retention.
+- `tests/test_migrations.py`: verifies index exists at migration head.
+- `docs/security.md` and OWASP audit plan: document exact full-window behavior.
+
+### Tests
+
+- Before fix, previous capped implementation would report only newest 10,000 rows and omit the older destructive action.
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_audit_detection.py`: passed, 7 tests.
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_audit_detection.py tests/test_admin_ui.py -k "audit_detection or admin2_audit_tab_shows_metadata_only_security_events or admin_audit_tab"`: passed, 9 tests (189 deselected).
+- `.venv/bin/pytest -q tests/test_migrations.py -k "upgrade_head_creates_expected_schema"`: passed, 1 test (20 deselected).
+
+### Documentation
+
+- Security operations contract now distinguishes exact full-window detection from separately limited recent-row display.
+
+### Risks / assumptions
+
+- Selected windows remain bounded to 30 days.
+- Exact grouped queries trade additional database work for correct monitoring results; creation-time index limits scanned time range.
+- Signal response cardinality remains event-based for destructive/admin and provider changes to preserve existing report semantics.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; SQL reads metadata-only audit columns and allowlisted JSON keys, never transcript-derived content.
+- Ownership rules: unchanged; Audit UI remains system-admin-only.
+- Deletion semantics: unchanged; audit metadata retention remains separate from transcript-root deletion.
+- Provider rules: unchanged; provider configuration is not modified and provider-change audit signals retain metadata-only fields.
+- Structured-note contract: unchanged.
+- Schema checkpoint: additive creation-time index only; no row or constraint semantics changed.
+- Auth/ownership checkpoint: no access scope or endpoint changed.
+- Lifecycle/deletion checkpoint: no deletion path changed; full-window destructive detection improves visibility.
+- Docs/tests checkpoint: regression, migration assertion, security docs, OWASP plan, and daily note updated.

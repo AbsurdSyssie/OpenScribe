@@ -156,13 +156,25 @@ class TestSsrFCanaryDesign:
         assert "169.254.169.254" in req.base_url
 
     def test_httpx_does_not_follow_redirects_by_default(self):
-        """httpx.get() and httpx.post() default to follow_redirects=False.
+        """httpx clients default to follow_redirects=False.
         This is a positive finding — no SSRF redirect attack is possible
-        using the default httpx convenience functions used throughout the codebase.
+        using the default redirect policy used throughout the codebase.
         """
         import httpx
 
-        assert httpx.get("https://httpbin.org/redirect/1").status_code == 302
+        requested_paths: list[str] = []
+
+        def redirect_transport(request: httpx.Request) -> httpx.Response:
+            requested_paths.append(request.url.path)
+            if request.url.path == "/redirect/1":
+                return httpx.Response(302, headers={"Location": "/redirect-target"})
+            return httpx.Response(200)
+
+        with httpx.Client(transport=httpx.MockTransport(redirect_transport)) as client:
+            response = client.get("https://provider.example/redirect/1")
+
+        assert response.status_code == 302
+        assert requested_paths == ["/redirect/1"]
 
     def test_no_host_allowlist_exists(self):
         """URL validation allows any host — no allowlist/blocklist.

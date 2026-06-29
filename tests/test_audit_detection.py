@@ -1,7 +1,16 @@
-from app.models import TeamRole, utcnow
+from datetime import timedelta
+
+from sqlalchemy import event
+
+from app.models import SecurityAuditEvent, TeamRole, utcnow
 from app.schemas import UserCreate
 from app.services.admin import create_user, delete_team
-from app.services.audit_detection import list_security_audit_events, parse_since, summarize_security_audit_events
+from app.services.audit_detection import (
+    audit_filter_options,
+    list_security_audit_events,
+    parse_since,
+    summarize_security_audit_events,
+)
 from app.services.security_audit import audit_subject_hash, record_security_event
 
 
@@ -93,6 +102,29 @@ def test_audit_detection_flags_rate_limit_validation_and_team_delete_blocker(db_
     assert report["action_counts"]["security_validation_rejected"] == 3
 
 
+def test_audit_detection_summary_cap_keeps_newest_events(db_session, monkeypatch):
+    now = utcnow()
+    db_session.add_all(
+        [
+            SecurityAuditEvent(action="old_benign_event", created_at=now - timedelta(minutes=3)),
+            SecurityAuditEvent(action="account_deleted", created_at=now - timedelta(minutes=2)),
+            SecurityAuditEvent(action="newest_security_event", created_at=now - timedelta(minutes=1)),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr("app.services.audit_detection.MAX_SUMMARY_EVENTS", 2)
+
+    report = summarize_security_audit_events(db_session, since=now - timedelta(hours=1))
+
+    assert report["event_count"] == 2
+    assert report["action_counts"] == {"account_deleted": 1, "newest_security_event": 1}
+    assert any(
+        signal["signal"] == "high_risk_admin_or_destructive_action"
+        and signal["action"] == "account_deleted"
+        for signal in report["signals"]
+    )
+
+
 def test_parse_since_accepts_relative_and_iso_values():
     assert parse_since("24h") < utcnow()
     assert parse_since("7d") < utcnow()
@@ -118,3 +150,45 @@ def test_audit_event_listing_filters_category_and_outcome_in_query(db_session):
     assert len(events) == 1
     assert events[0]["details"]["category"] == "provider"
     assert events[0]["details"]["outcome"] == "failure"
+
+
+def test_audit_filter_options_select_distinct_json_values_in_sql(db_session):
+    record_security_event(
+        db_session,
+        action="audit_filter_auth",
+        details={"category": "auth", "outcome": "success"},
+    )
+    record_security_event(
+        db_session,
+        action="audit_filter_auth_repeat",
+        details={"category": "auth", "outcome": "success"},
+    )
+    record_security_event(
+        db_session,
+        action="audit_filter_provider",
+        details={"category": "provider", "outcome": "failure"},
+    )
+    record_security_event(db_session, action="audit_filter_defaults", details={})
+    record_security_event(
+        db_session,
+        action="audit_filter_empty_defaults",
+        details={"category": "", "outcome": ""},
+    )
+
+    statements: list[str] = []
+    bind = db_session.get_bind()
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        options = audit_filter_options(db_session)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert options["categories"] == ["auth", "provider", "uncategorized"]
+    assert options["outcomes"] == ["failure", "success", "unknown"]
+    json_option_queries = [statement for statement in statements if "details_json" in statement]
+    assert len(json_option_queries) == 2
+    assert all("DISTINCT" in statement.upper() for statement in json_option_queries)

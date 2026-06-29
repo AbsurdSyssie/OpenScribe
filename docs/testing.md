@@ -38,6 +38,7 @@ Current behavior:
 - security audit tests verify durable audit redacts nested sensitive keys, sanitizes CR/LF, env-gates Cloudflare origin IP capture, records login success/failure without raw passwords or email, records invalid reset-token failures, records CSRF/authz/rate-limit abuse signals without cookies/tokens/bodies, records team-delete blockers and high-signal provider/de-ID validation rejections, records account lifecycle metadata, excludes prompt text from template/default-asset/generation audit, excludes smart-phrase content from smart-phrase audit, excludes filename/audio content from upload audit, and excludes transcript title/content from transcript deletion audit
 - audit detection tests verify the manual detection helper flags repeated auth failures, repeated access denials, rate-limit/validation bursts, high-risk admin/destructive actions, provider config changes, and time-window parsing
 - admin audit UI tests verify system admins can view security-audit metadata/signals, use DB-populated filter dropdowns, filter event rows, and non-admin users cannot open the Audit tab; tests also verify sensitive stored detail keys are not rendered
+- SSRF canary redirect coverage uses `httpx.MockTransport`; normal test runs require no external provider or public internet access.
 
 ## API auth route audit
 

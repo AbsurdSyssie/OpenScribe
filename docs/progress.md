@@ -8458,3 +8458,193 @@
 - Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_static_asset_version_bumped_for_pii_source_visibility or user_transcribe_page_shows_workspace_shell"` passed, 2 tests.
 - Tests: `.venv/bin/pytest -q tests/test_admin_ui.py -k "transcribe_reorder_blocks_blank_note_lines"` passed, 1 test.
 - Architecture checkpoint: privacy boundaries preserved by forcing redraw on active transcript changes and PII visibility changes; ownership rules unchanged; deletion semantics unchanged; provider rules unchanged; structured-note contract unchanged.
+
+# 2026-06-29 CSRF UI Assertion Regression
+
+### Scope
+
+- Updated two rendered-page assertions to verify CSRF JavaScript receives its token from nonce-protected request state and does not declare the old cookie-reader constant.
+
+### Checklist
+
+- Code complete: yes; test-only assertion update.
+- Tests added/updated: updated `tests/test_admin_ui.py`; focused regression passed.
+- Docs added/updated: this daily progress note.
+- Open issues: none.
+
+### Files changed
+
+- `tests/test_admin_ui.py`: replace stale cookie-source expectations with positive request-state token and negative cookie-reader checks.
+- `docs/progress.md`: record scope, validation, and architecture checkpoints.
+
+### Tests
+
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_admin_ui.py -k "template_editor_page_uses_dedicated_full_page_layout or admin2_preview_route_renders_for_system_admin"`: passed, 2 tests (after loading `.env`, `COOKIE_SECURE_MODE` was overridden to `auto` for HTTP TestClient compatibility).
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "public_forms_render_server_side_csrf_tokens or csrf_cookie"`: passed, 4 tests.
+
+### Documentation
+
+- Existing `docs/security.md` contract remains accurate; no user-facing or API behavior changed.
+
+### Risks / assumptions
+
+- Assumes rendered `const CSRF_TOKEN = "..."` remains the intended nonce-protected request-state handoff. Runtime code is unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries and ownership rules: unchanged; no content path changed.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: tests now reject the retired JavaScript-readable CSRF cookie source.
+- Lifecycle/deletion checkpoint: no lifecycle or deletion path changed.
+- Docs/tests checkpoint: assertions and daily note updated; focused UI and nearby CSRF security tests pass.
+
+# 2026-06-29 Newest Capped Audit Detection
+
+### Scope
+
+- Changed capped audit detection reads to select newest events before applying the 10,000-event cap, preserving recent attacks and destructive actions during high-volume windows.
+
+### Checklist
+
+- Target behavior: newest events remain in audit detection summaries when selected window exceeds cap.
+- Affected schema/modules/endpoints: `app/services/audit_detection.py`; no schema, migration, or endpoint change.
+- Affected tests: `tests/test_audit_detection.py`.
+- Architecture risks: metadata-only audit visibility; no transcript-derived content access.
+- Reuse decision: refined existing bounded SQL query and existing summarizer; no new code path.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: `docs/security.md` and this note.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/audit_detection.py`: order summary candidates newest-first before limiting.
+- `tests/test_audit_detection.py`: small-cap regression proves oldest exclusion and recent destructive-event retention.
+- `docs/security.md`: documents newest-event cap behavior.
+- `docs/progress.md`: records implementation checkpoints.
+
+### Tests
+
+- Before fix, focused regression failed because oldest event displaced newest event.
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_audit_detection.py`: passed, 6 tests (after loading `.env`, cookie mode was overridden for HTTP TestClient compatibility).
+
+### Documentation
+
+- Security operations contract now states how capped windows are sampled.
+
+### Risks / assumptions
+
+- Equal timestamps use descending UUID as deterministic tie-breaker; events sharing an exact timestamp have no finer persisted chronology.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; summaries still use metadata-only audit rows.
+- Ownership/auth rules: unchanged; no read-access scope changed.
+- Deletion semantics: unchanged; audit retention remains separate from transcript retention.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: system-admin/operations audit visibility unchanged.
+- Lifecycle/deletion checkpoint: destructive-event detection improves; deletion behavior unchanged.
+- Docs/tests checkpoint: regression and security documentation updated.
+
+# 2026-06-29 Offline SSRF Redirect Canary
+
+### Scope
+
+- Replaced live `httpbin.org` access in SSRF redirect-policy coverage with `httpx.MockTransport` and asserted only the initial redirecting URL is requested.
+
+### Checklist
+
+- Target behavior: deterministic offline verification that default HTTPX clients do not follow redirects.
+- Affected schema/modules/endpoints: test harness only; no schema, application module, or endpoint change.
+- Affected tests: `tests/test_ssrf_canary.py`.
+- Architecture risks: preserve meaningful SSRF redirect-policy coverage without external network dependency.
+- Reuse decision: used HTTPX built-in mock transport; no local server or custom transport layer.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: `docs/testing.md` and this note.
+- Open issues: none.
+
+### Files changed
+
+- `tests/test_ssrf_canary.py`: deterministic mocked redirect response and request-path assertion.
+- `docs/testing.md`: records network-free SSRF canary behavior.
+- `docs/progress.md`: records scope and checkpoints.
+
+### Tests
+
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_ssrf_canary.py`: passed, 23 tests (after loading `.env`, cookie mode was overridden for HTTP TestClient compatibility).
+
+### Documentation
+
+- Testing guide now states public internet is not required for SSRF redirect coverage.
+
+### Risks / assumptions
+
+- Test covers HTTPX default client redirect behavior. Application provider calls must continue omitting `follow_redirects=True` for this guarantee to apply.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; synthetic host/path only.
+- Ownership/auth rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged; runtime provider code untouched.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: admin-only provider controls unchanged.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: deterministic test and testing docs updated.
+
+# 2026-06-29 Bounded Audit Filter Options
+
+### Scope
+
+- Replaced unbounded application-side audit `details_json` loading with SQL-side distinct category/outcome extraction, defaulting, and ordering.
+
+### Checklist
+
+- Target behavior: Admin Audit filter options remain complete and sorted without loading every audit row's JSON into application memory.
+- Affected schema/modules/endpoints: `app/services/audit_detection.py`; no schema, migration, or endpoint change.
+- Affected tests: `tests/test_audit_detection.py` plus existing admin audit UI coverage.
+- Architecture risks: preserve metadata-only system-admin filter behavior and missing-value defaults.
+- Reuse decision: reused SQLAlchemy JSON text extraction, `coalesce`, `distinct`, and existing filter-option service.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: `docs/security.md` and this note.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/audit_detection.py`: query distinct JSON category/outcome values in SQL.
+- `tests/test_audit_detection.py`: verify values/defaults and capture SQL to reject full-column JSON loading.
+- `docs/security.md`: document SQL-side option extraction.
+- `docs/progress.md`: record implementation checkpoints.
+
+### Tests
+
+- Before fix, regression captured one unbounded `SELECT security_audit_events.details_json`; after fix, focused test passed with two distinct JSON scalar queries.
+- `COOKIE_SECURE_MODE=auto .venv/bin/pytest -q tests/test_audit_detection.py tests/test_admin_ui.py -k "audit_detection or admin2_audit_tab_shows_metadata_only_security_events"`: passed, 8 tests (after loading `.env`, cookie mode was overridden for HTTP TestClient compatibility).
+
+### Documentation
+
+- Security operations notes now describe bounded filter-option extraction.
+
+### Risks / assumptions
+
+- Audit category/outcome values are application-controlled metadata. SQL queries return all distinct values, whose cardinality is bounded by event vocabulary rather than row count.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: strengthened memory minimization; only distinct metadata values leave database.
+- Ownership/auth rules: unchanged; Audit tab remains system-admin-only.
+- Deletion semantics: unchanged; audit retention stays separate from transcript retention.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no scope expansion or content access.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: query-shape regression and security documentation updated.

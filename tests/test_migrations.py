@@ -99,6 +99,8 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "transcript_ingestion_jobs",
         "transcript_versions",
     }
+    audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
+    assert "ix_security_audit_events_created_at" in audit_indexes
 
 
 @pytest.mark.migration

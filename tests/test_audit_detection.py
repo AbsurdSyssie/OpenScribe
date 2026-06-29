@@ -1,6 +1,7 @@
 from datetime import timedelta
+from uuid import uuid4
 
-from sqlalchemy import event
+from sqlalchemy import event, insert
 
 from app.models import SecurityAuditEvent, TeamRole, utcnow
 from app.schemas import UserCreate
@@ -102,22 +103,29 @@ def test_audit_detection_flags_rate_limit_validation_and_team_delete_blocker(db_
     assert report["action_counts"]["security_validation_rejected"] == 3
 
 
-def test_audit_detection_summary_cap_keeps_newest_events(db_session, monkeypatch):
+def test_audit_detection_summary_covers_full_window_above_previous_cap(db_session):
     now = utcnow()
-    db_session.add_all(
+    db_session.add(SecurityAuditEvent(action="account_deleted", created_at=now - timedelta(minutes=2)))
+    db_session.execute(
+        insert(SecurityAuditEvent),
         [
-            SecurityAuditEvent(action="old_benign_event", created_at=now - timedelta(minutes=3)),
-            SecurityAuditEvent(action="account_deleted", created_at=now - timedelta(minutes=2)),
-            SecurityAuditEvent(action="newest_security_event", created_at=now - timedelta(minutes=1)),
-        ]
+            {
+                "id": uuid4(),
+                "action": "newer_benign_event",
+                "details_json": {"category": "system", "outcome": "success"},
+                "created_at": now - timedelta(minutes=1),
+            }
+            for _ in range(10_000)
+        ],
     )
     db_session.commit()
-    monkeypatch.setattr("app.services.audit_detection.MAX_SUMMARY_EVENTS", 2)
 
     report = summarize_security_audit_events(db_session, since=now - timedelta(hours=1))
 
-    assert report["event_count"] == 2
-    assert report["action_counts"] == {"account_deleted": 1, "newest_security_event": 1}
+    assert report["event_count"] == 10_001
+    assert report["action_counts"] == {"account_deleted": 1, "newer_benign_event": 10_000}
+    assert report["category_counts"] == {"system": 10_000, "uncategorized": 1}
+    assert report["outcome_counts"] == {"success": 10_000, "unknown": 1}
     assert any(
         signal["signal"] == "high_risk_admin_or_destructive_action"
         and signal["action"] == "account_deleted"

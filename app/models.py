@@ -380,6 +380,7 @@ class User(Base):
 class SecurityAuditEvent(Base):
     __tablename__ = "security_audit_events"
     __table_args__ = (
+        Index("ix_security_audit_events_created_at", "created_at"),
         Index("ix_security_audit_events_actor_created", "actor_user_id", "created_at"),
         Index("ix_security_audit_events_target_created", "target_user_id", "created_at"),
         Index("ix_security_audit_events_action_created", "action", "created_at"),

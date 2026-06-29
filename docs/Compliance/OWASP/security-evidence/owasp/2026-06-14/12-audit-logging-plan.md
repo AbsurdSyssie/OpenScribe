@@ -60,6 +60,7 @@ Remaining observed gaps:
 - Provider inspect/test calls and default asset/smart-phrase/preference changes have first-slice durable coverage.
 - Audit write-failure behavior is documented: normal audit writes raise on failure; error-handler telemetry is best-effort.
 - Audit retention/access-control policy is documented: audit metadata retention is separate from transcript retention; no product UI/API exposes audit rows in MVP.
+- Admin detection summaries aggregate the full selected window in SQL; a dedicated creation-time index supports bounded-lookback queries without silently sampling high-volume windows.
 
 ## Design Direction
 

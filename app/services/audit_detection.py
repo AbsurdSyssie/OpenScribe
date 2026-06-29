@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
-from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import SecurityAuditEvent, utcnow
@@ -72,7 +71,6 @@ AUDIT_EVENT_DETAIL_ALLOWLIST = {
 }
 MASKED_INTERNAL_IP_LABEL = "Private/internal IP masked"
 MAX_AUDIT_LOOKBACK = timedelta(days=30)
-MAX_SUMMARY_EVENTS = 10000
 
 
 @dataclass(frozen=True)
@@ -112,27 +110,6 @@ def _details(event: SecurityAuditEvent) -> dict[str, Any]:
     return dict(event.details_json or {})
 
 
-def _route(event: SecurityAuditEvent) -> str | None:
-    value = _details(event).get("route")
-    return str(value) if value else None
-
-
-def _subject_hash(event: SecurityAuditEvent) -> str | None:
-    value = _details(event).get("subject_hash")
-    return str(value) if value else None
-
-
-def _event_bounds(events: list[SecurityAuditEvent]) -> tuple[str | None, str | None]:
-    if not events:
-        return None, None
-    ordered = sorted(events, key=lambda item: item.created_at)
-    return ordered[0].created_at.isoformat(), ordered[-1].created_at.isoformat()
-
-
-def _provider_change(action: str) -> bool:
-    return action.startswith(("stt_", "llm_", "deidentification_", "clinical_nlp_", "hallucination_check_")) and action.endswith(PROVIDER_CHANGE_ACTION_SUFFIXES)
-
-
 def _audit_signal_display_key(value: str) -> str:
     try:
         address = ipaddress.ip_address(value)
@@ -143,15 +120,14 @@ def _audit_signal_display_key(value: str) -> str:
     return value
 
 
-def _fetch_events(db: Session, *, since: datetime) -> list[SecurityAuditEvent]:
-    return list(
-        db.scalars(
-            select(SecurityAuditEvent)
-            .where(SecurityAuditEvent.created_at >= since)
-            .order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc())
-            .limit(MAX_SUMMARY_EVENTS)
-        )
+def _count_by_value(db: Session, *, since: datetime, value: Any) -> dict[str, int]:
+    rows = db.execute(
+        select(value.label("value"), func.count().label("count"))
+        .where(SecurityAuditEvent.created_at >= since)
+        .group_by(value)
+        .order_by(value.asc())
     )
+    return {str(row.value): int(row.count) for row in rows}
 
 
 def summarize_security_audit_events(
@@ -163,138 +139,203 @@ def summarize_security_audit_events(
     csrf_threshold: int = 5,
     validation_threshold: int = 3,
 ) -> dict[str, Any]:
-    events = _fetch_events(db, since=since)
     signals: list[AuditSignal] = []
+    subject_hash = SecurityAuditEvent.details_json["subject_hash"].as_string()
+    route = func.coalesce(func.nullif(SecurityAuditEvent.details_json["route"].as_string(), ""), "unknown-route")
+    actor_key = func.coalesce(
+        cast(SecurityAuditEvent.actor_user_id, String),
+        func.nullif(SecurityAuditEvent.request_ip, ""),
+        "anonymous",
+    )
+    category = func.coalesce(
+        func.nullif(SecurityAuditEvent.details_json["category"].as_string(), ""),
+        "uncategorized",
+    )
+    outcome = func.coalesce(
+        func.nullif(SecurityAuditEvent.details_json["outcome"].as_string(), ""),
+        "unknown",
+    )
+    group_fields = (
+        func.count().label("count"),
+        func.min(SecurityAuditEvent.created_at).label("first_seen"),
+        func.max(SecurityAuditEvent.created_at).label("last_seen"),
+    )
 
-    by_subject: dict[str, list[SecurityAuditEvent]] = defaultdict(list)
-    by_ip_action: dict[tuple[str, str], list[SecurityAuditEvent]] = defaultdict(list)
-    by_action: dict[str, list[SecurityAuditEvent]] = defaultdict(list)
-    by_actor_access: dict[tuple[str, str], list[SecurityAuditEvent]] = defaultdict(list)
-    by_route_access: dict[tuple[str, str], list[SecurityAuditEvent]] = defaultdict(list)
-
-    for event in events:
-        details = _details(event)
-        subject_hash = _subject_hash(event)
-        if event.action in AUTH_FAILURE_ACTIONS and subject_hash:
-            by_subject[subject_hash].append(event)
-        if event.request_ip and event.action in AUTH_FAILURE_ACTIONS | ABUSE_SIGNAL_ACTIONS:
-            by_ip_action[(event.request_ip, event.action)].append(event)
-        if event.action in ABUSE_SIGNAL_ACTIONS:
-            by_action[event.action].append(event)
-        if event.action in ACCESS_DENIAL_ACTIONS:
-            actor_key = _string_id(event.actor_user_id) or event.request_ip or "anonymous"
-            route_key = _route(event) or "unknown-route"
-            by_actor_access[(actor_key, route_key)].append(event)
-            by_route_access[(route_key, str(details.get("reason_code") or "unknown"))].append(event)
-
-    for subject_hash, group in by_subject.items():
-        if len(group) >= login_failure_threshold:
-            first_seen, last_seen = _event_bounds(group)
+    subject_rows = db.execute(
+        select(subject_hash.label("key"), *group_fields)
+        .where(
+            SecurityAuditEvent.created_at >= since,
+            SecurityAuditEvent.action.in_(AUTH_FAILURE_ACTIONS),
+            subject_hash.is_not(None),
+            subject_hash != "",
+        )
+        .group_by(subject_hash)
+    )
+    for row in subject_rows:
+        if row.count >= login_failure_threshold:
             signals.append(
                 AuditSignal(
                     signal="auth_failure_burst_by_subject",
                     severity="medium",
-                    count=len(group),
-                    key=subject_hash,
+                    count=row.count,
+                    key=row.key,
                     action="login_failure",
-                    first_seen=first_seen,
-                    last_seen=last_seen,
+                    first_seen=row.first_seen.isoformat(),
+                    last_seen=row.last_seen.isoformat(),
                     note="Repeated authentication failures for same normalized subject hash.",
                 )
             )
 
-    for (ip, action), group in by_ip_action.items():
-        threshold = validation_threshold if action == "security_validation_rejected" else csrf_threshold if action == "csrf_rejected" else login_failure_threshold
-        if len(group) >= threshold:
-            first_seen, last_seen = _event_bounds(group)
+    ip_action_rows = db.execute(
+        select(SecurityAuditEvent.request_ip.label("key"), SecurityAuditEvent.action, *group_fields)
+        .where(
+            SecurityAuditEvent.created_at >= since,
+            SecurityAuditEvent.request_ip.is_not(None),
+            SecurityAuditEvent.request_ip != "",
+            SecurityAuditEvent.action.in_(AUTH_FAILURE_ACTIONS | ABUSE_SIGNAL_ACTIONS),
+        )
+        .group_by(SecurityAuditEvent.request_ip, SecurityAuditEvent.action)
+    )
+    for row in ip_action_rows:
+        threshold = (
+            validation_threshold
+            if row.action == "security_validation_rejected"
+            else csrf_threshold
+            if row.action == "csrf_rejected"
+            else login_failure_threshold
+        )
+        if row.count >= threshold:
             signals.append(
                 AuditSignal(
                     signal="security_event_burst_by_ip",
-                    severity="medium" if action != "rate_limit_exceeded" else "high",
-                    count=len(group),
-                    key=ip,
-                    action=action,
-                    first_seen=first_seen,
-                    last_seen=last_seen,
+                    severity="medium" if row.action != "rate_limit_exceeded" else "high",
+                    count=row.count,
+                    key=row.key,
+                    action=row.action,
+                    first_seen=row.first_seen.isoformat(),
+                    last_seen=row.last_seen.isoformat(),
                 )
             )
 
-    for action, group in by_action.items():
-        threshold = validation_threshold if action == "security_validation_rejected" else csrf_threshold if action == "csrf_rejected" else 1
-        if len(group) >= threshold:
-            first_seen, last_seen = _event_bounds(group)
+    action_rows = db.execute(
+        select(SecurityAuditEvent.action, *group_fields)
+        .where(SecurityAuditEvent.created_at >= since, SecurityAuditEvent.action.in_(ABUSE_SIGNAL_ACTIONS))
+        .group_by(SecurityAuditEvent.action)
+    )
+    for row in action_rows:
+        threshold = (
+            validation_threshold
+            if row.action == "security_validation_rejected"
+            else csrf_threshold
+            if row.action == "csrf_rejected"
+            else 1
+        )
+        if row.count >= threshold:
             signals.append(
                 AuditSignal(
                     signal="security_event_burst",
-                    severity="medium" if action != "rate_limit_exceeded" else "high",
-                    count=len(group),
-                    key=action,
-                    action=action,
-                    first_seen=first_seen,
-                    last_seen=last_seen,
+                    severity="medium" if row.action != "rate_limit_exceeded" else "high",
+                    count=row.count,
+                    key=row.action,
+                    action=row.action,
+                    first_seen=row.first_seen.isoformat(),
+                    last_seen=row.last_seen.isoformat(),
                 )
             )
 
-    for (actor_key, route_key), group in by_actor_access.items():
-        if len(group) >= access_denied_threshold:
-            first_seen, last_seen = _event_bounds(group)
+    access_rows = db.execute(
+        select(actor_key.label("key"), route.label("route"), *group_fields)
+        .where(SecurityAuditEvent.created_at >= since, SecurityAuditEvent.action.in_(ACCESS_DENIAL_ACTIONS))
+        .group_by(actor_key, route)
+    )
+    for row in access_rows:
+        if row.count >= access_denied_threshold:
             signals.append(
                 AuditSignal(
                     signal="access_denied_burst_by_actor_route",
                     severity="medium",
-                    count=len(group),
-                    key=actor_key,
+                    count=row.count,
+                    key=row.key,
                     action="access_denied",
-                    route=route_key,
-                    first_seen=first_seen,
-                    last_seen=last_seen,
+                    route=row.route,
+                    first_seen=row.first_seen.isoformat(),
+                    last_seen=row.last_seen.isoformat(),
                     note="Repeated denied access for same actor/IP and route.",
                 )
             )
 
-    high_risk_events = [event for event in events if event.action in HIGH_RISK_ADMIN_ACTIONS or event.action in DESTRUCTIVE_ACTIONS]
-    for event in high_risk_events:
+    high_risk_rows = db.execute(
+        select(
+            SecurityAuditEvent.id,
+            SecurityAuditEvent.action,
+            SecurityAuditEvent.actor_user_id,
+            SecurityAuditEvent.team_id,
+            SecurityAuditEvent.details_json["route"].as_string().label("route"),
+            SecurityAuditEvent.created_at,
+        )
+        .where(
+            SecurityAuditEvent.created_at >= since,
+            SecurityAuditEvent.action.in_(HIGH_RISK_ADMIN_ACTIONS | DESTRUCTIVE_ACTIONS),
+        )
+        .order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc())
+    )
+    for row in high_risk_rows:
         signals.append(
             AuditSignal(
                 signal="high_risk_admin_or_destructive_action",
-                severity="high" if event.action in DESTRUCTIVE_ACTIONS else "medium",
+                severity="high" if row.action in DESTRUCTIVE_ACTIONS else "medium",
                 count=1,
-                key=str(event.id),
-                action=event.action,
-                route=_route(event),
-                actor_user_id=_string_id(event.actor_user_id),
-                team_id=_string_id(event.team_id),
-                first_seen=event.created_at.isoformat(),
-                last_seen=event.created_at.isoformat(),
+                key=str(row.id),
+                action=row.action,
+                route=row.route,
+                actor_user_id=_string_id(row.actor_user_id),
+                team_id=_string_id(row.team_id),
+                first_seen=row.created_at.isoformat(),
+                last_seen=row.created_at.isoformat(),
             )
         )
 
-    provider_events = [event for event in events if _provider_change(event.action)]
-    for event in provider_events:
+    provider_prefixes = ("stt_", "llm_", "deidentification_", "clinical_nlp_", "hallucination_check_")
+    provider_change_filter = and_(
+        or_(*(SecurityAuditEvent.action.startswith(prefix) for prefix in provider_prefixes)),
+        or_(*(SecurityAuditEvent.action.endswith(suffix) for suffix in PROVIDER_CHANGE_ACTION_SUFFIXES)),
+    )
+    provider_rows = db.execute(
+        select(
+            SecurityAuditEvent.id,
+            SecurityAuditEvent.action,
+            SecurityAuditEvent.actor_user_id,
+            SecurityAuditEvent.team_id,
+            SecurityAuditEvent.created_at,
+        )
+        .where(SecurityAuditEvent.created_at >= since, provider_change_filter)
+        .order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc())
+    )
+    for row in provider_rows:
         signals.append(
             AuditSignal(
                 signal="provider_configuration_change",
                 severity="medium",
                 count=1,
-                key=str(event.id),
-                action=event.action,
-                actor_user_id=_string_id(event.actor_user_id),
-                team_id=_string_id(event.team_id),
-                first_seen=event.created_at.isoformat(),
-                last_seen=event.created_at.isoformat(),
+                key=str(row.id),
+                action=row.action,
+                actor_user_id=_string_id(row.actor_user_id),
+                team_id=_string_id(row.team_id),
+                first_seen=row.created_at.isoformat(),
+                last_seen=row.created_at.isoformat(),
             )
         )
 
-    action_counts = Counter(event.action for event in events)
-    category_counts = Counter(str(_details(event).get("category") or "uncategorized") for event in events)
-    outcome_counts = Counter(str(_details(event).get("outcome") or "unknown") for event in events)
+    action_counts = _count_by_value(db, since=since, value=SecurityAuditEvent.action)
+    category_counts = _count_by_value(db, since=since, value=category)
+    outcome_counts = _count_by_value(db, since=since, value=outcome)
 
     return {
         "since": since.isoformat(),
-        "event_count": len(events),
-        "action_counts": dict(sorted(action_counts.items())),
-        "category_counts": dict(sorted(category_counts.items())),
-        "outcome_counts": dict(sorted(outcome_counts.items())),
+        "event_count": sum(action_counts.values()),
+        "action_counts": action_counts,
+        "category_counts": category_counts,
+        "outcome_counts": outcome_counts,
         "signals": [
             {**asdict(signal), "display_key": _audit_signal_display_key(signal.key)}
             for signal in signals

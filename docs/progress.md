@@ -98,6 +98,44 @@
 - Structured-note contract: unchanged.
 - Privacy boundaries: audit rows remain metadata-only; sensitive keys, long payloads, request bodies, transcript/note/prompt/provider response content, tokens, cookies, and secrets remain excluded or bounded.
 
+## 2026-06-25 Provider Config Audit Enum Fix
+
+### Scope
+
+- Fixed STT and LLM provider config audit logging so post-refresh enum fields can be recorded whether SQLAlchemy returns enum objects or plain strings.
+
+### Checklist
+
+- Target behavior: provider config create/update/finalize/credential-replace endpoints do not 500 after successful DB commit when audit details include `setup_status` or `credential_status`.
+- Affected schema/modules/endpoints: `app/services/stt.py`, `app/services/llm.py`; no schema or route contract change.
+- Affected tests: provider config API tests covering STT, LLM, and deidentification provider paths.
+- Architecture risks: provider audit detail serialization only; no transcript-derived content, ownership, deletion, encryption, or provider-resolution policy changed.
+- Docs referenced/updated: `AGENTS.md`, `docs/progress.md`.
+- Reuse decision: reused a tiny local enum/string normalization helper instead of adding new infrastructure.
+- Code complete: yes.
+- Tests added/updated: no new tests required; existing focused provider config tests caught and now cover regression.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/services/llm.py`: normalize provider setup status before audit details are recorded.
+- `app/services/stt.py`: normalize provider setup and credential statuses before audit details are recorded.
+- `docs/progress.md`: records checklist, tests, and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "llm_config or stt_config or deidentification_provider"`: passed, 25 tests.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration changes.
+- Auth/ownership checkpoint: system-admin/team-scoped provider management checks unchanged.
+- Lifecycle/deletion checkpoint: no deletion, retention, or cascade behavior changed.
+- Provider checkpoint: provider credential write/delete and provider fallback behavior unchanged; only audit serialization changed after commit/refresh.
+- Structured-note contract: unchanged.
+- Privacy boundaries: audit details remain metadata-only; no transcript, note, prompt, model response, or provider secret content logged.
+
 ## 2026-06-24 Pen Test Findings Retest
 
 ### Scope

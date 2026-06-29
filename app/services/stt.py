@@ -79,6 +79,10 @@ def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, c
     record_security_event(db, action=action, actor=actor, team_id=team_id, details=payload)
 
 
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
     team = db.get(Team, team_id)
     if team is None:
@@ -1891,7 +1895,7 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
         _raise_stt_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
-    _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
+    _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
     return config
 
 
@@ -1951,7 +1955,7 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
         except AppError as cleanup_exc:
             logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
     db.refresh(config)
-    _record_stt_audit(db, action="stt_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, credential_status=config.credential_status.value)
+    _record_stt_audit(db, action="stt_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, credential_status=_enum_value(config.credential_status))
     return config, inspection
 
 
@@ -2205,8 +2209,8 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         team_id=team.id,
         config_id=config.id,
         credential_action=payload.credential_action,
-        credential_status=config.credential_status.value,
-        setup_status=config.setup_status.value,
+        credential_status=_enum_value(config.credential_status),
+        setup_status=_enum_value(config.setup_status),
         active=config.is_active,
     )
     return config

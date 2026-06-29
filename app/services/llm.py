@@ -33,6 +33,10 @@ def _record_llm_audit(db: Session, *, action: str, actor: User, team_id: UUID, c
     record_security_event(db, action=action, actor=actor, team_id=team_id, details=payload)
 
 
+def _enum_value(value):
+    return getattr(value, "value", value)
+
+
 def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -584,7 +588,7 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         _raise_llm_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
-    _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
+    _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
     return config
 
 
@@ -631,7 +635,7 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     db.add(config)
     db.commit()
     db.refresh(config)
-    _record_llm_audit(db, action="llm_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, setup_status=config.setup_status.value, active=config.is_active)
+    _record_llm_audit(db, action="llm_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
     return config, inspection
 
 
@@ -874,7 +878,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         team_id=team.id,
         config_id=config.id,
         credential_action=payload.credential_action,
-        setup_status=config.setup_status.value,
+        setup_status=_enum_value(config.setup_status),
         active=config.is_active,
     )
     return config

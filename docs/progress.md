@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-06-29 Home Tab Navigation Fix
+
+### Scope
+
+- Fixed `/home` section nav so tab clicks hide inactive panels, activate only existing panels, update the browser URL from each tab's `data-tab-url`, and keep browser back/forward in sync.
+
+### Checklist
+
+- Target behavior: Overview, Templates, Quick actions, Smart phrases, AI Services, Team, and Requests tabs all select their matching panel and preserve navigable URLs.
+- Affected schema/modules/endpoints: `app/templates/home.html` only; no schema or endpoint change.
+- Affected tests: static regression coverage in `tests/test_admin_ui.py`.
+- Architecture risks: low; frontend navigation only, no content access or persistence logic changed.
+- Docs referenced/updated: `docs/home_brief.md`, `docs/progress.md`.
+- Reuse decision: reused existing tab buttons, `data-tab-target`, `data-tab-panel`, and `data-tab-url`; no new router or library.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: visual browser smoke recommended because focused test asserts the tab contract, not computed layout.
+
+### Files changed
+
+- `app/templates/home.html`: restores explicit `[hidden]` hiding for grid panels, validates tab target names against rendered panels, updates URL on click, and handles `popstate`.
+- `tests/test_admin_ui.py`: adds regression coverage for the home tab navigation JS contract.
+- `docs/progress.md`: records checklist, verification, and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "home_tab_navigation_updates_url_and_rejects_missing_panels or home2_route_renders_admin2_styled_home_for_users_and_leaders or home_restyled_preview_route_renders_for_signed_in_non_admin"`: passed, 3 tests.
+- Browser MCP: logged in locally as `dev.user@example.com` and verified Overview, Templates, Quick actions, and Smart phrases each update URL, selected tab, active tab state, and sole visible panel.
+- Browser MCP: logged in locally as `dev.leader@example.com` and verified all seven tabs, including AI Services, Team, and Requests, each update URL, selected tab, active tab state, and sole visible panel.
+- Browser MCP root cause: found inactive panels visible because malformed HTML closed `[data-tab-shell]` after Overview, leaving other panels outside the tab shell. Also fixed explicit `[hidden]` CSS so author `display: grid` rules cannot override hidden panels.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no auth, role, content visibility, or ownership change.
+- Lifecycle/deletion checkpoint: no retention, deletion, or cascade change.
+- Provider checkpoint: no provider configuration, credential, or resolution change.
+- Structured-note contract: unchanged.
+- Privacy boundaries: no transcript-derived content or confidential data touched.
+
 ## 2026-06-29 CSP Style Attribute Migration
 
 ### Scope

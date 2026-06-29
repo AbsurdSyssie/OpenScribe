@@ -35,6 +35,7 @@
     }
 
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html { background: var(--bg); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
     body {
@@ -1798,7 +1799,6 @@ padding: 1rem 0;
 </div>
 {% endif %}
 </div>
-</div>
 </section>
 
 {# ── TEMPLATES ── #}
@@ -2652,19 +2652,30 @@ const tourOverlay = document.querySelector('[data-tour-overlay]');
         const panels = Array.from(shell.querySelectorAll('[data-tab-panel]'));
         if (!nav || !tabs.length || !panels.length) return;
 
-        const defaultTab = shell.dataset.defaultTab || tabs[0].dataset.tabTarget;
+        const panelNames = new Set(panels.map((panel) => panel.dataset.tabPanel));
+        const requestedTab = shell.dataset.defaultTab || new URLSearchParams(window.location.search).get('tab');
+        const defaultTab = panelNames.has(requestedTab) ? requestedTab : tabs[0].dataset.tabTarget;
         nav.hidden = false;
         nav.classList.add('is-tabs-ready');
 
-        function activateTab(name) {
+        function activateTab(name, { updateUrl = false } = {}) {
+          if (!panelNames.has(name)) return;
           tabs.forEach((tab) => tab.setAttribute('aria-selected', tab.dataset.tabTarget === name ? 'true' : 'false'));
           panels.forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== name; });
           shell.dataset.activeTab = name;
+          if (updateUrl) {
+            const selectedTab = tabs.find((tab) => tab.dataset.tabTarget === name);
+            if (selectedTab?.dataset.tabUrl) window.history.pushState({ homeTab: name }, '', selectedTab.dataset.tabUrl);
+          }
           if (document.body.classList.contains('home2')) {
             shell.scrollTop = 0;
           }
         }
-        tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget)));
+        tabs.forEach((tab) => tab.addEventListener('click', () => activateTab(tab.dataset.tabTarget, { updateUrl: true })));
+        window.addEventListener('popstate', () => {
+          const tabFromUrl = new URLSearchParams(window.location.search).get('tab');
+          activateTab(panelNames.has(tabFromUrl) ? tabFromUrl : defaultTab);
+        });
         activateTab(defaultTab);
       });
 

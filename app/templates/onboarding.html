@@ -56,12 +56,12 @@
         <div class="card-top">
           <div class="section-label">Step 1</div>
           <h2>Choose a new password</h2>
-          <p>Use at least 8 characters. This replaces your temporary password.</p>
+          <p>Use at least 12 characters with uppercase, lowercase, and number characters. This replaces your temporary password.</p>
         </div>
         <form method="post" action="/onboarding/password">
           <label>
             New password
-            <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+            <input type="password" name="new_password" required minlength="12" autocomplete="new-password">
           </label>
           <button type="submit">Save new password</button>
         </form>

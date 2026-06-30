@@ -1,12 +1,14 @@
 import re
-
-import pytest
-import pyotp
 from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from uuid import UUID
+
+import pytest
+import pyotp
 from sqlalchemy import func, select
+
+from tests.constants import PERMANENT_TEST_PASSWORD
 
 from app.errors import AppError
 from app.models import (
@@ -3152,7 +3154,7 @@ def test_transcribe_workspace_refresh_renders_updated_pii_entities():
     transcript_branch = app_js.split("if (transcript) {", 1)[1].split("} else {", 1)[0]
 
     assert "workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);" in app_js
-    assert "renderDraft(draftText);\n          renderPiiEntities(workspaceTranscriptPiiEntities);" in transcript_branch
+    assert "renderDraft(draftText, { force: activeTranscriptChanged });\n          renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in transcript_branch
 
 
 def test_transcribe_copy_review_uses_real_panels_without_sentinel_elements():
@@ -4741,7 +4743,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const displayRows = allowReveal" in app_js
     assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
     assert "currentPiiEntities = displayRows;" in app_js
-    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });" in app_js
+    assert "renderDraft(currentDraftText || readActiveDraftText(), { force: true });" in app_js
     assert "getTranscriptText: () => currentDraftText," in app_js
     assert "getTranscriptText?.()" in actions_js
     assert "dom.activeDraft?.textContent" in actions_js
@@ -4811,7 +4813,7 @@ def test_generated_document_pii_no_reveal_mode_strips_cached_values():
     assert "const displayRows = allowReveal" in app_js
     assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
     assert "currentPiiEntities = displayRows;" in app_js
-    assert "renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });" in app_js
+    assert "renderDraft(currentDraftText || readActiveDraftText(), { force: true });" in app_js
     assert "${displayRows.map((entity) => `" in app_js
     assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
 
@@ -6934,7 +6936,7 @@ def test_completed_user_login_redirects_to_mfa_challenge_then_home(client, make_
     client.post("/logout", follow_redirects=False)
 
     client.post("/login", data={"email": "managed@example.com", "password": "TempPass1"}, follow_redirects=False)
-    client.post("/onboarding/password", data={"new_password": "BetterPass1"})
+    client.post("/onboarding/password", data={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     code = pyotp.TOTP(start.json()["secret"]).now()
     client.post("/onboarding/totp/verify", data={"code": code})
@@ -6943,7 +6945,7 @@ def test_completed_user_login_redirects_to_mfa_challenge_then_home(client, make_
 
     login_response = client.post(
         "/login",
-        data={"email": "managed@example.com", "password": "BetterPass1"},
+        data={"email": "managed@example.com", "password": PERMANENT_TEST_PASSWORD},
         follow_redirects=False,
     )
     assert login_response.status_code == 303

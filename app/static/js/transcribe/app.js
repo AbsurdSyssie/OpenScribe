@@ -2877,8 +2877,7 @@ let statusDetailsHideTimer = null;
           : rows.map((entity) => ({ ...entity, value: '' }));
         currentPiiEntities = displayRows;
         if (updateTranscriptHighlights) {
-          renderHighlightedTranscript(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });
-          lastDraftRenderSignature = draftRenderSignature(currentDraftText || readActiveDraftText(), workspaceTranscriptPiiEntities, { maskPii: piiMasked });
+          renderDraft(currentDraftText || readActiveDraftText(), { force: true });
         }
         if (piiVisibilityToggle) {
           piiVisibilityToggle.textContent = piiMasked ? 'Show PII' : 'Hide PII';
@@ -3326,8 +3325,8 @@ let statusDetailsHideTimer = null;
         if (transcript) {
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           const draftText = transcript.current_draft_text || '';
-          renderDraft(draftText);
-          renderPiiEntities(workspaceTranscriptPiiEntities);
+          renderDraft(draftText, { force: activeTranscriptChanged });
+          renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });
           syncGenerationAvailability(draftText);
           if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
           if (renameTitleInput) renameTitleInput.value = transcript.title || '';

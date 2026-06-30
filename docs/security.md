@@ -157,7 +157,7 @@ Current CSP goals:
 - same-origin API/WebSocket/EventSource connections only
 - WASM allowed only through narrow ONNX Runtime requirement
 
-Templates must not use `style` attributes. Static presentation belongs in same-origin stylesheets or nonce-approved `<style>` blocks. Server-calculated visual percentages are rendered as escaped `data-*` values, clamped to `0..100`, then applied by nonce-approved JavaScript through direct CSSOM property assignment. Do not use `setAttribute("style", ...)` or `element.style.cssText`; both create CSP-blocked style attributes.
+Templates must not use `style` attributes. Static presentation belongs in same-origin stylesheets or nonce-approved `<style>` blocks. Server-calculated visual percentages are rendered as escaped `data-*` values, clamped to `0..100`, then applied by nonce-approved JavaScript through direct CSSOM property assignment. Chromium permits `HTMLElement.style` property assignment and `style.setProperty(...)` under `style-src-attr 'none'`; the browser regression test exercises representative split-pane, menu geometry, textarea autosize, visualizer, tour, and admin chart mutations. Do not use `setAttribute("style", ...)` or `element.style.cssText`; both create CSP-blocked style attributes.
 
 Before merging this area:
 
@@ -297,7 +297,7 @@ Current implementation note:
 - the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents, with category/outcome values deduplicated in SQL rather than loading every event's JSON.
 - future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
 - normal audit writes use a short-lived best-effort database session so audit persistence cannot commit, roll back, or fail unrelated application work. Error-handler telemetry such as rate-limit and validation rejection audit remains best-effort to avoid masking the original protection response.
-- audit subject hashes use keyed HMAC-SHA256 (`AUDIT_SUBJECT_HASH_SECRET`, falling back to the app secret in configured environments) rather than plain SHA-256.
+- audit subject hashes use keyed HMAC-SHA256 rather than plain SHA-256. Secret priority is `AUDIT_SUBJECT_HASH_SECRET`, then `SECRET_KEY`, then `CSRF_SECRET`, then the Vault-backed platform CSRF secret in production. Production fails closed if no configured or Vault-backed secret can be resolved; the public dev fallback is restricted to explicit local/dev/test environments.
 - manual detection is supported by `scripts/security/audit_events_report.py`, which summarizes metadata-only audit counts and signals for auth failures, access denials, abuse signals, high-risk admin/destructive actions, and provider configuration changes.
 - audit detection computes counts, burst groups, destructive/admin actions, and provider-change signals in SQL across the full selected window; recent-row display remains separately limited to 250 rows.
 

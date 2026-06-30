@@ -417,13 +417,13 @@
         </label>
         <label>
           Password
-          <input type="password" name="password" required minlength="8" autocomplete="new-password">
+          <input type="password" name="password" required minlength="12" autocomplete="new-password">
         </label>
         <div class="submit-row">
           <button type="submit">Create system admin</button>
         </div>
       </form>
-      <p class="footer-note">Use a strong password. After this step, everyone signs in through the normal managed login flow.</p>
+      <p class="footer-note">Use at least 12 characters with uppercase, lowercase, and number characters. After this step, everyone signs in through the normal managed login flow.</p>
       {% else %}
       <div class="card-top">
         <div class="section-label">Sign in</div>

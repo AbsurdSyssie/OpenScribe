@@ -323,7 +323,7 @@ from .services.auth_email import (
     send_manager_password_reset_email as send_manager_password_reset_email_service,
     send_password_reset_email as send_password_reset_email_service,
 )
-from .services.security_audit import audit_subject_hash, record_security_event
+from .services.security_audit import audit_subject_hash, audit_subject_hash_secret_configured_for_environment, record_security_event
 from .services.transcripts import (
     attach_task_id_to_ingestion_job,
     can_create_new_session as can_create_new_session_service,
@@ -425,6 +425,7 @@ class AuthenticatedContext:
 
 enforce_production_cookie_security()
 csrf_secret_configured_for_environment()
+audit_subject_hash_secret_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")

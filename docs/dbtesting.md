@@ -429,9 +429,11 @@ Behavior in plain language:
 Brief test shape:
 
 ```python
+from tests.constants import PERMANENT_TEST_PASSWORD
+
 challenge = client.post("/api/v1/auth/mfa/totp", json={"code": code, "remember_device": True})
 client.post("/api/v1/auth/logout")
-login_again = login(client, email="managed@example.com", password="BetterPass1")
+login_again = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
 ```
 
 Expected:

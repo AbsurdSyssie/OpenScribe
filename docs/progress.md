@@ -1,5 +1,56 @@
 # Progress
 
+## 2026-06-30 Regression Worklist Hardening
+
+### Scope
+
+- Worked through `regressions.md` P1/P2 items: permanent password rollout, audit User-Agent truncation, validation-response redaction, audit subject-hash secret handling, and CSP CSSOM browser coverage.
+
+### Checklist
+
+- Target behavior: permanent password UI/tests match 12-character complexity policy; audit strings fit storage limits including truncation marker; transient structured context is rejected with redacted validation payload; production audit subject hashes use configured/Vault secret material; strict CSP stays intact while CSSOM mutations remain covered.
+- Affected schema/modules/endpoints: `app/services/security_audit.py`, `app/main.py`, auth/onboarding/login/reset templates, browser CSP tests, API/auth/audit tests; no schema migration or endpoint contract broadening.
+- Affected tests: password/onboarding/MFA/browser UI tests, security audit tests, validation redaction test, CSP browser test.
+- Architecture risks: low for password/test/doc changes; audit secret startup failure is intentional fail-closed production behavior; CSP browser test requires Playwright package/browser in environment.
+- Docs referenced/updated: `regressions.md`, `docs/security.md`, `docs/auth.md`, `docs/dbtesting.md`, `docs/api.md`, `docs/working_note_implementation.md`, `docs/progress.md`.
+- Reuse decision: reused existing `validate_password_strength`, validation handler redaction, CSRF/Vault platform secret source, and audit best-effort writer; no new auth or deletion flow.
+- Code complete: yes for reproduced non-browser issues; CSP policy unchanged with regression test added.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: local venv lacks `playwright.sync_api`, so CSP browser regression skips here; run in browser-enabled CI/local env for live Chromium console evidence beyond static/full-suite skip coverage.
+
+### Files changed
+
+- `app/services/security_audit.py`: bounds truncation marker inside storage limit and resolves audit subject HMAC secret from explicit env/app/Vault sources with production fail-closed behavior.
+- `app/main.py`: validates production audit subject-hash secret at startup with existing cookie/CSRF production checks.
+- `app/templates/onboarding.html`, `app/templates/password_reset_confirm.html`, `app/templates/login.html`: permanent-password copy and `minlength` match backend policy while login/temp fields stay unchanged.
+- `tests/constants.py`: shared policy-compliant permanent password for tests.
+- `tests/test_api.py`, `tests/test_admin_ui.py`, `tests/test_auth_email.py`: password/onboarding/MFA tests use compliant value and preserve deliberate weak-password coverage; structured-context validation test asserts redacted public shape.
+- `tests/test_security_audit.py`: covers audit string boundaries, long User-Agent persistence, secret precedence, Vault production fallback, fail-closed production behavior, and local fallback.
+- `tests/test_csrf_browser.py`: adds real-browser CSP CSSOM mutation regression under `style-src-attr 'none'`.
+- `app/static/js/transcribe/app.js`: restores forced draft rendering on transcript switch and routes PII-triggered highlight refresh through `renderDraft` so transcript DOM updates have one owner.
+- `tests/test_admin_ui.py`: aligns static frontend guard assertions with single-owner draft render path.
+- `docs/security.md`, `docs/dbtesting.md`, `docs/progress.md`: document final policy/evidence.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_security_audit.py tests/test_api.py::test_generate_output_rejects_transient_structured_context_payload tests/test_api.py::test_temp_password_login_creates_onboarding_only_session_until_completion tests/test_admin_ui.py::test_completed_user_login_redirects_to_mfa_challenge_then_home`: passed, 31 tests.
+- `.venv/bin/pytest -q tests/test_api.py tests/test_admin_ui.py tests/test_auth_email.py -k "password or onboarding or mfa or bootstrap or activation"`: passed, 31 tests.
+- `.venv/bin/pytest -q tests/test_security_audit.py tests/test_cookie_csrf_security.py tests/test_auth_email.py -k "secret or subject_hash or login or audit or user_agent"`: passed, 37 tests.
+- `.venv/bin/pytest -q tests/test_api.py -k "generate_output_rejects_transient_structured_context_payload"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_csrf_browser.py`: skipped locally because `playwright.sync_api` is unavailable.
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_transcribe_workspace_refresh_renders_updated_pii_entities tests/test_admin_ui.py::test_transcribe_frontend_uses_global_template_selector_for_generation_controls tests/test_admin_ui.py::test_generated_document_pii_no_reveal_mode_strips_cached_values tests/test_web_refactor.py::test_transcribe_transcript_render_guard_owns_transcript_dom_updates`: passed, 4 tests.
+- `.venv/bin/pytest -q`: passed, 814 tests; 1 skipped; 18 warnings.
+
+### Architecture checkpoint summary
+
+- Schema checkpoint: no schema or migration change; audit strings now fit existing column limits.
+- Auth/ownership checkpoint: no ownership or role boundary change; permanent password creation keeps existing onboarding/activation/reset paths and temp/login contracts.
+- Lifecycle/deletion checkpoint: no retention root, cascade, lock, or deletion behavior changed.
+- Provider checkpoint: no team provider resolution or credential model changed; audit uses existing platform Vault secret only as secret material and never logs it.
+- Structured-note contract: transient `structured_context` generation input remains rejected; response now asserts redacted validation contract and no persistence.
+- Privacy boundaries: audit rows remain metadata-only; raw email subjects are HMACed, raw User-Agent is bounded, no transcript/note/prompt/provider response content exposed.
+
 ## 2026-06-29 Generation Audit Origin Metadata
 
 ### Scope

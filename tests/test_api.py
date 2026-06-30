@@ -147,6 +147,7 @@ from app.schemas.transcripts import TranscriptStart, WorkingNoteUpdate
 from app.services import vault as vault_service
 from app.services.auth import SESSION_COOKIE_NAME, rotate_session
 from app.services.vault import generate_user_content_data_key, unwrap_user_content_data_key
+from tests.constants import PERMANENT_TEST_PASSWORD
 
 
 def test_enqueue_transcript_ingestion_job_does_not_send_audio(monkeypatch):
@@ -2343,14 +2344,14 @@ def test_stt_routes_require_admin_provisioning_or_leader_selection_scope_and_ful
     assert_error(onboarding_options, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
     onboarding_clear = client.delete("/api/v1/stt-selection")
     assert_error(onboarding_clear, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
 
-    mfa_login = login(client, email="managed@example.com", password="BetterPass1")
+    mfa_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert mfa_login.status_code == 200
     assert mfa_login.json()["auth_level"] == "pending_mfa"
     pending_mfa = client.get(f"/api/v1/stt-configs?team_id={team.id}")
@@ -8061,8 +8062,18 @@ def test_generate_output_rejects_transient_structured_context_payload(
         },
     )
     assert generated.status_code == 422
-    assert "structured_context" in generated.text
-    assert "extra_forbidden" in generated.text
+    assert generated.json() == {
+        "error": {
+            "code": "validation_error",
+            "message": "Request validation failed",
+            "details": {"issue_count": 1},
+        }
+    }
+    assert "structured_context" not in generated.text
+    assert "Known asthma" not in generated.text
+    assert "Peak flow diary" not in generated.text
+    assert "extra_forbidden" not in generated.text
+    assert "loc" not in generated.text
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
     assert persisted_document is None
@@ -10798,14 +10809,14 @@ def test_onboarding_and_pending_mfa_sessions_cannot_use_manager_account_routes(c
     assert_error(onboarding_reactivate, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
     assert_error(onboarding_delete, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
 
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
 
-    mfa_login = login(client, email="managed@example.com", password="BetterPass1")
+    mfa_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert mfa_login.status_code == 200
     assert mfa_login.json()["auth_level"] == "pending_mfa"
 
@@ -11137,7 +11148,16 @@ def test_temp_password_login_creates_onboarding_only_session_until_completion(cl
     blocked = client.get("/api/v1/users")
     assert_error(blocked, status_code=403, code="onboarding_incomplete", message="Complete onboarding before accessing this route")
 
-    password_change = client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    weak_password_change = client.post("/api/v1/onboarding/password", json={"new_password": "ShortPass12"})
+    assert_error(
+        weak_password_change,
+        status_code=422,
+        code="validation_error",
+        message="Request validation failed",
+    )
+    assert weak_password_change.json()["error"]["details"] == {"issue_count": 1}
+
+    password_change = client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     assert password_change.status_code == 200
     assert password_change.json()["onboarding_state"] == "pending_totp_enrollment"
 
@@ -11172,14 +11192,14 @@ def test_completed_user_requires_mfa_on_next_login_without_trusted_device(client
 
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     code = pyotp.TOTP(start.json()["secret"]).now()
     client.post("/api/v1/onboarding/totp/verify", json={"code": code})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
 
-    second_login = login(client, email="managed@example.com", password="BetterPass1")
+    second_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert second_login.status_code == 200
     assert second_login.json()["auth_level"] == "pending_mfa"
     assert second_login.json()["redirect_to"] == "/mfa/challenge"
@@ -11218,13 +11238,13 @@ def test_mfa_challenge_is_rate_limited_after_repeated_invalid_codes(client, make
 
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
-    login(client, email="managed@example.com", password="BetterPass1")
+    login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
 
     responses = [
         client.post("/api/v1/auth/mfa/totp", json={"code": "000000", "remember_device": False})
@@ -11254,14 +11274,14 @@ def test_remembered_device_skips_mfa_within_freshness_window(client, db_session,
 
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
 
-    second_login = login(client, email="managed@example.com", password="BetterPass1")
+    second_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert second_login.json()["auth_level"] == "pending_mfa"
     challenge = complete_mfa_challenge(client, secret, remember_device=True)
     assert challenge.status_code == 200
@@ -11271,7 +11291,7 @@ def test_remembered_device_skips_mfa_within_freshness_window(client, db_session,
     assert stored_devices[0].device_token_hash
 
     client.post("/api/v1/auth/logout")
-    third_login = login(client, email="managed@example.com", password="BetterPass1")
+    third_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert third_login.status_code == 200
     assert third_login.json()["auth_level"] == "full"
     assert third_login.json()["redirect_to"] == "/home"
@@ -11295,13 +11315,13 @@ def test_expired_trusted_device_requires_mfa_again(client, db_session, make_team
     )
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
-    login(client, email="managed@example.com", password="BetterPass1")
+    login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     complete_mfa_challenge(client, secret, remember_device=True)
     client.post("/api/v1/auth/logout")
 
@@ -11311,7 +11331,7 @@ def test_expired_trusted_device_requires_mfa_again(client, db_session, make_team
     db_session.add(device)
     db_session.commit()
 
-    relogin = login(client, email="managed@example.com", password="BetterPass1")
+    relogin = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert relogin.status_code == 200
     assert relogin.json()["auth_level"] == "pending_mfa"
 
@@ -11334,13 +11354,13 @@ def test_locking_a_user_revokes_trusted_devices_immediately(client, db_session, 
     )
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     secret = start.json()["secret"]
     client.post("/api/v1/onboarding/totp/verify", json={"code": pyotp.TOTP(secret).now()})
     client.post("/api/v1/onboarding/skip-recovery-codes")
     client.post("/api/v1/auth/logout")
-    login(client, email="managed@example.com", password="BetterPass1")
+    login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     complete_mfa_challenge(client, secret, remember_device=True)
     user = db_session.scalar(select(User).where(User.email == "managed@example.com"))
     user.status = UserStatus.locked
@@ -11373,7 +11393,7 @@ def test_recovery_code_generation_hashes_codes_and_unlocks_full_session(client, 
 
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
     code = pyotp.TOTP(start.json()["secret"]).now()
     client.post("/api/v1/onboarding/totp/verify", json={"code": code})
@@ -11407,7 +11427,7 @@ def test_totp_start_returns_qr_code_svg_data_uri(client, make_team, make_user):
 
     client.post("/api/v1/auth/logout")
     login(client, email="managed@example.com", password="TempPass1")
-    client.post("/api/v1/onboarding/password", json={"new_password": "BetterPass1"})
+    client.post("/api/v1/onboarding/password", json={"new_password": PERMANENT_TEST_PASSWORD})
     start = client.post("/api/v1/onboarding/totp/start")
 
     assert start.status_code == 200

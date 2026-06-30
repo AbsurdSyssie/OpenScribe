@@ -9,7 +9,14 @@ from app.schemas.transcripts import TranscriptStart
 from app.services.admin import create_user, delete_team, reactivate_user, suspend_user
 from app.services.default_assets import delete_default_template, upsert_default_template
 from app.services.preferences import clear_user_app_preferences, set_user_app_preferences
-from app.services.security_audit import audit_subject_hash, record_security_event
+from app.services.security_audit import (
+    AUDIT_TRUNCATION_MARKER,
+    MAX_AUDIT_STRING_LENGTH,
+    _safe_string,
+    audit_subject_hash,
+    audit_subject_hash_secret_configured_for_environment,
+    record_security_event,
+)
 from app.services.smart_phrases import create_personal_smart_phrase, delete_personal_smart_phrase, update_personal_smart_phrase
 from app.services.templates import queue_document_generation_from_template, upsert_personal_template
 from app.services.transcripts import delete_transcripts, queue_audio_file_ingestion, start_transcript
@@ -44,6 +51,18 @@ def test_record_security_event_redacts_nested_sensitive_values_and_sanitizes_str
     assert "token" not in event.details_json["nested"]["items"][0]
     assert event.details_json["nested"]["items"][0]["value"] == "visible"
     assert "secret" not in str(event.details_json)
+
+
+def test_audit_safe_string_bounds_truncation_marker():
+    exact = "x" * MAX_AUDIT_STRING_LENGTH
+    one_over = "x" * (MAX_AUDIT_STRING_LENGTH + 1)
+    newline_expanded = "x" * (MAX_AUDIT_STRING_LENGTH - 5) + "\n" + "y" * 10
+
+    assert _safe_string(exact) == exact
+    assert len(_safe_string(one_over)) == MAX_AUDIT_STRING_LENGTH
+    assert _safe_string(one_over).endswith(AUDIT_TRUNCATION_MARKER)
+    assert len(_safe_string(newline_expanded)) == MAX_AUDIT_STRING_LENGTH
+    assert _safe_string(newline_expanded).endswith(AUDIT_TRUNCATION_MARKER)
 
 
 def test_record_security_event_does_not_commit_unrelated_pending_changes(db_session):
@@ -145,6 +164,22 @@ def test_trusted_audit_origin_ip_is_bounded(client, db_session, make_user, monke
     assert len(event.request_ip) <= 255
 
 
+def test_long_user_agent_is_persisted_with_bounded_truncation(client, db_session, make_user):
+    make_user(email="audit-long-ua@example.com", password="password-1", mfa_required=False, mfa_enabled=False)
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "audit-long-ua@example.com", "password": "wrong-password"},
+        headers={"User-Agent": "browser" + "x" * 2000},
+    )
+
+    event = _audit_events(db_session, "login_failure")[0]
+    assert response.status_code == 401
+    assert event.user_agent is not None
+    assert len(event.user_agent) <= MAX_AUDIT_STRING_LENGTH
+    assert event.user_agent.endswith(AUDIT_TRUNCATION_MARKER)
+
+
 def test_audit_subject_hash_uses_keyed_hmac(monkeypatch):
     monkeypatch.setenv("AUDIT_SUBJECT_HASH_SECRET", "first-secret")
     first = audit_subject_hash("person@example.com")
@@ -153,6 +188,66 @@ def test_audit_subject_hash_uses_keyed_hmac(monkeypatch):
 
     assert first is not None and first.startswith("hmac-sha256:")
     assert first != second
+
+
+def test_audit_subject_hash_explicit_override_takes_precedence(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUDIT_SUBJECT_HASH_SECRET", "audit-secret")
+    monkeypatch.setenv("SECRET_KEY", "app-secret")
+
+    override_hash = audit_subject_hash("person@example.com")
+    monkeypatch.delenv("AUDIT_SUBJECT_HASH_SECRET")
+    app_hash = audit_subject_hash("person@example.com")
+
+    assert override_hash != app_hash
+
+
+def test_audit_subject_hash_uses_explicit_application_secret(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("AUDIT_SUBJECT_HASH_SECRET", raising=False)
+    monkeypatch.setenv("SECRET_KEY", "first-app-secret")
+    first = audit_subject_hash("person@example.com")
+    monkeypatch.setenv("SECRET_KEY", "second-app-secret")
+    second = audit_subject_hash("person@example.com")
+
+    assert first != second
+
+
+def test_audit_subject_hash_uses_vault_secret_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("AUDIT_SUBJECT_HASH_SECRET", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("CSRF_SECRET", raising=False)
+    monkeypatch.setattr("app.services.vault.get_or_create_platform_csrf_secret", lambda: "vault-secret")
+    vault_hash = audit_subject_hash("person@example.com")
+    monkeypatch.setenv("CSRF_SECRET", "different-secret")
+    explicit_hash = audit_subject_hash("person@example.com")
+
+    assert vault_hash != explicit_hash
+
+
+def test_audit_subject_hash_secret_check_fails_closed_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("AUDIT_SUBJECT_HASH_SECRET", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("CSRF_SECRET", raising=False)
+    monkeypatch.setattr("app.services.vault.get_or_create_platform_csrf_secret", lambda: (_ for _ in ()).throw(RuntimeError("vault down")))
+
+    try:
+        audit_subject_hash_secret_configured_for_environment()
+    except RuntimeError as exc:
+        assert "Vault-backed CSRF secret" in str(exc)
+    else:
+        raise AssertionError("Expected production audit secret check to fail")
+
+
+def test_audit_subject_hash_local_fallback_is_dev_only(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("AUDIT_SUBJECT_HASH_SECRET", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("CSRF_SECRET", raising=False)
+
+    assert audit_subject_hash("person@example.com") is not None
 
 
 def test_large_audit_details_are_bounded(db_session):

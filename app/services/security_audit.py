@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import Request
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.cookie_security import app_environment
 from app.models import SecurityAuditEvent, User
 
 
@@ -45,6 +46,8 @@ MAX_AUDIT_IP_LENGTH = 255
 MAX_AUDIT_DICT_KEYS = 50
 MAX_AUDIT_LIST_ITEMS = 50
 MAX_AUDIT_DETAILS_JSON_LENGTH = 8192
+AUDIT_TRUNCATION_MARKER = "...[truncated]"
+LOCAL_AUDIT_SECRET_ENVIRONMENTS = {"local", "dev", "development", "test", "testing"}
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -52,11 +55,17 @@ def _is_sensitive_key(key: str) -> bool:
     return any(sensitive in normalized for sensitive in SENSITIVE_AUDIT_KEYS)
 
 
-def _safe_string(value: str) -> str:
+def _bounded_truncated_string(value: str, *, max_length: int) -> str:
+    if len(value) <= max_length:
+        return value
+    if max_length <= len(AUDIT_TRUNCATION_MARKER):
+        return AUDIT_TRUNCATION_MARKER[:max_length]
+    return value[: max_length - len(AUDIT_TRUNCATION_MARKER)] + AUDIT_TRUNCATION_MARKER
+
+
+def _safe_string(value: str, *, max_length: int = MAX_AUDIT_STRING_LENGTH) -> str:
     clean = value.replace("\r", "\\r").replace("\n", "\\n")
-    if len(clean) > MAX_AUDIT_STRING_LENGTH:
-        return clean[:MAX_AUDIT_STRING_LENGTH] + "...[truncated]"
-    return clean
+    return _bounded_truncated_string(clean, max_length=max_length)
 
 
 def _safe_value(value: Any) -> Any:
@@ -110,7 +119,7 @@ def _safe_ip(value: str | None) -> str | None:
     try:
         return str(ipaddress.ip_address(text))
     except ValueError:
-        return _safe_string(text)[:MAX_AUDIT_IP_LENGTH]
+        return _safe_string(text, max_length=MAX_AUDIT_IP_LENGTH)
 
 
 def request_ip(request: Request | None) -> str | None:
@@ -126,8 +135,30 @@ def request_ip(request: Request | None) -> str | None:
 
 
 def _subject_hash_secret() -> bytes:
-    material = os.getenv("AUDIT_SUBJECT_HASH_SECRET") or os.getenv("SECRET_KEY") or os.getenv("CSRF_SECRET") or "openscribe-dev-audit-subject-hash"
+    material = os.getenv("AUDIT_SUBJECT_HASH_SECRET") or os.getenv("SECRET_KEY") or os.getenv("CSRF_SECRET")
+    if material:
+        return material.encode("utf-8")
+
+    environment = app_environment()
+    if environment in {"production", "prod"} or os.getenv("CSRF_SECRET_VAULT_REF"):
+        try:
+            from app.services.vault import get_or_create_platform_csrf_secret
+
+            material = get_or_create_platform_csrf_secret()
+        except Exception as exc:
+            raise RuntimeError(
+                "AUDIT_SUBJECT_HASH_SECRET, SECRET_KEY, CSRF_SECRET, or Vault-backed CSRF secret is required for audit subject hashing"
+            ) from exc
+    elif environment in LOCAL_AUDIT_SECRET_ENVIRONMENTS:
+        material = "openscribe-dev-audit-subject-hash"
+    else:
+        raise RuntimeError("AUDIT_SUBJECT_HASH_SECRET, SECRET_KEY, or CSRF_SECRET is required for audit subject hashing")
     return material.encode("utf-8")
+
+
+def audit_subject_hash_secret_configured_for_environment() -> None:
+    if app_environment() in {"production", "prod"}:
+        _subject_hash_secret()
 
 
 def audit_subject_hash(value: str | None) -> str | None:

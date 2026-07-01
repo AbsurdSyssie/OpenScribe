@@ -961,7 +961,11 @@ def render_admin(
                     team_id=query_uuid("audit_team_id"),
                     actor_user_id=query_uuid("audit_actor_user_id"),
                 ),
-                "audit_filter_options": audit_filter_options_service(db),
+                "audit_filter_options": audit_filter_options_service(
+                    db,
+                    since=audit_since,
+                    limit=audit_limit,
+                ),
             }
         )
     email_recovery_enabled = email_password_reset_enabled_service()

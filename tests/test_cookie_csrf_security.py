@@ -62,6 +62,23 @@ def test_production_uses_vault_csrf_secret_when_env_secret_missing(monkeypatch):
     csrf_service._csrf_secret.cache_clear()
 
 
+def test_session_csrf_token_is_stable_for_session_and_bound_to_session():
+    first_token = csrf_service.session_csrf_token("first-session-token")
+
+    assert csrf_service.session_csrf_token("first-session-token") == first_token
+    assert csrf_service.session_csrf_token("second-session-token") != first_token
+    assert csrf_service.verify_csrf_token(
+        submitted_token=first_token,
+        raw_session_token="first-session-token",
+        anon_nonce=None,
+    )
+    assert not csrf_service.verify_csrf_token(
+        submitted_token=first_token,
+        raw_session_token="second-session-token",
+        anon_nonce=None,
+    )
+
+
 def test_hsts_added_for_https(raw_client):
     response = raw_client.get("/login", headers={"x-forwarded-proto": "https"})
 

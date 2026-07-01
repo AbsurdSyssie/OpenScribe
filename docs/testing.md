@@ -13,6 +13,9 @@ Documentation convention:
 ```bash
 source .venv/bin/activate
 export $(grep -v '^#' .env | xargs)
+export APP_ENV=test
+export COOKIE_SECURE_MODE=auto
+export HSTS_SOURCE=app
 pytest
 ```
 
@@ -37,7 +40,7 @@ Current behavior:
 - cookie/CSRF security tests verify production startup guards, HTTPS-only HSTS emission, proxy delegation, `HSTS_SOURCE=proxy_static_fallback` static-asset HSTS fallback mode, browser security headers, public splash/auth-page `no-store`, API no-store behavior, short-cacheable cookie-free public metadata routes, short-cacheable static assets without CSRF cookies, anonymous pre-login CSRF, `HttpOnly` signed CSRF/session/trusted-device/anonymous-nonce cookies, CSRF-cookie-alone non-authentication, server-rendered hidden CSRF fields on public forms, same-origin unsafe request checks, signed session-bound CSRF acceptance, stale CSRF rejection after session rotation, and evidence for accepting scanner auth/session auto-detection warnings on login/CSRF cookies
 - security audit tests verify durable audit redacts nested sensitive keys, sanitizes CR/LF, env-gates Cloudflare origin IP capture, records login success/failure without raw passwords or email, records invalid reset-token failures, records CSRF/authz/rate-limit abuse signals without cookies/tokens/bodies, records team-delete blockers and high-signal provider/de-ID validation rejections, records account lifecycle metadata, excludes prompt text from template/default-asset/generation audit, excludes smart-phrase content from smart-phrase audit, excludes filename/audio content from upload audit, and excludes transcript title/content from transcript deletion audit
 - audit detection tests verify the manual detection helper flags repeated auth failures, repeated access denials, rate-limit/validation bursts, high-risk admin/destructive actions, provider config changes, and time-window parsing
-- admin audit UI tests verify system admins can view security-audit metadata/signals, use DB-populated filter dropdowns, filter event rows, and non-admin users cannot open the Audit tab; tests also verify sensitive stored detail keys are not rendered
+- admin audit UI tests verify system admins can view security-audit metadata/signals, use windowed and capped DB-populated filter dropdowns, filter event rows, and non-admin users cannot open the Audit tab; tests also verify overflowing lookback input cannot cause a 500 and sensitive stored detail keys are not rendered
 - SSRF canary redirect coverage uses `httpx.MockTransport`; normal test runs require no external provider or public internet access.
 
 ## API auth route audit
@@ -55,7 +58,7 @@ The audit:
 
 `tests/test_csrf_browser.py` is an optional Playwright-backed browser test for rendered CSRF behavior.
 
-It starts the FastAPI app on a localhost port, logs in through the browser form, opens `/transcribe`, clicks “Create new consultation”, and verifies the browser sends `X-CSRF-Token` on `POST /api/v1/transcripts/start`.
+It starts the FastAPI app on a localhost port with a separate SQLAlchemy session per HTTP request, logs in through the browser form, opens `/transcribe`, clicks “Create new consultation”, and verifies the browser sends the current session-bound `X-CSRF-Token` on `POST /api/v1/transcripts/start`. It also verifies the successful redirect does not rotate that token within the same login session.
 
 Run it with:
 
@@ -63,6 +66,9 @@ Run it with:
 source .venv/bin/activate
 pip install playwright
 python -m playwright install chromium
+export APP_ENV=test
+export COOKIE_SECURE_MODE=auto
+export HSTS_SOURCE=app
 pytest -q tests/test_csrf_browser.py
 ```
 

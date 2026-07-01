@@ -63,9 +63,14 @@ def _decode(token: str) -> tuple[str, str] | None:
     return nonce, signature
 
 
+def _session_nonce(session_hash: str) -> str:
+    message = f"session-csrf-nonce:{session_hash}".encode("utf-8")
+    return hmac.new(_csrf_secret().encode("utf-8"), message, sha256).hexdigest()
+
+
 def session_csrf_token(raw_session_token: str) -> str:
-    nonce = secrets.token_urlsafe(24)
-    return _encode(f"session:{session_token_hash(raw_session_token)}", nonce)
+    session_hash = session_token_hash(raw_session_token)
+    return _encode(f"session:{session_hash}", _session_nonce(session_hash))
 
 
 def anonymous_csrf_token(anon_nonce: str) -> str:
@@ -88,7 +93,10 @@ def verify_csrf_token(
 
     nonce, signature = decoded
     if raw_session_token:
-        subject = f"session:{session_token_hash(raw_session_token)}"
+        session_hash = session_token_hash(raw_session_token)
+        subject = f"session:{session_hash}"
+        if not hmac.compare_digest(nonce, _session_nonce(session_hash)):
+            return False
     elif anon_nonce:
         subject = f"anon:{anon_nonce}"
         if nonce != anon_nonce:

@@ -89,16 +89,23 @@ class AuditSignal:
 
 
 def parse_since(value: str | None) -> datetime:
-    earliest = utcnow() - MAX_AUDIT_LOOKBACK
+    now = utcnow()
+    earliest = now - MAX_AUDIT_LOOKBACK
     if not value:
-        return utcnow() - timedelta(hours=24)
+        return now - timedelta(hours=24)
     text = value.strip().lower()
     if text.endswith("h") and text[:-1].isdigit():
-        return max(utcnow() - timedelta(hours=int(text[:-1])), earliest)
+        hours = int(text[:-1])
+        if hours >= MAX_AUDIT_LOOKBACK.total_seconds() // 3600:
+            return earliest
+        return now - timedelta(hours=hours)
     if text.endswith("d") and text[:-1].isdigit():
-        return max(utcnow() - timedelta(days=int(text[:-1])), earliest)
+        days = int(text[:-1])
+        if days >= MAX_AUDIT_LOOKBACK.days:
+            return earliest
+        return now - timedelta(days=days)
     parsed = datetime.fromisoformat(text.replace("z", "+00:00"))
-    since = parsed if parsed.tzinfo else parsed.replace(tzinfo=utcnow().tzinfo)
+    since = parsed if parsed.tzinfo else parsed.replace(tzinfo=now.tzinfo)
     return max(since, earliest)
 
 
@@ -360,6 +367,10 @@ def audit_event_display_ip(value: str | None) -> str | None:
     return value
 
 
+def _bounded_audit_limit(limit: int) -> int:
+    return max(1, min(limit, 250))
+
+
 def list_security_audit_events(
     db: Session,
     *,
@@ -372,7 +383,7 @@ def list_security_audit_events(
     team_id: UUID | None = None,
     actor_user_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
-    bounded_limit = max(1, min(limit, 250))
+    bounded_limit = _bounded_audit_limit(limit)
     statement = (
         select(SecurityAuditEvent)
         .options(joinedload(SecurityAuditEvent.actor), joinedload(SecurityAuditEvent.target), joinedload(SecurityAuditEvent.team))
@@ -415,23 +426,63 @@ def list_security_audit_events(
     ]
 
 
-def _distinct_audit_detail_values(db: Session, *, key: str, default: str) -> list[str]:
+def _distinct_audit_detail_values(
+    db: Session,
+    *,
+    since: datetime,
+    limit: int,
+    key: str,
+    default: str,
+) -> list[str]:
     value = func.coalesce(func.nullif(SecurityAuditEvent.details_json[key].as_string(), ""), default)
-    return list(db.scalars(select(value).distinct().order_by(value.asc())))
+    return list(
+        db.scalars(
+            select(value)
+            .where(SecurityAuditEvent.created_at >= since)
+            .distinct()
+            .order_by(value.asc())
+            .limit(limit)
+        )
+    )
 
 
-def audit_filter_options(db: Session) -> dict[str, list[str]]:
+def audit_filter_options(db: Session, *, since: datetime, limit: int = 100) -> dict[str, list[Any]]:
+    bounded_limit = _bounded_audit_limit(limit)
     return {
-        "actions": list(db.scalars(select(SecurityAuditEvent.action).distinct().order_by(SecurityAuditEvent.action.asc()))),
-        "categories": _distinct_audit_detail_values(db, key="category", default="uncategorized"),
-        "outcomes": _distinct_audit_detail_values(db, key="outcome", default="unknown"),
+        "actions": list(
+            db.scalars(
+                select(SecurityAuditEvent.action)
+                .where(SecurityAuditEvent.created_at >= since)
+                .distinct()
+                .order_by(SecurityAuditEvent.action.asc())
+                .limit(bounded_limit)
+            )
+        ),
+        "categories": _distinct_audit_detail_values(
+            db,
+            since=since,
+            limit=bounded_limit,
+            key="category",
+            default="uncategorized",
+        ),
+        "outcomes": _distinct_audit_detail_values(
+            db,
+            since=since,
+            limit=bounded_limit,
+            key="outcome",
+            default="unknown",
+        ),
         "request_ips": [
             {"value": value, "label": value}
             for value in db.scalars(
                 select(SecurityAuditEvent.request_ip)
-                .where(SecurityAuditEvent.request_ip.is_not(None))
+                .where(
+                    SecurityAuditEvent.created_at >= since,
+                    SecurityAuditEvent.request_ip.is_not(None),
+                )
                 .distinct()
                 .order_by(SecurityAuditEvent.request_ip.asc())
+                .limit(bounded_limit)
             )
             if value and audit_event_display_ip(value) == value
         ],

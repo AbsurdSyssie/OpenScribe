@@ -141,6 +141,7 @@ def test_parse_since_accepts_relative_and_iso_values():
 
 def test_parse_since_clamps_extreme_lookback():
     assert parse_since("3650d") > utcnow().replace(year=utcnow().year - 1)
+    assert parse_since("999999999999h") > utcnow().replace(year=utcnow().year - 1)
 
 
 def test_audit_event_listing_filters_category_and_outcome_in_query(db_session):
@@ -218,7 +219,7 @@ def test_audit_filter_options_select_distinct_json_values_in_sql(db_session):
 
     event.listen(bind, "before_cursor_execute", capture_statement)
     try:
-        options = audit_filter_options(db_session)
+        options = audit_filter_options(db_session, since=utcnow().replace(year=utcnow().year - 1))
     finally:
         event.remove(bind, "before_cursor_execute", capture_statement)
 
@@ -227,3 +228,47 @@ def test_audit_filter_options_select_distinct_json_values_in_sql(db_session):
     json_option_queries = [statement for statement in statements if "details_json" in statement]
     assert len(json_option_queries) == 2
     assert all("DISTINCT" in statement.upper() for statement in json_option_queries)
+
+
+def test_audit_filter_options_are_windowed_and_limited(db_session):
+    now = utcnow()
+    db_session.add_all(
+        [
+            SecurityAuditEvent(
+                action="old_action",
+                request_ip="1.1.1.1",
+                details_json={"category": "old_category", "outcome": "old_outcome"},
+                created_at=now - timedelta(days=2),
+            ),
+            SecurityAuditEvent(
+                action="recent_action_a",
+                request_ip="2.2.2.2",
+                details_json={"category": "recent_category_a", "outcome": "recent_outcome_a"},
+                created_at=now - timedelta(minutes=2),
+            ),
+            SecurityAuditEvent(
+                action="recent_action_b",
+                request_ip="3.3.3.3",
+                details_json={"category": "recent_category_b", "outcome": "recent_outcome_b"},
+                created_at=now - timedelta(minutes=1),
+            ),
+            SecurityAuditEvent(
+                action="recent_action_c",
+                request_ip="4.4.4.4",
+                details_json={"category": "recent_category_c", "outcome": "recent_outcome_c"},
+                created_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    options = audit_filter_options(db_session, since=now - timedelta(hours=1), limit=2)
+
+    assert len(options["actions"]) == 2
+    assert len(options["categories"]) == 2
+    assert len(options["outcomes"]) == 2
+    assert len(options["request_ips"]) == 2
+    assert "old_action" not in options["actions"]
+    assert "old_category" not in options["categories"]
+    assert "old_outcome" not in options["outcomes"]
+    assert {option["value"] for option in options["request_ips"]}.isdisjoint({"1.1.1.1"})

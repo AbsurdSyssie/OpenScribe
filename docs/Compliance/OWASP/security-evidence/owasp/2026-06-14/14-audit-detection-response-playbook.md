@@ -38,6 +38,7 @@ System-admin browser view:
 - open `/admin2?tab=audit`
 - use `audit_since`, `audit_action`, and `audit_request_ip` filters for manual review
 - confirm only allowlisted metadata appears; raw `details_json` is not dumped
+- lookback is capped at 30 days; recent rows and each filter-option list are capped at 250, with option queries scoped to the selected window
 
 Output includes:
 

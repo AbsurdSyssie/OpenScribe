@@ -123,10 +123,10 @@ Current implementation:
 - static assets under `/static/` use short public caching (`Cache-Control: public, max-age=3600`) and do not issue CSRF cookies
 - `/docs`, `/redoc`, and `/openapi.json` remain public in local/test by default, but production defaults to full system-admin authentication unless `PUBLIC_API_DOCS=true` is explicitly set
 - the signed CSRF cookie is `HttpOnly`; browser flows receive the same signed value through server-rendered hidden fields and the nonce-protected CSRF bootstrap script
-- the readable `openscribe_csrf` cookie is not an authentication bearer secret; it must match the `HttpOnly` anonymous nonce cookie before login or the current session token hash after login
+- the `HttpOnly` `openscribe_csrf` cookie is not an authentication bearer secret; before login it is bound to the separate anonymous nonce, and after login it is bound to the current session-token hash; browser JavaScript receives the same value from server-rendered page state rather than reading the cookie
 - passive scanners may identify `openscribe_csrf_anon`/`openscribe_csrf` as session-management cookies, but they are CSRF controls; only `openscribe_session` and `openscribe_trusted_device` are auth-bearing cookies
 - server-rendered browser forms include the same signed CSRF value in a hidden `_csrf_token` field so forms remain protected without depending on cookie reads from JavaScript
-- authenticated CSRF tokens are bound to the current session-token hash, so session rotation invalidates prior CSRF tokens
+- authenticated CSRF tokens are stable for the current session and HMAC-bound to its session-token hash; normal page navigation does not rotate them, while session rotation invalidates prior CSRF tokens
 - when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
 - anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session
 - unsafe `/api/v1` requests require same-origin `Origin` or `Referer` plus `X-CSRF-Token` when a session or trusted-device cookie is present; API CSRF validation does not parse form bodies for fallback tokens
@@ -294,7 +294,8 @@ Current implementation note:
 - audit retention is separate from transcript retention; deleting transcript-derived content does not delete metadata-only security audit rows.
 - MVP audit read access is DB/operations access plus the system-admin-only read-only Admin Audit tab.
 - the Admin Audit tab renders detection signals and recent metadata-only audit rows from an allowlist of safe fields; it does not dump raw `details_json`.
-- the Admin Audit tab shows all events in the selected time window by default; action/category/outcome/origin-IP filter dropdowns are populated from existing `security_audit_events` contents, with category/outcome values deduplicated in SQL rather than loading every event's JSON.
+- the Admin Audit tab computes exact detection totals across a lookback capped at 30 days and displays at most 250 recent rows; oversized relative lookbacks clamp before duration construction, so hostile numeric input cannot overflow.
+- action/category/outcome/origin-IP filter dropdown queries use the same selected audit window and 1-to-250 event limit; each query deduplicates in SQL and caps returned options rather than scanning all history into the response.
 - future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
 - normal audit writes use a short-lived best-effort database session so audit persistence cannot commit, roll back, or fail unrelated application work. Error-handler telemetry such as rate-limit and validation rejection audit remains best-effort to avoid masking the original protection response.
 - audit subject hashes use keyed HMAC-SHA256 rather than plain SHA-256. Secret priority is `AUDIT_SUBJECT_HASH_SECRET`, then `SECRET_KEY`, then `CSRF_SECRET`, then the Vault-backed platform CSRF secret in production. Production fails closed if no configured or Vault-backed secret can be resolved; the public dev fallback is restricted to explicit local/dev/test environments.

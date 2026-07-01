@@ -1,5 +1,118 @@
 # Progress
 
+## 2026-07-01 Audit Input and Filter Bounds
+
+### Scope
+
+- Prevented overflowing relative audit lookbacks from causing Admin Audit 500 responses.
+- Scoped all audit filter-option queries to the selected lookback and capped each option list using the same 1-to-250 event limit as recent rows.
+
+### Checklist
+
+- Target behavior: hostile numeric lookbacks clamp safely; filter generation cannot return unbounded historical IPs or metadata values.
+- Affected schema/modules/endpoints: audit detection service and both Admin Audit views through shared presentation code; no schema or migration change.
+- Affected tests: audit service and admin UI regression coverage.
+- Architecture risks: cap may omit high-cardinality option values beyond the selected limit; direct URL filters remain supported.
+- Docs referenced/updated: `docs/security.md`, `docs/testing.md`, OWASP audit response playbook, and this note; no applicable audit ADR exists.
+- Reuse decision: reused existing 30-day lookback, 250-row cap, SQLAlchemy parameterized queries, and IP masking.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: filter options are capped, not paginated.
+
+### Files changed
+
+- `app/services/audit_detection.py`: pre-bounds relative durations and applies selected-window/limit predicates to all filter-option queries.
+- `app/web/presentation.py`: passes parsed lookback and requested event limit into filter generation.
+- `tests/test_audit_detection.py`: covers overflow-safe parsing plus windowed/capped option results.
+- `tests/test_admin_ui.py`: verifies oversized lookback returns a successful Admin Audit page.
+- Security/testing/OWASP docs: document query and input bounds.
+
+### Tests
+
+- Before fix: focused regressions reproduced `OverflowError`, route failure, and missing window/limit API.
+- `.venv/bin/pytest -q tests/test_audit_detection.py tests/test_admin_ui.py -k "audit"`: passed, 12 tests (189 deselected).
+
+### Documentation
+
+- Security contract and response playbook now state 30-day lookback and 250-result bounds.
+- Testing guide records overflow and bounded-option regressions.
+
+### Risks / assumptions
+
+- Options use lexical ordering before the cap for deterministic output. Values outside the cap can still be supplied as direct query filters.
+- Public-IP masking still occurs after the bounded DB result, so an option list can contain fewer entries than its limit when internal addresses are omitted.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; only metadata-only audit fields are read, and internal-IP display masking remains intact.
+- Ownership rules: unchanged; Audit tab remains system-admin-only.
+- Deletion semantics: unchanged; audit retention remains separate from transcript-root retention.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, constraint, index, or migration change.
+- Auth/ownership checkpoint: no route authorization or metadata scope expansion.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: service/UI regressions and security/testing/operations docs updated.
+
+## 2026-06-30 Per-Session CSRF and Browser Harness Fix
+
+### Scope
+
+- Changed authenticated CSRF issuance from a fresh token on every safe page request to one deterministic, HMAC-signed token per login session.
+- Fixed the Playwright live-server fixture to use one SQLAlchemy session per HTTP request and made the CSRF browser assertion compare request-time state before checking stability after redirect.
+
+### Checklist
+
+- Target behavior: authenticated CSRF token remains stable during normal navigation, unsafe browser API requests send that token, and session rotation invalidates it.
+- Affected schema/modules/endpoints: `app/services/csrf.py` token generation/verification and Playwright test infrastructure; no schema or endpoint shape change.
+- Affected tests: cookie/CSRF security tests, session-rotation API coverage, and Playwright CSRF/CSP browser tests.
+- Architecture risks: changing CSRF derivation may reject a page holding a pre-deployment token until refresh; active auth sessions remain valid and the next safe page request issues the canonical token.
+- Docs referenced/updated: `CONTEXT.md`, `docs/security.md`, `docs/auth.md`, `docs/testing.md`, `docs/progress.md`; no applicable CSRF ADR exists under `docs/adr/`.
+- Reuse decision: reused existing CSRF HMAC secret, opaque session-token hash, constant-time comparison, origin validation, and cookie flags; no new storage or crypto library.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: Playwright remains an optional local dependency rather than a pinned project test dependency.
+
+### Files changed
+
+- `app/services/csrf.py`: derives one canonical opaque nonce per session and rejects non-canonical session nonces while retaining HMAC verification.
+- `tests/test_cookie_csrf_security.py`: verifies same-session stability, cross-session separation, correct-session acceptance, and wrong-session rejection.
+- `tests/test_csrf_browser.py`: uses request-scoped DB sessions, removes direct `conftest` import, verifies request-time token use, requires `201`, waits for redirect, and verifies same-session stability.
+- `docs/security.md`, `docs/auth.md`, `docs/testing.md`: document per-session behavior and current unsafe API contract.
+- `docs/progress.md`: records implementation checklist, evidence, and architecture checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py -k "session_csrf_token_is_stable"`: passed, 1 test.
+- `.venv/bin/pytest -q tests/test_csrf_browser.py::test_browser_transcribe_start_sends_csrf_header`: passed, 1 test with real Chromium.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py tests/test_api.py -k "csrf"`: passed, 36 tests with explicit test-mode cookie/HSTS settings.
+- `.venv/bin/pytest -q tests/test_csrf_browser.py`: passed, 3 tests with real Chromium and explicit test-mode cookie/HSTS settings.
+
+### Documentation
+
+- Security and auth docs now state authenticated CSRF tokens persist for one session and rotate with the session.
+- Testing docs now describe request-scoped browser DB sessions and the redirect stability check.
+
+### Risks / assumptions
+
+- Token remains non-auth-bearing, opaque, HMAC-signed, and bound to a high-entropy session token hash.
+- Deployment changes the canonical token format. Already-open pages may need one refresh; no login/session revocation is required.
+- Anonymous pre-login CSRF nonce behavior is unchanged.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript-derived content access or logging changed; tests use synthetic users and do not persist token values in docs.
+- Ownership rules: no user/team/admin authorization behavior changed.
+- Deletion semantics: no retention root, cascade, hard-delete, or session-revocation behavior changed.
+- Provider rules: no provider selection, fallback, credential, or Vault-reference behavior changed; existing platform CSRF secret resolution remains intact.
+- Structured-note contract: no structured profile, section key, validation, or generated-document behavior changed.
+- Schema checkpoint: no model, constraint, migration, or database lifecycle change.
+- Auth/ownership checkpoint: session binding, rotation invalidation, same-origin enforcement, HttpOnly session cookie, and constant-time HMAC checks remain enforced.
+- Lifecycle/deletion checkpoint: unchanged.
+- Docs/tests checkpoint: security, auth, testing, regression, and daily progress documentation updated; focused suites run.
+
 ## 2026-06-30 Regression Worklist Hardening
 
 ### Scope

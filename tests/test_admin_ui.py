@@ -2258,6 +2258,15 @@ def test_non_admin_cannot_open_admin_audit_tab(client, make_team, make_user):
     assert "Security audit" not in page.text
 
 
+def test_admin_audit_tab_clamps_overflowing_lookback(client, make_user):
+    admin = make_user(email="audit-overflow-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/admin2?tab=audit&audit_since=999999999999h")
+
+    assert page.status_code == 200
+
+
 def test_admin_restyled_account_request_reject_preserves_preview_route(client, db_session, make_team, make_user, make_account_request):
     make_team(name="Clinic Admin Requests")
     make_user(email="admin-restyled-requests@example.com", password="password-1", is_system_admin=True)

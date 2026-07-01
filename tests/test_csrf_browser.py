@@ -2,24 +2,31 @@ import socket
 import threading
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 playwright_sync = pytest.importorskip("playwright.sync_api")
 
 from app.db import get_db
 from app.main import app
 from app.models import TeamRole
-from tests.conftest import TestingSessionLocal
 
 
 @pytest.fixture
 def live_server(db_session):
     uvicorn = pytest.importorskip("uvicorn")
+    browser_session_factory = sessionmaker(
+        bind=db_session.get_bind(),
+        autoflush=False,
+        autocommit=False,
+        future=True,
+    )
 
     def override_get_db():
+        request_db = browser_session_factory()
         try:
-            yield db_session
+            yield request_db
         finally:
-            pass
+            request_db.close()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -27,7 +34,7 @@ def live_server(db_session):
 
     app.dependency_overrides[get_db] = override_get_db
     original_session_factory = getattr(app.state, "db_session_factory", None)
-    app.state.db_session_factory = TestingSessionLocal
+    app.state.db_session_factory = browser_session_factory
 
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -74,16 +81,27 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
         page.wait_for_url("**/home")
 
         page.goto("/transcribe")
+        csrf_cookie_before = next(
+            (cookie["value"] for cookie in context.cookies() if cookie["name"] == "openscribe_csrf"),
+            "",
+        )
         with page.expect_request(lambda request: request.method == "POST" and request.url.endswith("/api/v1/transcripts/start")) as request_info:
             page.locator("[data-new-session-button]").click()
         request = request_info.value
         response = request.response()
-        csrf_cookie = next((cookie["value"] for cookie in context.cookies() if cookie["name"] == "openscribe_csrf"), "")
 
-        assert csrf_cookie
-        assert request.headers.get("x-csrf-token") == csrf_cookie
+        assert csrf_cookie_before
+        if request.headers.get("x-csrf-token") != csrf_cookie_before:
+            pytest.fail("Browser sent a CSRF token different from the pre-request session token")
         assert response is not None
-        assert response.status != 403
+        assert response.status == 201
+        page.wait_for_url("**/transcribe?transcript_id=*")
+        csrf_cookie_after = next(
+            (cookie["value"] for cookie in context.cookies() if cookie["name"] == "openscribe_csrf"),
+            "",
+        )
+        if csrf_cookie_after != csrf_cookie_before:
+            pytest.fail("Authenticated navigation rotated the per-session CSRF token")
     finally:
         browser.close()
         playwright.stop()

@@ -178,9 +178,10 @@ For users whose onboarding is already complete:
 
 - browser state-changing routes now require a CSRF token in addition to the normal session cookie
 - the app issues a separate `openscribe_csrf` cookie for browser flows
+- authenticated CSRF tokens are stable for one login session, HMAC-bound to the opaque session token, and invalidated when that session rotates
 - browser forms render and submit the CSRF token as `_csrf_token`; the shared nonce-protected CSRF script refreshes or adds the field as a client-side fallback
 - browser JavaScript requests submit the token as `X-CSRF-Token` from server-rendered page state, not from a JavaScript-readable cookie
-- JSON API routes remain session-authenticated but are not using this browser CSRF check
+- unsafe `/api/v1` requests with cookie-backed authority require same-origin `Origin` or `Referer` and the session-bound `X-CSRF-Token`; safe API methods remain exempt
 - CSRF protection reduces cross-site request forgery risk; it does not prevent an already-authenticated user from scripting their own browser
 
 ### Account requests

@@ -134,20 +134,15 @@ def test_clinical_note_empty_state_uses_compact_spacing():
     assert ".assistant-flat-output--empty" in head_assets
 
 
-def test_note_editor_empty_state_tracks_existing_note_content():
+def test_note_editor_empty_state_guidance_removed():
     workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
     head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
-    transcribe_workspace = Path("app/web/transcribe_workspace.py").read_text()
-    structured_js = Path("app/static/js/transcribe/structured.js").read_text()
 
-    assert "structured_editor_has_text" in transcribe_workspace
-    assert "freeform_editor_has_text" in transcribe_workspace
-    assert 'data-structured-note-empty-state {% if structured_editor_has_text %}hidden{% endif %}' in workspace_template
-    assert 'data-freeform-note-empty-state {% if freeform_editor_has_text %}hidden{% endif %}' in workspace_template
-    assert ".note-editor-empty-state[hidden]" in head_assets
-    assert "display: none;" in head_assets
-    assert "dom.generatedStructuredPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js
-    assert "dom.generatedFreeformPanel.hidden = false;\n    syncNoteEmptyState();" in structured_js
+    assert "No note lines yet" not in workspace_template
+    assert "Select a template and start recording. Add note lines here as the consultation unfolds." not in workspace_template
+    assert "data-structured-note-empty-state" not in workspace_template
+    assert "data-freeform-note-empty-state" not in workspace_template
+    assert ".note-editor-empty-state" not in head_assets
 
 
 def test_transcribe_transcript_render_guard_owns_transcript_dom_updates():

@@ -540,18 +540,6 @@ export function createStructuredEditor({
     });
   };
 
-  const syncNoteEmptyState = () => {
-    const structuredHasText = Boolean(dom.generatedStructuredPanel && [...dom.generatedStructuredPanel.querySelectorAll('[data-structured-line-input]')].some((input) => String(input.value || '').trim().length > 0));
-    const freeformHasText = Boolean(dom.generatedFreeformPanel && [...dom.generatedFreeformPanel.querySelectorAll('[data-freeform-note-input]')].some((input) => String(input.value || '').trim().length > 0));
-    const selectedMode = selectedOutputTemplateMode();
-    if (dom.structuredNoteEmptyState) {
-      dom.structuredNoteEmptyState.hidden = selectedMode !== 'structured' || structuredHasText;
-    }
-    if (dom.freeformNoteEmptyState) {
-      dom.freeformNoteEmptyState.hidden = selectedMode !== 'freeform' || freeformHasText;
-    }
-  };
-
   const handleStructuredContextChanged = () => {
     onNoteEditorChanged?.();
     syncGenerationAvailability(getDraftText() || '');
@@ -903,7 +891,6 @@ export function createStructuredEditor({
       onChange: () => {
         syncGeneratedStructuredDraftFromDom();
         handleStructuredContextChanged();
-        syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
@@ -924,7 +911,6 @@ export function createStructuredEditor({
         ensureSectionHasEditableRow(sectionContainer);
         syncGeneratedStructuredDraftFromDom();
         handleStructuredContextChanged();
-        syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
@@ -1012,7 +998,6 @@ export function createStructuredEditor({
       syncGeneratedStructuredDraftFromDom();
     }
     handleStructuredContextChanged();
-    syncNoteEmptyState();
     if (dom.structuredCopyStatus) {
       dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
     }
@@ -1034,7 +1019,6 @@ export function createStructuredEditor({
       lineRowAttr: 'data-freeform-note-row',
       onChange: () => {
         syncGeneratedFreeformDraftFromDom();
-        syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
@@ -1055,7 +1039,6 @@ export function createStructuredEditor({
         currentRow.remove();
         ensureFreeformHasEditableRow();
         syncGeneratedFreeformDraftFromDom();
-        syncNoteEmptyState();
         if (dom.structuredCopyStatus) {
           dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
         }
@@ -1085,7 +1068,6 @@ export function createStructuredEditor({
     dom.generatedStructuredSections.innerHTML = '';
     if (!draft || !Array.isArray(draft.sections) || draft.sections.length === 0) {
       dom.generatedStructuredPanel.hidden = true;
-      syncNoteEmptyState();
       return;
     }
     draft.sections.forEach((section) => {
@@ -1136,7 +1118,6 @@ export function createStructuredEditor({
     syncGeneratedStructuredDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedStructuredPanel.hidden = false;
-    syncNoteEmptyState();
     syncCopyReviewUi();
     window.requestAnimationFrame(() => {
       autosizeStatementEditorsIn(dom.generatedStructuredPanel);
@@ -1152,7 +1133,6 @@ export function createStructuredEditor({
     dom.generatedFreeformRows.innerHTML = '';
     if (!draft || !Array.isArray(draft.lines) || draft.lines.length === 0) {
       dom.generatedFreeformPanel.hidden = true;
-      syncNoteEmptyState();
       return;
     }
     draft.lines.forEach((line, lineIndex) => {
@@ -1161,7 +1141,6 @@ export function createStructuredEditor({
     syncGeneratedFreeformDraftFromDom();
     syncStructuredEditorAvailability();
     dom.generatedFreeformPanel.hidden = false;
-    syncNoteEmptyState();
     syncCopyReviewUi();
     window.requestAnimationFrame(() => {
       autosizeStatementEditorsIn(dom.generatedFreeformPanel);
@@ -1215,7 +1194,6 @@ export function createStructuredEditor({
     observeCopyReviewTargets();
     if (!generatedDocument) {
       syncStructuredTemplateUi();
-      syncNoteEmptyState();
       syncNoteEditorToolbar();
       return;
     }
@@ -1292,7 +1270,6 @@ export function createStructuredEditor({
       dom.generatedStructuredPanel.hidden = true;
     }
     syncNoteEditorToolbar();
-    syncNoteEmptyState();
     syncGenerationAvailability(getDraftText() || '');
   };
 
@@ -1312,7 +1289,6 @@ export function createStructuredEditor({
       }
     }
     syncNoteEditorToolbar();
-    syncNoteEmptyState();
   };
 
   const clearStructuredSelection = () => {

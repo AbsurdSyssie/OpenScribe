@@ -116,6 +116,7 @@ Contained information:
 - latest note output state
 - note generation status
 - note history
+- in-panel loading animation while note generation is queued or processing
 
 User can change:
 - choose template
@@ -217,6 +218,7 @@ Contained information:
 - quick-action guidance text
 - latest follow-up output
 - follow-up generation status
+- in-panel loading animation while follow-up generation is queued or processing
 - current-transcript follow-up recents
 - empty-state guidance when nothing exists yet
 

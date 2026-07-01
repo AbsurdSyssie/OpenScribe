@@ -1,3 +1,5 @@
+import { generationLoadingHtml } from './documents.js?v=20260701-generation-loading-shared';
+
 export function createStructuredEditor({
   dom,
   structuredSectionDefinitions,
@@ -1205,13 +1207,13 @@ export function createStructuredEditor({
     if (generatedDocument.status === 'queued') {
       const message = getTranscriptWaitingForText?.()
         ? 'Waiting for transcription to finish before writing your note.'
-        : 'Your note is waiting to be written.';
-      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">${message}</span>`;
+        : "This usually takes a few seconds.<br>We're preparing your clinical note...";
+      dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'note', message });
       syncNoteEditorToolbar();
       return;
     }
     if (generatedDocument.status === 'processing') {
-      dom.latestGeneratedOutput.innerHTML = '<span class="text-slate">Your note is being written.</span>';
+      dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'note' });
       syncNoteEditorToolbar();
       return;
     }

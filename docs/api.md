@@ -715,8 +715,9 @@ Current whole-file ingestion behavior:
   - exposes `active_transcript_redaction_status` and `active_transcript_clinical_nlp_status` so empty review rows can distinguish not-run, failed, and succeeded-with-zero-results states without exposing transcript text
   - includes note-level `generated_documents[].pii_entities` summary rows without original values so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
-  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
-  - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected
+  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for workspace updates
+  - suppresses browser refresh bursts while that SSE connection is healthy
+  - falls back to polling the same owner-only workspace read model only when SSE is unavailable or disconnected
   - creates new sessions through `POST /api/v1/transcripts/start`
   - deletes selected sessions through owner-scoped `DELETE /api/v1/transcripts/{transcript_id}` calls
   - switches a blank session back to `whole_file` through `PATCH /api/v1/transcripts/{transcript_id}`

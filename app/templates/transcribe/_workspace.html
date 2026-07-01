@@ -1,4 +1,15 @@
 {% set dictation_unavailable_message = dictation_stt_status_message or 'Not available. Ask your team lead to enable post-consultation dictation.' %}
+{% macro generation_loading(label, message) -%}
+<div class="note-generation-loading" role="status" aria-live="polite">
+<div class="note-generation-loading__orbit" aria-hidden="true">
+<div class="note-generation-loading__ring"></div>
+<div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
+<div class="note-generation-loading__star">&#10022;</div>
+</div>
+<h2>Generating your {{ label }}</h2>
+<p>{{ message | safe }}</p>
+</div>
+{%- endmacro %}
 
 <main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
 <header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
@@ -251,7 +262,6 @@ aria-expanded="false">
 <span class="template-picker-button__mode" data-template-picker-mode>{% if latest_template_version %}{{ 'Sectioned' if latest_template_version.mode.value == 'structured' else 'Free text' }}{% endif %}</span>
 </button>
 {% if not latest_generated_document or latest_generated_document.status.value != "ready" %}
-<span class="note-header-hint">Start recording, then add lines as consultation unfolds.</span>
 {% endif %}
 </div>
 <div class="note-header-right">
@@ -415,14 +425,9 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) %}hidden{% endif %}>
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text %}
 {{ latest_generated_document.edited_output_text }}
-{% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
-{% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
-<span class="text-slate">Waiting for transcription to finish before writing your note.</span>
-{% else %}
-<span class="text-slate">Your note is waiting to be written.</span>
-{% endif %}
-{% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
-<span class="text-slate">Your note is being written.</span>
+{% elif latest_generated_document and latest_generated_document.status.value in ["queued", "processing"] %}
+{% set note_generation_loading_message = 'Waiting for transcription to finish before writing your note.' if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else "This usually takes a few seconds.<br>We're preparing your clinical note..." %}
+{{ generation_loading('note', note_generation_loading_message) }}
 {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
 <span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
 {% elif latest_generated_document %}
@@ -560,18 +565,17 @@ data-latest-followup-id="{{ latest_followup_document.id if latest_followup_docum
 data-latest-followup-updated-at="{{ latest_followup_document.updated_at if latest_followup_document else '' }}">
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
-{% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
+{% elif latest_followup_document and latest_followup_document.status.value in ["queued", "processing"] %}
 {% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
 {% if latest_followup_document.generator_type and latest_followup_document.generator_type.value == "quick_action" %}
-<span class="text-slate">Waiting for transcription to finish before running this quick action.</span>
+{% set followup_generation_loading_message = 'Waiting for transcription to finish before running this quick action.' %}
 {% else %}
-<span class="text-slate">Waiting for transcription to finish before writing your follow-up.</span>
+{% set followup_generation_loading_message = 'Waiting for transcription to finish before writing your follow-up.' %}
 {% endif %}
 {% else %}
-<span class="text-slate">Waiting to be written...</span>
+{% set followup_generation_loading_message = "This usually takes a few seconds.<br>We're preparing your follow-up..." %}
 {% endif %}
-{% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
-<span class="text-slate">Your follow-up is being written.</span>
+{{ generation_loading('follow-up', followup_generation_loading_message) }}
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
 <span class="text-slate">The latest follow-up could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
 {% else %}

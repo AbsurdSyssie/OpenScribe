@@ -1,5 +1,58 @@
 # Progress
 
+## 2026-07-01 Transcribe Note Empty Guidance Removal
+
+### Scope
+
+- Removed the structured/freeform editable-note empty guidance row from `/transcribe`.
+- Removed now-unused placeholder CSS, server template flags, and frontend empty-state sync hooks.
+
+### Checklist
+
+- Target behavior: the output note editor no longer shows "No note lines yet" or the start-recording guidance row.
+- Affected schema/modules/endpoints: transcribe workspace template, transcribe workspace render context, and transcribe frontend JS/CSS only; no schema or endpoint change.
+- Affected tests: transcribe page render assertions and static refactor coverage.
+- Architecture risks: UI-only change; no content access, provider selection, ownership, or deletion path changed.
+- Docs referenced/updated: this progress note.
+- Reuse decision: removed obsolete empty-state code instead of adding hide-only conditionals.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: removed structured/freeform empty note guidance rows.
+- `app/templates/transcribe/_head_assets.html`: removed unused note-editor empty-state CSS.
+- `app/web/transcribe_workspace.py`: removed now-unused empty-state content flags.
+- `app/static/js/transcribe/app.js`, `app/static/js/transcribe/structured.js`: removed empty-state DOM hooks and sync calls.
+- `tests/test_admin_ui.py`, `tests/test_web_refactor.py`: updated regression assertions for removed guidance.
+- `docs/progress.md`: records change and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_user_transcribe_page_marks_structured_template_options_for_blank_note_editor tests/test_admin_ui.py::test_user_transcribe_page_hides_emis_context_for_freeform_template tests/test_admin_ui.py::test_user_transcribe_page_shows_transcript_and_followup_empty_states tests/test_web_refactor.py::test_note_editor_empty_state_guidance_removed tests/test_web_refactor.py::test_clinical_note_empty_state_uses_compact_spacing`: passed, 5 tests.
+
+### Documentation
+
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes the separate clinical-note flat placeholder "Add note lines here as the consultation unfolds." should remain; only the requested row containing "No note lines yet" and its body was removed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content visibility path changed.
+- Ownership rules: unchanged; only owner page rendering changed.
+- Deletion semantics: unchanged; no data lifecycle or cascade path touched.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged; EMIS/template JSON unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: progress note and focused render/static tests updated.
+
 ## 2026-07-01 Audit Input and Filter Bounds
 
 ### Scope

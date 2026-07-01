@@ -4296,9 +4296,9 @@ def test_user_transcribe_page_marks_structured_template_options_for_blank_note_e
     assert "Problem" in page.text
     assert 'data-structured-line-input' in page.text
     assert 'data-generated-freeform-panel' in page.text
-    assert 'data-structured-note-empty-state' in page.text
-    assert 'No note lines yet' in page.text
-    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' in page.text
+    assert 'data-structured-note-empty-state' not in page.text
+    assert 'No note lines yet' not in page.text
+    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' not in page.text
 
 
 def test_user_transcribe_page_enables_followups_from_structured_note_content(
@@ -4974,8 +4974,8 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
     assert "Free text note" in page.text
     assert 'data-generated-freeform-panel' in page.text
     assert 'data-freeform-note-input' in page.text
-    assert 'data-freeform-note-empty-state' in page.text
-    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' in page.text
+    assert 'data-freeform-note-empty-state' not in page.text
+    assert 'Select a template and start recording. Add note lines here as the consultation unfolds.' not in page.text
 
 
 def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
@@ -5034,7 +5034,7 @@ def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
 
     assert page.status_code == 200
     assert "No note content yet." in page.text
-    assert "Select a template and start recording. Add note lines here as the consultation unfolds." in page.text
+    assert "Select a template and start recording. Add note lines here as the consultation unfolds." not in page.text
     assert "No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation." in page.text
 
 

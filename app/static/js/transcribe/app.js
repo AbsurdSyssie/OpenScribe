@@ -144,8 +144,6 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const noteEditorToolbar = document.querySelector('[data-note-editor-toolbar]');
       const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');
       const generatedFreeformRows = document.querySelector('[data-generated-freeform-rows]');
-      const structuredNoteEmptyState = document.querySelector('[data-structured-note-empty-state]');
-      const freeformNoteEmptyState = document.querySelector('[data-freeform-note-empty-state]');
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
@@ -2693,9 +2691,7 @@ let statusDetailsHideTimer = null;
           generateOutputTemplateSelect,
           generatedFreeformPanel,
           generatedFreeformRows,
-          structuredNoteEmptyState,
           generatedStructuredPanel,
-          freeformNoteEmptyState,
           generatedStructuredSections,
           copyStructuredLinesButton,
           latestGeneratedOutput,

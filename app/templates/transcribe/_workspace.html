@@ -477,10 +477,6 @@ data-settings-url="/home/templates/editor?scope={% if template.scope.value == 't
 class="structured-sections-panel"
 data-generated-structured-panel
 {% if not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-structured-note-empty-state {% if structured_editor_has_text %}hidden{% endif %}>
-<div class="note-editor-empty-state__title">No note lines yet</div>
-<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
-</div>
 <div class="structured-sections-list" data-generated-structured-sections>
 {% for section in structured_editor_sections %}
 <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
@@ -511,10 +507,6 @@ data-generated-structured-panel
 class="freeform-note-panel"
 data-generated-freeform-panel
 {% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-freeform-note-empty-state {% if freeform_editor_has_text %}hidden{% endif %}>
-<div class="note-editor-empty-state__title">No note lines yet</div>
-<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
-</div>
 <div class="freeform-note-list" data-generated-freeform-rows>
 {% for row in freeform_editor_rows %}
 <div class="statement-row freeform-note-row" data-freeform-note-row>

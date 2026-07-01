@@ -777,15 +777,6 @@ def resolve_transcribe_workspace(
         db,
         generated_document=latest_generated_document,
     )
-    structured_editor_has_text = any(
-        isinstance(row.get("text"), str) and row["text"].strip()
-        for section in structured_editor_sections
-        for row in section.get("rows", [])
-    )
-    freeform_editor_has_text = any(
-        isinstance(row.get("text"), str) and row["text"].strip()
-        for row in freeform_editor_rows
-    )
     return {
         "recent_transcripts": recent_transcripts,
         "recent_transcripts_next_cursor": recent_transcript_page["next_cursor"],
@@ -825,9 +816,7 @@ def resolve_transcribe_workspace(
         "latest_generated_document": latest_generated_document,
         "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
         "structured_editor_sections": structured_editor_sections,
-        "structured_editor_has_text": structured_editor_has_text,
         "freeform_editor_rows": freeform_editor_rows,
-        "freeform_editor_has_text": freeform_editor_has_text,
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
         "active_working_note": active_working_note,

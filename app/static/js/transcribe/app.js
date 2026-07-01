@@ -1,9 +1,9 @@
 import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260530-hallucination-check-panel';
+import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260701-generation-loading-shared';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';
+import { createStructuredEditor } from './structured.js?v=20260701-generation-loading-shared';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -1818,11 +1818,21 @@ let statusDetailsHideTimer = null;
         workspaceRefreshBurstTimeoutIds = [];
       };
 
+      const isWorkspaceRealtimeConnected = () => {
+        return Boolean(window.EventSource && workspaceEventSource && !workspaceStreamFallbackPolling);
+      };
+
+      const shouldUseWorkspacePollingFallback = () => {
+        return !isWorkspaceRealtimeConnected();
+      };
+
       const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {
         clearWorkspaceRefreshBurst();
+        if (!shouldUseWorkspacePollingFallback()) return;
         for (let index = 1; index <= attempts; index += 1) {
           const timeoutId = window.setTimeout(() => {
             workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);
+            if (!shouldUseWorkspacePollingFallback()) return;
             void fetchWorkspace();
           }, intervalMs * index);
           workspaceRefreshBurstTimeoutIds.push(timeoutId);
@@ -2812,11 +2822,17 @@ let statusDetailsHideTimer = null;
           const waitingMessage = document.generator_type === 'quick_action'
             ? 'Waiting for transcription to finish before running this quick action.'
             : 'Waiting for transcription to finish before writing your follow-up.';
-          latestFollowupOutput.innerHTML = `<span class="text-slate">${isTranscriptWaitingForText() ? waitingMessage : 'Your follow-up is waiting to be written.'}</span>`;
+          const message = isTranscriptWaitingForText()
+            ? waitingMessage
+            : "This usually takes a few seconds.<br>We're preparing your follow-up...";
+          latestFollowupOutput.innerHTML = generationLoadingHtml({ label: 'follow-up', message });
           return;
         }
         if (document.status === 'processing') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">Your follow-up is being written.</span>';
+          latestFollowupOutput.innerHTML = generationLoadingHtml({
+            label: 'follow-up',
+            message: "This usually takes a few seconds.<br>We're preparing your follow-up...",
+          });
           return;
         }
         if (document.status === 'failed') {
@@ -3188,10 +3204,6 @@ let statusDetailsHideTimer = null;
         workspaceEventSourceEndpoint = null;
       };
 
-      const shouldUseWorkspacePollingFallback = () => {
-        return !window.EventSource || workspaceStreamFallbackPolling || !workspaceEventSource;
-      };
-
       const syncWorkspaceRealtimeConnection = () => {
         if (!window.EventSource) return;
         const endpoint = workspaceStreamEndpointForTranscript(transcriptId);
@@ -3208,6 +3220,7 @@ let statusDetailsHideTimer = null;
         workspaceEventSource = new window.EventSource(endpoint);
         workspaceEventSource.addEventListener('open', () => {
           workspaceStreamFallbackPolling = false;
+          clearWorkspaceRefreshBurst();
         });
         workspaceEventSource.addEventListener('workspace', (event) => {
           try {
@@ -3539,9 +3552,11 @@ let statusDetailsHideTimer = null;
         setDictationMicStatus(dictationMicStatusState.message, dictationMicStatusState.kind);
       }
       syncWorkspaceRealtimeConnection();
-      if (transcriptId) {
+      if (transcriptId && shouldUseWorkspacePollingFallback()) {
         window.setTimeout(() => {
-          fetchWorkspace();
+          if (shouldUseWorkspacePollingFallback()) {
+            fetchWorkspace();
+          }
         }, 0);
       }
 

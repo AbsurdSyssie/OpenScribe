@@ -53,6 +53,174 @@
 - Lifecycle/deletion checkpoint: no records created, updated, or deleted.
 - Docs/tests checkpoint: progress note and focused render/static tests updated.
 
+## 2026-07-01 Follow-up Loading Animation Reuse
+
+### Scope
+
+- Reused the note generation loading animation for queued/processing follow-up generation.
+- Refactored repeated loading markup into a Jinja macro and a shared frontend helper so note/follow-up loading states use one HTML shape.
+- Bumped transcribe module cache tokens for the shared helper change.
+
+### Checklist
+
+- Target behavior: queued/processing follow-ups show the same orbit/star animation with follow-up-specific copy.
+- Affected schema/modules/endpoints: transcribe workspace template and frontend render helpers only; no schema or endpoint change.
+- Affected tests: static frontend and browser-render regression coverage.
+- Architecture risks: render-only change; no content access, provider selection, or lifecycle semantics changed.
+- Docs referenced/updated: `docs/transcribe_brief.md` and this note.
+- Reuse decision: reused existing animation CSS, introduced one Jinja macro and one shared JS helper instead of duplicating follow-up markup.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: CSS class remains `note-generation-loading` for minimal churn even when rendering follow-ups.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: adds shared `generation_loading` macro and uses it for note and follow-up queued/processing states.
+- `app/static/js/transcribe/documents.js`: adds shared `generationLoadingHtml` helper.
+- `app/static/js/transcribe/structured.js`, `app/static/js/transcribe/app.js`: use shared helper for note/follow-up dynamic renders.
+- `app/templates/transcribe/_shell_extras.html`: bumps module cache token.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: update loading and asset-token regressions.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document follow-up loading state.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "generation_loading or workspace_refresh_burst"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "generate_followup or static_asset_version_bumped or transcribe_documents_show_hallucination_check_panel or user_transcribe_page_shows_workspace_shell"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 10 tests.
+
+### Documentation
+
+- Transcribe brief now records in-panel loading animation for follow-up generation too.
+
+### Risks / assumptions
+
+- Quick action queued state keeps its transcription-waiting copy, but uses the same animation shell.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content is logged or newly exposed.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: docs and focused frontend/browser-render tests updated.
+
+## 2026-07-01 Note Generation Loading Animation
+
+### Scope
+
+- Replaced plain queued/processing generated-note placeholder text with the loading animation from `loading_animation.html` inside the clinical note output area.
+- Bumped transcribe module cache-bust tokens so refreshed pages cannot reuse stale generated-note renderers.
+- Kept failed note messages and empty editable-note guidance unchanged.
+
+### Checklist
+
+- Target behavior: once a generated-note document is queued or processing, the clinical note pane shows the orbit/star loading state in the note text space.
+- Affected schema/modules/endpoints: transcribe workspace template, transcribe styles, and generated-note client render path; no schema or endpoint change.
+- Affected tests: static frontend regression coverage in `tests/test_web_refactor.py`.
+- Architecture risks: render-only change; no content access, provider selection, or lifecycle semantics changed.
+- Docs referenced/updated: `docs/transcribe_brief.md` and this note.
+- Reuse decision: reused supplied animation structure/CSS, scoped class names to avoid broad page style changes.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: renders loading animation for generated-note queued/processing states.
+- `app/templates/transcribe/_head_assets.html`: adds scoped loading animation styles and keyframes.
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: bump module version tokens so browser fetches the updated renderer.
+- `app/static/js/transcribe/structured.js`: uses same animation during dynamic workspace refreshes.
+- `tests/test_web_refactor.py`: asserts animation replaces old plain text placeholders.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document behavior and change record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "note_generation_loading or clinical_note_empty_state or note_editor_empty_state"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "note_generation_loading or static_asset_version_bumped or transcribe_glm_2_page_exposes_workspace_hooks or user_transcribe_glm_2_page_exposes_workspace_hooks or blank_line_reorder"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 9 tests.
+
+### Documentation
+
+- Transcribe brief now records in-panel loading animation for queued/processing note generation.
+
+### Risks / assumptions
+
+- Animation is shown for generated-note queued and processing states, including queued notes still waiting on transcription, with status-specific helper text.
+- Cache-bust tokens must change with render-path updates; otherwise fresh HTML can briefly show new UI before cached JS overwrites it.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content is logged or newly exposed.
+- Ownership rules: unchanged; transcribe page remains owner-only through existing route protections.
+- Deletion semantics: unchanged; no stored content, cascade, or retention behavior changed.
+- Provider rules: unchanged; provider selection/fallback untouched.
+- Structured-note contract: unchanged; EMIS section keys and generated-note content shape untouched.
+- Schema checkpoint: no model, constraint, index, or migration change.
+- Auth/ownership checkpoint: no authorization or response scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: docs and focused frontend regression updated.
+
+## 2026-07-01 Workspace Refresh Burst Gating
+
+### Scope
+
+- Stopped repeated browser workspace refresh bursts while the owner workspace SSE connection is healthy.
+- Bumped the transcribe `app.js` cache token for the refresh-gating change so browsers do not reuse the prior ungated module.
+- Kept refresh bursts as fallback when `EventSource` is unavailable or the stream errors.
+- Skipped the immediate post-load workspace fetch when the SSE stream is present and expected to emit the initial workspace event.
+
+### Checklist
+
+- Target behavior: pending notes/transcripts update via SSE without browser-side repeated GET bursts that rebuild loading UI.
+- Affected schema/modules/endpoints: transcribe frontend refresh scheduling only; no schema or endpoint change.
+- Affected tests: static transcribe frontend regression coverage.
+- Architecture risks: if a proxy silently stalls SSE without triggering `onerror`, UI can wait longer for updates; heartbeat/error fallback remains the mitigation.
+- Docs referenced/updated: `docs/api.md`, `docs/transcript-capture.md`, and this note.
+- Reuse decision: reused existing SSE connection state and fallback polling path; no new event bus yet.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: server SSE implementation still polls the read model once per second internally; true cross-process push needs an event bus or database notification path.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: gate refresh burst scheduling/execution behind SSE fallback state, clear queued burst timers on stream open, skip initial fetch when stream owns hydration, and bump the module cache token.
+- `tests/test_web_refactor.py`: asserts refresh bursts are fallback-only and cleared when SSE opens.
+- `docs/api.md`, `docs/transcript-capture.md`, `docs/progress.md`: align realtime docs with fallback-only browser polling.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "workspace_refresh_burst or note_generation_loading or transcribe_transcript_render_guard"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "workspace_refresh_burst or note_generation_loading or transcribe_transcript_render_guard" && .venv/bin/pytest -q tests/test_admin_ui.py -k "static_asset_version_bumped or transcribe_glm_2_page_exposes_workspace_hooks or user_transcribe_page_shows_workspace_shell"`: passed, 6 tests across two focused runs.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 10 tests.
+
+### Documentation
+
+- API/capture docs now say browser refresh bursts are suppressed while SSE is healthy and fallback only when disconnected/unavailable.
+
+### Risks / assumptions
+
+- Existing SSE stream emits an initial workspace payload, so skipping immediate fetch does not leave the page unhydrated when EventSource works.
+- This reduces browser/network churn now; it does not yet remove server-side 1s polling inside the SSE stream.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; same owner-only workspace/SSE payload, no new transcript-derived exposure or logging.
+- Ownership rules: unchanged; existing auth/session checks continue to gate workspace reads.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: realtime docs and static regression updated.
+
 ## 2026-07-01 Audit Input and Filter Bounds
 
 ### Scope

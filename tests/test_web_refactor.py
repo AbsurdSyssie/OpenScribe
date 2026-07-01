@@ -145,6 +145,49 @@ def test_note_editor_empty_state_guidance_removed():
     assert ".note-editor-empty-state" not in head_assets
 
 
+def test_generation_loading_replaces_plain_text_placeholders():
+    workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
+    structured_js = Path("app/static/js/transcribe/structured.js").read_text()
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+    documents_js = Path("app/static/js/transcribe/documents.js").read_text()
+    shell_extras = Path("app/templates/transcribe/_shell_extras.html").read_text()
+
+    assert "note-generation-loading" in workspace_template
+    assert "Generating your {{ label }}" in workspace_template
+    assert "generation_loading('note'" in workspace_template
+    assert "generation_loading('follow-up'" in workspace_template
+    assert "We're preparing your clinical note..." in workspace_template
+    assert "We're preparing your follow-up..." in workspace_template
+    assert "Your note is waiting to be written." not in workspace_template
+    assert "Your note is being written." not in workspace_template
+    assert "Your follow-up is being written." not in workspace_template
+    assert "Your note is waiting to be written." not in structured_js
+    assert "Your note is being written." not in structured_js
+    assert "Your follow-up is waiting to be written." not in app_js
+    assert "Your follow-up is being written." not in app_js
+    assert "generationLoadingHtml" in documents_js
+    assert "generationLoadingHtml({ label: 'note'" in structured_js
+    assert "generationLoadingHtml({ label: 'follow-up'" in app_js
+    assert "structured.js?v=20260701-generation-loading-shared" in app_js
+    assert "documents.js?v=20260701-generation-loading-shared" in app_js
+    assert "/static/js/transcribe/app.js?v=20260701-generation-loading-shared" in shell_extras
+    assert ".note-generation-loading" in head_assets
+    assert "@keyframes note-generation-orbit" in head_assets
+
+
+def test_workspace_refresh_burst_uses_polling_fallback_only():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    assert "const isWorkspaceRealtimeConnected = () =>" in app_js
+    assert "return Boolean(window.EventSource && workspaceEventSource && !workspaceStreamFallbackPolling);" in app_js
+    assert "const shouldUseWorkspacePollingFallback = () => {\n        return !isWorkspaceRealtimeConnected();\n      };" in app_js
+    assert "const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {\n        clearWorkspaceRefreshBurst();\n        if (!shouldUseWorkspacePollingFallback()) return;" in app_js
+    assert "workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);\n            if (!shouldUseWorkspacePollingFallback()) return;\n            void fetchWorkspace();" in app_js
+    assert "workspaceEventSource.addEventListener('open', () => {\n          workspaceStreamFallbackPolling = false;\n          clearWorkspaceRefreshBurst();" in app_js
+    assert "if (transcriptId && shouldUseWorkspacePollingFallback())" in app_js
+
+
 def test_transcribe_transcript_render_guard_owns_transcript_dom_updates():
     app_js = Path("app/static/js/transcribe/app.js").read_text()
 

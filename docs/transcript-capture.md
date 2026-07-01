@@ -296,12 +296,12 @@ Implemented now for manual browser testing:
 - the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
 - the upload flow is post/redirect/get, so page refresh does not re-upload the file
 - the workspace now has a dedicated owner-only read model at `GET /api/v1/transcribe/workspace`
-- the transcribe page now keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates can arrive without constant request polling when the stream is healthy
-- if SSE is unavailable or disconnected, fallback polling is now limited to active live-recording/restart windows instead of continuing for the broader workspace
+- the transcribe page keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates arrive without browser refresh bursts while the stream is healthy
+- if SSE is unavailable or disconnected, fallback polling uses the same owner-only workspace read model until the browser reconnects to the stream
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
 - the transcript history pane now shows owner-visible detected PII from the latest successful redaction run in a bounded right-side table beside the transcript text
 - the browser highlights matching PII values in the transcript and lets the owner add/remove missed PII values that persist as owner-only encrypted transcript children
-- the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
+- pending transcript or generated-document states rely on the SSE stream while connected; the browser schedules repeated workspace refreshes only in fallback polling mode
 - failed whole-file STT attempts now expose a retry control in the workspace when stored retry audio is still available and the team still has a usable STT selection
 - failed live chunks no longer permanently block later successful chunks; the owner workspace reconciles completed live chunks past failed sequence gaps as soon as later results exist
 - `/transcribe-glm-2` now reuses that same workspace API while preserving the restored GLM 2 shell as the visual source of truth

@@ -4,7 +4,7 @@ from uuid import UUID
 from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
-from app.services.transcripts import process_transcript_ingestion_job
+from app.services.transcripts import delete_expired_transcripts, process_transcript_ingestion_job
 
 
 @celery_app.task(name="openscribe.process_transcript_ingestion_job")
@@ -29,3 +29,12 @@ def process_generated_document_task(self, *, document_id: str) -> None:
 
 def enqueue_generated_document_job(*, document_id: UUID):
     return process_generated_document_task.delay(document_id=str(document_id))
+
+
+@celery_app.task(name="openscribe.delete_expired_transcripts")
+def delete_expired_transcripts_task(*, batch_size: int = 100) -> int:
+    deleted_count = 0
+    with SessionLocal() as db:
+        while deleted := delete_expired_transcripts(db, batch_size=batch_size):
+            deleted_count += deleted
+    return deleted_count

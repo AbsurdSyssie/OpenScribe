@@ -40,6 +40,7 @@ from ..services.smart_phrases import (
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.transcripts import (
     clear_working_note as clear_working_note_service,
+    get_active_owner_transcript,
     save_working_note as save_working_note_service,
     working_note_detail as working_note_detail_service,
 )
@@ -1272,11 +1273,7 @@ def retry_transcript_audio_file(
 
 @api.get("/transcripts/{transcript_id}", response_model=TranscriptDetail, responses=error_responses)
 def get_transcript_detail(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
-    transcript = db.get(Transcript, transcript_id)
-    if not transcript:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != context.user.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = get_active_owner_transcript(db, context.user, transcript_id=transcript_id)
     return transcript_detail_response(db, transcript)
 
 

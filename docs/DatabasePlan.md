@@ -1000,6 +1000,13 @@ This applies to:
 * retention-based delete
 * system-level user deletion cascade
 
+Expired transcript roots are excluded from transcript history and direct detail
+access as soon as `retention_expires_at` is reached. An hourly Celery Beat task
+hard-deletes expired roots in bounded batches; database cascades remove
+transcript-derived children.
+Team retention changes apply to transcripts created afterward and do not extend
+or recalculate existing fixed expiry timestamps.
+
 ## 15.2 Generated document deletion
 
 When a generated document is deleted manually:

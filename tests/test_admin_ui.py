@@ -1757,8 +1757,23 @@ def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
 
     admin_css = Path("app/static/css/admin.css").read_text()
     assert ".admin-sidebar .tab-shell__nav.is-tabs-ready" in admin_css
+    assert ".admin-pane {\n  min-width: 0;\n  padding: 28px 40px 80px;\n  align-content: start;" in admin_css
     assert "background: transparent;" in admin_css
     assert '.tab-shell__tab[aria-selected="true"]::before' in admin_css
+    assert ".usage-hero {\n  display: grid;\n  gap: 18px;\n  padding: 18px;" in admin_css
+
+
+def test_admin_provider_setup_keeps_team_scope_panel_before_team_selection(client, make_user):
+    make_user(email="admin-provider-entry@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-provider-entry@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin?tab=providers")
+
+    assert page.status_code == 200
+    assert 'class="panel provider-scope"' in page.text
+    assert "Team scope" in page.text
+    assert "Choose target team before editing provider availability or active selections." in page.text
+    assert "Configure STT, LLM, and de-identification." not in page.text
 
 
 def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(client, db_session, make_team, make_user, make_llm_config):

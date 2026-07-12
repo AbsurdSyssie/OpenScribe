@@ -1,0 +1,95 @@
+from datetime import timedelta
+
+from sqlalchemy import select
+
+from app.celery_app import celery_app
+from app.models import (
+    GeneratedDocument,
+    Transcript,
+    TranscriptIngestionMode,
+    TranscriptStatus,
+    TranscriptVersion,
+    utcnow,
+)
+from app.services.transcripts import delete_expired_transcripts
+
+
+def _make_transcript(db_session, *, owner, title: str, expires_at):
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=owner.team_id,
+        title=title,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=expires_at,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    db_session.refresh(transcript)
+    return transcript
+
+
+def test_retention_cleanup_deletes_expired_roots_and_derived_documents(
+    db_session,
+    make_team,
+    make_user,
+    make_generated_document,
+):
+    team = make_team(name="Retention Team")
+    owner = make_user(email="retention-owner@example.com", password="password-1", team=team)
+    now = utcnow()
+    expired = _make_transcript(db_session, owner=owner, title="Expired", expires_at=now)
+    active = _make_transcript(db_session, owner=owner, title="Active", expires_at=now + timedelta(days=1))
+    version = TranscriptVersion(transcript_id=expired.id, version_no=1, text_encrypted="encrypted")
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+    document = make_generated_document(owner=owner, transcript=expired, transcript_version=version)
+
+    deleted = delete_expired_transcripts(db_session, now=now, batch_size=10)
+
+    assert deleted == 1
+    assert db_session.get(Transcript, expired.id) is None
+    assert db_session.get(TranscriptVersion, version.id) is None
+    assert db_session.get(GeneratedDocument, document.id) is None
+    assert db_session.get(Transcript, active.id) is not None
+
+
+def test_retention_cleanup_is_bounded_and_idempotent(db_session, make_team, make_user):
+    team = make_team(name="Bounded Retention Team")
+    owner = make_user(email="bounded-retention@example.com", password="password-1", team=team)
+    now = utcnow()
+    first = _make_transcript(db_session, owner=owner, title="First", expires_at=now - timedelta(days=2))
+    second = _make_transcript(db_session, owner=owner, title="Second", expires_at=now - timedelta(days=1))
+
+    assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 1
+    assert db_session.get(Transcript, first.id) is None
+    assert db_session.get(Transcript, second.id) is not None
+    assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 1
+    assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 0
+
+
+def test_expired_transcript_is_hidden_from_history_and_detail(client, db_session, make_team, make_user):
+    team = make_team(name="Visibility Retention Team")
+    owner = make_user(email="retention-visibility@example.com", password="password-1", team=team)
+    expired = _make_transcript(db_session, owner=owner, title="Expired", expires_at=utcnow() - timedelta(seconds=1))
+    active = _make_transcript(db_session, owner=owner, title="Active", expires_at=utcnow() + timedelta(days=1))
+
+    login = client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"})
+    assert login.status_code == 200
+
+    history = client.get("/api/v1/transcripts")
+    assert history.status_code == 200
+    assert [item["id"] for item in history.json()["items"]] == [str(active.id)]
+
+    detail = client.get(f"/api/v1/transcripts/{expired.id}")
+    assert detail.status_code == 404
+    assert detail.json()["error"]["code"] == "not_found"
+
+
+def test_retention_cleanup_task_has_hourly_beat_schedule():
+    schedule = celery_app.conf.beat_schedule["delete-expired-transcripts-hourly"]
+
+    assert schedule["task"] == "openscribe.delete_expired_transcripts"
+    assert schedule["schedule"] == 3600.0

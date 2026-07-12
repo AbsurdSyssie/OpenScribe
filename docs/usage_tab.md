@@ -1,5 +1,8 @@
 # Usage Tab
 
+The usage overview uses the standard admin panel inset so its heading, scope,
+filter, and KPI row remain clear of the rounded panel border.
+
 ## Purpose
 
 - Define the intended system-admin usage experience for `/admin?tab=usage`.

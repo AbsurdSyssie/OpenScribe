@@ -1,11 +1,18 @@
 {% set dictation_unavailable_message = dictation_stt_status_message or 'Not available. Ask your team lead to enable post-consultation dictation.' %}
-{% macro generation_loading(label, message) -%}
-<div class="note-generation-loading" role="status" aria-live="polite">
+{% macro loading_orbit(center='star') -%}
 <div class="note-generation-loading__orbit" aria-hidden="true">
 <div class="note-generation-loading__ring"></div>
 <div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
+{% if center == 'waveform' %}
+<div class="note-generation-loading__waveform"><span></span><span></span><span></span><span></span><span></span></div>
+{% else %}
 <div class="note-generation-loading__star">&#10022;</div>
+{% endif %}
 </div>
+{%- endmacro %}
+{% macro generation_loading(label, message) -%}
+<div class="note-generation-loading" role="status" aria-live="polite">
+{{ loading_orbit() }}
 <h2>Generating your {{ label }}</h2>
 <p>{{ message | safe }}</p>
 </div>
@@ -433,12 +440,6 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% elif latest_generated_document %}
 <span class="text-slate">No note content yet.</span>
 {% else %}
-<div class="empty-state empty-state--clinical-note">
-<div class="empty-state__icon">
-<i class="w-10 h-10 text-slate/30" data-lucide="file-text"></i>
-</div>
-<div class="empty-state__text">Add note lines here as the consultation unfolds.</div>
-</div>
 {% endif %}
 </div>
 
@@ -758,11 +759,26 @@ hidden
 <div class="structured-workspace__body">
 <div class="transcript-review-grid" data-transcript-review-grid>
 <section class="transcript-review-grid__transcript">
-<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
+<div
+class="note-generation-loading note-generation-loading--transcribing"
+data-transcription-loading
+role="status"
+aria-live="polite"
+{% if not active_transcript or active_transcript.status.value != "transcribing" %}hidden{% endif %}>
+{{ loading_orbit('waveform') }}
+<h2>Transcribing your conversation</h2>
+<p>This usually takes a few seconds.<br>We're listening and turning your conversation into a clinical note.</p>
+</div>
+<div
+class="note-generation-loading note-generation-loading--transcribing note-generation-loading--idle"
+data-transcript-empty
+{% if (active_transcript and active_transcript.status.value == "transcribing") or (active_transcript and active_transcript.current_draft_text) %}hidden{% endif %}>
+{{ loading_orbit('waveform') }}
+<h2>Start a recording to see your transcript</h2>
+</div>
+<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft{% if not active_transcript or active_transcript.status.value == "transcribing" or not active_transcript.current_draft_text %} hidden{% endif %}>
 {% if active_transcript and active_transcript.current_draft_text %}
 {{ active_transcript.current_draft_text }}
-{% else %}
-<span class="text-slate">No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds.</span>
 {% endif %}
 </div>
 <section class="dictation-compact" data-dictation-compact>

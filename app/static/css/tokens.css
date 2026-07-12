@@ -1,0 +1,42 @@
+/* Shared visual tokens for splash and transcribe surfaces. */
+:root {
+  --bg: #FAF8F5;
+  --parchment: #F5F1EB;
+  --card: #FFFFFF;
+  --ink: #1A202C;
+  --fg: var(--ink);
+  --slate: #2D3748;
+  --muted: #718096;
+  --border: #E2DED6;
+  --border-strong: #D8D2C8;
+
+  --accent: #1D4F5E;
+  --accent-soft: #3D7A8C;
+  --accent-pale: #E0F2F5;
+  --accent-warm: #F6E8BB;
+  --accent-green: #DFF2E2;
+
+  --success: #38A169;
+  --warning: #D69E2E;
+  --error: #C53030;
+  --danger: var(--error);
+
+  --font-body: "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
+
+  --shadow-xs: 0 1px 2px rgba(31, 42, 53, 0.04);
+  --shadow-sm: 0 2px 8px rgba(31, 42, 53, 0.06);
+  --shadow-md: 0 4px 16px rgba(31, 42, 53, 0.07), 0 1px 3px rgba(31, 42, 53, 0.04);
+  --shadow-lg: 0 12px 40px rgba(31, 42, 53, 0.1), 0 4px 12px rgba(31, 42, 53, 0.05);
+  --shadow-soft: 0 18px 50px rgba(26, 32, 44, 0.06);
+  --shadow-card: 0 14px 34px rgba(26, 32, 44, 0.08);
+  --shadow-focus: 0 0 0 3px rgba(224, 242, 245, 0.95);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+
+  --radius-sm: 11px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 24px;
+  --container: 1120px;
+  --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}

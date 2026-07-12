@@ -13,7 +13,7 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
-      const routeBase = shell?.dataset.routeBase || '/transcribe-glm-2';
+      const routeBase = shell?.dataset.routeBase || '/transcribe';
       const triggers = [...document.querySelectorAll('[data-tab-trigger]')];
       const panels = [...document.querySelectorAll('[data-tab-panel]')];
       const paneToggles = [...document.querySelectorAll('[data-pane-toggle]')];
@@ -101,6 +101,8 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       currentTranscriptStatus = activeStatus?.textContent?.trim() || null;
       const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
       const activeDraft = document.querySelector('[data-active-draft]');
+      const transcriptionLoading = document.querySelector('[data-transcription-loading]');
+      const transcriptEmpty = document.querySelector('[data-transcript-empty]');
       const transcriptStats = document.querySelector('[data-transcript-stats]');
       const piiCount = document.querySelector('[data-pii-count]');
       const piiStatus = document.querySelector('[data-pii-status]');
@@ -1135,6 +1137,7 @@ let statusDetailsHideTimer = null;
       const setVisibleStatus = (label) => {
         const nextLabel = label || 'idle';
         localStatusLabel = nextLabel;
+        syncTranscriptSurface(nextLabel);
         renderStatusPill();
       };
 
@@ -1788,9 +1791,27 @@ let statusDetailsHideTimer = null;
         return statusLabel || 'idle';
       };
 
+      const syncTranscriptSurface = (statusLabel = localStatusLabel || currentTranscriptStatus) => {
+        const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
+        const isTranscribing = String(visibleStatus || '').toLowerCase() === 'transcribing';
+        const hasDraft = Boolean(currentDraftText && currentDraftText.trim());
+        const normalizedStatus = String(statusLabel || '').toLowerCase();
+        const animateEmpty = Boolean(
+          captureController?.isCaptureUiActive?.()
+          || ['recording', 'listening', 'speech detected', 'sending chunk', 'uploading', 'finalizing', 'stopping', 'queued', 'processing'].includes(normalizedStatus)
+        );
+        if (transcriptionLoading) transcriptionLoading.hidden = !isTranscribing;
+        if (transcriptEmpty) {
+          transcriptEmpty.hidden = isTranscribing || hasDraft;
+          transcriptEmpty.classList.toggle('note-generation-loading--idle', !animateEmpty);
+        }
+        if (activeDraft) activeDraft.hidden = isTranscribing || !hasDraft;
+      };
+
       const reflectBackendStatus = (statusLabel, errorMessage = null) => {
         currentTranscriptStatus = statusLabel || null;
         const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
+        syncTranscriptSurface(visibleStatus);
         if (!captureController?.isCaptureUiActive?.() && !['queued', 'transcribing', 'processing', 'uploading'].includes(visibleStatus || '')) {
           localStatusLabel = null;
         }
@@ -1926,7 +1947,7 @@ let statusDetailsHideTimer = null;
         if (!activeDraft) return;
         const maskPii = Boolean(options.maskPii);
         if (!text.trim()) {
-          activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
+          activeDraft.textContent = '';
           return;
         }
         const highlightEntities = uniquePiiEntities(entities)
@@ -1956,6 +1977,7 @@ let statusDetailsHideTimer = null;
         const nextText = text || '';
         const force = Boolean(options.force);
         currentDraftText = nextText;
+        syncTranscriptSurface();
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
           if (!force && activeDraft.value === nextText) {
             renderTranscriptStats(nextText);

@@ -761,6 +761,7 @@ SECURITY_HEADER_HSTS_VALUE = "max-age=31536000; includeSubDomains"
 SECURITY_HEADER_PERMISSIONS_POLICY = (
     "camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)"
 )
+SECURITY_HEADER_X_ROBOTS_TAG = "noindex, nofollow, noarchive, nosnippet, noimageindex"
 HSTS_SOURCE_APP = "app"
 HSTS_SOURCE_PROXY = "proxy"
 HSTS_SOURCE_PROXY_STATIC_FALLBACK = "proxy_static_fallback"
@@ -817,6 +818,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     response.headers.setdefault("Cross-Origin-Embedder-Policy", "credentialless")
     response.headers.setdefault("Permissions-Policy", SECURITY_HEADER_PERMISSIONS_POLICY)
+    response.headers.setdefault("X-Robots-Tag", SECURITY_HEADER_X_ROBOTS_TAG)
     response.headers.setdefault(
         "Content-Security-Policy",
         content_security_policy(request.state.csp_nonce, upgrade_insecure_requests=is_https),

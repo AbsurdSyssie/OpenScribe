@@ -420,6 +420,8 @@ Useful future design split:
 Current visual direction:
 - keep `/admin` as a server-rendered Jinja surface
 - use a persistent sidebar for area selection instead of top card tabs
+- keep the sidebar area selector flat against the sidebar surface; do not inherit the shared horizontal tab container card chrome
+- mark the active admin area with the shared accent color and stronger label weight
 - use flat full-width editing panes with row dividers instead of stacked cards
 - keep provider setup, defaults, directory, requests, and usage as separate admin work areas
 - keep any future provider-policy split explicit so provisioning and team selection authority remain understandable

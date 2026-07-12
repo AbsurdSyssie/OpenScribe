@@ -230,6 +230,7 @@ def _ensure_unique_llm_config_label(db: Session, *, team_id: UUID, label: str, c
     normalized = label.strip().lower()
     stmt = select(TeamLlmConfig.id).where(
         TeamLlmConfig.team_id == team_id,
+        TeamLlmConfig.revision_of_config_id.is_(None),
         func.lower(func.btrim(TeamLlmConfig.label)) == normalized,
     )
     if current_config_id is not None:
@@ -447,7 +448,7 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
 
 def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> LlmConfigInspectResult:
     config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
-    bearer_token = read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id) if config.vault_secret_ref else None
+    bearer_token = read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref) if config.vault_secret_ref else None
     inspection = inspect_llm_contract(
         db,
         actor,
@@ -473,7 +474,7 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
 
 def list_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:
     team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
-    stmt = select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id).order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
+    stmt = select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None)).order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
     return list(db.scalars(stmt))
 
 
@@ -482,6 +483,45 @@ def get_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID |
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config_id, TeamLlmConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
+    return config
+
+
+def update_llm_config_details(
+    db: Session,
+    actor: User,
+    *,
+    config_id: UUID,
+    team_id: UUID,
+    label: str,
+    is_active: bool,
+) -> TeamLlmConfig:
+    team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
+    config = db.scalar(
+        select(TeamLlmConfig).where(
+            TeamLlmConfig.id == config_id,
+            TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.revision_of_config_id.is_(None),
+            TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
+        )
+    )
+    if config is None:
+        raise AppError(404, "not_found", "Ready LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
+    normalized_label = label.strip()
+    if not normalized_label:
+        raise AppError(422, "business_rule_violation", "LLM provider name is required", {"field": "label"})
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=normalized_label, current_config_id=config.id)
+    config.label = normalized_label
+    config.is_active = is_active
+    config.updated_by_user_id = actor.id
+    db.add(config)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _raise_llm_label_conflict_if_needed(exc)
+        raise
+    db.refresh(config)
+    _record_llm_audit(db, action="llm_config_details_updated", actor=actor, team_id=team.id, config_id=config.id, active=config.is_active)
     return config
 
 
@@ -496,6 +536,11 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
 
 def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCreate) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    target = None
+    if payload.revision_of_config_id is not None:
+        target = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.revision_of_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None), TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready))
+        if target is None:
+            raise AppError(404, "not_found", "Ready LLM config not found", {"resource": "llm_config", "config_id": str(payload.revision_of_config_id)})
     provider_preset, adapter_kind, base_url, region = apply_provider_defaults(
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
@@ -504,7 +549,10 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
     preset = get_llm_provider_preset(provider_preset)
     adapter_kind = preset.adapter_kind
-    if preset.requires_bearer_token and not payload.bearer_token:
+    bearer_token = payload.bearer_token
+    if not bearer_token and target is not None and target.vault_secret_ref:
+        bearer_token = read_team_llm_bearer_token(team_id=team.id, config_id=target.id)
+    if preset.requires_bearer_token and not bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires an API key", {"field": "bearer_token"})
     raw_label = (payload.label or "").strip()
     inspection = inspect_llm_contract(
@@ -515,15 +563,17 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
             provider_preset=provider_preset,
             adapter_kind=adapter_kind,
             base_url=base_url,
-            bearer_token=payload.bearer_token,
+            bearer_token=bearer_token,
             bedrock_region=region,
         ),
     )
-    label = raw_label or default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name)
-    _ensure_unique_llm_config_label(db, team_id=team.id, label=label)
+    label = raw_label or (target.label if target is not None else default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name))
+    if target is None:
+        _ensure_unique_llm_config_label(db, team_id=team.id, label=label)
     config = TeamLlmConfig(
         id=uuid4(),
         team_id=team.id,
+        revision_of_config_id=target.id if target is not None else None,
         label=label,
         provider_preset=inspection.provider_preset,
         adapter_kind=inspection.adapter_kind,
@@ -533,7 +583,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         available_models_json=list(inspection.available_models),
         inspection_metadata_json=_inspection_metadata(inspection),
         setup_status=LlmConfigSetupStatus.pending_model_selection,
-        vault_secret_ref="pending" if payload.bearer_token else "",
+        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if target is not None else ""),
         is_active=False,
         created_by_user_id=actor.id,
         updated_by_user_id=actor.id,
@@ -558,15 +608,20 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
-    has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
-    if has_in_flight_jobs and config.setup_status != LlmConfigSetupStatus.pending_model_selection:
+    target = None
+    if config.revision_of_config_id is not None:
+        target = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config.revision_of_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None)).with_for_update())
+        if target is None:
+            raise AppError(409, "conflict", "LLM revision target is unavailable")
+    has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=target.id if target is not None else config.id)
+    if has_in_flight_jobs:
         raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
     model_name = payload.model_name.strip()
     available = list(config.available_models_json or [])
     if available and model_name not in available:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
     label = payload.label.strip()
-    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id)
+    _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=target.id if target is not None else config.id)
     metadata = dict(config.inspection_metadata_json or {})
     if not available:
         available = [model_name]
@@ -580,16 +635,30 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     config.setup_status = LlmConfigSetupStatus.ready
     config.is_active = payload.is_active
     config.updated_by_user_id = actor.id
-    db.add(config)
+    result = config
+    old_secret_ref = ""
+    if target is not None:
+        old_secret_ref = target.vault_secret_ref
+        for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "setup_status", "vault_secret_ref", "is_active"):
+            setattr(target, field, getattr(config, field))
+        target.updated_by_user_id = actor.id
+        db.delete(config)
+        result = target
+    db.add(result)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         _raise_llm_label_conflict_if_needed(exc)
         raise
-    db.refresh(config)
-    _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
-    return config
+    if target is not None and old_secret_ref and old_secret_ref != result.vault_secret_ref:
+        try:
+            delete_team_llm_bearer_token(team_id=team.id, config_id=target.id, secret_ref=old_secret_ref)
+        except AppError as exc:
+            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": exc.code})
+    db.refresh(result)
+    _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
+    return result
 
 
 def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmConfigDraftReplaceCredential) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
@@ -709,7 +778,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
 
     existing_token_for_discovery: str | None = None
     if provider_endpoint_changed and not replacing_secret and has_existing_secret:
-        existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+        existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=config.vault_secret_ref)
 
     available_models_json: list[str]
     discovery_metadata: dict[str, object] = {}
@@ -839,7 +908,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     elif removing_secret:
         if config.vault_secret_ref:
             try:
-                bearer_token_for_restore = read_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+                bearer_token_for_restore = read_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=config.vault_secret_ref)
             except AppError as exc:
                 if exc.code != "vault_read_failed":
                     raise
@@ -897,17 +966,36 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
     if selection is not None:
         db.delete(selection)
         db.flush()
-    delete_after_commit = bool(config.vault_secret_ref)
+    revisions = list(db.scalars(select(TeamLlmConfig).where(TeamLlmConfig.revision_of_config_id == config.id))) if config.revision_of_config_id is None else []
+    revision_secrets = [(item.id, item.vault_secret_ref) for item in revisions]
+    deleted_secret_ref = config.vault_secret_ref
+    delete_after_commit = bool(deleted_secret_ref)
     team_id = config.team_id
     deleted_config_id = config.id
     db.delete(config)
     db.commit()
-    if delete_after_commit:
+    for revision_id, revision_ref in revision_secrets:
+        if revision_ref:
+            try:
+                delete_team_llm_bearer_token(team_id=team_id, config_id=revision_id, secret_ref=revision_ref)
+            except AppError as exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(revision_id), "team_id": str(team_id), "error_code": exc.code})
+    secret_still_referenced = delete_after_commit and db.scalar(
+        select(TeamLlmConfig.id).where(TeamLlmConfig.vault_secret_ref == deleted_secret_ref).limit(1)
+    ) is not None
+    if delete_after_commit and not secret_still_referenced:
         try:
-            delete_team_llm_bearer_token(team_id=team_id, config_id=deleted_config_id)
+            delete_team_llm_bearer_token(team_id=team_id, config_id=deleted_config_id, secret_ref=deleted_secret_ref)
         except AppError as exc:
             logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(deleted_config_id), "team_id": str(team_id), "error_code": exc.code})
     _record_llm_audit(db, action="llm_config_deleted", actor=actor, team_id=team_id, config_id=deleted_config_id)
+
+
+def cancel_llm_config_draft(db: Session, actor: User, *, config_id: UUID, team_id: UUID) -> None:
+    config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
+    if config.setup_status != LlmConfigSetupStatus.pending_model_selection:
+        raise AppError(409, "conflict", "Only a pending LLM setup draft can be cancelled")
+    delete_llm_config(db, actor, config_id=config_id, team_id=team_id)
 
 
 def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamLlmConfig]:
@@ -916,6 +1004,7 @@ def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | Non
         select(TeamLlmConfig)
         .where(
             TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
             TeamLlmConfig.model_name.is_not(None),
@@ -936,6 +1025,7 @@ def set_team_llm_selection(db: Session, actor: User, payload: LlmSelectionUpsert
         select(TeamLlmConfig).where(
             TeamLlmConfig.id == payload.llm_config_id,
             TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
             TeamLlmConfig.model_name.is_not(None),
@@ -1031,6 +1121,7 @@ def set_team_hallucination_check_selection(db: Session, actor: User, payload: Ha
         select(TeamLlmConfig).where(
             TeamLlmConfig.id == payload.llm_config_id,
             TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
             TeamLlmConfig.model_name.is_not(None),
@@ -1177,4 +1268,4 @@ def read_active_team_llm_bearer_token(db: Session, *, team_id: UUID) -> str:
     _, config, _ = resolve_team_llm(db, team_id=team_id)
     if not config.vault_secret_ref:
         raise AppError(422, "business_rule_violation", "No stored API key is configured for this LLM provider", {"team_id": str(team_id)})
-    return read_team_llm_bearer_token(team_id=team_id, config_id=config.id)
+    return read_team_llm_bearer_token(team_id=team_id, config_id=config.id, secret_ref=config.vault_secret_ref)

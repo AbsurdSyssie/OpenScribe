@@ -556,10 +556,14 @@ class UserRecoveryCode(Base):
 
 class TeamSttConfig(Base):
     __tablename__ = "team_stt_configs"
-    __table_args__ = (Index("uq_team_stt_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
+    __table_args__ = (
+        Index("uq_team_stt_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True, postgresql_where=text("revision_of_config_id IS NULL")),
+        Index("uq_team_stt_configs_pending_revision", "revision_of_config_id", unique=True, postgresql_where=text("revision_of_config_id IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    revision_of_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_stt_configs.id", ondelete="CASCADE"), nullable=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_preset: Mapped[str] = mapped_column(String(64), default=SttProviderPreset.custom_rest_openapi.value, server_default=SttProviderPreset.custom_rest_openapi.value, nullable=False)
     adapter_kind: Mapped[SttAdapterKind] = mapped_column(Enum(SttAdapterKind), default=SttAdapterKind.generic_rest, nullable=False)
@@ -626,10 +630,14 @@ class TeamSttSelection(Base):
 
 class TeamLlmConfig(Base):
     __tablename__ = "team_llm_configs"
-    __table_args__ = (Index("uq_team_llm_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
+    __table_args__ = (
+        Index("uq_team_llm_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True, postgresql_where=text("revision_of_config_id IS NULL")),
+        Index("uq_team_llm_configs_pending_revision", "revision_of_config_id", unique=True, postgresql_where=text("revision_of_config_id IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    revision_of_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="CASCADE"), nullable=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_preset: Mapped[str] = mapped_column(String(64), default=LlmProviderPreset.openai.value, nullable=False)
     adapter_kind: Mapped[LlmAdapterKind] = mapped_column(Enum(LlmAdapterKind), default=LlmAdapterKind.openai_chat, nullable=False)

@@ -687,9 +687,9 @@ def inspect_saved_llm_config(config_id: UUID, team_id: UUID | None = None, conte
 
 
 @api.post("/llm-configs/{config_id}/finalize", response_model=LlmConfigDetail, responses=error_responses)
-def finalize_llm_config_draft(config_id: UUID, payload: LlmConfigFinalize, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
-    payload = payload.model_copy(update={"config_id": config_id})
-    return llm_config_response(finalize_llm_config_draft_service(db, context.user, payload))
+def finalize_llm_config_draft(config_id: UUID, payload: LlmConfigFinalizeBody, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    service_payload = LlmConfigFinalize(**payload.model_dump(), config_id=config_id)
+    return llm_config_response(finalize_llm_config_draft_service(db, context.user, service_payload))
 
 
 @api.post("/llm-configs/{config_id}/replace-credential", response_model=LlmConfigDraftCreateResult, responses=error_responses)

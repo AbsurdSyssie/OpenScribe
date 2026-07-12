@@ -3115,7 +3115,6 @@ def test_system_admin_can_create_and_finalize_llm_draft_without_secret_reveal(
         f"/api/v1/llm-configs/{config_id}/finalize",
         json={
             "team_id": str(team.id),
-            "config_id": str(config_id),
             "label": "OpenRouter North",
             "model_name": "model-b",
             "is_active": True,
@@ -3202,6 +3201,202 @@ def test_llm_draft_preserves_supplied_label_and_falls_back_when_omitted(client, 
     assert fallback.status_code == 200
     assert fallback.json()["config"]["label"] == "OpenAI · Clinic Draft Labels"
 
+
+def test_stt_revision_stays_pending_then_promotes_into_active_config(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinic STT Revision")
+    other_team = make_team(name="Other STT Revision")
+    admin = make_user(email="admin-stt-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(team=team, actor=admin, label="Current STT", base_url="https://old-stt.example", model_name="old-model")
+    selection = make_stt_selection(config=active, actor=admin)
+    monkeypatch.setattr(
+        "app.services.stt.inspect_stt_contract",
+        lambda *args, **kwargs: SttInspectResult(
+            adapter_kind=SttAdapterKind.openai_compatible_rest,
+            base_url="https://new-stt.example",
+            openapi_path=None,
+            transcribe_path="/v1/audio/transcriptions",
+            model_name=None,
+            available_models=["new-model"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        ),
+    )
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", lambda **kwargs: f"secret:test/stt/{kwargs['config_id']}")
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda **kwargs: None)
+
+    login(client, email=admin.email, password="password-1")
+    cross_team = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(other_team.id), "provider_preset": "custom_openai_compatible", "base_url": "https://new-stt.example", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    assert_error(cross_team, status_code=404, code="not_found", message="Ready STT config not found")
+
+    created = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "custom_openai_compatible", "base_url": "https://new-stt.example", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.is_active) == ("https://old-stt.example", "old-model", True)
+    listed = client.get(f"/api/v1/stt-configs?team_id={team.id}")
+    assert [item["id"] for item in listed.json()] == [str(active.id)]
+    assert resolve_selected_team_stt(db_session, team_id=team.id)[1].id == active.id
+
+    finalized = client.post(
+        f"/api/v1/stt-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current STT", "model_name": "new-model", "language": "en-GB", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    assert finalized.json()["id"] == str(active.id)
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.language) == ("https://new-stt.example", "new-model", "en-GB")
+    assert db_session.get(TeamSttConfig, revision_id) is None
+    assert db_session.get(TeamSttSelection, selection.id).stt_config_id == active.id
+
+
+def test_llm_revision_stays_pending_then_promotes_into_active_config(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision")
+    other_team = make_team(name="Other LLM Revision")
+    admin = make_user(email="admin-llm-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(team=team, actor=admin, label="Current LLM", base_url="https://old-llm.example/v1", model_name="old-model")
+    selection = make_llm_selection(config=active, actor=admin)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-model"])
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: f"secret:test/llm/{kwargs['config_id']}")
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda **kwargs: None)
+
+    login(client, email=admin.email, password="password-1")
+    payload = {"provider_preset": "custom_openai_compatible", "base_url": "https://new-llm.example/v1", "bearer_token": "key", "revision_of_config_id": str(active.id)}
+    cross_team = client.post("/api/v1/llm-configs/drafts", json={**payload, "team_id": str(other_team.id)})
+    assert_error(cross_team, status_code=404, code="not_found", message="Ready LLM config not found")
+
+    created = client.post("/api/v1/llm-configs/drafts", json={**payload, "team_id": str(team.id)})
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.is_active) == ("https://old-llm.example/v1", "old-model", True)
+    listed = client.get(f"/api/v1/llm-configs?team_id={team.id}")
+    assert [item["id"] for item in listed.json()] == [str(active.id)]
+    assert db_session.get(TeamLlmSelection, selection.id).llm_config_id == active.id
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current LLM", "model_name": "new-model", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    assert finalized.json()["id"] == str(active.id)
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name) == ("https://new-llm.example/v1", "new-model")
+    assert db_session.get(TeamLlmConfig, revision_id) is None
+    assert db_session.get(TeamLlmSelection, selection.id).llm_config_id == active.id
+
+
+def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_secret(
+    client, db_session, make_team, make_user, make_stt_config, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic Credential Reuse")
+    admin = make_user(email="admin-credential-reuse@example.com", password="password-1", is_system_admin=True)
+    stt = make_stt_config(team=team, actor=admin, label="Saved STT", base_url="https://api.openai.com/v1")
+    llm = make_llm_config(team=team, actor=admin, label="Saved LLM", provider_preset="openai", base_url="https://api.openai.com/v1", available_models_json=["model-a"])
+    stt_ref, llm_ref = stt.vault_secret_ref, llm.vault_secret_ref
+    deleted_stt, deleted_llm = [], []
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "saved-stt-key")
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: SttInspectResult(adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="https://api.openai.com/v1", openapi_path=None, transcribe_path="/audio/transcriptions", model_name=None, available_models=["whisper-1"], file_field_name="file", model_field_name="model", language=None, language_field_name="language", response_text_path="text", extra_form_fields_json={}, candidate_paths=[], operation_summary=None, field_tips=[], notes=[]))
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda **kwargs: deleted_stt.append(kwargs))
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-llm-key")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda **kwargs: deleted_llm.append(kwargs))
+    login(client, email=admin.email, password="password-1")
+
+    stt_created = client.post("/api/v1/stt-configs/drafts", json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(stt.id)})
+    llm_created = client.post("/api/v1/llm-configs/drafts", json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(llm.id)})
+    assert stt_created.status_code == 200 and llm_created.status_code == 200
+    stt_revision = db_session.get(TeamSttConfig, UUID(stt_created.json()["config"]["id"]))
+    llm_revision = db_session.get(TeamLlmConfig, UUID(llm_created.json()["config"]["id"]))
+    assert stt_revision.vault_secret_ref == stt_ref
+    assert llm_revision.vault_secret_ref == llm_ref
+
+    assert client.post(f"/admin/stt-configs/{stt_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
+    assert client.post(f"/admin/llm-configs/{llm_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
+    db_session.refresh(stt)
+    db_session.refresh(llm)
+    assert stt.vault_secret_ref == stt_ref and llm.vault_secret_ref == llm_ref
+    assert deleted_stt == [] and deleted_llm == []
+
+def test_llm_revision_finalize_rejects_active_target_with_queued_document(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision Guard")
+    admin = make_user(email="admin-llm-revision-guard@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-llm-revision-guard@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    active = make_llm_config(team=team, actor=admin, label="Guarded LLM", model_name="old-model")
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Guarded generation",
+        current_draft_text_encrypted="Encrypted test draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=owner.created_at,
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Encrypted test version",
+    )
+    db_session.add(version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=owner.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=version.id,
+            llm_config_id=active.id,
+            generator_type=GeneratedDocumentGeneratorType.followup,
+            source_template_name="Follow-up",
+            status=GeneratedDocumentStatus.queued,
+            title="Queued output",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="",
+            edited_output_text_encrypted="",
+            retention_expires_at=owner.created_at,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-model"])
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: f"secret:test/llm/{kwargs['config_id']}")
+
+    login(client, email=admin.email, password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    revision_id = created.json()["config"]["id"]
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": revision_id, "label": "Guarded LLM", "model_name": "new-model", "is_active": True},
+    )
+
+    assert_error(finalized, status_code=409, code="conflict", message="Cannot edit this LLM config while generated documents are queued or processing")
+    db_session.refresh(active)
+    assert active.model_name == "old-model"
+    assert db_session.get(TeamLlmConfig, UUID(revision_id)) is not None
 
 def test_llm_config_labels_are_unique_per_team_case_and_trim_normalized(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Unique LLM")

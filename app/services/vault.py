@@ -320,8 +320,21 @@ def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token:
     return team_llm_secret_ref(team_id, config_id)
 
 
-def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
-    path = team_llm_secret_path(team_id, config_id)
+def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+    if not secret_ref:
+        return team_llm_secret_path(team_id, config_id)
+    mount_prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(mount_prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(mount_prefix):]
+    expected_prefix = f"openscribe/llm/team/{team_id}/config/"
+    if not path.startswith(expected_prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    return path
+
+
+def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+    path = _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
     try:
         response = httpx.get(
@@ -343,8 +356,8 @@ def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
     return str(bearer_token)
 
 
-def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
-    path = team_llm_secret_path(team_id, config_id)
+def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> None:
+    path = _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/metadata/{path}"
     try:
         response = httpx.delete(

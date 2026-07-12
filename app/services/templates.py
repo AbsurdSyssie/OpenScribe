@@ -2401,7 +2401,7 @@ def _run_hallucination_check(
     edit_cap = _hallucination_check_edit_cap(note_generation_options)
     output_token_cap = _note_generation_output_token_cap(note_generation_options)
     try:
-        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref) if config.vault_secret_ref else None
     except AppError as exc:
         if debug_payload is not None:
             debug_payload["failure_code"] = exc.code
@@ -3369,7 +3369,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
 
     try:
-        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref) if config.vault_secret_ref else None
         request_body = llm_request_payload
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(

@@ -9,15 +9,72 @@ from ..main import (
     _page_context_or_redirect,
 )
 from ..stt_normalization import normalize_stt_language
+from ..models import LlmConfigSetupStatus, SttConfigSetupStatus, Team, TeamLlmConfig, TeamSttConfig
+from ..services.admin import update_team_default_retention as update_team_default_retention_service
 from ..schemas import HallucinationCheckSelectionUpsert
 from ..services.llm import (
     clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
+    update_llm_config_details as update_llm_config_details_service,
 )
+from ..services.stt import update_stt_config_details as update_stt_config_details_service
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(
+    request: Request,
+    team_id: str | None = None,
+    stt_config_id: str | None = None,
+    llm_config_id: str | None = None,
+    deidentification_provider_id: str | None = None,
+    default_template_id: str | None = None,
+    default_quick_action_id: str | None = None,
+    tab: str | None = None,
+    team_tab: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    if team_id:
+        try:
+            parsed_team_id = UUID(team_id)
+        except ValueError:
+            parsed_team_id = None
+        if parsed_team_id is None or db.get(Team, parsed_team_id) is None:
+            team_id = None
+    team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}
+    if team_tab in team_tabs:
+        resolved_team_tab = team_tab
+    elif team_id and tab == "providers":
+        resolved_team_tab = "provider-policy"
+    else:
+        resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
+    global_tabs = {"home", "directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"}
+    resolved_global_tab = tab if tab in global_tabs else "home"
+    return render_admin(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_id=team_id,
+        selected_stt_config_id=stt_config_id,
+        selected_llm_config_id=llm_config_id,
+        selected_deidentification_provider_id=deidentification_provider_id,
+        selected_default_template_id=default_template_id,
+        selected_default_quick_action_id=default_quick_action_id,
+        active_admin_tab=resolved_global_tab,
+        admin_page_route="/admin",
+        admin_return_view="workspace",
+        template_name="admin_mockup.html",
+        extra_admin_tabs=global_tabs,
+        workspace_team_tab=resolved_team_tab,
+    )
+
+
+@app.get("/legacy-admin", response_class=HTMLResponse)
+def legacy_admin_page(
     request: Request,
     team_id: str | None = None,
     stt_config_id: str | None = None,
@@ -44,8 +101,9 @@ def admin_page(
         selected_default_template_id=default_template_id,
         selected_default_quick_action_id=default_quick_action_id,
         active_admin_tab=tab,
-        admin_page_route="/admin",
-        admin_return_view="",
+        admin_page_route="/legacy-admin",
+        admin_return_view="legacy",
+        template_name="admin.html",
     )
 
 
@@ -199,6 +257,42 @@ def admin_delete_team(
         )
     return RedirectResponse(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/teams/{team_id}/retention", response_class=HTMLResponse)
+def admin_update_team_retention(
+    request: Request,
+    team_id: UUID,
+    default_retention_days: int = Form(...),
+    return_view: str = Form("workspace"),
+    return_tab: str = Form("defaults"),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        update_team_default_retention_service(db, context.user, team_id=team_id, default_retention_days=default_retention_days)
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=str(team_id),
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab,
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=str(team_id)),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -842,6 +936,7 @@ def admin_create_stt_config_draft(
     base_url: str = Form(""),
     openapi_path: str = Form(""),
     bearer_token: str = Form(""),
+    revision_of_config_id: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -858,6 +953,7 @@ def admin_create_stt_config_draft(
             context.user,
             SttConfigDraftCreate(
                 team_id=UUID(team_id),
+                revision_of_config_id=UUID(revision_of_config_id) if revision_of_config_id else None,
                 provider_preset=provider_preset,
                 label=label or None,
                 base_url=base_url,
@@ -933,6 +1029,38 @@ def admin_finalize_stt_config_draft(
             admin_return_view=_admin_return_view_value(return_view),
         )
     return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-configs/{config_id}/details", response_class=HTMLResponse)
+def admin_update_stt_config_details(request: Request, config_id: UUID, team_id: str = Form(...), label: str = Form(...), is_active: str | None = Form(default=None), return_view: str = Form("workspace"), return_tab: str = Form("stt"), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        update_stt_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT details request"
+        code = exc.status_code if isinstance(exc, AppError) else 400
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace", template_name="admin_mockup.html")
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/stt-configs/{config_id}/draft-cancel", response_class=HTMLResponse)
+def admin_cancel_stt_config_draft(request: Request, config_id: UUID, team_id: str = Form(...), return_view: str = Form("workspace"), return_tab: str = Form("stt"), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        main_module.cancel_stt_config_draft_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid STT draft cancellation"
+        code = exc.status_code if isinstance(exc, AppError) else 400
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab=return_tab, admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/stt-configs/{config_id}/replace-credential", response_class=HTMLResponse)
@@ -1197,6 +1325,7 @@ def admin_create_llm_config_draft(
     base_url: str = Form(""),
     bedrock_region: str = Form(""),
     bearer_token: str = Form(""),
+    revision_of_config_id: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -1213,6 +1342,7 @@ def admin_create_llm_config_draft(
             context.user,
             LlmConfigDraftCreate(
                 team_id=UUID(team_id),
+                revision_of_config_id=UUID(revision_of_config_id) if revision_of_config_id else None,
                 provider_preset=provider_preset,
                 label=label or None,
                 base_url=base_url,
@@ -1306,6 +1436,38 @@ def admin_finalize_llm_config_draft(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@app.post("/admin/llm-configs/{config_id}/details", response_class=HTMLResponse)
+def admin_update_llm_config_details(request: Request, config_id: UUID, team_id: str = Form(...), label: str = Form(...), is_active: str | None = Form(default=None), return_view: str = Form("workspace"), return_tab: str = Form("llm"), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        update_llm_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM details request"
+        code = exc.status_code if isinstance(exc, AppError) else 400
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace", template_name="admin_mockup.html")
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/llm-configs/{config_id}/draft-cancel", response_class=HTMLResponse)
+def admin_cancel_llm_config_draft(request: Request, config_id: UUID, team_id: str = Form(...), return_view: str = Form("workspace"), return_tab: str = Form("llm"), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        main_module.cancel_llm_config_draft_service(db, context.user, config_id=config_id, team_id=UUID(team_id))
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM draft cancellation"
+        code = exc.status_code if isinstance(exc, AppError) else 400
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab=return_tab, admin_page_route=_admin_page_route_from_return_view(return_view), admin_return_view=_admin_return_view_value(return_view))
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/llm-configs/{config_id}/replace-credential", response_class=HTMLResponse)

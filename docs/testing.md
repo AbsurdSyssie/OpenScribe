@@ -1,5 +1,8 @@
 # Testing
 
+- Admin redesign migration tests verify `/admin` renders the mockup-based neutral/team-scoped shell with URL-backed team tabs, `/legacy-admin` retains the functional current workspace, and `/admin2` remains available.
+- Admin redesign slice tests verify team member forms/actions reuse existing account routes without system-admin promotion, De-ID assignment remains distinct from global deletion, Danger zone uses existing team hard-delete, and retention-default edits preserve future-only semantics.
+
 This document covers non-database testing. Database-specific behavior, safety rules, and persistence-level checks belong in [dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md).
 
 Documentation convention:
@@ -401,3 +404,14 @@ What it does:
 
 - Postgres-backed tests need real socket access to the local test database. In this environment that means running them outside the restricted sandbox.
 - The STT and LLM browser forms use `provider_model` for HTML form posts, while the JSON API and persisted field remain `model_name` / `model_name_override`. That keeps the API stable while avoiding FastAPI/Pydantic protected-namespace warnings from generated form models.
+# Admin provider redesign checks
+
+Run `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or change_llm_connection"` for narrow provider detail and connection-revision coverage.
+# Admin provider wizard
+
+`tests/test_admin_ui.py::test_admin_workspace_provider_redesign_has_explicit_safe_actions` checks API draft/finalize wiring, response-driven rendering, named controls, removal of fabricated model data, and absence of credential references.
+
+`tests/test_admin_ui.py::test_admin_provider_wizards_render_safe_contextual_errors` checks both provider wizards use assertive, focusable alerts; retain only safe structured API status/code/field metadata; map failures to concise guidance; highlight explicitly named controls; and never serialize arbitrary error details.
+# Provider-policy table
+
+`tests/test_admin_ui.py -k provider_policy` verifies six styled policy rows, real provider/model values, discovered-model data, inline save and state-dependent clear routes, representative STT/LLM POSTs, and JavaScript model-sync markers. Tests use provider metadata only; no transcript-derived content or credentials are rendered.

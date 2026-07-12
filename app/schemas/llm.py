@@ -92,6 +92,7 @@ class LlmConfigUpsert(BaseModel):
 class LlmConfigDetail(BaseModel):
     id: UUID
     team_id: UUID
+    revision_of_config_id: UUID | None = None
     label: str
     provider_preset: str
     adapter_kind: LlmAdapterKind
@@ -117,6 +118,7 @@ class LlmConfigDraftCreate(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     team_id: UUID
+    revision_of_config_id: UUID | None = None
     provider_preset: LlmProviderPreset = LlmProviderPreset.openai
     label: str | None = Field(default=None, min_length=1, max_length=255)
     base_url: str = Field(default="", max_length=2048)
@@ -174,6 +176,15 @@ class LlmConfigFinalize(BaseModel):
 
     team_id: UUID
     config_id: UUID
+    label: str = Field(min_length=1, max_length=255)
+    model_name: str = Field(min_length=1, max_length=255)
+    is_active: bool = True
+
+
+class LlmConfigFinalizeBody(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
     label: str = Field(min_length=1, max_length=255)
     model_name: str = Field(min_length=1, max_length=255)
     is_active: bool = True

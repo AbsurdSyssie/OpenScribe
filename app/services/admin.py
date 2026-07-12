@@ -1119,6 +1119,27 @@ def list_teams(db: Session) -> list[Team]:
     return list(db.scalars(select(Team).order_by(Team.created_at.desc())))
 
 
+def update_team_default_retention(db: Session, actor: User, *, team_id: UUID, default_retention_days: int) -> Team:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin team retention access required")
+    team = db.get(Team, team_id)
+    if team is None:
+        raise AppError(404, "not_found", "Team not found")
+    old_days = team.default_retention_days
+    team.default_retention_days = validate_retention_days(default_retention_days)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    record_security_event(
+        db,
+        action="team_default_retention_updated",
+        actor=actor,
+        team_id=team.id,
+        details={"category": "account", "outcome": "success", "old_days": old_days, "new_days": team.default_retention_days},
+    )
+    return team
+
+
 def _resolve_team_for_admin_delete(db: Session, actor: User, *, team_id: UUID) -> Team:
     if not actor.is_system_admin:
         raise AppError(403, "forbidden", "System-admin team deletion access required")

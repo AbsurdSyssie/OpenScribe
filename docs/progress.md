@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-07-12 Transcript Retention Enforcement
+
+### Scope
+
+- Enforced fixed team retention expiry in transcript history, direct detail, and latest-session selection.
+- Added bounded transcript-root cleanup and hourly Celery Beat scheduling.
+- Preserved root cascades for working notes, versions, generated documents, redaction data, and ingestion jobs.
+
+### Checklist
+
+- Target behavior: expired notes become unavailable immediately and transcript roots are hard-deleted hourly.
+- Affected schema/modules/endpoints: transcript service, transcript history/detail APIs, Celery task/config; no schema change.
+- Affected tests: expiry boundary, root cascade, bounded/idempotent cleanup, API visibility, scheduler registration, existing Vault-failure deletion fixture.
+- Architecture risks: retry-audio Vault deletion remains best-effort under existing deletion semantics; durable cleanup outbox remains open architecture work.
+- Docs referenced/updated: `docs/DatabasePlan.md`, `docs/progress.md`.
+- Reuse decision: reused transcript-root relationships and retry-source cleanup instead of child-specific note deletion.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: production must run Celery Beat as well as workers; existing transcript expiry timestamps are not recalculated from later team setting changes.
+
+### Files changed
+
+- `app/services/transcripts.py`: active-expiry guards and bounded root cleanup.
+- `app/web/transcribe_workspace.py`, `app/routes/api_routes.py`: expired transcript visibility enforcement.
+- `app/tasks.py`, `app/celery_app.py`: cleanup task and hourly schedule.
+- `tests/test_retention.py`, `tests/test_api.py`: retention and deletion regressions.
+- `docs/DatabasePlan.md`, `docs/progress.md`: operational and architecture behavior.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_retention.py`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_retention.py tests/test_api.py -k "transcript_delete_is_owner_only or transcript_delete_still_succeeds or can_create_new_session or transcript_history"`: passed, 2 tests selected.
+- Full `tests/test_api.py` regression reached 56% with 202 tests passing before exposing unrelated legacy fixtures whose expiry equals creation time; central write-path expiry enforcement was narrowed rather than rewriting unrelated fixtures.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: expired transcript-derived content is hidden immediately; no content is logged.
+- Ownership rules: existing owner-only checks remain; expiry returns not-found only after ownership validation.
+- Deletion semantics: cleanup deletes transcript roots and relies on existing cascades; no independent note lifecycle added.
+- Provider rules: unchanged; retry-audio Vault cleanup follows existing best-effort deletion behavior.
+- Structured-note contract: unchanged; working notes disappear with transcript root.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: owner access remains mandatory; history and direct detail hide expired owner content while cleanup removes its root.
+- Lifecycle/deletion checkpoint: fixed expiry now triggers bounded hard deletion; later team setting changes do not extend existing content.
+- Docs/tests checkpoint: retention docs and focused tests added.
+
 ## 2026-07-02 Legacy Loader, Route, And Usage Spacing Cleanup
 
 ### Scope
@@ -9871,3 +9918,20 @@
 - Auth/ownership: unchanged; existing system-admin rendering and tab behavior remain intact.
 - Lifecycle/deletion: unchanged.
 - Privacy/provider/structured-note contracts: unchanged; styling exposes no new data and changes no provider behavior.
+
+## 2026-07-12 Usage Overview Panel Spacing
+
+- Restored standard `18px` admin panel inset on `.usage-hero`; its previous late cascade override placed the Usage overview heading against the rounded border.
+- Bumped the admin stylesheet cache key and extended the static admin UI regression.
+- Updated `docs/usage_tab.md`; no schema, auth, ownership, deletion, provider, privacy, encryption, or structured-note behavior changed.
+- Focused pytest remains blocked by the unavailable test PostgreSQL connection; `git diff --check` passes.
+
+## 2026-07-12 Provider Setup Entry State
+
+- Promoted the team selector to the first and primary Provider setup card when no team is selected.
+- Moved entry-state context into that card; the full provider introduction remains after team selection.
+- Reused existing panel, section header, form, and visual tokens. Provider selection inputs, routes, credentials, and policy behavior are unchanged.
+- Added focused render coverage and updated `docs/admin_brief.md`.
+- Follow-up: removed the stretched entry card after browser review. Unselected state is now a compact, unframed, top-aligned selector with a `520px` maximum width.
+- Follow-up: fixed parent admin grid track stretching with `.admin-pane { align-content: start; }`, keeping sparse entry content directly below the header instead of halfway down the viewport.
+- Final design decision: Team scope now uses identical panel markup and copy before and after team selection; only selector value and downstream provider configuration change.

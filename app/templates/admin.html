@@ -6,7 +6,7 @@
   <title>OpenScribe Admin</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">
-  <link rel="stylesheet" href="/static/css/admin.css?v=20260712-sidebar-selector">
+  <link rel="stylesheet" href="/static/css/admin.css?v=20260712-team-scope">
 </head>
 <body>
   <div class="admin-shell">
@@ -63,12 +63,14 @@
 
       <div class="tab-shell" data-tab-shell data-default-tab="{{ active_admin_tab }}">
     <section class="admin-section" data-tab-panel="providers">
+      {% if selected_team_id %}
       <div class="admin-section__intro">
         <div class="eyebrow">Provider setup</div>
         <h2>Configure STT, LLM, and de-identification.</h2>
         <p>System admins provision endpoint rows, credentials, team policy, and redaction providers without opening transcript or note content.</p>
       </div>
-      <div class="panel">
+      {% endif %}
+      <div class="panel provider-scope">
         <div class="section-header">
           <div>
             <h2>Team scope</h2>

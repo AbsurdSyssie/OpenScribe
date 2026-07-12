@@ -13275,7 +13275,7 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()

@@ -371,7 +371,9 @@ def list_transcript_history_page(
 ) -> dict[str, object]:
     page_limit = _normalize_transcript_history_limit(limit)
     decoded_cursor = _decode_transcript_history_cursor(cursor)
-    conditions = [Transcript.owner_user_id == current_user.id]
+    from app.services.transcripts import active_transcript_condition, transcript_is_expired
+
+    conditions = [Transcript.owner_user_id == current_user.id, active_transcript_condition()]
     if decoded_cursor is not None:
         cursor_created_at, cursor_id = decoded_cursor
         conditions.append(
@@ -391,7 +393,11 @@ def list_transcript_history_page(
     page_rows = rows[:page_limit]
     has_more = len(rows) > page_limit
     next_cursor = _encode_transcript_history_cursor(page_rows[-1]) if has_more and page_rows else None
-    if include_transcript is not None and include_transcript.owner_user_id == current_user.id:
+    if (
+        include_transcript is not None
+        and include_transcript.owner_user_id == current_user.id
+        and not transcript_is_expired(include_transcript)
+    ):
         page_ids = {transcript.id for transcript in page_rows}
         if include_transcript.id not in page_ids:
             page_rows.append(include_transcript)

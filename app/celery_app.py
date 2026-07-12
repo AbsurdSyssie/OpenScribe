@@ -26,6 +26,13 @@ celery_app.conf.update(
     task_track_started=True,
     task_always_eager=_env_flag("CELERY_TASK_ALWAYS_EAGER", default=False),
     task_eager_propagates=True,
+    timezone="UTC",
+    beat_schedule={
+        "delete-expired-transcripts-hourly": {
+            "task": "openscribe.delete_expired_transcripts",
+            "schedule": 3600.0,
+        },
+    },
 )
 
 celery_app.autodiscover_tasks(["app"])

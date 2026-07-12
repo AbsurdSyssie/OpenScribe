@@ -45,6 +45,19 @@ WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES",
 WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", str(4 * 60 * 60)))
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
+transcript_retention_logger = logging.getLogger("openscribe.transcript_retention")
+
+
+def active_transcript_condition(*, now: datetime | None = None):
+    return Transcript.retention_expires_at > (now or utcnow())
+
+
+def transcript_is_expired(transcript: Transcript, *, now: datetime | None = None) -> bool:
+    expires_at = transcript.retention_expires_at
+    comparison_now = now or utcnow()
+    if expires_at.tzinfo is None and comparison_now.tzinfo is not None:
+        comparison_now = comparison_now.replace(tzinfo=None)
+    return expires_at <= comparison_now
 
 
 def _retry_source_available(job: TranscriptIngestionJob) -> bool:
@@ -727,7 +740,7 @@ def next_live_chunk_sequence_no_for_transcript(db: Session, *, transcript_id: UU
 def _latest_owner_transcript(db: Session, owner: User) -> Transcript | None:
     return db.scalar(
         select(Transcript)
-        .where(Transcript.owner_user_id == owner.id)
+        .where(Transcript.owner_user_id == owner.id, active_transcript_condition())
         .order_by(Transcript.created_at.desc())
         .limit(1)
     )
@@ -779,6 +792,13 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != owner.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    return transcript
+
+
+def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    if transcript_is_expired(transcript):
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     return transcript
 
 
@@ -1086,6 +1106,38 @@ def delete_transcripts(
         details={"category": "transcript", "outcome": "success", "object_type": "transcript", "object_ids": deleted_ids, "deleted_count": deleted_count},
     )
     return deleted_count
+
+
+def delete_expired_transcripts(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    batch_size: int = 100,
+) -> int:
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    comparison_now = now or utcnow()
+    transcripts = list(
+        db.scalars(
+            select(Transcript)
+            .where(Transcript.retention_expires_at <= comparison_now)
+            .order_by(Transcript.retention_expires_at.asc(), Transcript.id.asc())
+            .limit(batch_size)
+        )
+    )
+    if not transcripts:
+        return 0
+
+    transcript_ids = [transcript.id for transcript in transcripts]
+    delete_retry_sources_for_transcripts(db, transcript_ids=transcript_ids)
+    for transcript in transcripts:
+        db.delete(transcript)
+    db.commit()
+    transcript_retention_logger.info(
+        "expired_transcript_roots_deleted",
+        extra={"deleted_count": len(transcripts)},
+    )
+    return len(transcripts)
 
 
 def queue_audio_chunk_ingestion(

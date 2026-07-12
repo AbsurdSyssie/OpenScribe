@@ -78,6 +78,7 @@ from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
+    get_llm_config as get_llm_config_service,
     get_user_llm_preference as get_user_llm_preference_service,
     list_selectable_llm_configs as list_selectable_llm_configs_service,
     list_llm_configs as list_llm_configs_service,
@@ -98,6 +99,7 @@ from ..services.redaction import (
 from ..services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
     get_team_stt_selection as get_team_stt_selection_service,
+    get_stt_config as get_stt_config_service,
     list_selectable_stt_configs as list_selectable_stt_configs_service,
     list_stt_configs as list_stt_configs_service,
 )
@@ -842,10 +844,19 @@ def render_admin(
     admin_return_view: str = "",
     template_name: str | None = None,
     extra_admin_tabs: set[str] | None = None,
+    workspace_team_tab: str | None = None,
 ):
+    workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}
+    if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
+        workspace_team_tab = active_admin_tab
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
+    if edit_stt_config is None and selected_uuid and selected_stt_config_id and selected_stt_config_id != "new":
+        try:
+            edit_stt_config = get_stt_config_service(db, current_user, config_id=UUID(selected_stt_config_id), team_id=selected_uuid)
+        except (ValueError, AppError):
+            edit_stt_config = None
     stt_selection = get_team_stt_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     stt_dictation_selection = (
         get_team_stt_selection_service(
@@ -859,6 +870,11 @@ def render_admin(
     )
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
+    if edit_llm_config is None and selected_uuid and selected_llm_config_id and selected_llm_config_id != "new":
+        try:
+            edit_llm_config = get_llm_config_service(db, current_user, config_id=UUID(selected_llm_config_id), team_id=selected_uuid)
+        except (ValueError, AppError):
+            edit_llm_config = None
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     hallucination_check_selection = get_team_hallucination_check_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     deidentification_providers = list_deidentification_providers_service(db, current_user)
@@ -970,11 +986,21 @@ def render_admin(
             }
         )
     email_recovery_enabled = email_password_reset_enabled_service()
+    teams = list_teams_service(db)
+    users = list_users_service(db)
+    selected_team = next((team for team in teams if str(team.id) == selected_team_id), None)
+    selected_team_users = [
+        user
+        for user in users
+        if selected_team is not None and user.team_id == selected_team.id and not user.is_system_admin
+    ]
     context = {
         "request": request,
         "current_user": current_user,
-        "teams": list_teams_service(db),
-        "users": list_users_service(db),
+        "teams": teams,
+        "users": users,
+        "selected_team": selected_team,
+        "selected_team_users": selected_team_users,
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
         "selected_llm_config_id": selected_llm_config_id,
@@ -1001,6 +1027,7 @@ def render_admin(
         "deidentification_inspection": deidentification_inspection,
         "deidentification_form": deidentification_form_override or deidentification_form_defaults(edit_deidentification_provider),
         "deidentification_assignments": deidentification_assignments,
+        "assigned_deidentification_provider_ids": {assignment.provider_id for assignment in deidentification_assignments},
         "deidentification_selection": deidentification_selection,
         "clinical_nlp_selection": clinical_nlp_selection,
         "selectable_deidentification_providers": (
@@ -1026,6 +1053,7 @@ def render_admin(
         "active_provider_tab": resolved_provider_tab,
         "admin_page_route": admin_page_route,
         "admin_return_view": admin_return_view,
+        "workspace_team_tab": workspace_team_tab,
         "message": message,
         "message_kind": message_kind,
         "recovery_temporary_password": recovery_temporary_password,
@@ -1034,20 +1062,24 @@ def render_admin(
         **usage_context,
         **audit_context,
     }
-    resolved_template_name = template_name or "admin.html"
+    resolved_template_name = template_name or ("admin_mockup.html" if admin_return_view == "workspace" else "admin.html")
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
 
 
 def admin_page_route_from_return_view(return_view: str | None) -> str:
+    if return_view == "workspace":
+        return "/admin"
     if return_view == "admin2":
         return "/admin2"
-    return "/admin-restyled" if return_view == "restyled" else "/admin"
+    return "/admin-restyled" if return_view == "restyled" else "/legacy-admin"
 
 
 def admin_return_view_value(return_view: str | None) -> str:
+    if return_view == "workspace":
+        return "workspace"
     if return_view == "admin2":
         return "admin2"
-    return "restyled" if return_view == "restyled" else ""
+    return "restyled" if return_view == "restyled" else "legacy"
 
 
 def admin_redirect_url(
@@ -1070,7 +1102,10 @@ def admin_redirect_url(
     if deidentification_provider_id:
         params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
-        params["tab"] = return_tab
+        if return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}:
+            params["team_tab"] = return_tab
+        else:
+            params["tab"] = return_tab
     return f"{base}?{urlencode(params)}" if params else base
 
 

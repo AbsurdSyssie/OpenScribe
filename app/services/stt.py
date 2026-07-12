@@ -146,6 +146,7 @@ def _duplicate_stt_config(
         return None
     stmt = select(TeamSttConfig).where(
         TeamSttConfig.team_id == team_id,
+        TeamSttConfig.revision_of_config_id.is_(None),
         TeamSttConfig.adapter_kind == adapter_kind,
         TeamSttConfig.base_url == base_url,
         TeamSttConfig.credential_fingerprint == fingerprint,
@@ -159,6 +160,7 @@ def _ensure_unique_stt_config_label(db: Session, *, team_id: UUID, label: str, c
     normalized = label.strip().lower()
     stmt = select(TeamSttConfig.id).where(
         TeamSttConfig.team_id == team_id,
+        TeamSttConfig.revision_of_config_id.is_(None),
         func.lower(func.btrim(TeamSttConfig.label)) == normalized,
     )
     if current_config_id is not None:
@@ -265,7 +267,7 @@ def _resolve_selection_scoped_team(db: Session, actor: User, *, team_id: UUID | 
 
 def list_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
     team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
-    stmt = select(TeamSttConfig).where(TeamSttConfig.team_id == team.id).order_by(TeamSttConfig.created_at.desc(), TeamSttConfig.id.desc())
+    stmt = select(TeamSttConfig).where(TeamSttConfig.team_id == team.id, TeamSttConfig.revision_of_config_id.is_(None)).order_by(TeamSttConfig.created_at.desc(), TeamSttConfig.id.desc())
     return list(db.scalars(stmt))
 
 
@@ -274,6 +276,45 @@ def get_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID |
     config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == config_id, TeamSttConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(config_id)})
+    return config
+
+
+def update_stt_config_details(
+    db: Session,
+    actor: User,
+    *,
+    config_id: UUID,
+    team_id: UUID,
+    label: str,
+    is_active: bool,
+) -> TeamSttConfig:
+    team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
+    config = db.scalar(
+        select(TeamSttConfig).where(
+            TeamSttConfig.id == config_id,
+            TeamSttConfig.team_id == team.id,
+            TeamSttConfig.revision_of_config_id.is_(None),
+            TeamSttConfig.setup_status == SttConfigSetupStatus.ready,
+        )
+    )
+    if config is None:
+        raise AppError(404, "not_found", "Ready STT config not found", {"resource": "stt_config", "config_id": str(config_id)})
+    normalized_label = label.strip()
+    if not normalized_label:
+        raise AppError(422, "business_rule_violation", "STT provider name is required", {"field": "label"})
+    _ensure_unique_stt_config_label(db, team_id=team.id, label=normalized_label, current_config_id=config.id)
+    config.label = normalized_label
+    config.is_active = is_active
+    config.updated_by_user_id = actor.id
+    db.add(config)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _raise_stt_label_conflict_if_needed(exc)
+        raise
+    db.refresh(config)
+    _record_stt_audit(db, action="stt_config_details_updated", actor=actor, team_id=team.id, config_id=config.id, active=config.is_active)
     return config
 
 
@@ -295,20 +336,39 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this STT config while transcription jobs are queued or processing",
             {"config_id": str(config.id)},
         )
+    revisions = list(db.scalars(select(TeamSttConfig).where(TeamSttConfig.revision_of_config_id == config.id))) if config.revision_of_config_id is None else []
+    revision_secrets = [(item.id, item.vault_secret_ref) for item in revisions]
     secret_team_id = config.team_id
     secret_config_id = config.id
     secret_ref = config.vault_secret_ref
     _clear_stt_selections_for_config(db, config_id=config.id)
     db.delete(config)
     db.commit()
-    try:
-        delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id, secret_ref=secret_ref or None)
-    except AppError as exc:
-        logger.warning(
-            "stt_config_secret_cleanup_failed",
-            extra={"config_id": str(secret_config_id), "team_id": str(secret_team_id), "error_code": exc.code},
-        )
+    for revision_id, revision_ref in revision_secrets:
+        if revision_ref:
+            try:
+                delete_team_stt_bearer_token(team_id=secret_team_id, config_id=revision_id, secret_ref=revision_ref)
+            except AppError as exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(revision_id), "team_id": str(secret_team_id), "error_code": exc.code})
+    secret_still_referenced = bool(secret_ref) and db.scalar(
+        select(TeamSttConfig.id).where(TeamSttConfig.vault_secret_ref == secret_ref).limit(1)
+    ) is not None
+    if not secret_still_referenced:
+        try:
+            delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id, secret_ref=secret_ref or None)
+        except AppError as exc:
+            logger.warning(
+                "stt_config_secret_cleanup_failed",
+                extra={"config_id": str(secret_config_id), "team_id": str(secret_team_id), "error_code": exc.code},
+            )
     _record_stt_audit(db, action="stt_config_deleted", actor=actor, team_id=secret_team_id, config_id=secret_config_id)
+
+
+def cancel_stt_config_draft(db: Session, actor: User, *, config_id: UUID, team_id: UUID) -> None:
+    config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
+    if config.setup_status != SttConfigSetupStatus.pending_model_selection:
+        raise AppError(409, "conflict", "Only a pending STT setup draft can be cancelled")
+    delete_stt_config(db, actor, config_id=config_id, team_id=team_id)
 
 
 def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | None = None) -> list[TeamSttConfig]:
@@ -317,6 +377,7 @@ def list_selectable_stt_configs(db: Session, actor: User, *, team_id: UUID | Non
         select(TeamSttConfig)
         .where(
             TeamSttConfig.team_id == team.id,
+            TeamSttConfig.revision_of_config_id.is_(None),
             TeamSttConfig.is_active.is_(True),
             TeamSttConfig.setup_status == SttConfigSetupStatus.ready,
             TeamSttConfig.credential_status != ProviderCredentialStatus.invalid,
@@ -347,6 +408,7 @@ def set_team_stt_selection(db: Session, actor: User, payload: SttSelectionUpsert
         select(TeamSttConfig).where(
             TeamSttConfig.id == payload.stt_config_id,
             TeamSttConfig.team_id == team.id,
+            TeamSttConfig.revision_of_config_id.is_(None),
             TeamSttConfig.is_active.is_(True),
             TeamSttConfig.setup_status == SttConfigSetupStatus.ready,
             TeamSttConfig.credential_status != ProviderCredentialStatus.invalid,
@@ -1761,13 +1823,21 @@ def _verify_generic_stt_config_with_sample(
 
 def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCreate) -> tuple[TeamSttConfig, SttInspectResult]:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    target = None
+    if payload.revision_of_config_id is not None:
+        target = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == payload.revision_of_config_id, TeamSttConfig.team_id == team.id, TeamSttConfig.revision_of_config_id.is_(None), TeamSttConfig.setup_status == SttConfigSetupStatus.ready))
+        if target is None:
+            raise AppError(404, "not_found", "Ready STT config not found", {"resource": "stt_config", "config_id": str(payload.revision_of_config_id)})
     provider_preset, adapter_kind, base_url, preset = apply_stt_provider_defaults(
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
     )
     provider_preset = _resolve_stt_provider_preset_for_admin_write(provider_preset, adapter_kind, base_url)
     preset = get_stt_provider_preset(provider_preset)
-    if preset.requires_api_key and not payload.bearer_token:
+    bearer_token = payload.bearer_token
+    if not bearer_token and target is not None and target.vault_secret_ref:
+        bearer_token = read_team_stt_bearer_token(team_id=team.id, config_id=target.id)
+    if preset.requires_api_key and not bearer_token:
         raise AppError(422, "business_rule_violation", "This STT provider requires an API key", {"field": "bearer_token"})
     inspection = inspect_stt_contract(
         db,
@@ -1778,13 +1848,16 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
             adapter_kind=adapter_kind,
             base_url=base_url,
             openapi_path=payload.openapi_path,
-            bearer_token=payload.bearer_token,
+            bearer_token=bearer_token,
         ),
     )
-    label = (payload.label or "").strip() or default_stt_config_label(provider_display_name=preset.display_name, team_name=team.name)
-    _ensure_unique_stt_config_label(db, team_id=team.id, label=label)
-    fingerprint = _credential_fingerprint(payload.bearer_token)
+    label = (payload.label or "").strip() or (target.label if target is not None else default_stt_config_label(provider_display_name=preset.display_name, team_name=team.name))
+    if target is None:
+        _ensure_unique_stt_config_label(db, team_id=team.id, label=label)
+    fingerprint = _credential_fingerprint(bearer_token)
     duplicate = _duplicate_stt_config(db, team_id=team.id, adapter_kind=inspection.adapter_kind, base_url=inspection.base_url, fingerprint=fingerprint)
+    if duplicate is not None and target is not None and duplicate.id == target.id:
+        duplicate = None
     if duplicate is not None:
         raise AppError(
             409,
@@ -1792,10 +1865,11 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
             "A saved STT provider for this team, adapter, endpoint, and credential already exists.",
             {"duplicate_config_id": str(duplicate.id), "team_id": str(team.id), "provider_type": "stt"},
         )
-    status = _inspection_status(inspection, had_secret=bool(payload.bearer_token)) if payload.bearer_token else ProviderCredentialStatus.unknown
+    status = _inspection_status(inspection, had_secret=bool(bearer_token)) if bearer_token else ProviderCredentialStatus.unknown
     config = TeamSttConfig(
         id=uuid4(),
         team_id=team.id,
+        revision_of_config_id=target.id if target is not None else None,
         label=label,
         provider_preset=provider_preset,
         adapter_kind=inspection.adapter_kind,
@@ -1815,7 +1889,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         segment_end_field=inspection.segment_end_field,
         segment_speaker_field=inspection.segment_speaker_field,
         extra_form_fields_json=inspection.extra_form_fields_json,
-        vault_secret_ref="pending" if payload.bearer_token else "",
+        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if target is not None else ""),
         credential_status=status,
         credential_fingerprint=fingerprint,
         inspection_metadata_json=_status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=status),
@@ -1859,10 +1933,16 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     config = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == payload.config_id, TeamSttConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "STT config not found", {"resource": "stt_config", "config_id": str(payload.config_id)})
-    if _stt_config_has_in_flight_jobs(db, config_id=config.id):
+    target = None
+    if config.revision_of_config_id is not None:
+        target = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == config.revision_of_config_id, TeamSttConfig.team_id == team.id, TeamSttConfig.revision_of_config_id.is_(None)).with_for_update())
+        if target is None:
+            raise AppError(409, "conflict", "STT revision target is unavailable")
+    job_config_id = target.id if target is not None else config.id
+    if _stt_config_has_in_flight_jobs(db, config_id=job_config_id):
         raise AppError(409, "conflict", "Cannot edit this STT config while transcription jobs are queued or processing", {"config_id": str(config.id)})
     label = payload.label.strip()
-    _ensure_unique_stt_config_label(db, team_id=team.id, label=label, current_config_id=config.id)
+    _ensure_unique_stt_config_label(db, team_id=team.id, label=label, current_config_id=target.id if target is not None else config.id)
     model_name = payload.model_name.strip() if payload.model_name else None
     if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         model_name = _validated_elevenlabs_model(model_name)
@@ -1887,16 +1967,31 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     config.setup_status = SttConfigSetupStatus.ready
     config.is_active = payload.is_active
     config.updated_by_user_id = actor.id
-    db.add(config)
+    result = config
+    old_secret_ref = ""
+    if target is not None:
+        old_secret_ref = target.vault_secret_ref
+        editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
+        for field in editable:
+            setattr(target, field, getattr(config, field))
+        target.updated_by_user_id = actor.id
+        db.delete(config)
+        result = target
+    db.add(result)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         _raise_stt_label_conflict_if_needed(exc)
         raise
-    db.refresh(config)
-    _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
-    return config
+    if target is not None and old_secret_ref and old_secret_ref != result.vault_secret_ref:
+        try:
+            delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=old_secret_ref)
+        except AppError as exc:
+            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": exc.code})
+    db.refresh(result)
+    _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
+    return result
 
 
 def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttConfigDraftReplaceCredential) -> tuple[TeamSttConfig, SttInspectResult]:

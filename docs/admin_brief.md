@@ -1,5 +1,14 @@
 # Admin Brief
 
+## Redesign branch routing
+
+- `/admin` is the in-progress mockup-based team-first workspace.
+- `/legacy-admin` renders the current fully functional `admin.html` workspace during migration.
+- `/admin2` remains unchanged as a secondary developer reference.
+- `master` is user-facing; incomplete redesign work must not merge until the preservation/release gate in `docs/admin_workspace_function_map.md` passes.
+- Existing mutation endpoints remain under `/admin/...`; validated `return_view` values preserve the initiating workspace.
+- Current wired redesign slices include team member creation/lifecycle/recovery actions, team De-ID provider attach/detach, team hard-delete, and future-only team retention-default updates.
+
 ## Purpose
 
 This document inventories what `/admin` contains today, without tying future design work to the current arrangement of tabs, panels, forms, or tables.
@@ -408,6 +417,7 @@ Any redesign must preserve:
 - some tasks are high-trust and destructive
 - some tasks are exploratory or diagnostic
 - provider configuration and provider policy are related but not identical
+- Provider policy uses one scrollable six-row table. Inline provider/model/language controls remain visible; writing-assistant model visibility stays compact in its model cell. Empty rows link to provisioning, and clearing De-identification states that native Presidio becomes active.
 - usage is observability, not content review
 
 Useful future design split:
@@ -436,3 +446,9 @@ Use this document as an admin capability map:
 - but “what `/admin` must expose and protect”
 
 That should make it easier to redesign admin UX while preserving the privacy and authority boundaries that matter.
+# Provider editing
+
+Provider rows expose one `Edit` action that reuses add wizard with supported non-secret settings populated. Credential remains blank and saved credential is retained unless replacement is entered. Edit stages revision; active root remains unchanged until finalization.
+# Provider wizard inspection
+
+Admin workspace STT and LLM wizards inspect connections through authenticated JSON draft APIs. Inspection and model choices come only from server responses. Finalize uses draft ID; cancel deletes server draft before closing. Back is locked after draft creation to prevent connection changes against staged credentials. Browser unload may leave stale drafts for future cleanup.

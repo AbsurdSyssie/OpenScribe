@@ -1738,7 +1738,7 @@ def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
     make_user(email="admin-flat-layout@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin-flat-layout@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin?tab=directory")
+    page = client.get("/legacy-admin?tab=directory")
 
     assert page.status_code == 200
     assert 'class="admin-shell"' in page.text
@@ -1761,6 +1761,315 @@ def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
     assert "background: transparent;" in admin_css
     assert '.tab-shell__tab[aria-selected="true"]::before' in admin_css
     assert ".usage-hero {\n  display: grid;\n  gap: 18px;\n  padding: 18px;" in admin_css
+
+
+def test_admin_workspace_uses_mockup_shell_and_url_scoped_team_navigation(client, make_team, make_user):
+    team = make_team(name="Clinic Workspace Redesign")
+    make_user(email="admin-workspace@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": "admin-workspace@example.com", "password": "password-1"}, follow_redirects=False)
+    home = client.get("/admin")
+    page = client.get(f"/admin?team_id={team.id}&team_tab=members")
+    legacy = client.get("/legacy-admin?tab=directory")
+
+    assert home.status_code == 200
+    assert "Admin home" in home.text
+    assert "No team is selected" in home.text
+    assert "automatically." in home.text
+    assert '<style nonce="' in home.text
+    assert '<script nonce="' in page.text
+    assert 'style="' not in page.text
+    assert "style-src-attr 'none'" in page.headers["content-security-policy"]
+    assert page.status_code == 200
+    assert "Clinic Workspace Redesign" in page.text
+    assert f'href="/admin?team_id={team.id}&amp;team_tab=overview"' in page.text
+    assert 'class="tab active"' in page.text
+    assert 'data-tab="members"' in page.text
+    assert legacy.status_code == 200
+    assert 'class="admin-shell"' in legacy.text
+    assert 'name="return_view" value="legacy"' in legacy.text
+
+
+def test_admin_workspace_members_wire_existing_account_routes(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Workspace Members")
+    make_user(email="workspace-members-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="existing.member@example.com", password="password-1", team=team)
+
+    client.post("/login", data={"email": "workspace-members-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&team_tab=members")
+
+    assert page.status_code == 200
+    assert "existing.member@example.com" in page.text
+    assert 'action="/admin/users"' in page.text
+    assert f'name="team_id" value="{team.id}"' in page.text
+    assert 'name="return_view" value="workspace"' in page.text
+    assert f'action="/admin/users/{member.id}/suspend"' in page.text
+    assert f'action="/admin/users/{member.id}/send-activation"' in page.text
+    assert f'action="/admin/users/{member.id}/reset-mfa"' in page.text
+    assert f'action="/admin/users/{member.id}/delete"' in page.text
+    assert 'name="is_system_admin"' not in page.text
+
+    response = client.post(
+        "/admin/users",
+        data={
+            "full_name": "New Team Member",
+            "email": "new.workspace.member@example.com",
+            "temporary_password": "password-2",
+            "team_id": str(team.id),
+            "team_role": "user",
+            "status": "active",
+            "mfa_required": "true",
+            "return_view": "workspace",
+            "return_tab": "members",
+            "return_team_id": str(team.id),
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=members"
+
+
+def test_admin_workspace_wires_team_deid_assignment_and_danger_actions(client, make_team, make_user, make_deidentification_provider):
+    team = make_team(name="Clinic Workspace Lifecycle")
+    make_user(email="workspace-lifecycle-admin@example.com", password="password-1", is_system_admin=True)
+    provider = make_deidentification_provider(label="Shared De-ID")
+
+    client.post("/login", data={"email": "workspace-lifecycle-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    deid = client.get(f"/admin?team_id={team.id}&team_tab=deidentification")
+    danger = client.get(f"/admin?team_id={team.id}&team_tab=danger")
+
+    assert deid.status_code == 200
+    assert "Shared De-ID" in deid.text
+    assert 'action="/admin/deidentification-provider-assignments"' in deid.text
+    assert 'name="return_tab"' in deid.text and 'value="deidentification"' in deid.text
+    assert danger.status_code == 200
+    assert f'action="/admin/teams/{team.id}/delete"' in danger.text
+    assert "This cannot be undone" in danger.text
+
+
+def test_admin_workspace_updates_future_team_retention_default(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Workspace Retention", default_retention_days=30)
+    make_user(email="workspace-retention-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": "workspace-retention-admin@example.com", "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    assert page.status_code == 200
+    assert f'action="/admin/teams/{team.id}/retention"' in page.text
+    assert "Applies only to transcript roots created afterward" in page.text
+
+    response = client.post(
+        f"/admin/teams/{team.id}/retention",
+        data={"default_retention_days": "45", "return_view": "workspace", "return_tab": "defaults"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=defaults"
+    db_session.refresh(team)
+    assert team.default_retention_days == 45
+
+
+def test_admin_workspace_provider_policy_wires_existing_selection_routes(client, make_team, make_user, make_stt_config, make_llm_config):
+    team = make_team(name="Clinic Workspace Policy")
+    admin = make_user(email="workspace-policy-admin@example.com", password="password-1", is_system_admin=True)
+    stt = make_stt_config(team=team, actor=admin, label="Policy STT", model_name="whisper-default", available_models_json=["whisper-default", "whisper-fast"])
+    llm = make_llm_config(team=team, actor=admin, label="Policy LLM", model_name="model-default", available_models_json=["model-default", "model-review"])
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    stt_response = client.post("/admin/stt-selection", data={"team_id": str(team.id), "stt_config_id": str(stt.id), "purpose": "conversation", "provider_model": "whisper-fast", "language": "en-GB", "return_view": "workspace", "return_tab": "provider-policy"}, follow_redirects=False)
+    llm_response = client.post("/admin/llm-selection", data={"team_id": str(team.id), "llm_config_id": str(llm.id), "allowed_model_names": ["model-default", "model-review"], "provider_model": "model-review", "return_view": "workspace", "return_tab": "provider-policy"}, follow_redirects=False)
+    assert stt_response.status_code == 303
+    assert llm_response.status_code == 303
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=provider-policy")
+
+    assert page.status_code == 200
+    assert "Policy STT" in page.text
+    assert "Policy LLM" in page.text
+    assert page.text.count('action="/admin/stt-selection"') == 2
+    assert 'action="/admin/llm-selection"' in page.text
+    assert 'action="/admin/hallucination-check-selection"' in page.text
+    assert 'action="/admin/deidentification-selection"' in page.text
+    assert 'name="return_tab"' in page.text and 'value="provider-policy"' in page.text
+    assert page.text.count('data-policy-row=') == 6
+    assert 'class="policy-table" data-provider-policy-table' in page.text
+    assert 'action="/admin/stt-selection/clear"' in page.text
+    assert 'action="/admin/llm-selection/clear"' in page.text
+    assert 'value="whisper-fast"' in page.text and 'value="en-GB"' in page.text
+    assert 'data-models=' in page.text and "model-review" in page.text
+    assert 'data-policy-provider-select' in page.text and 'data-policy-model-select' in page.text
+    assert "syncPolicyModels" in page.text
+    assert "Whisper Production" not in page.text
+    assert "OpenAI Production" not in page.text
+
+    stt_page = client.get(f"/admin?team_id={team.id}&team_tab=stt")
+    llm_page = client.get(f"/admin?team_id={team.id}&team_tab=llm")
+    assert "Policy STT" in stt_page.text
+    assert 'action="/admin/stt-configs/' in stt_page.text
+    assert "/test" in stt_page.text and "/inspect" in stt_page.text and "/delete" in stt_page.text
+    assert "Whisper Production" not in stt_page.text
+    assert "Policy LLM" in llm_page.text
+    assert 'action="/admin/llm-configs/' in llm_page.text
+    assert "/inspect" in llm_page.text and "/delete" in llm_page.text
+    assert "OpenAI Production" not in llm_page.text
+    assert 'action="/admin/stt-configs/drafts"' in stt_page.text
+    assert 'id="stt-provider-preset"' in stt_page.text and 'value="openai"' in stt_page.text
+    assert 'action="/admin/llm-configs/drafts"' in llm_page.text
+    assert 'id="llm-provider-preset"' in llm_page.text and 'value="openai"' in llm_page.text
+
+
+def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_team, make_user, make_account_request):
+    team = make_team(name="Clinic Global Admin")
+    admin = make_user(email="workspace-global-admin@example.com", password="password-1", is_system_admin=True)
+    request = make_account_request(requested_email="requested.workspace@example.com")
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    directory = client.get("/admin?tab=directory")
+    requests = client.get("/admin?tab=requests")
+    admins = client.get("/admin?tab=system-admins")
+    defaults = client.get("/admin?tab=global-defaults")
+    audit = client.get("/admin?tab=audit")
+    team_usage = client.get(f"/admin?tab=usage&team_id={team.id}")
+
+    assert 'action="/admin/teams"' in directory.text
+    assert f"/admin?team_id={team.id}&amp;team_tab=overview" in directory.text
+    assert f'action="/admin/account-requests/{request.id}/approve"' in requests.text
+    assert f'action="/admin/account-requests/{request.id}/reject"' in requests.text
+    assert 'name="return_view"' in requests.text and 'value="workspace"' in requests.text
+    assert 'action="/admin/users"' in admins.text
+    assert 'name="is_system_admin"' in admins.text and 'value="true"' in admins.text
+    assert "/legacy-admin?tab=defaults" in defaults.text
+    assert 'name="audit_since"' in audit.text
+    assert "Metadata-only provider and ingestion activity" in team_usage.text
+    assert "Team identity, status and operational summary" not in team_usage.text
+
+
+def test_admin_workspace_pending_provider_drafts_offer_finalize_and_cancel(client, db_session, make_team, make_user, make_stt_config, make_llm_config):
+    from app.models import LlmConfigSetupStatus, SttConfigSetupStatus
+
+    team = make_team(name="Clinic Workspace Drafts")
+    admin = make_user(email="workspace-drafts-admin@example.com", password="password-1", is_system_admin=True)
+    stt = make_stt_config(team=team, actor=admin, label="Pending STT", available_models_json=["whisper-1"])
+    llm = make_llm_config(team=team, actor=admin, label="Pending LLM", available_models_json=["gpt-4o-mini"])
+    stt.setup_status = SttConfigSetupStatus.pending_model_selection
+    llm.setup_status = LlmConfigSetupStatus.pending_model_selection
+    db_session.commit()
+    db_session.refresh(stt)
+    db_session.refresh(llm)
+    assert stt.setup_status == SttConfigSetupStatus.pending_model_selection.value
+    assert llm.setup_status == LlmConfigSetupStatus.pending_model_selection.value
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    stt_page = client.get(f"/admin?team_id={team.id}&team_tab=stt&stt_config_id={stt.id}")
+    llm_page = client.get(f"/admin?team_id={team.id}&team_tab=llm&llm_config_id={llm.id}")
+
+    assert "Finish Pending STT" in stt_page.text
+    assert f'/admin/stt-configs/{stt.id}/finalize' in stt_page.text
+    assert f'action="/admin/stt-configs/{stt.id}/draft-cancel"' in stt_page.text
+    assert f'action="/admin/llm-configs/{llm.id}/finalize"' in llm_page.text
+    assert f'action="/admin/llm-configs/{llm.id}/draft-cancel"' in llm_page.text
+
+
+def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_session, make_team, make_user, make_stt_config, make_llm_config):
+    team = make_team(name="Clinic Provider Actions")
+    admin = make_user(email="provider-actions@example.com", password="password-1", is_system_admin=True)
+    stt = make_stt_config(team=team, actor=admin, label="Original STT", base_url="http://127.0.0.1:9300")
+    llm = make_llm_config(team=team, actor=admin, label="Original LLM", base_url="http://localhost:11434", available_models_json=["llama3"])
+    stt_ref, llm_ref = stt.vault_secret_ref, llm.vault_secret_ref
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    stt_page = client.get(f"/admin?team_id={team.id}&team_tab=stt")
+    llm_page = client.get(f"/admin?team_id={team.id}&team_tab=llm")
+    assert "Edit details" not in stt_page.text + llm_page.text
+    assert "Change connection" not in stt_page.text + llm_page.text
+    assert 'data-edit-stt-provider' in stt_page.text and '>Edit</button>' in stt_page.text
+    assert 'data-edit-llm-provider' in llm_page.text and '>Edit</button>' in llm_page.text
+    assert 'name="revision_of_config_id"' in stt_page.text and f'data-config-id="{stt.id}"' in stt_page.text
+    assert 'name="revision_of_config_id"' in llm_page.text and f'data-config-id="{llm.id}"' in llm_page.text
+    assert 'addSttProviderButton.addEventListener("click", () => openSttWizard());' in stt_page.text
+    assert 'addLlm.addEventListener("click", () => openLlm());' in llm_page.text
+    assert 'const custom = llmProvider === "Custom OpenAI-compatible"' in llm_page.text
+    assert 'document.getElementById("llm-base-url-field").hidden = !(' in llm_page.text
+    assert 'document.getElementById("llm-region-field").hidden = !bedrock;' in llm_page.text
+    assert 'document.getElementById("llm-base-url-field").hidden = false;' not in llm_page.text
+    assert ".wizard .field[hidden]" in llm_page.text
+    assert ".llm-model-option[hidden]" in llm_page.text
+    assert "90px 100px minmax(260px, auto)" in llm_page.text
+    assert ".llm-provider-row .quick-actions" in llm_page.text
+    assert "minmax(130px, 0.7fr)" in stt_page.text
+    assert ".stt-provider-row .quick-actions" in stt_page.text
+    assert 'form.reset();' in stt_page.text and 'form.reset();' in llm_page.text
+    assert "Leave blank to keep saved credential" in stt_page.text and "Leave blank to keep saved credential" in llm_page.text
+    assert f'data-provider-label="{stt.label}"' in stt_page.text
+    assert f'data-base-url="{stt.base_url}"' in stt_page.text
+    assert f'data-provider-label="{llm.label}"' in llm_page.text
+    assert f'data-base-url="{llm.base_url}"' in llm_page.text
+    assert stt_ref not in stt_page.text and llm_ref not in llm_page.text
+    markup = stt_page.text + llm_page.text
+    assert "providerDefaults" not in markup
+    assert "llmData" not in markup
+    assert "Discovered model 1" not in markup
+    assert "gpt-4.1-mini" not in markup
+    assert 'apiJson("/api/v1/stt-configs/drafts"' in stt_page.text
+    assert 'apiJson("/api/v1/llm-configs/drafts"' in llm_page.text
+    assert 'revision_of_config_id: value("revision_of_config_id") || null' in markup
+    assert 'bearer_token: value("bearer_token") || null' in markup
+    assert "/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize" in stt_page.text
+    assert "/api/v1/llm-configs/${encodeURIComponent(llmDraftId)}/finalize" in llm_page.text
+    assert "result.available_model_options" in markup
+    assert "result.config.base_url" in markup
+    assert "vault_secret_ref" not in markup
+    assert 'name="model_name"' in markup
+    assert 'name="language"' in stt_page.text
+
+    assert '/details"' not in stt_page.text + llm_page.text
+
+
+def test_admin_provider_wizards_render_safe_contextual_errors(client, make_team, make_user):
+    team = make_team(name="Clinic Wizard Errors")
+    admin = make_user(email="wizard-errors@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=llm")
+    markup = page.text
+
+    assert markup.count('class="wizard-error"') == 2
+    assert markup.count('role="alert" aria-live="assertive" tabindex="-1" hidden') == 2
+    assert ".wizard-error[hidden]" in markup
+    assert "border: 1px solid #b42318" in markup
+    assert 'field.setAttribute("aria-invalid", "true")' in markup
+    assert 'field.classList.add("wizard-field-error")' in markup
+    assert 'field.removeAttribute("aria-invalid")' in markup
+    assert 'typeof safeError.details?.field === "string"' in markup
+    assert 'new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset"])' in markup
+    assert 'if (typeof sourceDetails?.field === "string") details = { field: sourceDetails.field };' in markup
+    assert "error.status = response.status" in markup
+    assert "error.code = code" in markup
+    assert 'wizardError("llm-wizard-error", error);' in markup
+    assert 'wizardError("stt-wizard-error", error);' in markup
+    assert "JSON.stringify(sourceDetails)" not in markup
+    assert "element.textContent = error" not in markup
+    assert "Check the API key and confirm this account has access to the provider." in markup
+    assert "Verify the endpoint, network connection, and provider availability." in markup
+    assert "Review the highlighted field and the provider-specific requirements." in markup
+    assert "The endpoint worked, but its model list is unavailable." in markup
+
+
+def test_admin_change_llm_connection_stages_selected_revision(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="Clinic Revision")
+    admin = make_user(email="provider-revision@example.com", password="password-1", is_system_admin=True)
+    root = make_llm_config(team=team, actor=admin, label="Local LLM", provider_preset="ollama", base_url="http://localhost:11434", available_models_json=["llama3"])
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda *, base_url, bearer_token: ["llama3"])
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    response = client.post("/admin/llm-configs/drafts", data={"team_id": str(team.id), "revision_of_config_id": str(root.id), "provider_preset": "ollama", "label": root.label, "base_url": "http://localhost:11435", "return_view": "workspace", "return_tab": "llm"}, follow_redirects=False)
+    assert response.status_code == 303
+    revision = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.revision_of_config_id == root.id))
+    assert revision is not None
+    assert f"llm_config_id={revision.id}" in response.headers["location"]
+    page = client.get(response.headers["location"])
+    assert "Updating existing provider" in page.text
+    assert "Discard change" in page.text
+    assert root.vault_secret_ref not in page.text
 
 
 def test_admin_provider_setup_keeps_team_scope_panel_before_team_selection(client, make_user):
@@ -6748,14 +7057,17 @@ def test_admin_page_can_run_saved_stt_test_and_render_result(client, make_team, 
     )
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    tested = client.post(f"/admin/stt-configs/{config.id}/test", data={"team_id": str(team.id)})
+    tested = client.post(
+        f"/admin/stt-configs/{config.id}/test",
+        data={"team_id": str(team.id), "return_view": "workspace", "return_tab": "stt"},
+    )
 
     assert tested.status_code == 200
     assert "STT test completed." in tested.text
-    assert "Bundled STT sample test" in tested.text
-    assert "MoreOrLess.wav" in tested.text
-    assert "more or less" in tested.text
-    assert "Test STT" in tested.text
+    assert "data-stt-test-result" in tested.text
+    assert "STT test passed" in tested.text
+    assert "Health: skipped" in tested.text
+    assert "whisper-1" in tested.text
 
 
 def test_admin_page_renders_saved_stt_provider_error_details(client, make_team, make_user, make_stt_config, monkeypatch):

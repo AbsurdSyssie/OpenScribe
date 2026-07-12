@@ -88,6 +88,7 @@ from .schemas import (
     LlmConfigDraftReplaceCredential,
     LlmConfigDetail,
     LlmConfigFinalize,
+    LlmConfigFinalizeBody,
     LlmConfigInspectResult,
     LlmInspectRequest,
     LlmConfigUpsert,
@@ -190,6 +191,7 @@ from .services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     clear_team_llm_selection as clear_team_llm_selection_service,
     clear_user_llm_preference as clear_user_llm_preference_service,
+    cancel_llm_config_draft as cancel_llm_config_draft_service,
     create_llm_config_draft as create_llm_config_draft_service,
     delete_llm_config as delete_llm_config_service,
     finalize_llm_config_draft as finalize_llm_config_draft_service,
@@ -229,6 +231,7 @@ from .services.preferences import (
 )
 from .services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
+    cancel_stt_config_draft as cancel_stt_config_draft_service,
     create_stt_config_draft as create_stt_config_draft_service,
     delete_stt_config as delete_stt_config_service,
     finalize_stt_config_draft as finalize_stt_config_draft_service,

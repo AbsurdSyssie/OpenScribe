@@ -48,7 +48,7 @@ def test_alembic_upgrade_keeps_application_loggers_enabled():
 
 
 @pytest.mark.migration
-def test_alembic_upgrade_head_creates_expected_schema():
+def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisions():
     reset_public_schema()
 
     command.upgrade(alembic_config(), "head")
@@ -101,6 +101,14 @@ def test_alembic_upgrade_head_creates_expected_schema():
     }
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
     assert "ix_security_audit_events_created_at" in audit_indexes
+    inspector = inspect(engine)
+    for table in ("team_stt_configs", "team_llm_configs"):
+        assert "revision_of_config_id" in {column["name"] for column in inspector.get_columns(table)}
+        indexes = {index["name"]: index for index in inspector.get_indexes(table)}
+        assert indexes[f"uq_{table}_team_label_lower"]["unique"] is True
+        assert "revision_of_config_id IS NULL" in indexes[f"uq_{table}_team_label_lower"]["dialect_options"]["postgresql_where"]
+        assert indexes[f"uq_{table}_pending_revision"]["unique"] is True
+        assert "revision_of_config_id IS NOT NULL" in indexes[f"uq_{table}_pending_revision"]["dialect_options"]["postgresql_where"]
 
 
 @pytest.mark.migration

@@ -1,5 +1,49 @@
 # Progress
 
+## 2026-07-12 Contextual Provider Wizard Errors
+
+### Scope
+
+- Replaced small STT/LLM wizard error text with prominent accessible alerts and safe provider-specific guidance.
+- Preserved API error status, code, message, and explicit field name without retaining arbitrary nested details.
+- Highlighted explicitly identified invalid controls and focused either that control or the alert.
+
+### Checklist
+
+- Target behavior: provider failures remain visible, actionable, accessible, and free of raw provider or secret detail.
+- Affected schema/modules/endpoints: admin mockup template JavaScript/CSS only; no backend or schema change.
+- Affected tests: focused admin provider wizard template regression.
+- Architecture risks: server error messages remain the trusted user-safe summary; nested API details are discarded except allowlisted field targeting.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: one shared alert renderer and guidance mapper serve both LLM and STT wizards.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/admin_mockup.html`: alert markup/styles, structured error parsing, guidance, field state, and focus handling.
+- `tests/test_admin_ui.py`: safe structured parsing, alert accessibility/style, guidance, and field-error regressions.
+- `docs/testing.md`, `docs/progress.md`: test contract and implementation record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or provider_wizards_render_safe_contextual_errors or change_llm_connection"`: passed, 3 tests.
+- `git diff --check`: passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: arbitrary nested provider responses and secret values are never rendered or retained on client errors.
+- Ownership rules: unchanged; existing system-admin provider routes and team scope remain intact.
+- Deletion semantics: unchanged; failed draft cleanup now uses same prominent safe alert.
+- Provider rules: unchanged; UI guidance does not alter provider inspection, fallback, credential, or selection behavior.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no auth or authorization change.
+- Lifecycle/deletion checkpoint: draft cleanup behavior unchanged except error presentation.
+- Docs/tests checkpoint: focused regression and docs added.
+
 ## 2026-07-12 Transcript Retention Enforcement
 
 ### Scope
@@ -9917,6 +9961,35 @@
 - Schema: unchanged.
 - Auth/ownership: unchanged; existing system-admin rendering and tab behavior remain intact.
 - Lifecycle/deletion: unchanged.
+
+## 2026-07-12 STT/LLM Provider Revisions
+
+### Scope
+- Added inspected pending revisions for existing STT and LLM provider configs, with atomic promotion into stable active IDs.
+- Kept pending rows out of normal lists, selection candidates, and runtime paths.
+
+### Checklist
+- Code complete: revision schema, service lifecycle, API schema, web draft forms, cancellation, promotion, and secret cleanup implemented.
+- Tests updated: migration head verifies revision columns and partial unique indexes; focused provider draft regressions run.
+- Docs updated: admin workspace lifecycle map and this daily note.
+- Open issues: full migration suite requires configured test PostgreSQL; focused migration result recorded below.
+
+### Files changed
+- `alembic/versions/w4x5y6z7a8b9_add_provider_config_revisions.py`, `app/models.py`: self-links and partial uniqueness.
+- `app/services/stt.py`, `app/services/llm.py`, `app/services/vault.py`, `app/services/templates.py`: staged lifecycle, runtime isolation, reference-aware Vault access.
+- `app/schemas/stt.py`, `app/schemas/llm.py`, `app/routes/web_admin.py`, `app/main.py`: revision draft inputs and service-backed cancellation.
+- `tests/test_migrations.py`: migration shape assertions.
+
+### Architecture checkpoint summary
+- Privacy boundaries: provider metadata and Vault references only; no transcript-derived content exposed.
+- Ownership rules: revision target resolution requires same team and ready root.
+- Deletion semantics: DB commit precedes staged/retired secret cleanup; active deletion includes pending revision secrets.
+- Provider rules: active ID and selection FKs survive promotion; in-flight restrictions remain enforced against active root.
+- Structured-note contract: unchanged.
+- Schema checkpoint: nullable self-FKs plus root-label and one-pending-revision partial unique indexes.
+- Auth/ownership checkpoint: existing system-admin draft authorization retained; service enforces team scope.
+- Lifecycle/deletion checkpoint: revision promotion atomic; promoted secret reference is not cleaned with deleted revision row.
+- Docs/tests checkpoint: function map, daily note, migration assertions, focused provider tests updated/run.
 - Privacy/provider/structured-note contracts: unchanged; styling exposes no new data and changes no provider behavior.
 
 ## 2026-07-12 Usage Overview Panel Spacing
@@ -9935,3 +10008,116 @@
 - Follow-up: removed the stretched entry card after browser review. Unselected state is now a compact, unframed, top-aligned selector with a `520px` maximum width.
 - Follow-up: fixed parent admin grid track stretching with `.admin-pane { align-content: start; }`, keeping sparse entry content directly below the header instead of halfway down the viewport.
 - Final design decision: Team scope now uses identical panel markup and copy before and after team selection; only selector value and downstream provider configuration change.
+# 2026-07-12 — Admin workspace redesign discovery
+
+- Scope: inspected current `admin.html`, redesign input `admin_mockup.html`, admin routes/services, and existing admin docs; added `docs/admin_workspace_function_map.md` as preservation checklist before UI changes.
+- Tests: not run; documentation-only change with no runtime behavior.
+- Architecture: no schema or provider-resolution change; system-admin metadata-only privacy boundary, ownership rules, immediate deletion semantics, Vault secret handling, and EMIS structured-note contract recorded as redesign gates.
+- Risk/open work: mockup remains mostly static and does not yet cover all current admin functions. Migration sequence and navigation model remain to be resolved through design grilling.
+- Decision: new evolving workspace will own `/admin`; current functional workspace will move to temporary `/legacy-admin`. Existing mutation routes stay under `/admin/...`, with redirects required to preserve initiating workspace.
+- Decision: internal-only development allows unfinished mock panels on `/admin`; production exposure waits for full redesign verification. Inert controls must not accidentally mutate state.
+- Decision: retain mockup's team-first information architecture. First pass plugs mockup controls into extant routes/services one-by-one; workflow/backend redesign is out of scope until parity exists.
+- Decision: keep full team list in sidebar as mocked; expected environment scale does not justify search/filter/pagination.
+- Decision: retain `/admin2` unchanged as secondary developer reference. `/legacy-admin` is official migration fallback.
+- Decision: selected team and team tab use canonical `team_id`/`team_tab` URL query state. Links work without JavaScript; refresh/history/bookmarks and POST redirects preserve valid state.
+- Decision: `/admin` without `team_id` shows explicit team-selection empty state; no automatic or remembered team. Zero-team state offers team creation. Global areas remain available without team scope.
+- Decision: team selection defaults to Overview and canonical `team_tab=overview`.
+- Decision: team Overview is read-only summary/navigation; mutations remain in dedicated tabs.
+- Decision: Provider policy owns all active runtime selections. STT, LLM, and new De-identification tab own provider provisioning/inspection/lifecycle. Configured and active states stay distinct.
+- Decision: preserve current global De-identification provider model for now. Team tab lists assigned providers first, available global providers for attachment, and create-global-then-assign flow. “Remove from team” means detach; global edit/delete must disclose cross-team impact. Team-scoped provider model redesign deferred.
+- Refinement: sidebar gets separate global De-ID providers management area for create/inspect/edit/delete. Team De-identification tab only views and attaches/detaches providers; team rows never globally delete. Provider policy selects active assigned provider.
+- Decision: global De-ID registry also manages Clinical NLP providers, labelled by De-ID, Clinical NLP, or both capabilities. Team assignment and the two active runtime selections remain separate.
+- Decision: team Security tab is read-only posture/navigation. User MFA/recovery/break-glass actions stay under Members; event inspection stays in global Audit.
+- Decision: Danger zone contains existing team hard-delete only, with cleanup scope, blockers, and explicit confirmation. No new suspend/archive semantics.
+- Proposed during grill: team Defaults should allow system-admin editing of default retention time. This needs a new backend mutation and targeted retention tests; effect on existing transcripts must respect fixed-expiry rule and remains to be confirmed.
+- Resolution: keep fixed-expiry architecture. Team default retention may be edited, but only future transcript roots use the new value; existing expiry timestamps remain unchanged. New mutation needs authorization and retention regression tests when implemented.
+- Decision: team Defaults includes retention edit plus read-only team asset summary. Team leaders manage team-owned assets; sidebar Global defaults manages platform defaults without overwriting existing team assets.
+- Decision: Team Members creates normal users with selected team fixed and role chosen. Separate sidebar System admins area manages admin-only accounts; member form cannot promote to system admin.
+- Decision: member rows use state-aware Actions menu. Destructive/break-glass actions get consequence-specific confirmation; email actions provide direct outcome feedback; server remains final guard.
+- Decision: account requests remain global. Approval selects target team/role and links to resulting team member; rejection requires reason.
+- Decision: Usage defaults to all-team aggregates; team and user drill-down use URL scope and remain metadata-only.
+- Decision: Audit lookback/team/actor/action/outcome/resource filters are validated URL state. Sensitive values remain forbidden.
+- Decision: production redesign uses Jinja/partials plus dedicated progressive-enhancement JS and minimal workspace CSS. Existing site tokens/components and CSRF behavior take priority; no parallel admin design system.
+- Decision: implementation order is route swap; shell/navigation; Overview; Members; Provider policy; provider areas; Defaults/Security/Danger; global Requests/Usage/Audit; parity/release gate. Mockup expresses layout intent, but shared site components win on duplicated styling.
+- Refinement: shared components do not automatically override mockup. Reuse clear matches; ask user at implementation time where reuse materially changes mockup appearance/interaction.
+- Decision: forms use inline field errors plus form summary; outcomes use site toasts and refreshed panel state. Preserve non-secret input on failure, never credentials.
+- Decision: provider wizards use server-side draft/finalize state with URL-addressable step/draft. Refresh restores non-secret state; secrets remain Vault-backed and absent from URL/HTML.
+- Decision/new backend need: Cancel wizard explicitly deletes pending draft and safely cleans Vault reference after DB reference removal. Browser-abandoned drafts require later scheduled stale cleanup with metadata-only audit/logging.
+- Release decision: `master` is user-facing. Incomplete redesign stays off `master`; full parity, affected tests, manual/accessibility/responsive comparison, and security review gate merge. `/legacy-admin` is development fallback only.
+- Workflow decision: use one long-lived redesign branch, small slice commits, and regular synchronization with `master` to control drift before final merge.
+- Test decision: add semantic browser E2E coverage for critical admin workflows; avoid pixel-perfect screenshots. Keep server/API tests authoritative for auth, deletion, provider, and secret invariants.
+- IA decision: accepted sidebar is Home, Teams, Manage teams, Account requests, System admins, Global defaults, De-ID providers, Usage, Audit, Log out; accepted team tabs are Overview, Members, Provider policy, STT, LLM, De-identification, Defaults, Security, Danger zone. Open: admin-only `/home` currently redirects to `/admin`, so sidebar Home meaning needs resolution.
+- Resolution: rename Home to Admin home; brand and link target neutral `/admin`. Show safe global summary counts plus team-selection prompt, with no automatic team.
+- Decision: Manage teams provides metadata directory, create, and open-team actions. Hard-delete remains only in team Danger zone.
+- Decision: team status remains read-only after creation; suspend/archive semantics are deferred pending explicit lifecycle design.
+- Implementation checkpoint: `/admin` now renders `admin_mockup.html` with real system-admin identity, full team list, neutral Admin home, safe global counts, validated `team_id`/`team_tab`, dynamic team summary, agreed sidebar inventory, and POST logout. `/legacy-admin` renders unchanged functional `admin.html`; `/admin2` remains unchanged. Validated return views distinguish new workspace, legacy, admin2, and restyled routes.
+- Tests: focused admin workspace/legacy/admin2 route tests passed (3 tests). Existing flat-layout regression now targets `/legacy-admin`; new regression covers neutral home and URL-scoped team navigation.
+- Architecture checkpoints: no schema change; both pages remain system-admin-only and metadata-only; mutation services/deletion semantics/provider resolution/EMIS contract unchanged; invalid team IDs cannot select scope.
+- Remaining: mock team panels still require control-by-control parity wiring; retention-default update, draft cancellation, CSS/JS extraction, global areas, broader test migration, and release gate are not complete.
+- CSP styling fix: diagnosed mockup's un-nonced inline stylesheet/script plus six forbidden `style` attributes under `style-src-attr 'none'`. Added per-response CSP nonces and replaced style attributes with classes; retained strict CSP. scite.ai font violations are browser-extension injections, not app assets.
+- Regression coverage now asserts new admin render contains nonced style/script, contains no `style` attributes, and retains strict `style-src-attr 'none'`. Template static probe and `git diff --check` pass. Focused DB-backed rerun reached assertion once after fix, then subsequent retry was blocked during test setup by intermittent PostgreSQL connection failure; rerun required when DB is stable.
+- Functionality checkpoint: Members now renders real selected-team users and wires add, suspend/reactivate, activation, password/account recovery, MFA reset, and immediate delete through existing routes with CSRF, state-aware controls, confirmations, and `team_tab=members` returns. No member form can create/promote a system admin.
+- Functionality checkpoint: team De-identification tab lists assigned and available global providers and wires attach/detach only; global deletion remains absent. Danger zone wires existing team hard-delete with full cleanup warning.
+- Functionality checkpoint: added system-admin-only `POST /admin/teams/{team_id}/retention` and `update_team_default_retention`; bounded default changes apply to future transcript creation only and record safe audit metadata. Existing transcript expiry rows are not queried or updated.
+- Tests: 4 focused redesign tests pass, covering CSP/shell navigation, member route wiring plus creation redirect, De-ID/Danger actions, and retention update.
+- Functionality checkpoint: Provider policy now posts conversation/dictation STT, writing-assistant LLM/model visibility/default, hallucination checker, De-ID, and Clinical NLP selections through existing services. STT/LLM tabs render real config metadata and wire saved inspect/test/delete; add/edit currently enters fully functional legacy forms pending wizard design decision.
+- Functionality checkpoint: global sidebar areas now render distinct functional views for team directory/create, account request approve/reject, system-admin creation/list, global defaults entry, global De-ID registry/delete, aggregate Usage, and filtered Audit. Security posture now derives member/provider metadata rather than mock counts.
+- Open design decision: mock STT/LLM wizards are intentionally simple, while existing provider forms expose advanced generic REST/OpenAPI request/response mappings, credential actions, duplicate confirmation, model visibility, and adapter-specific controls. Need decide progressive Advanced step versus full expert form inside wizard.
+- Resolution: keep simple preset wizard; custom providers reveal progressive Advanced fields preserving full expert contract. Provider cards must come only from backend-supported preset registries, never unsupported mock brands.
+- Provider wizard checkpoint: STT/LLM add buttons now submit real server-side draft routes with backend preset keys, return to matching team tab, show pending finalization forms using discovered models, and expose explicit draft cancellation routes. Cancellation accepts pending drafts only and reuses existing delete/Vault cleanup services.
+- Routing checkpoint: global Usage/Audit and other global sidebar views render globally even when `team_id` filters context; legacy `tab=providers&team_id=...` maps to Provider policy for migration compatibility.
+- Verification: redesign-focused suite passes 7 tests. Full `tests/test_admin_ui.py` run: 172 passed, 29 failed. Most admin failures assert old `/admin` markup and need deliberate `/legacy-admin` or redesign expectation migration; unrelated Home/Transcribe failures also appeared and require baseline review rather than green-chasing.
+- Provider edit decision: cosmetic label/availability edits may save directly. Endpoint, credential, adapter, region, model-discovery, and contract changes require a separately inspected pending revision; active provider remains unchanged and usable until atomic promotion. Cancelling removes only revision and staged Vault credential.
+- Provider edit schema checkpoint: existing setup drafts have no lineage to an active config, so safe revision editing needs a dedicated migration and service/API slice. Redesign must retain legacy material-edit links until lineage, atomic promotion, auth/team scoping, post-commit secret cleanup, and tests exist. No schema shortcut added in presentation work.
+## 2026-07-12 - Provider revision finalize safety
+
+- LLM revision promotion now rejects when target config has queued or processing generated documents.
+- STT and LLM API coverage verifies revisions remain hidden/pending until promotion, preserve active config IDs and selection foreign keys, apply provider/model fields, reject cross-team targets, and remove promoted revision rows.
+- Provider credential writes/deletes remain Vault-reference operations; tests replace provider inspection and Vault calls with deterministic fakes.
+- Migration head test name now explicitly includes provider config revisions for reliable focused selection.
+- Verification rerun: provider revision API tests `3 passed`; revision migration test `1 passed`; redesign-focused admin suite `7 passed`; `git diff --check` passed. Shared test DB requires serial pytest runs, so one attempted parallel admin run exited by design and passed when rerun serially.
+- Provider edit UI checkpoint: redesign now uses one populated add/edit wizard backed by inspected connection revisions. Review fixed add-provider listeners accidentally passing click events into edit-mode initializers; focused redesign/provider suite passes.
+- LLM wizard field checkpoint: Region appears only for Bedrock; Base URL appears only for Ollama and Custom OpenAI-compatible. Edit mode no longer forces Base URL visible for managed providers.
+- LLM wizard live visibility fix: author `.field { display: grid; }` overrode native `[hidden]`, so OpenAI still displayed Base URL and Region despite correct JS state. Added explicit `.wizard .field[hidden] { display: none; }` and regression coverage.
+- Real inspection wizard review fixed optional JSON fields being sent as empty strings; credentials, revision IDs, OpenAPI paths, and regions now use `null`, matching API schemas and preventing add-mode `422` validation failures.
+- LLM wizard finalize 422 fix: API path already identifies the draft, but route body incorrectly required a duplicate `config_id`. Added `LlmConfigFinalizeBody`, constructs service payload from path ID, and regression-tests finalize without body ID.
+- LLM provider table layout: replaced obsolete 46px action-menu column with a 260px minimum action area, tightened metadata columns/gaps, and added wrapping flex layout for action buttons.
+- STT provider table now mirrors LLM spacing: narrower provider-instance/usage columns, 260px minimum Actions area, 10px column gaps, and consistently spaced wrapping buttons.
+- LLM wizard model filter fix: `.llm-model-option { display: flex; }` overrode native `hidden`, so filtered cards stayed visible. Added explicit `.llm-model-option[hidden] { display: none; }` regression rule.
+- Restored operation feedback omitted by the redesign: STT tests render pass/fail, health, duration, model, and safe errors; saved LLM inspections render discovery status, provider, model count, warnings, and notes. Top-level operation messages now have visible status styling.
+- Architecture checkpoints: no transcript-derived content visibility change; team ownership filtering remains enforced; no deletion/cascade or structured-note contract change; provider runtime targets remain stable until successful promotion.
+# 2026-07-12: explicit provider edit actions
+
+## Scope
+Added narrow STT/LLM detail updates and revision-based connection-change actions in admin workspace.
+
+## Checklist
+- Code complete: root-ready, team-scoped detail services/routes; explicit UI actions; selected revision presentation.
+- Tests added: cosmetic field isolation, secret/ref HTML absence, revision staging/redirect.
+- Docs updated: function map, admin brief, testing guide, progress note.
+- Open issues: pending-revision discovery remains intentionally selected-ID only; no broad runtime listing added.
+
+## Files changed
+`app/services/stt.py`, `app/services/llm.py`, `app/routes/web_admin.py`, `app/web/presentation.py`, provider schemas/template, focused tests, admin docs.
+
+## Architecture checkpoints
+- Privacy: no secret or Vault reference rendered; credential input blank on connection changes.
+- Ownership: system-admin route plus service-level team scoping; root-ready target required.
+- Deletion/lifecycle: revisions remain hidden from normal lists; discard deletes pending revision while active root stays unchanged.
+- Provider rules: cosmetic edits do not mutate endpoint, model, or credentials; connection changes use existing inspect/finalize flow.
+- Structured notes: unchanged.
+# 2026-07-12: Unified provider edit wizard
+
+- Scope: replaced split provider edit actions with one STT/LLM wizard edit action; populated supported non-secret settings and added blank-credential reuse.
+- Checklist: code and focused regressions updated; docs updated; no schema change. Open issue: wizard remains server-backed two-stage flow, so inspected defaults finish in existing finalize card.
+- Files: `app/templates/admin_mockup.html`, STT/LLM services, admin/API tests, admin UX docs.
+- Tests: provider-row/modal regression plus STT/LLM shared-secret revision cancellation coverage; focused results recorded in change summary.
+- Architecture checkpoints: system-admin and same-team root-ready checks unchanged; no transcript content path added; revision cancellation now checks remaining Vault references after commit; promotion retains identical refs; provider fallback and EMIS structured-note contract unchanged.
+# 2026-07-12: Server-backed provider wizards
+
+- Replaced admin workspace STT/LLM fabricated inspection data with existing authenticated draft/finalize APIs.
+- Added response-driven safe provider, endpoint, status, warning/note, and model rendering; credentials are cleared after staging and never rendered.
+- Added awaited draft deletion on cancel/backdrop/Escape, with modal retained on cleanup failure. Back locks after successful draft creation. Browser unload stale-draft cleanup remains open.
+- Architecture: system-admin and team checks remain in API services; Vault references/raw provider responses stay outside DOM; no transcript content, ownership, deletion cascade, provider fallback, or structured-note contract changed.
+- 2026-07-12 provider-policy redesign: replaced summary cards with functional six-row policy table using existing visual language and always-visible accessible selects. Added provider-driven STT/LLM/checker model synchronization, compact writing-assistant visible-model checkboxes, state-dependent clear actions, explicit Presidio fallback, and empty-provider links.
+- Checklist: code complete; focused UI/POST coverage updated; admin brief, testing guide, and function map updated. No schema/API/service changes. Architecture checkpoints: metadata-only UI preserves transcript privacy; existing system-admin/team ownership guards remain authoritative; clear routes remove selections only and do not alter provider/deletion lifecycle; provider fallback/resolution and structured-note contracts remain unchanged.

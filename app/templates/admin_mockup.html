@@ -1,0 +1,4715 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenScribe Admin — Team Workspace Mock-up</title>
+    <style nonce="{{ request.state.csp_nonce }}">
+      /* Based on the palette and flat panel treatment in app/templates/admin.html. */
+      :root {
+        --bg: #faf8f5;
+        --parchment: #f5f1eb;
+        --card: #ffffff;
+        --ink: #1a202c;
+        --slate: #2d3748;
+        --muted: #718096;
+        --border: #e2ded6;
+        --border-strong: #d8d2c8;
+        --accent: #1d4f5e;
+        --accent-soft: #3d7a8c;
+        --accent-pale: #e0f2f5;
+        --success: #2f855a;
+        --warning: #b7791f;
+        --error: #c53030;
+        --shadow-focus: 0 0 0 3px rgba(224, 242, 245, 0.9);
+        --sidebar-width: 272px;
+        --team-list-width: 380px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        background: var(--bg);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family:
+          "DM Sans",
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        line-height: 1.45;
+        font-size: 14px;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+      h1 {
+        font-size: 2.45rem;
+        line-height: 1.05;
+      }
+      h2 {
+        font-size: 1.65rem;
+      }
+      h3 {
+        font-size: 1.1rem;
+      }
+      p {
+        margin: 0;
+      }
+
+      .app-shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow-y: auto;
+        border-right: 1px solid var(--border);
+        background: linear-gradient(
+          180deg,
+          rgba(245, 241, 235, 0.98),
+          rgba(250, 248, 245, 1)
+        );
+        padding: 22px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 0 6px 10px;
+      }
+      .brand-mark {
+        width: 38px;
+        height: 38px;
+        border: 2px solid var(--accent);
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: var(--accent);
+        font-weight: 800;
+        transform: rotate(-8deg);
+      }
+      .brand strong {
+        display: block;
+        font:
+          600 20px/1 Georgia,
+          serif;
+      }
+      .brand small {
+        color: var(--accent);
+        letter-spacing: 0.08em;
+        font-weight: 700;
+      }
+
+      .account-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 12px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.55);
+        border-radius: 7px;
+      }
+      .avatar {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        color: #fff;
+        background: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .account-card strong {
+        display: block;
+        font-size: 13px;
+      }
+      .account-card small {
+        color: var(--muted);
+      }
+
+      .nav-group {
+        display: grid;
+        gap: 5px;
+      }
+      .nav-label {
+        padding: 0 8px 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .nav-link {
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 9px;
+        border-radius: 5px;
+        color: var(--slate);
+      }
+      .nav-link:hover {
+        background: rgba(29, 79, 94, 0.06);
+      }
+      .nav-link.active {
+        background: var(--accent-pale);
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .nav-icon {
+        width: 18px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .sidebar-spacer {
+        flex: 1;
+      }
+
+      .sidebar-team-section {
+        display: grid;
+        gap: 6px;
+      }
+      .sidebar-section-toggle {
+        width: 100%;
+        min-height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 8px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        text-align: left;
+      }
+      .sidebar-section-toggle:hover {
+        color: var(--ink);
+      }
+      .sidebar-section-chevron {
+        font-size: 14px;
+        transition: transform 0.16s ease;
+      }
+      .sidebar-section-toggle[aria-expanded="false"] .sidebar-section-chevron {
+        transform: rotate(-90deg);
+      }
+      .sidebar-team-list {
+        display: grid;
+        gap: 3px;
+      }
+      .sidebar-team-list[hidden] {
+        display: none;
+      }
+      .sidebar-team-link {
+        width: 100%;
+        min-height: 34px;
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) 18px;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 9px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--slate);
+        text-align: left;
+      }
+      .sidebar-team-link:hover {
+        background: rgba(29, 79, 94, 0.06);
+      }
+      .sidebar-team-link.active {
+        background: var(--accent-pale);
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .sidebar-team-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--success);
+      }
+      .sidebar-team-dot.suspended {
+        background: var(--warning);
+      }
+      .sidebar-team-check {
+        text-align: center;
+        color: var(--accent);
+        font-weight: 800;
+      }
+      .sidebar-team-manage {
+        margin-top: 3px;
+        padding: 7px 9px 7px 27px;
+        border-radius: 5px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .sidebar-team-manage:hover {
+        background: rgba(29, 79, 94, 0.06);
+      }
+
+      .workspace {
+        min-width: 0;
+        display: block;
+      }
+      .page-header {
+        padding: 28px 34px 22px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.45);
+      }
+      .page-header p {
+        color: var(--muted);
+        margin-top: 7px;
+        font-size: 15px;
+      }
+      .header-actions {
+        display: flex;
+        gap: 10px;
+        padding-top: 4px;
+      }
+
+      .btn {
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 8px 13px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .btn:hover {
+        border-color: var(--accent-soft);
+      }
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .btn.small {
+        min-height: 31px;
+        padding: 5px 9px;
+        font-size: 12px;
+      }
+      .btn.icon {
+        width: 34px;
+        padding: 0;
+      }
+      .btn:focus-visible,
+      .team-row:focus-visible,
+      .tab:focus-visible,
+      .select-like:focus-visible {
+        outline: none;
+        box-shadow: var(--shadow-focus);
+      }
+
+      .admin-workspace {
+        min-height: 100vh;
+        display: block;
+      }
+
+      .detail-pane {
+        min-width: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        align-content: stretch;
+      }
+      .team-summary {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        padding: 24px 28px 16px;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        align-items: flex-start;
+        background: rgba(250, 248, 245, 0.98);
+        border-bottom: 1px solid var(--border);
+        backdrop-filter: blur(8px);
+      }
+      .title-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #e5f4ea;
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .tabs {
+        position: sticky;
+        top: 95px;
+        z-index: 19;
+        display: flex;
+        flex-wrap: wrap;
+        overflow: visible;
+        border-bottom: 1px solid var(--border);
+        padding: 0 28px;
+        background: rgba(250, 248, 245, 0.98);
+        backdrop-filter: blur(8px);
+      }
+      .tab {
+        position: relative;
+        min-height: 48px;
+        padding: 13px 16px;
+        border: 0;
+        background: transparent;
+        color: var(--slate);
+        white-space: normal;
+      }
+      .tab.active {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .tab.active::after {
+        content: "";
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: -1px;
+        height: 2px;
+        background: var(--accent);
+      }
+
+      .detail-content {
+        min-height: 0;
+        padding: 24px 28px 40px;
+      }
+      .tab-panel {
+        min-height: auto;
+      }
+      .section-intro {
+        margin-bottom: 18px;
+      }
+      .section-intro p {
+        color: var(--muted);
+        margin-top: 5px;
+      }
+      .policy-table {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+        overflow-x: auto;
+      }
+      .policy-row {
+        display: grid;
+        grid-template-columns: minmax(180px, 1.35fr) minmax(170px, 1.1fr) minmax(170px, 1fr) minmax(120px, 0.72fr) minmax(90px, 0.58fr) auto auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 58px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .policy-row:last-child {
+        border-bottom: 0;
+      }
+      .policy-row.head {
+        min-height: 38px;
+        background: var(--parchment);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .policy-row.head .policy-actions-heading { grid-column: span 2; }
+      .policy-row > form { display: contents; }
+      .policy-row .policy-na { color: var(--muted); }
+      .policy-actions { display: flex; gap: 6px; align-items: center; }
+      .policy-model-cell details { margin-top: 5px; }
+      .policy-model-cell summary { color: var(--accent); cursor: pointer; font-size: 11px; }
+      .policy-model-options { display: grid; gap: 3px; margin-top: 5px; font-size: 11px; }
+      .policy-empty { color: var(--muted); font-size: 12px; }
+      .purpose {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .purpose-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(61, 122, 140, 0.26);
+        border-radius: 50%;
+        color: var(--accent);
+        background: rgba(224, 242, 245, 0.45);
+      }
+      .purpose small {
+        display: block;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .select-like {
+        width: 100%;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+        padding: 6px 9px;
+      }
+      .configured {
+        display: inline-flex;
+        justify-content: center;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: #e5f4ea;
+        color: var(--success);
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .fallback {
+        background: #fff2d9;
+        color: var(--warning);
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .summary-panel {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.78);
+      }
+      .summary-panel header {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      .summary-list {
+        margin: 0;
+        padding: 0 16px;
+        list-style: none;
+      }
+      .summary-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .summary-list li:last-child {
+        border-bottom: 0;
+      }
+      .summary-list span:first-child {
+        color: var(--muted);
+      }
+      .panel-link {
+        display: block;
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      .member-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin: 0 0 14px;
+        flex-wrap: wrap;
+      }
+      .member-toolbar__left {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .member-search {
+        width: 260px;
+        min-height: 38px;
+        padding: 7px 11px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+      }
+      .member-table {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+        overflow: visible;
+      }
+      .member-row {
+        display: grid;
+        grid-template-columns:
+          minmax(220px, 1.5fr) minmax(220px, 1.3fr)
+          120px 120px 120px 46px;
+        gap: 14px;
+        align-items: center;
+        min-height: 62px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .member-row:last-child {
+        border-bottom: 0;
+      }
+      .member-row.head {
+        min-height: 38px;
+        background: var(--parchment);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .member-name {
+        font-weight: 700;
+      }
+      .member-email {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      .role-pill {
+        width: max-content;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--accent-pale);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .user-status {
+        width: max-content;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #e5f4ea;
+        color: var(--success);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .user-status.pending {
+        background: #fff2d9;
+        color: var(--warning);
+      }
+      .member-actions-wrap {
+        position: relative;
+      }
+      .member-actions-button {
+        width: 34px;
+        height: 32px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--slate);
+      }
+      .member-menu {
+        position: absolute;
+        right: 0;
+        top: 38px;
+        z-index: 30;
+        width: 245px;
+        padding: 6px;
+        border: 1px solid var(--border-strong);
+        border-radius: 7px;
+        background: var(--card);
+        box-shadow: 0 16px 34px rgba(26, 32, 44, 0.14);
+      }
+      .member-menu[hidden] {
+        display: none;
+      }
+      .member-menu button {
+        width: 100%;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 9px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--slate);
+        text-align: left;
+      }
+      .member-menu button:hover {
+        background: var(--parchment);
+      }
+      .member-menu button.danger {
+        color: var(--error);
+      }
+      .menu-separator {
+        height: 1px;
+        margin: 5px 4px;
+        background: var(--border);
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: rgba(26, 32, 44, 0.34);
+      }
+      .modal-backdrop[hidden] {
+        display: none;
+      }
+      .modal {
+        width: min(560px, 100%);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--card);
+        box-shadow: 0 24px 70px rgba(26, 32, 44, 0.18);
+      }
+      .modal header {
+        padding: 20px 22px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .modal header p {
+        margin-top: 5px;
+        color: var(--muted);
+      }
+      .modal-body {
+        padding: 18px 22px;
+        display: grid;
+        gap: 14px;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+      .wizard .field[hidden] {
+        display: none;
+      }
+      .field.full {
+        grid-column: 1 / -1;
+      }
+      .field label {
+        color: var(--slate);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .field input,
+      .field select {
+        width: 100%;
+        min-height: 38px;
+        padding: 7px 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+      }
+      .field-help {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 10px 0 0;
+      }
+      .checkbox-row input {
+        margin-top: 3px;
+      }
+      .modal footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 14px 22px 20px;
+        border-top: 1px solid var(--border);
+      }
+
+      .stt-management {
+        margin-top: 22px;
+        display: grid;
+        gap: 16px;
+      }
+      .eyebrow-inline {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+      .stt-provider-table {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+        overflow: visible;
+      }
+      .stt-provider-row {
+        display: grid;
+        grid-template-columns:
+          minmax(200px, 1.1fr) 120px 110px minmax(130px, 0.7fr)
+          minmax(260px, auto);
+        gap: 10px;
+        align-items: center;
+        min-height: 60px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .stt-provider-row:last-child {
+        border-bottom: 0;
+      }
+      .stt-provider-row.head {
+        min-height: 38px;
+        background: var(--parchment);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .stt-provider-row .quick-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .provider-subtext {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .stt-actions-wrap {
+        position: relative;
+      }
+      .stt-actions-button {
+        width: 34px;
+        height: 32px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--slate);
+      }
+      .stt-actions-menu {
+        position: absolute;
+        right: 0;
+        top: 38px;
+        z-index: 35;
+        width: 220px;
+        padding: 6px;
+        border: 1px solid var(--border-strong);
+        border-radius: 7px;
+        background: var(--card);
+        box-shadow: 0 16px 34px rgba(26, 32, 44, 0.14);
+      }
+      .stt-actions-menu[hidden] {
+        display: none;
+      }
+      .stt-actions-menu button {
+        width: 100%;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        padding: 7px 9px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--slate);
+        text-align: left;
+      }
+      .stt-actions-menu button:hover {
+        background: var(--parchment);
+      }
+      .stt-actions-menu button.danger {
+        color: var(--error);
+      }
+
+      .wizard-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: rgba(26, 32, 44, 0.34);
+      }
+      .wizard-backdrop[hidden] {
+        display: none;
+      }
+      .wizard {
+        width: min(760px, 100%);
+        max-height: calc(100vh - 40px);
+        overflow: auto;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--card);
+        box-shadow: 0 24px 70px rgba(26, 32, 44, 0.18);
+      }
+      .wizard header {
+        padding: 20px 22px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .wizard header p {
+        margin-top: 5px;
+        color: var(--muted);
+      }
+      .wizard-progress {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        padding: 14px 22px;
+        border-bottom: 1px solid var(--border);
+        background: var(--parchment);
+      }
+      .wizard-step-indicator {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .wizard-step-indicator span {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+        background: var(--card);
+      }
+      .wizard-step-indicator.active {
+        color: var(--accent);
+      }
+      .wizard-step-indicator.active span {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+      .wizard-body {
+        padding: 20px 22px;
+      }
+      .wizard-panel[hidden] {
+        display: none;
+      }
+      .wizard-error[hidden] {
+        display: none;
+      }
+      .wizard-error {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        margin: 0 22px 16px;
+        padding: 13px 14px;
+        border: 1px solid #b42318;
+        border-left-width: 4px;
+        border-radius: 6px;
+        background: #fff1f0;
+        color: #7a271a;
+      }
+      .wizard-error-icon {
+        font-size: 18px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+      .wizard-error-heading {
+        margin: 0 0 3px;
+        color: #7a271a;
+        font-size: 14px;
+      }
+      .wizard-error-message,
+      .wizard-error-guidance {
+        margin: 0;
+        line-height: 1.45;
+      }
+      .wizard-error-guidance {
+        margin-top: 4px;
+        font-size: 12px;
+      }
+      .wizard .wizard-field-error {
+        border-color: #b42318;
+        box-shadow: 0 0 0 1px #b42318;
+      }
+      .provider-choice-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .provider-choice {
+        min-height: 116px;
+        display: grid;
+        gap: 6px;
+        align-content: start;
+        padding: 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        background: var(--card);
+        text-align: left;
+      }
+      .provider-choice:hover,
+      .provider-choice.selected {
+        border-color: var(--accent-soft);
+        background: var(--accent-pale);
+      }
+      .provider-choice strong {
+        font-size: 15px;
+      }
+      .provider-choice small {
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .advanced-choice {
+        margin-top: 16px;
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+      }
+      .advanced-toggle {
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-weight: 700;
+        padding: 0;
+      }
+      .advanced-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .wizard-form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .wizard-form-grid .full {
+        grid-column: 1 / -1;
+      }
+      .inspection-card {
+        display: grid;
+        gap: 10px;
+        padding: 16px;
+        border: 1px solid rgba(47, 133, 90, 0.28);
+        background: #f1faf5;
+      }
+      .inspection-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(47, 133, 90, 0.14);
+      }
+      .inspection-row:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+      .operation-result,
+      .flash {
+        margin-bottom: 16px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--success);
+        border-radius: 8px;
+        background: var(--card);
+      }
+      .operation-result.error,
+      .flash.error {
+        border-left-color: var(--error);
+      }
+      .operation-result p {
+        margin: 6px 0 0;
+      }
+      .workspace > .flash {
+        margin: 16px 24px 0;
+      }
+      .wizard footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 14px 22px 20px;
+        border-top: 1px solid var(--border);
+      }
+      .wizard-footer-right {
+        display: flex;
+        gap: 10px;
+      }
+      @media (max-width: 860px) {
+        .provider-choice-grid,
+        .advanced-grid,
+        .wizard-form-grid {
+          grid-template-columns: 1fr;
+        }
+        .stt-provider-table {
+          overflow-x: auto;
+        }
+        .stt-provider-row {
+          min-width: 760px;
+        }
+        .wizard-progress {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      .llm-management {
+        margin-top: 22px;
+        display: grid;
+        gap: 16px;
+      }
+      .llm-provider-table {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+        overflow: visible;
+      }
+      .llm-provider-row {
+        display: grid;
+        grid-template-columns:
+          minmax(210px, 1.25fr) 110px minmax(130px, 0.8fr)
+          90px 100px minmax(260px, auto);
+        gap: 10px;
+        align-items: center;
+        min-height: 60px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .llm-provider-row:last-child {
+        border-bottom: 0;
+      }
+      .llm-provider-row.head {
+        min-height: 38px;
+        background: var(--parchment);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .llm-provider-row .quick-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .llm-actions-wrap {
+        position: relative;
+      }
+      .llm-actions-button {
+        width: 34px;
+        height: 32px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--slate);
+      }
+      .llm-actions-menu {
+        position: absolute;
+        right: 0;
+        top: 38px;
+        z-index: 35;
+        width: 220px;
+        padding: 6px;
+        border: 1px solid var(--border-strong);
+        border-radius: 7px;
+        background: var(--card);
+        box-shadow: 0 16px 34px rgba(26, 32, 44, 0.14);
+      }
+      .llm-actions-menu[hidden] {
+        display: none;
+      }
+      .llm-actions-menu button {
+        width: 100%;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        padding: 7px 9px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--slate);
+        text-align: left;
+      }
+      .llm-actions-menu button:hover {
+        background: var(--parchment);
+      }
+      .llm-actions-menu button.danger {
+        color: var(--error);
+      }
+      .llm-model-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .llm-model-option {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 10px 11px;
+        border: 1px solid var(--border);
+        background: var(--parchment);
+      }
+      .llm-model-option[hidden] {
+        display: none;
+      }
+      .llm-model-option strong {
+        display: block;
+        font-size: 13px;
+      }
+      .llm-model-option small {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+      }
+      .model-filter-tools {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+      .model-filter-input {
+        flex: 1;
+        min-width: 220px;
+        min-height: 38px;
+        padding: 7px 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+      }
+      .model-filter-summary {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      @media (max-width: 860px) {
+        .llm-provider-table {
+          overflow-x: auto;
+        }
+        .llm-provider-row {
+          min-width: 860px;
+        }
+        .llm-model-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .danger-action {
+        color: var(--error);
+        border-color: rgba(197, 48, 48, 0.35);
+      }
+      .wizard-spaced {
+        margin-top: 14px;
+      }
+
+      @media (max-width: 1180px) {
+        :root {
+          --sidebar-width: 230px;
+          --team-list-width: 330px;
+        }
+        .policy-row {
+          min-width: 1060px;
+        }
+      }
+      @media (max-width: 820px) {
+        .team-summary {
+          position: static;
+        }
+        .tabs {
+          position: static;
+          flex-wrap: wrap;
+        }
+        .app-shell {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          position: relative;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+        .sidebar .nav-group,
+        .sidebar-spacer,
+        .account-card {
+          display: none;
+        }
+        .workspace {
+          overflow: visible;
+        }
+        .page-header {
+          padding: 22px 18px;
+        }
+        .admin-workspace {
+          display: block;
+        }
+        .detail-pane {
+          border-top: 1px solid var(--border);
+        }
+        .summary-grid {
+          grid-template-columns: 1fr;
+        }
+        .policy-table {
+          overflow-x: auto;
+        }
+        .policy-row { min-width: 1060px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/admin" aria-label="OpenScribe admin home">
+          <span class="brand-mark">O</span>
+          <span><strong>OpenScribe</strong><small>ADMIN</small></span>
+        </a>
+
+        <div class="account-card">
+          <span class="avatar"
+            >{{ (current_user.full_name or current_user.email)[:2]|upper
+            }}</span
+          >
+          <span
+            ><strong
+              >{{ current_user.full_name or "System administrator" }}</strong
+            ><small>{{ current_user.email }}</small></span
+          >
+        </div>
+
+        <nav class="nav-group" aria-label="Account">
+          <div class="nav-label">Account</div>
+          <a
+            class="nav-link{% if active_admin_tab == 'home' and not selected_team %} active{% endif %}"
+            href="/admin"
+            ><span class="nav-icon">⌂</span>Admin home</a
+          >
+        </nav>
+
+        <section class="sidebar-team-section" aria-label="Teams">
+          <button
+            class="sidebar-section-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-controls="sidebar-team-list"
+          >
+            <span class="sidebar-section-title">Teams</span>
+            <span class="sidebar-section-chevron">⌄</span>
+          </button>
+          <div class="sidebar-team-list" id="sidebar-team-list">
+            {% for team in teams %}
+            <a
+              class="sidebar-team-link{% if selected_team and selected_team.id == team.id %} active{% endif %}"
+              href="/admin?team_id={{ team.id }}&amp;team_tab=overview"
+            >
+              <span
+                class="sidebar-team-dot{% if team.status.value != 'active' %} suspended{% endif %}"
+              ></span
+              ><span>{{ team.name }}</span
+              ><span class="sidebar-team-check"
+                >{% if selected_team and selected_team.id == team.id %}✓{% endif
+                %}</span
+              >
+            </a>
+            {% endfor %}
+            <a class="sidebar-team-manage" href="/admin?tab=directory"
+              >Manage teams</a
+            >
+          </div>
+        </section>
+
+        <nav class="nav-group" aria-label="Administration">
+          <div class="nav-label">Administration</div>
+          <a class="nav-link" href="/admin?tab=requests"
+            ><span class="nav-icon">↗</span>Account requests</a
+          >
+          <a class="nav-link" href="/admin?tab=system-admins"
+            ><span class="nav-icon">♙</span>System admins</a
+          >
+          <a class="nav-link" href="/admin?tab=global-defaults"
+            ><span class="nav-icon">▤</span>Global defaults</a
+          >
+          <a class="nav-link" href="/admin?tab=deid-providers"
+            ><span class="nav-icon">◉</span>De-ID providers</a
+          >
+          <a class="nav-link" href="/admin?tab=usage"
+            ><span class="nav-icon">◌</span>Usage</a
+          >
+          <a class="nav-link" href="/admin?tab=audit"
+            ><span class="nav-icon">◎</span>Audit</a
+          >
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+
+        <nav class="nav-group" aria-label="Session">
+          <div class="nav-label">System</div>
+          <form method="post" action="/logout">
+            <button class="nav-link" type="submit">
+              <span class="nav-icon">⎋</span>Log out
+            </button>
+          </form>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        {% if message %}
+        <div class="flash {{ message_kind }}" role="status">{{ message }}</div>
+        {% endif %} {% if not selected_team or active_admin_tab in ['directory','requests','system-admins','global-defaults','deid-providers','usage','audit'] %}
+        <section class="detail-pane" aria-labelledby="admin-home-title">
+          <div class="detail-content">
+            {% if active_admin_tab == 'home' %}
+            <div class="section-intro">
+              <h1 id="admin-home-title">Admin home</h1>
+              <p>
+                Select a team from sidebar to manage its members, providers,
+                defaults, and lifecycle.
+              </p>
+            </div>
+            <div class="summary-grid">
+              <article class="summary-panel">
+                <header><h3>Environment</h3></header>
+                <ul class="summary-list">
+                  <li><span>Teams</span><strong>{{ teams|length }}</strong></li>
+                  <li>
+                    <span>Users</span
+                    ><strong
+                      >{{ users|rejectattr('is_system_admin')|list|length
+                      }}</strong
+                    >
+                  </li>
+                  <li>
+                    <span>Account requests</span
+                    ><strong>{{ account_requests|length }}</strong>
+                  </li>
+                </ul>
+              </article>
+              <article class="summary-panel">
+                <header><h3>Choose scope</h3></header>
+                <p>
+                  {% if teams %}Choose a team in sidebar. No team is selected
+                  automatically.{% else %}No teams exist yet.
+                </p>
+                <a class="btn primary" href="/admin?tab=directory"
+                  >Create team</a
+                >{% endif %}
+              </article>
+            </div>
+            {% elif active_admin_tab == 'directory' %}
+            <div class="section-intro">
+              <h1>Manage teams</h1>
+              <p>
+                Create teams and open their workspaces. Team deletion remains in
+                each team's Danger zone.
+              </p>
+            </div>
+            <div class="summary-grid">
+              <article class="summary-panel">
+                <header><h3>Create team</h3></header>
+                <form method="post" action="/admin/teams">
+                  <input
+                    type="hidden"
+                    name="return_view"
+                    value="workspace"
+                  /><input
+                    type="hidden"
+                    name="return_tab"
+                    value="directory"
+                  /><label>Name <input name="name" required /></label
+                  ><label
+                    >Status
+                    <select name="status">
+                      {% for status in team_statuses %}
+                      <option value="{{ status.value }}">
+                        {{ status.value|title }}
+                      </option>
+                      {% endfor %}
+                    </select></label
+                  ><label
+                    >Default retention
+                    <input
+                      type="number"
+                      name="default_retention_days"
+                      min="1"
+                      max="90"
+                      value="30"
+                      required /></label
+                  ><button class="btn primary" type="submit">
+                    Create team
+                  </button>
+                </form>
+              </article>
+              <article class="summary-panel">
+                <header><h3>Teams</h3></header>
+                {% for team in teams %}
+                <div class="inspection-row">
+                  <span
+                    ><strong>{{ team.name }}</strong><br /><small
+                      >{{ team.status.value|title }} · {{
+                      team.default_retention_days }} day retention</small
+                    ></span
+                  ><a
+                    class="btn small"
+                    href="/admin?team_id={{ team.id }}&amp;team_tab=overview"
+                    >Open</a
+                  >
+                </div>
+                {% else %}
+                <p>No teams.</p>
+                {% endfor %}
+              </article>
+            </div>
+            {% elif active_admin_tab == 'requests' %}
+            <div class="section-intro">
+              <h1>Account requests</h1>
+              <p>
+                Review access requests without exposing transcript-derived
+                content.
+              </p>
+            </div>
+            {% for item in account_requests %}
+            <article class="summary-panel">
+              <header><h3>{{ item.requested_email }}</h3></header>
+              <p>
+                {{ item.requested_name or 'Name not supplied' }} · {{
+                item.requested_team_name }} · {{ item.status.value|title }}
+              </p>
+              <form
+                method="post"
+                action="/admin/account-requests/{{ item.id }}/approve"
+              >
+                <input
+                  type="hidden"
+                  name="return_view"
+                  value="workspace"
+                /><input
+                  type="hidden"
+                  name="return_tab"
+                  value="requests"
+                /><label
+                  >Team
+                  <select name="team_id">
+                    {% for team in teams %}
+                    <option value="{{ team.id }}">{{ team.name }}</option>
+                    {% endfor %}
+                  </select></label
+                ><label
+                  >Role
+                  <select name="team_role">
+                    <option value="user">User</option>
+                    <option value="leader">Team leader</option>
+                  </select></label
+                ><label
+                  >Temporary password
+                  <input
+                    type="password"
+                    name="temporary_password"
+                    required /></label
+                ><button class="btn primary" type="submit">Approve</button>
+              </form>
+              <form
+                method="post"
+                action="/admin/account-requests/{{ item.id }}/reject"
+              >
+                <input
+                  type="hidden"
+                  name="return_view"
+                  value="workspace"
+                /><input
+                  type="hidden"
+                  name="return_tab"
+                  value="requests"
+                /><label
+                  >Rejection reason <input name="reason" required /></label
+                ><button class="btn danger-action" type="submit">Reject</button>
+              </form>
+            </article>
+            {% else %}
+            <p>No pending requests.</p>
+            {% endfor %} {% elif active_admin_tab == 'system-admins' %}
+            <div class="section-intro">
+              <h1>System administrators</h1>
+              <p>
+                Admin-only accounts do not belong to teams or own
+                transcript-derived content.
+              </p>
+            </div>
+            <div class="summary-grid">
+              <article class="summary-panel">
+                <header><h3>Create system admin</h3></header>
+                <form method="post" action="/admin/users">
+                  <input
+                    type="hidden"
+                    name="is_system_admin"
+                    value="true"
+                  /><input type="hidden" name="status" value="active" /><input
+                    type="hidden"
+                    name="mfa_required"
+                    value="true"
+                  /><input
+                    type="hidden"
+                    name="return_view"
+                    value="workspace"
+                  /><input
+                    type="hidden"
+                    name="return_tab"
+                    value="system-admins"
+                  /><label>Full name <input name="full_name" /></label
+                  ><label
+                    >Email <input type="email" name="email" required /></label
+                  ><label
+                    >Temporary password
+                    <input
+                      type="password"
+                      name="temporary_password"
+                      required /></label
+                  ><button class="btn primary" type="submit">
+                    Create system admin
+                  </button>
+                </form>
+              </article>
+              <article class="summary-panel">
+                <header><h3>Administrators</h3></header>
+                {% for user in users if user.is_system_admin %}
+                <div class="inspection-row">
+                  <span
+                    ><strong>{{ user.full_name or user.email }}</strong
+                    ><br /><small
+                      >{{ user.email }} · {{ user.status.value|title }}</small
+                    ></span
+                  >
+                </div>
+                {% endfor %}
+              </article>
+            </div>
+            {% elif active_admin_tab == 'global-defaults' %}
+            <div class="section-intro">
+              <h1>Global defaults</h1>
+              <p>
+                Platform templates and quick actions seed new teams; existing
+                team assets are not overwritten.
+              </p>
+            </div>
+            <a class="btn primary" href="/legacy-admin?tab=defaults"
+              >Manage global templates and quick actions</a
+            >
+            <div class="summary-grid">
+              <article class="summary-panel">
+                <h3>Templates</h3>
+                <strong>{{ default_templates|length }}</strong>
+              </article>
+              <article class="summary-panel">
+                <h3>Quick actions</h3>
+                <strong>{{ default_quick_actions|length }}</strong>
+              </article>
+            </div>
+            {% elif active_admin_tab == 'deid-providers' %}
+            <div class="section-intro">
+              <h1>De-ID providers</h1>
+              <p>
+                Global registry for De-identification and Clinical NLP-capable
+                providers. Edits may affect multiple teams.
+              </p>
+            </div>
+            <a class="btn primary" href="/legacy-admin?tab=providers"
+              >Create or inspect global provider</a
+            >{% for provider in deidentification_providers %}
+            <article class="summary-panel">
+              <header><h3>{{ provider.label }}</h3></header>
+              <p>
+                {{ provider.adapter_kind.value }} · {% if
+                provider.clinical_detection_enabled %}De-ID and Clinical NLP{%
+                else %}De-identification{% endif %}
+              </p>
+              {% if not provider.is_builtin %}
+              <div class="quick-actions">
+                <a
+                  class="btn small"
+                  href="/legacy-admin?tab=providers&amp;deidentification_provider_id={{ provider.id }}"
+                  >Edit</a
+                >
+                <form
+                  method="post"
+                  action="/admin/deidentification-providers/{{ provider.id }}/delete"
+                  data-confirm-submit="Delete this global provider and its saved secret? Assigned teams may fall back or lose Clinical NLP."
+                >
+                  <input
+                    type="hidden"
+                    name="return_view"
+                    value="workspace"
+                  /><input
+                    type="hidden"
+                    name="return_tab"
+                    value="deid-providers"
+                  /><button class="btn small danger" type="submit">
+                    Delete globally
+                  </button>
+                </form>
+              </div>
+              {% endif %}
+            </article>
+            {% endfor %} {% elif active_admin_tab == 'usage' %}
+            <div class="section-intro">
+              <h1>Usage</h1>
+              <p>
+                Metadata-only provider and ingestion activity across all teams.
+              </p>
+            </div>
+            {% for card in usage_kpi_cards %}
+            <article class="summary-panel">
+              <header><h3>{{ card.label }}</h3></header>
+              <strong>{{ card.value }}</strong>
+              <p>{{ card.detail }}</p>
+            </article>
+            {% else %}
+            <p>No usage activity in current reporting window.</p>
+            {% endfor %}<a class="panel-link" href="/legacy-admin?tab=usage"
+              >Open detailed usage reports →</a
+            >
+            {% elif active_admin_tab == 'audit' %}
+            <div class="section-intro">
+              <h1>Security audit</h1>
+              <p>Metadata-only events and detection signals.</p>
+            </div>
+            <form method="get" action="/admin">
+              <input type="hidden" name="tab" value="audit" /><label
+                >Window
+                <input name="audit_since" value="{{ audit_since }}" /></label
+              ><label
+                >Action
+                <select name="audit_action">
+                  <option value="">All</option>
+                  {% for action in audit_filter_options.actions %}
+                  <option value="{{ action }}"{% if audit_action_filter == action %} selected{% endif %}>
+                    {{ action }}
+                  </option>
+                  {% endfor %}
+                </select></label
+              ><button class="btn primary" type="submit">Filter</button>
+            </form>
+            {% for event in audit_events %}
+            <article class="summary-panel">
+              <strong>{{ event.action }}</strong>
+              <p>
+                {{ event.created_at }} · {{ event.actor_email or
+                event.actor_user_id or 'system' }} · {{ event.team_name or '' }}
+              </p>
+            </article>
+            {% else %}
+            <p>No audit events in this window.</p>
+            {% endfor %} {% endif %}
+          </div>
+        </section>
+        {% else %}
+        <div class="admin-workspace">
+          <section class="detail-pane" aria-label="Selected team details">
+            <div class="team-summary">
+              <div>
+                <div class="title-line">
+                  <h2 id="team-title">{{ selected_team.name }}</h2>
+                  <span class="badge" id="team-status"
+                    >{{ selected_team.status.value|title }}</span
+                  >
+                </div>
+                <div class="meta">
+                  <span>Selected team scope</span><span>•</span
+                  ><span id="team-members"
+                    >{{ selected_team_users|length }} members</span
+                  ><span>•</span
+                  ><span>Provider configuration is isolated to this team</span>
+                </div>
+              </div>
+              <button class="btn icon" type="button" aria-label="Team actions">
+                ⋮
+              </button>
+            </div>
+
+            <nav class="tabs" aria-label="Team settings">
+              {% for key, label in
+              [('overview','Overview'),('members','Members'),('provider-policy','Provider
+              policy'),('stt','STT'),('llm','LLM'),('deidentification','De-identification'),('defaults','Defaults'),('security','Security'),('danger','Danger
+              zone')] %}<a
+                class="tab{% if workspace_team_tab == key %} active{% endif %}"
+                data-tab="{{ key }}"
+                href="/admin?team_id={{ selected_team.id }}&amp;team_tab={{ key }}"
+                >{{ label }}</a
+              >{% endfor %}
+            </nav>
+
+            <div class="detail-content">
+              <section
+                class="tab-panel"
+                data-panel="provider-policy"
+                {%
+                if
+                workspace_team_tab
+                !="provider-policy"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Provider policy</h2>
+                  <p>
+                    Configure which team-specific provider instance and model
+                    are used for each purpose.
+                  </p>
+                </div>
+
+                <div class="policy-table" data-provider-policy-table>
+                  <div class="policy-row head"><span>Purpose</span><span>Provider instance</span><span>Model</span><span>Language</span><span>Status</span><span class="policy-actions-heading">Actions</span></div>
+                  {% for purpose, label, description, icon, selection in [('conversation','Consultation STT','Real-time / live','≋',stt_selection),('post_consultation_dictation','Dictation STT','Post-consultation','▣',stt_dictation_selection)] %}
+                  <div class="policy-row" data-policy-row="{{ purpose }}">
+                    <div class="purpose"><span class="purpose-icon">{{ icon }}</span><span><strong>{{ label }}</strong><small>{{ description }}</small></span></div>
+                    {% if selectable_stt_configs %}
+                    <form method="post" action="/admin/stt-selection" data-policy-stt-form>
+                      <input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="purpose" value="{{ purpose }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy">
+                      <select class="select-like" name="stt_config_id" aria-label="{{ label }} provider instance" required data-policy-provider-select>
+                        {% for config in selectable_stt_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}" data-default-language="{{ config.language or '' }}"{% if selection and selection.stt_config_id == config.id %} selected{% endif %}>{{ config.label }} · {{ config.adapter_kind.value }}</option>{% endfor %}
+                      </select>
+                      <select class="select-like" name="provider_model" aria-label="{{ label }} model" data-policy-model-select data-selected-value="{{ selection.model_name_override if selection else '' }}"></select>
+                      <input class="select-like" name="language" aria-label="{{ label }} language override" value="{{ selection.language_override if selection else '' }}" placeholder="Provider default / auto" data-policy-language-input>
+                      <span class="configured{% if not selection %} fallback{% endif %}">{% if selection %}Configured{% else %}Unconfigured{% endif %}</span>
+                      <button class="btn primary small" type="submit">Save</button>
+                    </form>
+                    {% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=stt">Add STT provider</a></span><span class="policy-na">—</span><span class="policy-na">Auto</span><span class="configured fallback">Unconfigured</span><span></span>{% endif %}
+                    {% if selection %}<form method="post" action="/admin/stt-selection/clear" onsubmit="return confirm('Clear {{ label }} selection? Transcription for this purpose will be unavailable until another provider is selected.')"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="purpose" value="{{ purpose }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">Clear</button></form>{% else %}<span></span>{% endif %}
+                  </div>
+                  {% endfor %}
+
+                  <div class="policy-row" data-policy-row="writing-assistant">
+                    <div class="purpose"><span class="purpose-icon">✦</span><span><strong>Writing assistant</strong><small>Summaries and notes</small></span></div>
+                    {% if selectable_llm_configs %}
+                    <form method="post" action="/admin/llm-selection" data-policy-llm-form>
+                      <input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy">
+                      <select class="select-like" name="llm_config_id" aria-label="Writing assistant provider instance" required data-policy-provider-select>{% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if llm_selection and llm_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}</select>
+                      <div class="policy-model-cell"><select class="select-like" name="provider_model" aria-label="Writing assistant default model" required data-policy-model-select data-selected-value="{{ (llm_selection.model_name_override or llm_selection.config.model_name) if llm_selection else '' }}"></select><details><summary>Visible models</summary><div class="policy-model-options" data-policy-visible-models></div></details></div>
+                      <span class="policy-na">—</span><span class="configured{% if not llm_selection %} fallback{% endif %}">{% if llm_selection %}Configured{% else %}Unconfigured{% endif %}</span><button class="btn primary small" type="submit">Save</button>
+                    </form>
+                    {% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=llm">Add LLM provider</a></span><span class="policy-na">—</span><span class="policy-na">—</span><span class="configured fallback">Unconfigured</span><span></span>{% endif %}
+                    {% if llm_selection %}<form method="post" action="/admin/llm-selection/clear" onsubmit="return confirm('Clear writing assistant selection? Users will lose team LLM actions until another provider is selected.')"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">Clear</button></form>{% else %}<span></span>{% endif %}
+                  </div>
+
+                  <div class="policy-row" data-policy-row="hallucination-checker">
+                    <div class="purpose"><span class="purpose-icon">✓</span><span><strong>Hallucination checker</strong><small>Verification model</small></span></div>
+                    {% if selectable_llm_configs %}<form method="post" action="/admin/hallucination-check-selection" data-policy-model-form><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><select class="select-like" name="llm_config_id" aria-label="Hallucination checker provider instance" required data-policy-provider-select>{% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if hallucination_check_selection and hallucination_check_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}</select><select class="select-like" name="provider_model" aria-label="Hallucination checker model" required data-policy-model-select data-selected-value="{{ hallucination_check_selection.model_name_override if hallucination_check_selection else '' }}"></select><span class="policy-na">—</span><span class="configured{% if not hallucination_check_selection %} fallback{% endif %}">{% if hallucination_check_selection %}Configured{% else %}Unconfigured{% endif %}</span><button class="btn primary small" type="submit">Save</button></form>{% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=llm">Add LLM provider</a></span><span class="policy-na">—</span><span class="policy-na">—</span><span class="configured fallback">Unconfigured</span><span></span>{% endif %}
+                    {% if hallucination_check_selection %}<form method="post" action="/admin/hallucination-check-selection/clear" onsubmit="return confirm('Disable hallucination checking for this team? Structured-note verification will not run.')"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">Clear</button></form>{% else %}<span></span>{% endif %}
+                  </div>
+
+                  {% for kind, label, description, icon, selection, providers, save_route, clear_route in [('deidentification','De-identification','Protects identifiers before remote processing','◉',deidentification_selection,selectable_deidentification_providers,'/admin/deidentification-selection','/admin/deidentification-selection/clear'),('clinical-nlp','Clinical NLP','Clinical entity extraction','⌁',clinical_nlp_selection,selectable_clinical_nlp_providers,'/admin/clinical-nlp-selection','/admin/clinical-nlp-selection/clear')] %}
+                  <div class="policy-row" data-policy-row="{{ kind }}"><div class="purpose"><span class="purpose-icon">{{ icon }}</span><span><strong>{{ label }}</strong><small>{{ description }}</small></span></div>
+                    {% if providers %}<form method="post" action="{{ save_route }}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><select class="select-like" name="provider_id" aria-label="{{ label }} provider instance" required>{% for provider in providers %}<option value="{{ provider.id }}"{% if selection and selection.provider_id == provider.id %} selected{% endif %}>{{ provider.label }}</option>{% endfor %}</select><span class="policy-na">—</span><span class="policy-na">{% if kind == 'deidentification' %}Auto{% else %}—{% endif %}</span><span class="configured{% if not selection %} fallback{% endif %}">{% if selection %}Configured{% elif kind == 'deidentification' %}Fallback{% else %}Unconfigured{% endif %}</span><button class="btn primary small" type="submit">Save</button></form>{% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=deidentification">Assign provider</a>{% if kind == 'deidentification' %}; native Presidio active{% endif %}</span><span class="policy-na">—</span><span class="policy-na">{% if kind == 'deidentification' %}Auto{% else %}—{% endif %}</span><span class="configured fallback">{% if kind == 'deidentification' %}Fallback{% else %}Unconfigured{% endif %}</span><span></span>{% endif %}
+                    {% if selection %}<form method="post" action="{{ clear_route }}" onsubmit="return confirm('{% if kind == 'deidentification' %}Clear De-identification provider? Native Presidio fallback will become active.{% else %}Disable Clinical NLP for this team? Clinical extraction will stop.{% endif %}')"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">{% if kind == 'deidentification' %}Use fallback{% else %}Disable{% endif %}</button></form>{% else %}<span></span>{% endif %}
+                  </div>{% endfor %}
+                </div>
+
+                {% if false %}<div class="summary-grid">
+                  <article class="summary-panel">
+                    <header><h3>Speech to text</h3></header>
+                    {% if selectable_stt_configs %}{% for purpose, label,
+                    selection in [('conversation','Consultation
+                    STT',stt_selection),('post_consultation_dictation','Dictation
+                    STT',stt_dictation_selection)] %}
+                    <form method="post" action="/admin/stt-selection">
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="purpose"
+                        value="{{ purpose }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="provider-policy"
+                      /><label
+                        >{{ label }}<select name="stt_config_id" required>
+                          {% for config in selectable_stt_configs %}
+                          <option value="{{ config.id }}"{% if selection and selection.stt_config_id == config.id %} selected{% endif %}>
+                            {{ config.label }} · {{ config.adapter_kind.value }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      ><label
+                        >Model override
+                        <input
+                          name="provider_model"
+                          value="{{ selection.model_name_override if selection else '' }}"
+                          placeholder="Provider default" /></label
+                      ><label
+                        >Language override
+                        <input
+                          name="language"
+                          value="{{ selection.language_override if selection else '' }}"
+                          placeholder="Provider default / auto" /></label
+                      ><button class="btn primary" type="submit">
+                        Save {{ label }}
+                      </button>
+                    </form>
+                    {% endfor %}{% else %}
+                    <p>No ready STT endpoints. Add one under STT.</p>
+                    {% endif %}
+                  </article>
+                  <article class="summary-panel">
+                    <header><h3>Writing assistant</h3></header>
+                    {% if selectable_llm_configs %}
+                    <form method="post" action="/admin/llm-selection">
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="provider-policy"
+                      /><label
+                        >Provider
+                        <select name="llm_config_id" required>
+                          {% for config in selectable_llm_configs %}
+                          <option value="{{ config.id }}"{% if llm_selection and llm_selection.llm_config_id == config.id %} selected{% endif %}>
+                            {{ config.label }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      >{% set policy_config = llm_selection.config if
+                      llm_selection else selectable_llm_configs|first %}
+                      <fieldset>
+                        <legend>Visible models</legend>
+                        {% for model in policy_config.available_models_json
+                        %}<label
+                          ><input
+                            type="checkbox"
+                            name="allowed_model_names"
+                            value="{{ model }}"
+                            {%
+                            if
+                            not
+                            llm_selection
+                            or
+                            model
+                            in
+                            llm_selection.allowed_models_json
+                            %}
+                            checked{%
+                            endif
+                            %}
+                          />
+                          {{ model }}</label
+                        >{% endfor %}
+                      </fieldset>
+                      <label
+                        >Default model
+                        <select name="provider_model" required>
+                          {% for model in policy_config.available_models_json %}
+                          <option value="{{ model }}"{% if llm_selection and (llm_selection.model_name_override or llm_selection.config.model_name) == model %} selected{% endif %}>
+                            {{ model }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      ><button class="btn primary" type="submit">
+                        Save writing assistant
+                      </button>
+                    </form>
+                    {% else %}
+                    <p>No ready LLM provider. Add one under LLM.</p>
+                    {% endif %}
+                  </article>
+                  <article class="summary-panel">
+                    <header><h3>Hallucination checker</h3></header>
+                    {% if selectable_llm_configs %}
+                    <form
+                      method="post"
+                      action="/admin/hallucination-check-selection"
+                    >
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="provider-policy"
+                      /><label
+                        >Provider
+                        <select name="llm_config_id">
+                          {% for config in selectable_llm_configs %}
+                          <option value="{{ config.id }}"{% if hallucination_check_selection and hallucination_check_selection.llm_config_id == config.id %} selected{% endif %}>
+                            {{ config.label }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      ><label
+                        >Model
+                        <input
+                          name="provider_model"
+                          value="{{ hallucination_check_selection.model_name_override if hallucination_check_selection else '' }}"
+                          required /></label
+                      ><button class="btn primary" type="submit">
+                        Save checker
+                      </button>
+                    </form>
+                    {% endif %}
+                  </article>
+                  <article class="summary-panel">
+                    <header><h3>Privacy and clinical NLP</h3></header>
+                    <form
+                      method="post"
+                      action="/admin/deidentification-selection"
+                    >
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="provider-policy"
+                      /><label
+                        >De-identification
+                        <select name="provider_id">
+                          {% for provider in
+                          selectable_deidentification_providers %}
+                          <option value="{{ provider.id }}"{% if deidentification_selection and deidentification_selection.provider_id == provider.id %} selected{% endif %}>
+                            {{ provider.label }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      ><button class="btn primary" type="submit">
+                        Save De-ID provider
+                      </button>
+                    </form>
+                    {% if selectable_clinical_nlp_providers %}
+                    <form method="post" action="/admin/clinical-nlp-selection">
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="provider-policy"
+                      /><label
+                        >Clinical NLP
+                        <select name="provider_id">
+                          {% for provider in selectable_clinical_nlp_providers
+                          %}
+                          <option value="{{ provider.id }}"{% if clinical_nlp_selection and clinical_nlp_selection.provider_id == provider.id %} selected{% endif %}>
+                            {{ provider.label }}
+                          </option>
+                          {% endfor %}
+                        </select></label
+                      ><button class="btn primary" type="submit">
+                        Save Clinical NLP
+                      </button>
+                    </form>
+                    {% endif %}
+                  </article>
+                </div>
+
+                <div class="policy-table">
+                  <div class="policy-row head">
+                    <span>Purpose</span><span>Provider instance</span
+                    ><span>Model</span><span>Language</span><span>Status</span
+                    ><span></span>
+                  </div>
+                  <div class="policy-row">
+                    <div class="purpose">
+                      <span class="purpose-icon">≋</span
+                      ><span
+                        ><strong>Consultation STT</strong
+                        ><small>Real-time / live</small></span
+                      >
+                    </div>
+                    <button class="select-like" type="button">
+                      <span>Whisper Production</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>large-v3</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>Auto</span><span>⌄</span>
+                    </button>
+                    <span class="configured">Configured</span>
+                    <button
+                      class="btn icon small"
+                      type="button"
+                      aria-label="Edit consultation STT"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                  <div class="policy-row">
+                    <div class="purpose">
+                      <span class="purpose-icon">▣</span
+                      ><span
+                        ><strong>Dictation STT</strong
+                        ><small>Post-consultation</small></span
+                      >
+                    </div>
+                    <button class="select-like" type="button">
+                      <span>Deepgram Backup</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>nova-2</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>en-GB</span><span>⌄</span>
+                    </button>
+                    <span class="configured">Configured</span>
+                    <button
+                      class="btn icon small"
+                      type="button"
+                      aria-label="Edit dictation STT"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                  <div class="policy-row">
+                    <div class="purpose">
+                      <span class="purpose-icon">✦</span
+                      ><span
+                        ><strong>Writing assistant</strong
+                        ><small>Summaries and notes</small></span
+                      >
+                    </div>
+                    <button class="select-like" type="button">
+                      <span>OpenAI Production</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>GPT-4.1</span><span>⌄</span>
+                    </button>
+                    <span>—</span>
+                    <span class="configured">Configured</span>
+                    <button
+                      class="btn icon small"
+                      type="button"
+                      aria-label="Edit writing assistant"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                  <div class="policy-row">
+                    <div class="purpose">
+                      <span class="purpose-icon">✓</span
+                      ><span
+                        ><strong>Hallucination check</strong
+                        ><small>Verification model</small></span
+                      >
+                    </div>
+                    <button class="select-like" type="button">
+                      <span>Local Ollama</span><span>⌄</span>
+                    </button>
+                    <button class="select-like" type="button">
+                      <span>llama3.1:70b</span><span>⌄</span>
+                    </button>
+                    <span>—</span>
+                    <span class="configured">Configured</span>
+                    <button
+                      class="btn icon small"
+                      type="button"
+                      aria-label="Edit hallucination checking"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                  <div class="policy-row">
+                    <div class="purpose">
+                      <span class="purpose-icon">◉</span
+                      ><span
+                        ><strong>De-identification</strong
+                        ><small>Current shared-provider model</small></span
+                      >
+                    </div>
+                    <button class="select-like" type="button">
+                      <span>Presidio fallback</span><span>⌄</span>
+                    </button>
+                    <span>—</span><span>Auto</span>
+                    <span class="configured fallback">Fallback</span>
+                    <button
+                      class="btn icon small"
+                      type="button"
+                      aria-label="Edit de-identification"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                </div>
+
+                <div class="summary-grid">
+                  <article class="summary-panel">
+                    <header><h3>Members summary</h3></header>
+                    <ul class="summary-list">
+                      <li>
+                        <span>Total members</span
+                        ><strong id="summary-members">8</strong>
+                      </li>
+                      <li><span>Team leaders</span><strong>2</strong></li>
+                      <li><span>Active accounts</span><strong>8</strong></li>
+                      <li><span>Pending onboarding</span><strong>1</strong></li>
+                    </ul>
+                    <button
+                      class="panel-link"
+                      type="button"
+                      data-open-tab="members"
+                    >
+                      View members →
+                    </button>
+                  </article>
+
+                  <article class="summary-panel">
+                    <header><h3>Retention and defaults</h3></header>
+                    <ul class="summary-list">
+                      <li>
+                        <span>Default retention</span
+                        ><strong id="summary-retention">90 days</strong>
+                      </li>
+                      <li>
+                        <span>Default template</span><strong>SOAP Note</strong>
+                      </li>
+                      <li>
+                        <span>Default language</span
+                        ><strong>Auto-detect</strong>
+                      </li>
+                      <li><span>Provider instances</span><strong>4</strong></li>
+                    </ul>
+                    <button
+                      class="panel-link"
+                      type="button"
+                      data-open-tab="defaults"
+                    >
+                      Edit defaults →
+                    </button>
+                  </article>
+                </div>
+                {% endif %}
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="stt"
+                {%
+                if
+                workspace_team_tab
+                !="stt"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Speech-to-text providers</h2>
+                  <p>
+                    Add, inspect, test, and manage STT provider instances for
+                    the selected team. Assign their roles from Provider policy.
+                  </p>
+                </div>
+                {% if stt_config and (stt_config.setup_status == 'pending_model_selection' or stt_config.setup_status.value == 'pending_model_selection') %}
+                <article class="summary-panel">
+                  <header><h3>Finish {{ stt_config.label }}</h3></header>
+                  <p>{% if stt_config.revision_of_config_id %}Updating existing provider. Active provider stays unchanged until finalization.{% else %}Inspection complete. Confirm model, language, and availability.{% endif %}</p>
+                  <form
+                    method="post"
+                    action="/admin/stt-configs/{{ stt_config.id }}/finalize"
+                  >
+                    <input
+                      type="hidden"
+                      name="team_id"
+                      value="{{ selected_team.id }}"
+                    /><input
+                      type="hidden"
+                      name="return_view"
+                      value="workspace"
+                    /><input
+                      type="hidden"
+                      name="return_tab"
+                      value="stt"
+                    /><label
+                      >Provider name
+                      <input
+                        name="label"
+                        value="{{ stt_config.label }}"
+                        required /></label
+                    ><label
+                      >Default model
+                      <select name="provider_model">
+                        <option value="">No default</option>
+                        {% for model in stt_config.available_models_json %}
+                        <option value="{{ model }}"{% if stt_config.model_name == model %} selected{% endif %}>
+                          {{ model }}
+                        </option>
+                        {% endfor %}
+                      </select></label
+                    ><label
+                      >Language
+                      <input
+                        name="language"
+                        value="{{ stt_config.language or '' }}"
+                        placeholder="Auto-detect" /></label
+                    ><label
+                      ><input
+                        type="checkbox"
+                        name="is_active"
+                        value="true"
+                        checked
+                      />
+                      Available for team selection</label
+                    ><button class="btn primary" type="submit">
+                      Finish provider setup
+                    </button>
+                  </form>
+                  <form method="post" action="/admin/stt-configs/{{ stt_config.id }}/draft-cancel" data-confirm-submit="{% if stt_config.revision_of_config_id %}Discard change while active provider stays unchanged?{% else %}Cancel this STT setup and delete its pending credential?{% endif %}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="stt"><button class="btn danger-action" type="submit">{% if stt_config.revision_of_config_id %}Discard change{% else %}Cancel setup{% endif %}</button></form>
+                </article>
+                {% endif %}
+                <section class="stt-management">
+                  <div class="section-header">
+                    <div>
+                      <h3>Provider instances</h3>
+                      <p>
+                        Credentials remain Vault-backed and are never rendered.
+                      </p>
+                    </div>
+                    <button class="btn primary" id="add-stt-provider-button" type="button">＋ Add STT provider</button>
+                  </div>
+                  {% if stt_test_result %}
+                  <div class="operation-result {{ 'success' if stt_test_result.success else 'error' }}" role="status" data-stt-test-result>
+                    <strong>STT test {{ 'passed' if stt_test_result.success else 'failed' }}</strong>
+                    <p>Health: {{ stt_test_result.health_status }} · {{ stt_test_result.duration_ms }} ms · Model: {{ stt_test_result.model_name or 'not set' }}</p>
+                    {% if not stt_test_result.success %}<p>{{ stt_test_result.error_message }}{% if stt_test_result.error_code %} ({{ stt_test_result.error_code }}){% endif %}</p>{% endif %}
+                  </div>
+                  {% endif %}
+                  <div class="stt-provider-table">
+                    <div class="stt-provider-row head">
+                      <span>Provider instance</span><span>Provider</span
+                      ><span>Status</span><span>Used for</span
+                      ><span>Actions</span>
+                    </div>
+                    {% for config in stt_configs %}
+                    <div class="stt-provider-row">
+                      <div>
+                        <strong>{{ config.label }}</strong>
+                        <div class="provider-subtext">
+                          {{ config.model_name or 'No default model' }} · {{
+                          config.language or 'Auto-detect' }}
+                        </div>
+                      </div>
+                      <span>{{ config.adapter_kind.value }}</span
+                      ><span class="configured"
+                        >{{ config.credential_status.value }}</span
+                      ><span
+                        >{% if stt_selection and stt_selection.stt_config_id ==
+                        config.id %}Consultation {% endif %}{% if
+                        stt_dictation_selection and
+                        stt_dictation_selection.stt_config_id == config.id
+                        %}Dictation{% endif %}</span
+                      >
+                      <div class="quick-actions">
+                        <button class="btn small" type="button" data-edit-stt-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-openapi-path="{% if config.adapter_kind.value == 'generic_rest' %}/openapi.json{% endif %}" data-model-name="{{ config.model_name or '' }}" data-language="{{ config.language or '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
+                        <form
+                          method="post"
+                          action="/admin/stt-configs/{{ config.id }}/test"
+                        >
+                          <input
+                            type="hidden"
+                            name="team_id"
+                            value="{{ selected_team.id }}"
+                          /><input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="stt"
+                          /><button class="btn small" type="submit">
+                            Test
+                          </button>
+                        </form>
+                        <form
+                          method="post"
+                          action="/admin/stt-configs/{{ config.id }}/inspect"
+                        >
+                          <input
+                            type="hidden"
+                            name="team_id"
+                            value="{{ selected_team.id }}"
+                          /><input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="stt"
+                          /><button class="btn small" type="submit">
+                            Re-inspect
+                          </button>
+                        </form>
+                        <form
+                          method="post"
+                          action="/admin/stt-configs/{{ config.id }}/delete"
+                          data-confirm-submit="Delete this STT endpoint and its saved secret?"
+                        >
+                          <input
+                            type="hidden"
+                            name="team_id"
+                            value="{{ selected_team.id }}"
+                          /><input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="stt"
+                          /><button class="btn small danger" type="submit">
+                            Delete
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                    {% else %}
+                    <p>No STT providers configured.</p>
+                    {% endfor %}
+                  </div>
+                </section>
+                {% if false %}
+                <section class="stt-management">
+                  <div class="section-header">
+                    <div>
+                      <h3>Provider instances</h3>
+                      <p>Manage the STT connections available to this team.</p>
+                    </div>
+                    <button
+                      class="btn primary"
+                      id="add-stt-provider-button"
+                      type="button"
+                    >
+                      ＋ Add STT provider
+                    </button>
+                  </div>
+
+                  <div class="stt-provider-table">
+                    <div class="stt-provider-row head">
+                      <span>Provider instance</span>
+                      <span>Provider</span>
+                      <span>Status</span>
+                      <span>Used for</span>
+                      <span></span>
+                    </div>
+
+                    <div class="stt-provider-row">
+                      <div>
+                        <strong>Whisper Production</strong>
+                        <div class="provider-subtext">
+                          gpt-4o-transcribe · Auto-detect
+                        </div>
+                      </div>
+                      <span>OpenAI</span>
+                      <span class="configured">Verified</span>
+                      <span>Consultation</span>
+                      <div class="stt-actions-wrap">
+                        <button
+                          class="stt-actions-button"
+                          type="button"
+                          aria-label="Whisper Production actions"
+                        >
+                          ⋮
+                        </button>
+                        <div class="stt-actions-menu" hidden>
+                          <button type="button">Edit</button>
+                          <button type="button">Test</button>
+                          <button type="button">Re-inspect</button>
+                          <button type="button">Make unavailable</button>
+                          <div class="menu-separator"></div>
+                          <button class="danger" type="button">Delete</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="stt-provider-row">
+                      <div>
+                        <strong>Deepgram Backup</strong>
+                        <div class="provider-subtext">nova-2 · en-GB</div>
+                      </div>
+                      <span>Deepgram</span>
+                      <span class="configured">Verified</span>
+                      <span>Dictation</span>
+                      <div class="stt-actions-wrap">
+                        <button
+                          class="stt-actions-button"
+                          type="button"
+                          aria-label="Deepgram Backup actions"
+                        >
+                          ⋮
+                        </button>
+                        <div class="stt-actions-menu" hidden>
+                          <button type="button">Edit</button>
+                          <button type="button">Test</button>
+                          <button type="button">Re-inspect</button>
+                          <button type="button">Make unavailable</button>
+                          <div class="menu-separator"></div>
+                          <button class="danger" type="button">Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                {% endif %}
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="llm"
+                {%
+                if
+                workspace_team_tab
+                !="llm"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Large-language-model providers</h2>
+                  <p>
+                    Add, inspect, filter, and manage LLM provider instances for
+                    the selected team. Assign writing-assistant and
+                    hallucination-checking roles from Provider policy.
+                  </p>
+                </div>
+                {% if llm_config and (llm_config.setup_status == 'pending_model_selection' or llm_config.setup_status.value == 'pending_model_selection') %}
+                <article class="summary-panel">
+                  <header><h3>Finish {{ llm_config.label }}</h3></header>
+                  <p>{% if llm_config.revision_of_config_id %}Updating existing provider. Active provider stays unchanged until finalization.{% else %}Model discovery complete. Choose the initial default.{% endif %}</p>
+                  <form
+                    method="post"
+                    action="/admin/llm-configs/{{ llm_config.id }}/finalize"
+                  >
+                    <input
+                      type="hidden"
+                      name="team_id"
+                      value="{{ selected_team.id }}"
+                    /><input
+                      type="hidden"
+                      name="return_view"
+                      value="workspace"
+                    /><input
+                      type="hidden"
+                      name="return_tab"
+                      value="llm"
+                    /><label
+                      >Provider name
+                      <input
+                        name="label"
+                        value="{{ llm_config.label }}"
+                        required /></label
+                    ><label
+                      >Default model
+                      <select name="provider_model" required>
+                        {% for model in llm_config.available_models_json %}
+                        <option value="{{ model }}"{% if llm_config.model_name == model %} selected{% endif %}>
+                          {{ model }}
+                        </option>
+                        {% endfor %}
+                      </select></label
+                    ><label
+                      ><input
+                        type="checkbox"
+                        name="is_active"
+                        value="true"
+                        checked
+                      />
+                      Available for team selection</label
+                    ><button class="btn primary" type="submit">
+                      Finish provider setup
+                    </button>
+                  </form>
+                  <form method="post" action="/admin/llm-configs/{{ llm_config.id }}/draft-cancel" data-confirm-submit="{% if llm_config.revision_of_config_id %}Discard change while active provider stays unchanged?{% else %}Cancel this LLM setup and delete its pending credential?{% endif %}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="llm"><button class="btn danger-action" type="submit">{% if llm_config.revision_of_config_id %}Discard change{% else %}Cancel setup{% endif %}</button></form>
+                </article>
+                {% endif %}
+                <section class="llm-management">
+                  <div class="section-header">
+                    <div>
+                      <h3>Provider instances</h3>
+                      <p>
+                        Credentials remain Vault-backed and are never rendered.
+                      </p>
+                    </div>
+                    <button class="btn primary" id="add-llm-provider-button" type="button">＋ Add LLM provider</button>
+                  </div>
+                  {% if llm_inspection %}
+                  <div class="operation-result {{ 'success' if llm_inspection.discovery_status == 'fetched' else 'error' }}" role="status" data-llm-inspection-result>
+                    <strong>LLM inspection: {{ llm_inspection.discovery_status }}</strong>
+                    <p>{{ llm_inspection.provider_display_name }} · {{ llm_inspection.available_models|length }} models found</p>
+                    {% if llm_inspection.warnings %}<p>{{ llm_inspection.warnings|join(' · ') }}</p>{% endif %}
+                    {% if llm_inspection.notes %}<p>{{ llm_inspection.notes|join(' · ') }}</p>{% endif %}
+                  </div>
+                  {% endif %}
+                  <div class="llm-provider-table">
+                    <div class="llm-provider-row head">
+                      <span>Provider instance</span><span>Provider</span
+                      ><span>Default model</span><span>Visible models</span
+                      ><span>Status</span><span>Actions</span>
+                    </div>
+                    {% for config in llm_configs %}
+                    <div class="llm-provider-row">
+                      <div>
+                        <strong>{{ config.label }}</strong>
+                        <div class="provider-subtext">
+                          {{ config.base_url }}
+                        </div>
+                      </div>
+                      <span>{{ config.adapter_kind.value }}</span
+                      ><span>{{ config.model_name or 'Not set' }}</span
+                      ><span>{{ config.available_models_json|length }}</span
+                      ><span class="configured"
+                        >{{ 'Available' if config.is_active else 'Unavailable'
+                        }}</span
+                      >
+                      <div class="quick-actions">
+                        <button class="btn small" type="button" data-edit-llm-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-bedrock-region="{% if config.adapter_kind.value == 'bedrock_chat' %}{{ config.base_url.split('.')[1] }}{% endif %}" data-model-name="{{ config.model_name or '' }}" data-available-models='{{ config.available_models_json|tojson }}' data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
+                        <form
+                          method="post"
+                          action="/admin/llm-configs/{{ config.id }}/inspect"
+                        >
+                          <input
+                            type="hidden"
+                            name="team_id"
+                            value="{{ selected_team.id }}"
+                          /><input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="llm"
+                          /><button class="btn small" type="submit">
+                            Re-inspect
+                          </button>
+                        </form>
+                        <form
+                          method="post"
+                          action="/admin/llm-configs/{{ config.id }}/delete"
+                          data-confirm-submit="Delete this LLM provider and its saved secret?"
+                        >
+                          <input
+                            type="hidden"
+                            name="team_id"
+                            value="{{ selected_team.id }}"
+                          /><input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="llm"
+                          /><button class="btn small danger" type="submit">
+                            Delete
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                    {% else %}
+                    <p>No LLM providers configured.</p>
+                    {% endfor %}
+                  </div>
+                </section>
+                {% if false %}
+                <section class="llm-management">
+                  <div class="section-header">
+                    <div>
+                      <h3>Provider instances</h3>
+                      <p>
+                        Manage the LLM connections and model catalogues
+                        available to this team.
+                      </p>
+                    </div>
+                    <button
+                      class="btn primary"
+                      id="add-llm-provider-button"
+                      type="button"
+                    >
+                      ＋ Add LLM provider
+                    </button>
+                  </div>
+                  <div class="llm-provider-table">
+                    <div class="llm-provider-row head">
+                      <span>Provider instance</span><span>Provider</span
+                      ><span>Default model</span><span>Visible models</span
+                      ><span>Status</span><span></span>
+                    </div>
+                    <div class="llm-provider-row">
+                      <div>
+                        <strong>OpenAI Production</strong>
+                        <div class="provider-subtext">Cloud provider</div>
+                      </div>
+                      <span>OpenAI</span><span>gpt-4.1</span
+                      ><span>4 models</span
+                      ><span class="configured">Verified</span>
+                      <div class="llm-actions-wrap">
+                        <button class="llm-actions-button" type="button">
+                          ⋮
+                        </button>
+                        <div class="llm-actions-menu" hidden>
+                          <button>Edit</button
+                          ><button>Manage visible models</button
+                          ><button>Re-inspect models</button
+                          ><button>Make unavailable</button>
+                          <div class="menu-separator"></div>
+                          <button class="danger">Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="llm-provider-row">
+                      <div>
+                        <strong>Local Ollama</strong>
+                        <div class="provider-subtext">
+                          http://localhost:11434
+                        </div>
+                      </div>
+                      <span>Ollama</span><span>llama3.1:70b</span
+                      ><span>2 models</span
+                      ><span class="configured">Verified</span>
+                      <div class="llm-actions-wrap">
+                        <button class="llm-actions-button" type="button">
+                          ⋮
+                        </button>
+                        <div class="llm-actions-menu" hidden>
+                          <button>Edit</button
+                          ><button>Manage visible models</button
+                          ><button>Re-inspect models</button
+                          ><button>Make unavailable</button>
+                          <div class="menu-separator"></div>
+                          <button class="danger">Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                {% endif %}
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="overview"
+                {%
+                if
+                workspace_team_tab
+                !="overview"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Overview</h2>
+                  <p>Team identity, status and operational summary.</p>
+                </div>
+                <div class="summary-panel">
+                  <ul class="summary-list">
+                    <li>
+                      <span>Team name</span
+                      ><strong id="overview-name"
+                        >{{ selected_team.name }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>Status</span
+                      ><strong id="overview-status"
+                        >{{ selected_team.status.value|title }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>Members</span
+                      ><strong id="overview-members"
+                        >{{ selected_team_users|length }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>Default retention</span
+                      ><strong
+                        >{{ selected_team.default_retention_days }} days</strong
+                      >
+                    </li>
+                  </ul>
+                  <form
+                    method="post"
+                    action="/admin/teams/{{ selected_team.id }}/retention"
+                  >
+                    <input
+                      type="hidden"
+                      name="return_view"
+                      value="workspace"
+                    /><input type="hidden" name="return_tab" value="defaults" />
+                    <label
+                      >Default retention for new transcripts
+                      <input
+                        type="number"
+                        name="default_retention_days"
+                        min="1"
+                        max="90"
+                        value="{{ selected_team.default_retention_days }}"
+                        required
+                    /></label>
+                    <p class="field-help">
+                      Applies only to transcript roots created afterward.
+                      Existing expiry dates never change.
+                    </p>
+                    <button class="btn primary" type="submit">
+                      Save retention default
+                    </button>
+                  </form>
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="members"
+                {%
+                if
+                workspace_team_tab
+                !="members"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Members</h2>
+                  <p>
+                    Manage accounts belonging to {{ selected_team.name }}.
+                    Account actions never expose transcript-derived content.
+                  </p>
+                </div>
+                <div class="member-toolbar">
+                  <div class="member-toolbar__left">
+                    <input
+                      class="member-search"
+                      id="member-search"
+                      type="search"
+                      placeholder="Search members…"
+                      aria-label="Search members"
+                    />
+                  </div>
+                  <button
+                    class="btn primary"
+                    id="add-member-button"
+                    type="button"
+                  >
+                    ＋ Add member
+                  </button>
+                </div>
+                <div class="member-table">
+                  <div class="member-row head">
+                    <span>Member</span><span>Email</span><span>Type</span
+                    ><span>Status</span><span>MFA</span><span></span>
+                  </div>
+                  {% for user in selected_team_users %}
+                  <div
+                    class="member-row"
+                    data-member-name="{{ user.full_name or user.email }} {{ user.email }}"
+                  >
+                    <div>
+                      <div class="member-name">
+                        {{ user.full_name or user.email }}
+                      </div>
+                      <div class="member-email">
+                        Added {{ user.created_at.strftime('%d %b %Y') }}
+                      </div>
+                    </div>
+                    <span>{{ user.email }}</span
+                    ><span class="role-pill"
+                      >{{ user.team_role.value|replace('_', ' ')|title }}</span
+                    ><span class="user-status"
+                      >{{ user.status.value|replace('_', ' ')|title }}</span
+                    ><span
+                      >{{ 'Required' if user.mfa_required else 'Optional'
+                      }}</span
+                    >
+                    <div class="member-actions-wrap">
+                      <button
+                        class="member-actions-button"
+                        type="button"
+                        aria-label="Actions for {{ user.full_name or user.email }}"
+                      >
+                        ⋮
+                      </button>
+                      <div class="member-menu" hidden>
+                        {% if user.status.value == 'active' %}
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/suspend"
+                          data-confirm-submit="Suspend this user and revoke their sessions immediately?"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">⏸ Suspend</button>
+                        </form>
+                        {% else %}
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/reactivate"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">▶ Reactivate</button>
+                        </form>
+                        {% endif %}
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/send-activation"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">↗ Send setup link</button>
+                        </form>
+                        {% if email_recovery_enabled %}
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/send-password-reset"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">✉ Send password reset</button>
+                        </form>
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/send-account-recovery"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">
+                            ✉ Send account recovery
+                          </button>
+                        </form>
+                        {% endif %}
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/reset-mfa"
+                          data-confirm-submit="Reset MFA and require this user to enrol again?"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button type="submit">◎ Reset MFA</button>
+                        </form>
+                        <div class="menu-separator"></div>
+                        <form
+                          method="post"
+                          action="/admin/users/{{ user.id }}/delete"
+                          data-confirm-submit="Delete this user immediately, including transcript-derived content and personal assets?"
+                        >
+                          <input
+                            type="hidden"
+                            name="return_view"
+                            value="workspace"
+                          /><input
+                            type="hidden"
+                            name="return_tab"
+                            value="members"
+                          /><input
+                            type="hidden"
+                            name="return_team_id"
+                            value="{{ selected_team.id }}"
+                          /><button class="danger" type="submit">
+                            ⌫ Delete permanently
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                  {% else %}
+                  <p>No members in this team.</p>
+                  {% endfor %}
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="deidentification"
+                {%
+                if
+                workspace_team_tab
+                !="deidentification"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>De-identification providers</h2>
+                  <p>
+                    Attach or detach globally managed De-ID and Clinical NLP
+                    providers for {{ selected_team.name }}. Active runtime roles
+                    are selected under Provider policy.
+                  </p>
+                </div>
+                <div class="summary-panel">
+                  <h3>Assigned providers</h3>
+                  {% for assignment in deidentification_assignments %}
+                  <div class="inspection-row">
+                    <span
+                      ><strong>{{ assignment.provider.label }}</strong
+                      ><br /><small
+                        >{{ assignment.provider.adapter_kind.value }}{% if
+                        assignment.provider.clinical_detection_enabled %} ·
+                        Clinical NLP{% endif %}</small
+                      ></span
+                    >
+                    <form
+                      method="post"
+                      action="/admin/deidentification-provider-assignments/remove"
+                      data-confirm-submit="Detach this provider from {{ selected_team.name }}? Active selections may fall back or disable."
+                    >
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="provider_id"
+                        value="{{ assignment.provider_id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="deidentification"
+                      /><button class="btn small" type="submit">Detach</button>
+                    </form>
+                  </div>
+                  {% else %}
+                  <p>No global providers attached.</p>
+                  {% endfor %}
+                </div>
+                <div class="summary-panel">
+                  <h3>Available global providers</h3>
+                  {% for provider in deidentification_providers %}{% if not
+                  provider.is_builtin and provider.id not in
+                  assigned_deidentification_provider_ids %}
+                  <div class="inspection-row">
+                    <span
+                      ><strong>{{ provider.label }}</strong><br /><small
+                        >{{ provider.adapter_kind.value }}{% if
+                        provider.clinical_detection_enabled %} · Clinical NLP{%
+                        endif %}</small
+                      ></span
+                    >
+                    <form
+                      method="post"
+                      action="/admin/deidentification-provider-assignments"
+                    >
+                      <input
+                        type="hidden"
+                        name="team_id"
+                        value="{{ selected_team.id }}"
+                      /><input
+                        type="hidden"
+                        name="provider_id"
+                        value="{{ provider.id }}"
+                      /><input
+                        type="hidden"
+                        name="return_view"
+                        value="workspace"
+                      /><input
+                        type="hidden"
+                        name="return_tab"
+                        value="deidentification"
+                      /><button class="btn small" type="submit">Attach</button>
+                    </form>
+                  </div>
+                  {% endif %}{% else %}
+                  <p>No global providers available.</p>
+                  {% endfor %}
+                  <a class="panel-link" href="/admin?tab=deid-providers"
+                    >Manage global providers →</a
+                  >
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="defaults"
+                {%
+                if
+                workspace_team_tab
+                !="defaults"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Defaults</h2>
+                  <p>
+                    Retention, templates and quick-action defaults for the
+                    selected team.
+                  </p>
+                </div>
+                <div class="summary-panel">
+                  <ul class="summary-list">
+                    <li>
+                      <span>Retention</span
+                      ><strong id="defaults-retention"
+                        >{{ selected_team.default_retention_days }} days</strong
+                      >
+                    </li>
+                    <li>
+                      <span>Team templates/actions</span
+                      ><strong>Managed by team leaders</strong>
+                    </li>
+                  </ul>
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="security"
+                {%
+                if
+                workspace_team_tab
+                !="security"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Security</h2>
+                  <p>Team account and access posture.</p>
+                </div>
+                <div class="summary-panel">
+                  <ul class="summary-list">
+                    <li>
+                      <span>Members requiring MFA</span
+                      ><strong
+                        >{{
+                        selected_team_users|selectattr('mfa_required')|list|length
+                        }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>Suspended users</span
+                      ><strong
+                        >{{ selected_team_users|rejectattr('status.value',
+                        'equalto', 'active')|list|length }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>STT credential issues</span
+                      ><strong
+                        >{{ stt_configs|rejectattr('credential_status.value',
+                        'equalto', 'verified')|list|length }}</strong
+                      >
+                    </li>
+                    <li>
+                      <span>LLM providers</span
+                      ><strong>{{ llm_configs|length }}</strong>
+                    </li>
+                  </ul>
+                  <a
+                    class="panel-link"
+                    href="/admin?team_id={{ selected_team.id }}&amp;team_tab=members"
+                    >Review member security actions →</a
+                  >
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
+                data-panel="danger"
+                {%
+                if
+                workspace_team_tab
+                !="danger"
+                %}
+                hidden{%
+                endif
+                %}
+              >
+                <div class="section-intro">
+                  <h2>Danger zone</h2>
+                  <p>
+                    Destructive team lifecycle actions should remain explicit
+                    and confirmed.
+                  </p>
+                </div>
+                <form
+                  method="post"
+                  action="/admin/teams/{{ selected_team.id }}/delete"
+                  data-confirm-submit="Delete this team, all team users, transcript-derived content, team assets, provider configuration, requests, and usage metadata immediately? This cannot be undone."
+                >
+                  <input type="hidden" name="return_view" value="workspace" />
+                  <input type="hidden" name="return_tab" value="home" />
+                  <button class="btn danger-action" type="submit">
+                    Delete team permanently
+                  </button>
+                </form>
+              </section>
+            </div>
+          </section>
+        </div>
+        {% endif %}
+      </main>
+    </div>
+
+    {% if selected_team %}
+    <div class="modal-backdrop" id="add-member-modal" hidden>
+      <section
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-member-title"
+      >
+        <form method="post" action="/admin/users">
+          <input type="hidden" name="team_id" value="{{ selected_team.id }}" />
+          <input
+            type="hidden"
+            name="return_team_id"
+            value="{{ selected_team.id }}"
+          />
+          <input type="hidden" name="return_view" value="workspace" />
+          <input type="hidden" name="return_tab" value="members" />
+          <header>
+            <h2 id="add-member-title">
+              Add member to
+              <span id="modal-team-name">{{ selected_team.name }}</span>
+            </h2>
+            <p>Create an account directly within the selected team.</p>
+          </header>
+
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="field full">
+                <label for="member-full-name">Full name</label>
+                <input
+                  id="member-full-name"
+                  name="full_name"
+                  type="text"
+                  placeholder="e.g. Jordan Taylor"
+                />
+              </div>
+
+              <div class="field full">
+                <label for="member-email">Email address</label>
+                <input
+                  id="member-email"
+                  name="email"
+                  type="email"
+                  placeholder="jordan.taylor@example.com"
+                  required
+                />
+                <div class="field-help">
+                  Required for sign-in, setup links, password resets, and
+                  account recovery.
+                </div>
+              </div>
+
+              <div class="field">
+                <label for="member-role">User type</label>
+                <select id="member-role" name="team_role">
+                  <option value="user">User</option>
+                  <option value="leader">Team leader</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label for="member-status">Starting status</label>
+                <select id="member-status" name="status">
+                  {% for status in user_statuses %}
+                  <option value="{{ status.value }}">
+                    {{ status.value|replace('_', ' ')|title }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="field full">
+                <label for="member-password">Temporary password</label>
+                <input
+                  id="member-password"
+                  name="temporary_password"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="Enter a temporary password"
+                  required
+                />
+                <div class="field-help">
+                  The user will be required to change this during onboarding.
+                </div>
+              </div>
+            </div>
+
+            <label class="checkbox-row">
+              <input
+                id="member-mfa"
+                name="mfa_required"
+                value="true"
+                type="checkbox"
+                checked
+              />
+              <span
+                ><strong>Require MFA</strong><br /><span class="field-help"
+                  >The account must enrol an MFA method during onboarding.</span
+                ></span
+              >
+            </label>
+          </div>
+
+          <div class="wizard-error" id="stt-wizard-error" role="alert" aria-live="assertive" tabindex="-1" hidden>
+            <span class="wizard-error-icon" aria-hidden="true">!</span>
+            <div>
+              <h3 class="wizard-error-heading">Provider setup failed</h3>
+              <p class="wizard-error-message"></p>
+              <p class="wizard-error-guidance"></p>
+            </div>
+          </div>
+          <footer>
+            <button class="btn" id="cancel-add-member" type="button">
+              Cancel
+            </button>
+            <button class="btn primary" type="submit">Create member</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+
+    <div class="wizard-backdrop" id="stt-wizard" hidden>
+      <section
+        class="wizard"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="stt-wizard-title"
+      >
+        <form
+          method="post"
+          action="/admin/stt-configs/drafts"
+          id="stt-wizard-form"
+        >
+          <input
+            type="hidden"
+            name="team_id"
+            value="{{ selected_team.id }}"
+          /><input
+            type="hidden"
+            name="provider_preset"
+            id="stt-provider-preset"
+            value="openai"
+          /><input type="hidden" name="return_view" value="workspace" /><input
+            type="hidden"
+            name="return_tab"
+            value="stt"
+          /><input type="hidden" name="revision_of_config_id" id="stt-revision-of-config-id" value="" />
+          <input type="hidden" id="stt-draft-id" value="" />
+          <header>
+            <h2 id="stt-wizard-title">
+              Add STT provider to <span id="stt-wizard-team">North Clinic</span>
+            </h2>
+            <p id="stt-wizard-description">Create and validate a team-specific speech-to-text provider.</p>
+          </header>
+
+          <div class="wizard-progress">
+            <div class="wizard-step-indicator active" data-step-indicator="1">
+              <span>1</span>Provider
+            </div>
+            <div class="wizard-step-indicator" data-step-indicator="2">
+              <span>2</span>Connection
+            </div>
+            <div class="wizard-step-indicator" data-step-indicator="3">
+              <span>3</span>Inspection
+            </div>
+            <div class="wizard-step-indicator" data-step-indicator="4">
+              <span>4</span>Defaults
+            </div>
+          </div>
+
+          <div class="wizard-body">
+            <section class="wizard-panel" data-wizard-step="1">
+              <h3>Choose provider</h3>
+              <p class="field-help">
+                Known providers use preconfigured endpoint contracts.
+              </p>
+
+              <div class="provider-choice-grid">
+                <button
+                  class="provider-choice selected"
+                  type="button"
+                  data-provider-choice="OpenAI"
+                >
+                  <strong>OpenAI</strong>
+                  <small
+                    >Managed transcription API with model discovery and language
+                    support.</small
+                  >
+                </button>
+                <button
+                  class="provider-choice"
+                  type="button"
+                  data-provider-choice="Deepgram"
+                >
+                  <strong>Deepgram</strong>
+                  <small
+                    >Managed STT with model discovery, language selection, and
+                    diarization.</small
+                  >
+                </button>
+                <button
+                  class="provider-choice"
+                  type="button"
+                  data-provider-choice="ElevenLabs"
+                >
+                  <strong>ElevenLabs</strong>
+                  <small
+                    >Speech-to-text API using the ElevenLabs transcription
+                    contract.</small
+                  >
+                </button>
+              </div>
+
+              <div class="advanced-choice">
+                <button
+                  class="advanced-toggle"
+                  id="advanced-stt-toggle"
+                  type="button"
+                  aria-expanded="false"
+                >
+                  Show advanced providers
+                </button>
+                <div class="advanced-grid" id="advanced-stt-options" hidden>
+                  <button
+                    class="provider-choice"
+                    type="button"
+                    data-provider-choice="Custom OpenAI-compatible"
+                  >
+                    <strong>Custom OpenAI-compatible</strong>
+                    <small
+                      >Self-hosted or third-party endpoint using the OpenAI
+                      transcription contract.</small
+                    >
+                  </button>
+                  <button
+                    class="provider-choice"
+                    type="button"
+                    data-provider-choice="Custom REST/OpenAPI"
+                  >
+                    <strong>Custom REST/OpenAPI</strong>
+                    <small
+                      >Advanced contract inspection and manual field
+                      mapping.</small
+                    >
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="wizard-panel" data-wizard-step="2" hidden>
+              <h3>Connection details</h3>
+              <p class="field-help" id="stt-connection-help">
+                Enter the API key for this provider.
+              </p>
+              <div class="wizard-form-grid wizard-spaced">
+                <div class="field full" id="stt-provider-name-field" hidden>
+                  <label for="stt-provider-name">Provider name</label>
+                  <input
+                    id="stt-provider-name"
+                    name="label"
+                    type="text"
+                    value="OpenAI · North Clinic"
+                  />
+                </div>
+                <div class="field full" id="stt-base-url-field" hidden>
+                  <label for="stt-base-url">Base URL</label>
+                  <input
+                    id="stt-base-url"
+                    name="base_url"
+                    type="url"
+                    placeholder="https://stt.example.com"
+                  />
+                </div>
+                <div class="field full" id="stt-openapi-field" hidden>
+                  <label for="stt-openapi-path">OpenAPI path</label>
+                  <input
+                    id="stt-openapi-path"
+                    name="openapi_path"
+                    type="text"
+                    placeholder="/openapi.json"
+                  />
+                </div>
+                <div class="field full">
+                  <label for="stt-api-key">API key</label>
+                  <input
+                    id="stt-api-key"
+                    name="bearer_token"
+                    type="password"
+                    placeholder="Enter API key"
+                  />
+                  <div class="field-help" id="stt-key-help">
+                    Required for this provider. Credentials are stored
+                    server-side.
+                  </div>
+                   <div class="field-help" id="stt-change-key-help" hidden>Leave blank to keep saved credential, or enter replacement. Saved credential is never shown.</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="wizard-panel" data-wizard-step="3" hidden>
+              <h3>Connection verified</h3>
+              <div class="inspection-card wizard-spaced">
+                <div class="inspection-row">
+                  <span>Provider</span
+                  ><strong id="inspection-provider"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Endpoint</span
+                  ><strong id="inspection-endpoint"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Models found</span
+                  ><strong id="inspection-models"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Status</span><strong id="inspection-status"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Warnings / notes</span
+                  ><strong id="inspection-notes"></strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="wizard-panel" data-wizard-step="4" hidden>
+              <h3>Provider defaults</h3>
+              <div class="wizard-form-grid wizard-spaced">
+                <div class="field">
+                  <label for="stt-default-model">Default model</label>
+                  <select id="stt-default-model" name="model_name" data-edit-default-model></select>
+                </div>
+                <div class="field">
+                  <label for="stt-default-language">Default language</label>
+                  <input
+                    id="stt-default-language" name="language" data-edit-default-language
+                    type="text"
+                    placeholder="Provider default / auto-detect"
+                  />
+                </div>
+              </div>
+
+              <label class="checkbox-row">
+                <input type="checkbox" id="stt-default-active" name="is_active" checked />
+                <span
+                  ><strong>Available for team selection</strong><br /><span
+                    class="field-help"
+                    >This provider can be assigned to team transcription
+                    purposes.</span
+                  ></span
+                >
+              </label>
+            </section>
+          </div>
+
+          <footer>
+            <button class="btn" id="cancel-stt-wizard" type="button">
+              Cancel
+            </button>
+            <div class="wizard-footer-right">
+              <button class="btn" id="stt-wizard-back" type="button" hidden>
+                Back
+              </button>
+              <button class="btn primary" id="stt-wizard-next" type="button">
+                Continue
+              </button>
+            </div>
+          </footer>
+        </form>
+      </section>
+    </div>
+
+    <div class="wizard-backdrop" id="llm-wizard" hidden>
+      <section class="wizard" role="dialog" aria-modal="true">
+        <form
+          method="post"
+          action="/admin/llm-configs/drafts"
+          id="llm-wizard-form"
+        >
+          <input
+            type="hidden"
+            name="team_id"
+            value="{{ selected_team.id }}"
+          /><input
+            type="hidden"
+            name="provider_preset"
+            id="llm-provider-preset"
+            value="openai"
+          /><input type="hidden" name="return_view" value="workspace" /><input
+            type="hidden"
+            name="return_tab"
+            value="llm"
+          /><input type="hidden" name="revision_of_config_id" id="llm-revision-of-config-id" value="" />
+          <input type="hidden" id="llm-draft-id" value="" />
+          <header>
+             <h2 id="llm-wizard-title">
+              Add LLM provider to <span id="llm-wizard-team">North Clinic</span>
+            </h2>
+             <p id="llm-wizard-description">
+              Create, inspect, and configure a team-specific
+              large-language-model provider.
+            </p>
+          </header>
+          <div class="wizard-progress">
+            <div
+              class="wizard-step-indicator active"
+              data-llm-step-indicator="1"
+            >
+              <span>1</span>Provider
+            </div>
+            <div class="wizard-step-indicator" data-llm-step-indicator="2">
+              <span>2</span>Connection
+            </div>
+            <div class="wizard-step-indicator" data-llm-step-indicator="3">
+              <span>3</span>Models
+            </div>
+            <div class="wizard-step-indicator" data-llm-step-indicator="4">
+              <span>4</span>Defaults
+            </div>
+          </div>
+          <div class="wizard-body">
+            <section class="wizard-panel" data-llm-wizard-step="1">
+              <h3>Choose provider</h3>
+              <p class="field-help">
+                All supported providers are listed together. Custom
+                OpenAI-compatible remains under Advanced.
+              </p>
+              <div class="provider-choice-grid">
+                <button
+                  class="provider-choice selected"
+                  type="button"
+                  data-llm-provider-choice="OpenAI"
+                >
+                  <strong>OpenAI</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="OpenRouter"
+                >
+                  <strong>OpenRouter</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="xAI"
+                >
+                  <strong>xAI</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Groq"
+                >
+                  <strong>Groq</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Mistral"
+                >
+                  <strong>Mistral</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="DeepSeek"
+                >
+                  <strong>DeepSeek</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Together AI"
+                >
+                  <strong>Together AI</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Ollama"
+                >
+                  <strong>Ollama</strong
+                  ><small>Supported provider preset.</small></button
+                ><button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Bedrock HTTP gateway"
+                >
+                  <strong>Bedrock HTTP gateway</strong
+                  ><small>Supported provider preset.</small>
+                </button>
+              </div>
+              <div class="advanced-choice">
+                <button
+                  class="advanced-toggle"
+                  id="advanced-llm-toggle"
+                  type="button"
+                  aria-expanded="false"
+                >
+                  Show advanced provider
+                </button>
+                <div class="advanced-grid" id="advanced-llm-options" hidden>
+                  <button
+                    class="provider-choice"
+                    type="button"
+                    data-llm-provider-choice="Custom OpenAI-compatible"
+                  >
+                    <strong>Custom OpenAI-compatible</strong
+                    ><small>Advanced custom endpoint.</small>
+                  </button>
+                </div>
+              </div>
+            </section>
+            <section class="wizard-panel" data-llm-wizard-step="2" hidden>
+              <h3>Connection details</h3>
+              <p class="field-help" id="llm-connection-help">
+                Enter the API key for this provider.
+              </p>
+              <p class="field-help" id="llm-change-key-help" hidden>Leave blank to keep saved credential, or enter replacement. Saved credential is never shown.</p>
+              <div class="wizard-form-grid wizard-spaced">
+                <div class="field full" id="llm-provider-name-field" hidden>
+                  <label>Provider name</label
+                  ><input id="llm-provider-name" name="label" type="text" />
+                </div>
+                <div class="field full" id="llm-base-url-field" hidden>
+                  <label>Base URL</label
+                  ><input id="llm-base-url" name="base_url" type="url" />
+                </div>
+                <div class="field full" id="llm-region-field" hidden>
+                  <label>Region</label
+                  ><select id="llm-region" name="bedrock_region">
+                    <option>eu-west-2</option>
+                    <option>eu-west-1</option>
+                    <option>eu-central-1</option>
+                    <option>us-east-1</option>
+                    <option>us-west-2</option>
+                    <option>ap-southeast-1</option>
+                    <option>ap-southeast-2</option>
+                  </select>
+                </div>
+                <div class="field full" id="llm-api-key-field">
+                  <label>API key</label
+                  ><input
+                    id="llm-api-key" name="bearer_token"
+                    type="password"
+                    placeholder="Enter API key"
+                  />
+                </div>
+              </div>
+            </section>
+            <section class="wizard-panel" data-llm-wizard-step="3" hidden>
+              <h3>Discovered models</h3>
+              <p class="field-help">
+                Filter the provider catalogue now. Only selected models remain
+                visible for this provider.
+              </p>
+              <div class="inspection-card wizard-spaced">
+                <div class="inspection-row">
+                  <span>Provider</span
+                  ><strong id="llm-inspection-provider"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Endpoint</span
+                  ><strong id="llm-inspection-endpoint"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Discovery</span><strong id="llm-inspection-status"></strong>
+                </div>
+                <div class="inspection-row">
+                  <span>Models found</span
+                  ><strong id="llm-model-count"></strong>
+                </div>
+              </div>
+              <p class="field-help" id="llm-inspection-notes"></p>
+              <div class="model-filter-tools">
+                <input
+                  class="model-filter-input"
+                  id="llm-model-search"
+                  type="search"
+                  placeholder="Filter discovered models…"
+                /><button
+                  class="btn small"
+                  id="llm-select-all-models"
+                  type="button"
+                >
+                  Select all</button
+                ><button class="btn small" id="llm-clear-models" type="button">
+                  Clear
+                </button>
+              </div>
+              <div class="llm-model-grid" id="llm-model-grid"></div>
+              <p class="model-filter-summary" id="llm-model-summary"></p>
+            </section>
+            <section class="wizard-panel" data-llm-wizard-step="4" hidden>
+              <h3>Provider defaults</h3>
+              <div class="wizard-form-grid wizard-spaced">
+                <div class="field full">
+                  <label>Provider name</label
+                  ><input id="llm-final-provider-name" name="label" type="text" />
+                </div>
+                <div class="field full">
+                  <label>Default model</label
+                  ><select id="llm-default-model" name="model_name" data-edit-default-model></select>
+                  <input id="llm-manual-model" name="model_name" type="text" placeholder="Enter exact provider model ID" hidden disabled />
+                  <div class="field-help">
+                    The default must be one of the selected visible models.
+                  </div>
+                </div>
+              </div>
+              <label class="checkbox-row"
+                ><input type="checkbox" id="llm-default-active" name="is_active" checked /><span
+                  ><strong>Available for team selection</strong><br /><span
+                    class="field-help"
+                    >Assign this provider from Provider policy.</span
+                  ></span
+                ></label
+              >
+            </section>
+          </div>
+          <div class="wizard-error" id="llm-wizard-error" role="alert" aria-live="assertive" tabindex="-1" hidden>
+            <span class="wizard-error-icon" aria-hidden="true">!</span>
+            <div>
+              <h3 class="wizard-error-heading">Provider setup failed</h3>
+              <p class="wizard-error-message"></p>
+              <p class="wizard-error-guidance"></p>
+            </div>
+          </div>
+          <footer>
+            <button class="btn" id="cancel-llm-wizard" type="button">
+              Cancel
+            </button>
+            <div class="wizard-footer-right">
+              <button class="btn" id="llm-wizard-back" type="button" hidden>
+                Back</button
+              ><button class="btn primary" id="llm-wizard-next" type="button">
+                Continue
+              </button>
+            </div>
+          </footer>
+        </form>
+      </section>
+    </div>
+
+    {% include "_csrf_script.html" %}
+    <script nonce="{{ request.state.csp_nonce }}">
+      document.addEventListener("submit", (event) => {
+        const form = event.target.closest("form[data-confirm-submit]");
+        if (form && !window.confirm(form.dataset.confirmSubmit))
+          event.preventDefault();
+      });
+      const syncPolicyModels = (form) => {
+        const provider = form.querySelector("[data-policy-provider-select]");
+        const model = form.querySelector("[data-policy-model-select]");
+        if (!provider || !model) return;
+        const option = provider.selectedOptions[0];
+        const models = JSON.parse(option?.dataset.models || "[]");
+        const defaultModel = option?.dataset.defaultModel || "";
+        const wanted = model.dataset.selectedValue || model.value || defaultModel;
+        const choices = [...new Set([defaultModel, ...models].filter(Boolean))];
+        model.replaceChildren(...choices.map((name) => new Option(name === defaultModel ? `${name} (provider default)` : name, name, false, name === wanted)));
+        if (!choices.includes(wanted) && choices.length) model.value = defaultModel || choices[0];
+        model.dataset.selectedValue = "";
+        const language = form.querySelector("[data-policy-language-input]");
+        if (language) language.placeholder = option?.dataset.defaultLanguage ? `Provider default: ${option.dataset.defaultLanguage}` : "Provider default / auto";
+        const visible = form.querySelector("[data-policy-visible-models]");
+        if (visible) {
+          const selected = new Set({{ (llm_selection.allowed_models_json if llm_selection else [])|tojson }});
+          visible.replaceChildren(...choices.map((name) => {
+            const label = document.createElement("label");
+            const input = document.createElement("input");
+            input.type = "checkbox"; input.name = "allowed_model_names"; input.value = name;
+            input.checked = selected.size ? selected.has(name) : true;
+            label.append(input, ` ${name}`); return label;
+          }));
+          const ensureDefaultVisible = () => visible.querySelectorAll("input").forEach((input) => { if (input.value === model.value) input.checked = true; });
+          model.addEventListener("change", ensureDefaultVisible); ensureDefaultVisible();
+        }
+      };
+      document.querySelectorAll("[data-policy-stt-form], [data-policy-llm-form], [data-policy-model-form]").forEach((form) => {
+        syncPolicyModels(form);
+        form.querySelector("[data-policy-provider-select]")?.addEventListener("change", () => syncPolicyModels(form));
+      });
+
+      const tabs = [...document.querySelectorAll(".tab")];
+      const panels = [...document.querySelectorAll(".tab-panel")];
+      const sidebarTeamButtons = [
+        ...document.querySelectorAll("[data-sidebar-team]"),
+      ];
+      const sidebarTeamToggle = document.querySelector(
+        ".sidebar-section-toggle",
+      );
+      const sidebarTeamList = document.getElementById("sidebar-team-list");
+
+      const teamData = {
+        "North Clinic": { status: "Active", members: "8", retention: "90" },
+        "South Clinic": { status: "Active", members: "6", retention: "30" },
+        Demo: { status: "Active", members: "3", retention: "7" },
+        Cardiology: { status: "Active", members: "5", retention: "90" },
+        "Family Practice": {
+          status: "Suspended",
+          members: "2",
+          retention: "30",
+        },
+      };
+
+      function selectTeam(name) {
+        const data = teamData[name];
+        if (!data) return;
+        document.getElementById("team-title").textContent = name;
+        document.getElementById("team-status").textContent = data.status;
+        document.getElementById("team-members").textContent =
+          `${data.members} members`;
+        document.getElementById("summary-members").textContent = data.members;
+        document.getElementById("summary-retention").textContent =
+          `${data.retention} days`;
+        document.getElementById("overview-name").textContent = name;
+        document.getElementById("overview-status").textContent = data.status;
+        document.getElementById("overview-members").textContent = data.members;
+        document.getElementById("defaults-retention").textContent =
+          `${data.retention} days`;
+        sidebarTeamButtons.forEach((button) => {
+          const isActive = button.dataset.sidebarTeam === name;
+          button.classList.toggle("active", isActive);
+          const check = button.querySelector(".sidebar-team-check");
+          if (check) check.textContent = isActive ? "✓" : "";
+        });
+      }
+
+      function showTab(name) {
+        tabs.forEach((tab) =>
+          tab.classList.toggle("active", tab.dataset.tab === name),
+        );
+        panels.forEach(
+          (panel) => (panel.hidden = panel.dataset.panel !== name),
+        );
+      }
+
+      sidebarTeamButtons.forEach((button) =>
+        button.addEventListener("click", () => {
+          selectTeam(button.dataset.sidebarTeam);
+        }),
+      );
+      tabs.forEach((tab) =>
+        tab.addEventListener("click", () => showTab(tab.dataset.tab)),
+      );
+      document
+        .querySelectorAll("[data-open-tab]")
+        .forEach((button) =>
+          button.addEventListener("click", () =>
+            showTab(button.dataset.openTab),
+          ),
+        );
+
+      const addMemberButton = document.getElementById("add-member-button");
+      const addMemberModal = document.getElementById("add-member-modal");
+      const cancelAddMember = document.getElementById("cancel-add-member");
+      const memberSearch = document.getElementById("member-search");
+      const memberRows = [
+        ...document.querySelectorAll(".member-row[data-member-name]"),
+      ];
+      const memberActionButtons = [
+        ...document.querySelectorAll(".member-actions-button"),
+      ];
+
+      function openAddMemberModal() {
+        document.getElementById("modal-team-name").textContent =
+          document.getElementById("team-title").textContent;
+        addMemberModal.hidden = false;
+        document.body.style.overflow = "hidden";
+        requestAnimationFrame(() =>
+          document.getElementById("member-full-name").focus(),
+        );
+      }
+
+      function closeAddMemberModal() {
+        addMemberModal.hidden = true;
+        document.body.style.overflow = "";
+        addMemberButton.focus();
+      }
+
+      addMemberButton.addEventListener("click", openAddMemberModal);
+      cancelAddMember.addEventListener("click", closeAddMemberModal);
+
+      addMemberModal.addEventListener("click", (event) => {
+        if (event.target === addMemberModal) closeAddMemberModal();
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !addMemberModal.hidden)
+          closeAddMemberModal();
+      });
+
+      if (memberSearch) {
+        memberSearch.addEventListener("input", () => {
+          const term = memberSearch.value.trim().toLowerCase();
+          memberRows.forEach((row) => {
+            row.hidden = !row.textContent.toLowerCase().includes(term);
+          });
+        });
+      }
+
+      memberActionButtons.forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const menu = button.nextElementSibling;
+          document.querySelectorAll(".member-menu").forEach((other) => {
+            if (other !== menu) other.hidden = true;
+          });
+          menu.hidden = !menu.hidden;
+        });
+      });
+
+      document.addEventListener("click", () => {
+        document
+          .querySelectorAll(".member-menu")
+          .forEach((menu) => (menu.hidden = true));
+      });
+
+      const sttWizard = document.getElementById("stt-wizard");
+      const addSttProviderButton = document.getElementById(
+        "add-stt-provider-button",
+      );
+      const cancelSttWizard = document.getElementById("cancel-stt-wizard");
+      const sttWizardBack = document.getElementById("stt-wizard-back");
+      const sttWizardNext = document.getElementById("stt-wizard-next");
+      const providerChoices = [
+        ...document.querySelectorAll("[data-provider-choice]"),
+      ];
+      const wizardPanels = [...document.querySelectorAll("[data-wizard-step]")];
+      const wizardIndicators = [
+        ...document.querySelectorAll("[data-step-indicator]"),
+      ];
+      const advancedSttToggle = document.getElementById("advanced-stt-toggle");
+      const advancedSttOptions = document.getElementById(
+        "advanced-stt-options",
+      );
+      let currentSttStep = 1;
+      let selectedSttProvider = "OpenAI";
+      let sttDraftId = "";
+      let sttBusy = false;
+
+      function setSttStep(step) {
+        currentSttStep = step;
+        wizardPanels.forEach(
+          (panel) => (panel.hidden = Number(panel.dataset.wizardStep) !== step),
+        );
+        wizardIndicators.forEach((indicator) =>
+          indicator.classList.toggle(
+            "active",
+            Number(indicator.dataset.stepIndicator) === step,
+          ),
+        );
+        sttWizardBack.hidden = step === 1;
+        sttWizardNext.textContent =
+          step === 2
+            ? "Check connection"
+            : step === 4
+              ? "Save provider"
+              : "Continue";
+      }
+
+      function updateSttProviderFields({ resetLabel = true } = {}) {
+        const advanced = selectedSttProvider.startsWith("Custom");
+        document.getElementById("stt-provider-name-field").hidden = !advanced;
+        document.getElementById("stt-base-url-field").hidden = !advanced;
+        document.getElementById("stt-openapi-field").hidden =
+          selectedSttProvider !== "Custom REST/OpenAPI";
+        document.getElementById("stt-connection-help").textContent = advanced
+          ? "Enter the endpoint details required to inspect this advanced provider."
+          : "Enter the API key for this provider.";
+        document.getElementById("stt-key-help").textContent =
+          selectedSttProvider === "Custom REST/OpenAPI"
+            ? "Optional for endpoints that do not require authentication."
+            : "Required for this provider. Credentials are stored server-side.";
+        if (resetLabel)
+          document.getElementById("stt-provider-name").value =
+            `${selectedSttProvider} · ${document.getElementById("team-title").textContent}`;
+      }
+
+      function renderSttInspection(result) {
+        const models = result.available_model_options?.map((item) => item.id) || result.available_models || [];
+        document.getElementById("inspection-provider").textContent = result.provider_display_name || result.config.provider_display_name;
+        document.getElementById("inspection-endpoint").textContent = `${result.config.base_url}${result.config.transcribe_path}`;
+        document.getElementById("inspection-models").textContent = models.length ? models.join(", ") : "No models discovered";
+        document.getElementById("inspection-status").textContent = result.config.setup_status_label || result.config.setup_status;
+        document.getElementById("inspection-notes").textContent = [...(result.warnings || []), ...(result.notes || [])].join(" · ") || "None";
+        const modelSelect = document.getElementById("stt-default-model");
+        modelSelect.replaceChildren();
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "Provider default";
+        modelSelect.appendChild(blank);
+        models.forEach((model) => {
+          const option = document.createElement("option");
+          option.value = model;
+          option.textContent = model;
+          modelSelect.appendChild(option);
+        });
+      }
+
+      function clearWizardError(id) {
+        const element = document.getElementById(id);
+        const form = element.closest("form");
+        element.hidden = true;
+        element.querySelector(".wizard-error-message").textContent = "";
+        element.querySelector(".wizard-error-guidance").textContent = "";
+        form.querySelectorAll(".wizard-field-error").forEach((field) => {
+          field.classList.remove("wizard-field-error");
+          field.removeAttribute("aria-invalid");
+        });
+      }
+
+      function providerErrorGuidance(error) {
+        const code = String(error?.code || "").toLowerCase();
+        const message = String(error?.message || "").toLowerCase();
+        const status = Number(error?.status || 0);
+        if (status === 401 || status === 403 || /(credential|api.?key|unauthori[sz]ed|forbidden|rejected)/.test(`${code} ${message}`))
+          return "Check the API key and confirm this account has access to the provider.";
+        if ([502, 503, 504].includes(status) || /(connection|connect|timeout|timed.?out|unavailable)/.test(`${code} ${message}`))
+          return "Verify the endpoint, network connection, and provider availability.";
+        if (status === 422 || /validation|invalid_request/.test(code))
+          return "Review the highlighted field and the provider-specific requirements.";
+        if (status === 409 || /duplicate|conflict/.test(`${code} ${message}`))
+          return "A matching configuration may already exist. Review it or confirm the intended change.";
+        if (/(model.*(discovery|manual|required)|manual.*(model|required)|discovery.*(unavailable|failed))/.test(`${code} ${message}`))
+          return "The endpoint worked, but its model list is unavailable. Enter a model manually where supported.";
+        return "Try again. If the problem persists, check the provider status and configuration.";
+      }
+
+      function wizardError(id, error, { prefix = "" } = {}) {
+        const element = document.getElementById(id);
+        clearWizardError(id);
+        if (!error) return;
+        const safeError = error instanceof Error ? error : new Error(String(error));
+        element.querySelector(".wizard-error-message").textContent = `${prefix}${safeError.message || "Request failed"}`;
+        element.querySelector(".wizard-error-guidance").textContent = providerErrorGuidance(safeError);
+        element.hidden = false;
+        const fieldName = typeof safeError.details?.field === "string"
+          ? safeError.details.field.split(".").pop()
+          : "";
+        const allowedFields = new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset"]);
+        const field = allowedFields.has(fieldName)
+          ? [...element.closest("form").elements].find((control) => control.name === fieldName && control.type !== "hidden" && !control.disabled && !control.closest("[hidden]"))
+          : null;
+        if (field) {
+          field.classList.add("wizard-field-error");
+          field.setAttribute("aria-invalid", "true");
+          field.focus();
+        } else {
+          element.focus();
+        }
+      }
+
+      async function apiJson(url, options) {
+        const response = await window.OpenScribeCSRF.fetch(url, options);
+        if (response.ok) return response.status === 204 ? null : response.json();
+        let message = `Request failed (${response.status})`;
+        let code = "request_failed";
+        let details = null;
+        try {
+          const body = await response.json();
+          const payload = body?.error && typeof body.error === "object" ? body.error : body;
+          const detail = payload?.detail && typeof payload.detail === "object" ? payload.detail : null;
+          code = String(payload?.code || detail?.code || code);
+          message = payload?.message || detail?.message || (typeof payload?.detail === "string" ? payload.detail : message);
+          const sourceDetails = payload?.details || detail?.details;
+          if (typeof sourceDetails?.field === "string") details = { field: sourceDetails.field };
+        } catch (_error) {}
+        const error = new Error(String(message));
+        error.status = response.status;
+        error.code = code;
+        error.details = details;
+        throw error;
+      }
+
+      async function discardDraft(kind, draftId, teamId) {
+        if (!draftId) return;
+        await apiJson(`/api/v1/${kind}-configs/${encodeURIComponent(draftId)}?team_id=${encodeURIComponent(teamId)}`, { method: "DELETE" });
+      }
+
+      function openSttWizard(editButton = null) {
+        const form = document.getElementById("stt-wizard-form");
+        form.reset();
+        sttDraftId = "";
+        document.getElementById("stt-draft-id").value = "";
+        clearWizardError("stt-wizard-error");
+        const editing = Boolean(editButton);
+        document.getElementById("stt-revision-of-config-id").value = editButton?.dataset.configId || "";
+        document.getElementById("stt-wizard-title").firstChild.textContent = editing ? "Edit STT provider for " : "Add STT provider to ";
+        document.getElementById("stt-wizard-description").textContent = editing
+          ? "Update provider settings. Saved credential is retained unless replacement is entered."
+          : "Create and validate a team-specific speech-to-text provider.";
+        document.getElementById("stt-change-key-help").hidden = !editing;
+        document.getElementById("stt-api-key").value = "";
+        document.getElementById("stt-wizard-team").textContent =
+          document.getElementById("team-title").textContent;
+        const sttNames = {openai: "OpenAI", deepgram: "Deepgram", elevenlabs: "ElevenLabs", custom_openai_compatible: "Custom OpenAI-compatible", custom_rest_openapi: "Custom REST/OpenAPI"};
+        selectedSttProvider = editButton ? (sttNames[editButton.dataset.providerPreset] || "Custom OpenAI-compatible") : "OpenAI";
+        document.getElementById("stt-provider-preset").value = editButton?.dataset.providerPreset || "openai";
+        providerChoices.forEach((choice) =>
+          choice.classList.toggle(
+            "selected",
+            choice.dataset.providerChoice === selectedSttProvider,
+          ),
+        );
+        updateSttProviderFields({ resetLabel: !editing });
+        if (editButton) {
+          document.getElementById("stt-provider-name-field").hidden = false;
+          document.getElementById("stt-base-url-field").hidden = false;
+          document.getElementById("stt-provider-name").value = editButton.dataset.providerLabel;
+          document.getElementById("stt-base-url").value = editButton.dataset.baseUrl;
+          document.getElementById("stt-openapi-path").value = editButton.dataset.openapiPath;
+          document.getElementById("stt-default-language").value = editButton.dataset.language;
+          document.getElementById("stt-default-active").checked = editButton.dataset.isActive === "true";
+        }
+        document.getElementById("stt-default-model").replaceChildren();
+        setSttStep(1);
+        sttWizard.hidden = false;
+        document.body.style.overflow = "hidden";
+      }
+
+      async function closeSttWizard() {
+        if (sttBusy) return;
+        sttBusy = true;
+        sttWizardNext.disabled = cancelSttWizard.disabled = true;
+        try {
+          await discardDraft("stt", sttDraftId, document.querySelector("#stt-wizard-form [name=team_id]").value);
+          sttDraftId = "";
+        } catch (error) {
+          wizardError("stt-wizard-error", error, { prefix: "Could not discard draft: " });
+          return;
+        } finally {
+          sttBusy = false;
+          sttWizardNext.disabled = cancelSttWizard.disabled = false;
+        }
+        sttWizard.hidden = true;
+        document.body.style.overflow = "";
+        addSttProviderButton.focus();
+      }
+
+      addSttProviderButton.addEventListener("click", () => openSttWizard());
+      document.querySelectorAll("[data-edit-stt-provider]").forEach((button) => button.addEventListener("click", () => openSttWizard(button)));
+      cancelSttWizard.addEventListener("click", () => void closeSttWizard());
+
+      sttWizard.addEventListener("click", (event) => {
+        if (event.target === sttWizard) void closeSttWizard();
+      });
+
+      advancedSttToggle.addEventListener("click", () => {
+        const expanded =
+          advancedSttToggle.getAttribute("aria-expanded") === "true";
+        advancedSttToggle.setAttribute("aria-expanded", String(!expanded));
+        advancedSttOptions.hidden = expanded;
+        advancedSttToggle.textContent = expanded
+          ? "Show advanced providers"
+          : "Hide advanced providers";
+      });
+
+      providerChoices.forEach((choice) => {
+        choice.addEventListener("click", () => {
+          selectedSttProvider = choice.dataset.providerChoice;
+          clearWizardError("stt-wizard-error");
+          document.getElementById("stt-provider-preset").value = {
+            OpenAI: "openai",
+            Deepgram: "deepgram",
+            ElevenLabs: "elevenlabs",
+            "Custom OpenAI-compatible": "custom_openai_compatible",
+            "Custom REST/OpenAPI": "custom_rest_openapi",
+          }[selectedSttProvider];
+          providerChoices.forEach((item) =>
+            item.classList.toggle("selected", item === choice),
+          );
+          updateSttProviderFields();
+        });
+      });
+
+      document.getElementById("stt-wizard-form").addEventListener("submit", (event) => event.preventDefault());
+      sttWizardNext.addEventListener("click", async () => {
+        if (sttBusy) return;
+        if (currentSttStep === 2) {
+          sttBusy = true;
+          sttWizardNext.disabled = cancelSttWizard.disabled = true;
+          clearWizardError("stt-wizard-error");
+          const form = document.getElementById("stt-wizard-form");
+          const value = (name) => form.elements.namedItem(name)?.value.trim() || undefined;
+          try {
+            const result = await apiJson("/api/v1/stt-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: value("team_id"), provider_preset: value("provider_preset"), label: value("label") || null, base_url: value("base_url"), openapi_path: value("openapi_path") || null, bearer_token: value("bearer_token") || null, revision_of_config_id: value("revision_of_config_id") || null }) });
+            sttDraftId = result.config.id;
+            document.getElementById("stt-draft-id").value = sttDraftId;
+            document.getElementById("stt-api-key").value = "";
+            document.getElementById("stt-provider-name").value = result.config.label;
+            renderSttInspection(result);
+            setSttStep(3);
+          } catch (error) { wizardError("stt-wizard-error", error); }
+          finally { sttBusy = false; sttWizardNext.disabled = cancelSttWizard.disabled = false; }
+        } else if (currentSttStep < 4) {
+          setSttStep(currentSttStep + 1);
+        } else {
+          sttBusy = true;
+          sttWizardNext.disabled = cancelSttWizard.disabled = true;
+          const form = document.getElementById("stt-wizard-form");
+          try {
+            await apiJson(`/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: form.elements.label.value, model_name: form.elements.model_name.value || null, language: form.elements.language.value || null, is_active: form.elements.is_active.checked }) });
+            sttDraftId = "";
+            window.location.assign(`/admin?team_id=${encodeURIComponent(form.elements.team_id.value)}&team_tab=stt`);
+          } catch (error) { wizardError("stt-wizard-error", error); sttBusy = false; sttWizardNext.disabled = cancelSttWizard.disabled = false; }
+        }
+      });
+
+      sttWizardBack.addEventListener("click", () => {
+        if (currentSttStep > 1 && !sttDraftId) setSttStep(currentSttStep - 1);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !sttWizard.hidden) void closeSttWizard();
+      });
+
+      document.querySelectorAll(".stt-actions-button").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const menu = button.nextElementSibling;
+          document.querySelectorAll(".stt-actions-menu").forEach((other) => {
+            if (other !== menu) other.hidden = true;
+          });
+          menu.hidden = !menu.hidden;
+        });
+      });
+
+      document.addEventListener("click", () => {
+        document
+          .querySelectorAll(".stt-actions-menu")
+          .forEach((menu) => (menu.hidden = true));
+      });
+
+      const llmWizard = document.getElementById("llm-wizard"),
+        addLlm = document.getElementById("add-llm-provider-button"),
+        cancelLlm = document.getElementById("cancel-llm-wizard"),
+        llmBack = document.getElementById("llm-wizard-back"),
+        llmNext = document.getElementById("llm-wizard-next");
+      let llmStep = 1,
+        llmProvider = "OpenAI";
+      let llmDraftId = "";
+      let llmBusy = false;
+      function setLlmStep(n) {
+        llmStep = n;
+        document
+          .querySelectorAll("[data-llm-wizard-step]")
+          .forEach((p) => (p.hidden = Number(p.dataset.llmWizardStep) !== n));
+        document
+          .querySelectorAll("[data-llm-step-indicator]")
+          .forEach((i) =>
+            i.classList.toggle(
+              "active",
+              Number(i.dataset.llmStepIndicator) === n,
+            ),
+          );
+        llmBack.hidden = n === 1;
+        llmNext.textContent =
+          n === 2 ? "Find models" : n === 4 ? "Save provider" : "Continue";
+      }
+      function llmFields({ resetValues = true } = {}) {
+        const custom = llmProvider === "Custom OpenAI-compatible",
+          ollama = llmProvider === "Ollama",
+          bedrock = llmProvider === "Bedrock HTTP gateway";
+        document.getElementById("llm-provider-name-field").hidden = !custom;
+        document.getElementById("llm-base-url-field").hidden = !(
+          custom || ollama
+        );
+        document.getElementById("llm-region-field").hidden = !bedrock;
+        document.getElementById("llm-api-key-field").hidden = ollama;
+        document.getElementById("llm-connection-help").textContent = ollama
+          ? "Confirm the Ollama server address."
+          : bedrock
+            ? "Choose the region and enter the API key."
+            : custom
+              ? "Enter the custom endpoint and API key."
+              : "Enter the API key for this provider.";
+        const team = document.getElementById("team-title").textContent;
+        if (resetValues) {
+          document.getElementById("llm-provider-name").value = `${llmProvider} · ${team}`;
+          document.getElementById("llm-final-provider-name").value = `${llmProvider} · ${team}`;
+        }
+        if (ollama && resetValues)
+          document.getElementById("llm-base-url").value =
+            "http://localhost:11434";
+      }
+      function modelOptions() {
+        return [
+          ...document.querySelectorAll("#llm-model-grid .llm-model-option"),
+        ];
+      }
+      function updateModelState() {
+        const opts = modelOptions(),
+          chosen = opts.filter((o) => o.querySelector("input").checked);
+        document.getElementById("llm-model-summary").textContent =
+          `${chosen.length} of ${opts.length} models selected.`;
+        const sel = document.getElementById("llm-default-model");
+        sel.innerHTML = "";
+        chosen.map((o) => o.querySelector("input").value).forEach((m) => {
+          const o = document.createElement("option");
+          o.value = m;
+          o.textContent = m;
+          sel.appendChild(o);
+        });
+      }
+      function renderModels(result) {
+        const models = result.available_model_options?.length ? result.available_model_options : (result.available_models || []).map((id) => ({ id, label: id, source: "provider" }));
+        const grid = document.getElementById("llm-model-grid");
+        document.getElementById("llm-inspection-provider").textContent = result.provider_display_name || result.config.provider_display_name;
+        document.getElementById("llm-inspection-endpoint").textContent = result.config.base_url;
+        document.getElementById("llm-inspection-status").textContent = result.discovery_status;
+        document.getElementById("llm-model-count").textContent = models.length;
+        document.getElementById("llm-inspection-notes").textContent = [...(result.warnings || []), ...(result.notes || [])].join(" · ") || "No warnings or notes.";
+        grid.replaceChildren();
+        models.forEach((model) => {
+          const l = document.createElement("label");
+          l.className = "llm-model-option";
+          l.dataset.modelName = model.id.toLowerCase();
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = model.id;
+          input.checked = true;
+          const span = document.createElement("span"), strong = document.createElement("strong"), small = document.createElement("small");
+          strong.textContent = model.label || model.id;
+          small.textContent = model.source || "provider";
+          span.append(strong, small);
+          l.append(input, span);
+          grid.appendChild(l);
+        });
+        grid
+          .querySelectorAll("input")
+          .forEach((c) => c.addEventListener("change", updateModelState));
+        updateModelState();
+        const manual = models.length === 0 || result.discovery_status === "manual_required";
+        document.getElementById("llm-default-model").hidden = manual;
+        document.getElementById("llm-default-model").disabled = manual;
+        document.getElementById("llm-manual-model").hidden = !manual;
+        document.getElementById("llm-manual-model").disabled = !manual;
+      }
+      function openLlm(editButton = null) {
+        const form = document.getElementById("llm-wizard-form");
+        form.reset();
+        llmDraftId = "";
+        document.getElementById("llm-draft-id").value = "";
+        clearWizardError("llm-wizard-error");
+        const editing = Boolean(editButton);
+        document.getElementById("llm-revision-of-config-id").value = editButton?.dataset.configId || "";
+        document.getElementById("llm-wizard-title").firstChild.textContent = editing ? "Edit LLM provider for " : "Add LLM provider to ";
+        document.getElementById("llm-wizard-description").textContent = editing
+          ? "Update provider settings. Saved credential is retained unless replacement is entered."
+          : "Create, inspect, and configure a team-specific large-language-model provider.";
+        document.getElementById("llm-change-key-help").hidden = !editing;
+        document.getElementById("llm-api-key").value = "";
+        const llmNames = {openai: "OpenAI", openrouter: "OpenRouter", xai: "xAI", groq: "Groq", mistral: "Mistral", deepseek: "DeepSeek", together: "Together AI", ollama: "Ollama", bedrock_http_gateway: "Bedrock HTTP gateway", custom_openai_compatible: "Custom OpenAI-compatible"};
+        llmProvider = editButton ? (llmNames[editButton.dataset.providerPreset] || "Custom OpenAI-compatible") : "OpenAI";
+        document.getElementById("llm-provider-preset").value = editButton?.dataset.providerPreset || "openai";
+        document
+          .querySelectorAll("[data-llm-provider-choice]")
+          .forEach((c) =>
+            c.classList.toggle(
+              "selected",
+              c.dataset.llmProviderChoice === llmProvider,
+            ),
+          );
+        document.getElementById("llm-wizard-team").textContent =
+          document.getElementById("team-title").textContent;
+        llmFields({ resetValues: !editing });
+        if (editButton) {
+          document.getElementById("llm-provider-name-field").hidden = false;
+          document.getElementById("llm-provider-name").value = editButton.dataset.providerLabel;
+          document.getElementById("llm-final-provider-name").value = editButton.dataset.providerLabel;
+          document.getElementById("llm-base-url").value = editButton.dataset.baseUrl;
+          if (editButton.dataset.bedrockRegion) document.getElementById("llm-region").value = editButton.dataset.bedrockRegion;
+          document.getElementById("llm-default-active").checked = editButton.dataset.isActive === "true";
+        }
+        document.getElementById("llm-model-grid").replaceChildren();
+        setLlmStep(1);
+        llmWizard.hidden = false;
+        document.body.style.overflow = "hidden";
+      }
+      async function closeLlm() {
+        if (llmBusy) return;
+        llmBusy = true;
+        llmNext.disabled = cancelLlm.disabled = true;
+        try {
+          await discardDraft("llm", llmDraftId, document.querySelector("#llm-wizard-form [name=team_id]").value);
+          llmDraftId = "";
+        } catch (error) {
+          wizardError("llm-wizard-error", error, { prefix: "Could not discard draft: " });
+          return;
+        } finally {
+          llmBusy = false;
+          llmNext.disabled = cancelLlm.disabled = false;
+        }
+        llmWizard.hidden = true;
+        document.body.style.overflow = "";
+        addLlm.focus();
+      }
+      addLlm.addEventListener("click", () => openLlm());
+      document.querySelectorAll("[data-edit-llm-provider]").forEach((button) => button.addEventListener("click", () => openLlm(button)));
+      cancelLlm.addEventListener("click", () => void closeLlm());
+      llmWizard.addEventListener("click", (e) => {
+        if (e.target === llmWizard) void closeLlm();
+      });
+      document.getElementById("llm-wizard-form").addEventListener("submit", (event) => event.preventDefault());
+      llmNext.addEventListener("click", async () => {
+        if (llmBusy) return;
+        if (llmStep === 2) {
+          llmBusy = true;
+          llmNext.disabled = cancelLlm.disabled = true;
+          clearWizardError("llm-wizard-error");
+          const form = document.getElementById("llm-wizard-form"), value = (name) => form.elements.namedItem(name)?.value.trim() || undefined;
+          try {
+            const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: value("team_id"), provider_preset: value("provider_preset"), label: value("label") || null, base_url: value("base_url"), bedrock_region: value("bedrock_region") || null, bearer_token: value("bearer_token") || null, revision_of_config_id: value("revision_of_config_id") || null }) });
+            llmDraftId = result.config.id;
+            document.getElementById("llm-draft-id").value = llmDraftId;
+            document.getElementById("llm-api-key").value = "";
+            document.getElementById("llm-provider-name").value = result.config.label;
+            document.getElementById("llm-final-provider-name").value = result.config.label;
+            renderModels(result);
+            setLlmStep(3);
+          } catch (error) { wizardError("llm-wizard-error", error); }
+          finally { llmBusy = false; llmNext.disabled = cancelLlm.disabled = false; }
+        } else if (llmStep < 4) setLlmStep(llmStep + 1);
+        else {
+          llmBusy = true;
+          llmNext.disabled = cancelLlm.disabled = true;
+          const form = document.getElementById("llm-wizard-form");
+          const model = document.getElementById("llm-manual-model").disabled ? document.getElementById("llm-default-model").value : document.getElementById("llm-manual-model").value.trim();
+          try {
+            await apiJson(`/api/v1/llm-configs/${encodeURIComponent(llmDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: document.getElementById("llm-final-provider-name").value, model_name: model, is_active: form.elements.is_active.checked }) });
+            llmDraftId = "";
+            window.location.assign(`/admin?team_id=${encodeURIComponent(form.elements.team_id.value)}&team_tab=llm`);
+          } catch (error) { wizardError("llm-wizard-error", error); llmBusy = false; llmNext.disabled = cancelLlm.disabled = false; }
+        }
+      });
+      llmBack.addEventListener("click", () => {
+        if (llmStep > 1 && !llmDraftId) setLlmStep(llmStep - 1);
+      });
+      document
+        .getElementById("advanced-llm-toggle")
+        .addEventListener("click", (e) => {
+          const x = e.currentTarget.getAttribute("aria-expanded") === "true";
+          e.currentTarget.setAttribute("aria-expanded", String(!x));
+          document.getElementById("advanced-llm-options").hidden = x;
+          e.currentTarget.textContent = x
+            ? "Show advanced provider"
+            : "Hide advanced provider";
+        });
+      document.querySelectorAll("[data-llm-provider-choice]").forEach((c) =>
+        c.addEventListener("click", () => {
+          llmProvider = c.dataset.llmProviderChoice;
+          clearWizardError("llm-wizard-error");
+          document.getElementById("llm-provider-preset").value = {
+            OpenAI: "openai",
+            OpenRouter: "openrouter",
+            xAI: "xai",
+            Groq: "groq",
+            Mistral: "mistral",
+            DeepSeek: "deepseek",
+            "Together AI": "together",
+            Ollama: "ollama",
+            "Bedrock HTTP gateway": "bedrock_http_gateway",
+            "Custom OpenAI-compatible": "custom_openai_compatible",
+          }[llmProvider];
+          document
+            .querySelectorAll("[data-llm-provider-choice]")
+            .forEach((x) => x.classList.toggle("selected", x === c));
+          llmFields();
+        }),
+      );
+      document
+        .getElementById("llm-model-search")
+        .addEventListener("input", (e) => {
+          const t = e.target.value.trim().toLowerCase();
+          modelOptions().forEach(
+            (o) => (o.hidden = !o.dataset.modelName.includes(t)),
+          );
+        });
+      document
+        .getElementById("llm-select-all-models")
+        .addEventListener("click", () => {
+          modelOptions().forEach((o) => {
+            if (!o.hidden) o.querySelector("input").checked = true;
+          });
+          updateModelState();
+        });
+      document
+        .getElementById("llm-clear-models")
+        .addEventListener("click", () => {
+          modelOptions().forEach((o) => {
+            if (!o.hidden) o.querySelector("input").checked = false;
+          });
+          updateModelState();
+        });
+      document.querySelectorAll(".llm-actions-button").forEach((b) =>
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const m = b.nextElementSibling;
+          document.querySelectorAll(".llm-actions-menu").forEach((x) => {
+            if (x !== m) x.hidden = true;
+          });
+          m.hidden = !m.hidden;
+        }),
+      );
+      document.addEventListener("click", () =>
+        document
+          .querySelectorAll(".llm-actions-menu")
+          .forEach((m) => (m.hidden = true)),
+      );
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && !llmWizard.hidden) void closeLlm();
+      });
+    </script>
+    {% endif %}
+  </body>
+</html>

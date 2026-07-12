@@ -1,5 +1,681 @@
 # Progress
 
+## 2026-07-02 Legacy Loader, Route, And Usage Spacing Cleanup
+
+### Scope
+
+- Removed obsolete standalone `loading_animation.html` after confirming active note/follow-up loading markup and styles live in transcribe workspace assets.
+- Removed obsolete `/transcribe-glm-2` alias and moved its coverage to `/transcribe`.
+- Replaced empty 14-day usage charts with a compact no-activity message; real activity keeps the full charts.
+
+### Checklist
+
+- Target behavior: no unused standalone loader or alias route; empty usage dashboard avoids oversized blank chart cards.
+- Affected schema/modules/endpoints: transcribe browser route, usage presentation data, admin template/CSS/tests/docs; no schema change.
+- Affected tests: loader/route static assertions, normal transcribe route coverage, empty/active usage render coverage.
+- Architecture risks: no transcript ownership, data, provider, deletion, or structured-note behavior changed.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: retain active loader in transcribe-specific CSS rather than preserving the unused standalone demo.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains inline by explicit user decision.
+
+### Files changed
+
+- `loading_animation.html`: removed unused standalone demo.
+- `app/routes/web_transcribe.py`: removes obsolete `/transcribe-glm-2` alias.
+- `app/services/admin.py`, `app/web/presentation.py`: supply `usage_has_activity` for empty-dashboard rendering.
+- `app/templates/admin.html`, `app/static/css/admin.css`: compact empty daily-activity state.
+- `tests/test_admin_ui.py`, `tests/test_web_refactor.py`: migrate route coverage and add loader/usage regression tests.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record cleanup.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "legacy_glm_transcribe_route_is_removed or generation_loading_replaces_plain_text_placeholders or user_transcribe_page_uses_workspace_template or user_transcribe_page_renders_workspace_values or user_transcribe_page_exposes_workspace_hooks_and_pane_controls or user_transcribe_page_uses_structured_template_sections or user_transcribe_page_prioritises_latest_note_and_emis_driven_generation or user_transcribe_page_shows_stt_config_label or user_transcribe_page_shows_idle_status_with_team_stt_selected or user_transcribe_page_allows_new_session_when_latest_has_transcript_text or user_transcribe_page_syncs_generation_controls_after_workspace_refresh or admin_page_usage_tab"`: passed, 13 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 13 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged; `/transcribe` owner checks remain the sole supported workspace route.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session change.
+- Lifecycle/deletion checkpoint: no record lifecycle path changed.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-02 Admin CSS Extraction
+
+### Scope
+
+- Extracted `admin.html` inline style block into `app/static/css/admin.css`.
+- Linked `tokens.css`, `components.css`, and `admin.css` from `admin.html`.
+- Removed admin-local token root and direct font-family names in favour of shared font variables.
+- Moderately harmonised admin surfaces with shared radii and shared feedback primitives while keeping dense admin layout CSS local.
+
+### Checklist
+
+- Target behavior: admin page has no inline CSS, uses shared tokens/components, and preserves all admin form actions, data hooks, and role-gated content.
+- Affected schema/modules/endpoints: template/static CSS/tests/docs only; no schema, route, endpoint, provider, or deletion behavior changed.
+- Affected tests: static refactor assertions and admin toast/static CSS assertions.
+- Architecture risks: visual drift in admin management UI only; destructive/provider controls must remain clear and unchanged semantically.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: use `components.css` for tokens-adjacent primitives and feedback; keep admin shell, provider cards, usage charts, tables, and destructive form grouping in `admin.css`.
+- Code complete: yes for admin extraction/harmonisation slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains inline by prior special/excluded decision.
+
+### Files changed
+
+- `app/templates/admin.html`: links static stylesheets and removes inline style block.
+- `app/static/css/admin.css`: admin page-specific shell, provider, directory, usage, table, modal, and responsive CSS.
+- `tests/test_web_refactor.py`: adds admin static CSS/link/no-inline assertions.
+- `tests/test_admin_ui.py`: points admin toast assertion at shared components/admin CSS split.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "home_and_template_editor_reuse_shared_visual_tokens or active_templates_route_flash_messages_through_top_right_toasts or root_route_shows_public_splash_without_auth or admin_page"`: passed, 25 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_cookie_csrf_security.py -k "home_and_admin_templates_do_not_use_inline_script_handlers or web_refactor"`: passed, 13 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table and authenticated app audit notes.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes moderate admin visual harmonisation is acceptable: rounded panels/forms/cards, shared feedback, local dense layouts.
+- Assumes `admin2.html` remains out of scope unless explicitly requested.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session/route access change; admin page controls and hidden fields unchanged.
+- Lifecycle/deletion checkpoint: destructive forms and confirmations unchanged.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-02 Anti-Crawling Policy Hardening
+
+### Scope
+
+- Changed `/robots.txt` from selective route exclusions to deny-all policy.
+- Added global `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex` defense-in-depth header.
+
+### Checklist
+
+- Target behavior: no OpenScribe route intended for crawler discovery or indexing.
+- Affected modules/endpoints: shared response-header middleware and `/robots.txt`; no schema change.
+- Affected tests: security-header and public-metadata regressions.
+- Architecture risks: public splash becomes intentionally non-indexable; crawler controls remain non-security controls.
+- Reuse decision: reused existing metadata route and shared middleware; no bot-name list or dependency.
+- Code/tests/docs complete: yes.
+- Open issue: production edge cache for `/robots.txt` must be purged after deployment.
+
+### Files changed
+
+- `app/routes/web_pages.py`: deny all compliant crawlers.
+- `app/main.py`: emit global indexing-control header.
+- `tests/test_cookie_csrf_security.py`: pin exact robots body and header value.
+- `docs/security.md`, `docs/testing.md`, daily note, and this progress log: document policy and coverage.
+
+### Tests
+
+- Focused regression recorded red before implementation, then passed after implementation.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 30 tests.
+
+### Risks / assumptions
+
+- Assumes OpenScribe splash must not appear in search results.
+- Existing indexed URLs may require separate search-engine removal workflow because blocked crawlers may not fetch new `noindex` headers.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: crawler discovery reduced; access controls unchanged and still authoritative.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no route access or content visibility change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: security/testing docs and regressions updated.
+
+## 2026-07-02 Transcript Empty State
+
+### Scope
+
+- Replaced Transcript tab's plain empty copy with frozen orbit/waveform visual.
+- Changed empty heading to `Start a recording to see your transcript`.
+- Starts empty-state animation on local recording/capture activity and keeps it active through pre-transcript processing states.
+- Hides orbit dot in frozen state; active orbit restores it at `1.45s` per cycle.
+- Consolidated repeated orbit markup into shared Jinja macro.
+- Added browser surface sync for empty, transcribing, and populated transcript states.
+
+### Checklist
+
+- Target behavior: empty transcript shows requested frozen visual/heading, then animates from recording start until text arrives.
+- Affected schema/modules/endpoints: transcribe template, CSS, browser renderer, tests, docs only.
+- Affected tests: shared-loader static regression and history empty-state expectation.
+- Architecture risks: visual/status-sync only; no content access or persistence changes.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: same orbit macro and waveform CSS serve generation-adjacent transcription and empty states.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser visual check remains optional.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: shared orbit macro and frozen empty-state surface.
+- `app/static/css/transcribe.css`: idle animation override.
+- `app/static/js/transcribe/app.js`: three-way transcript surface sync.
+- Asset include templates: cache-bust versions.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: updated regressions.
+- `docs/testing.md`, `docs/progress.md`: behavior and checkpoint record.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "generation_loading_replaces_plain_text_placeholders or splash_and_transcribe_styles_are_cacheable_static_assets"`: passed, 2 tests.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Added testing coverage note and this progress entry.
+
+### Risks / assumptions
+
+- Empty means transcript draft contains no non-whitespace text and status is not `transcribing`.
+- Frozen visual retains ring and waveform but hides orbit dot; recording/listening/upload/finalize/queue states restore dot and run orbit at `1.45s` per cycle while draft remains empty.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript content added to new surface.
+- Ownership rules: unchanged; existing owner-only workspace state drives visibility.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint changes.
+- Auth/ownership checkpoint: no auth, query, or route changes.
+- Lifecycle/deletion checkpoint: no record lifecycle changes.
+- Docs/tests checkpoint: docs updated; JS syntax, static regressions, and diff validation pass.
+
+## 2026-07-02 Transcription Loading State
+
+### Scope
+
+- Added orbit/waveform loading state to open Transcript tab while consultation status is `transcribing`.
+- Reused note-generation loader structure, colors, sizing, orbit keyframe, and typography.
+- Set transcription orbit duration to `1.45s`; note-generation orbit remains `2.2s`.
+- Added client status sync so loader exits when backend status changes.
+
+### Checklist
+
+- Target behavior: show supplied transcription loader while open consultation is transcribing.
+- Affected schema/modules/endpoints: transcribe template, CSS, browser status renderer, tests, docs; no schema or endpoint changes.
+- Affected tests: static shared-loader regression and transcribing-session page render.
+- Architecture risks: visual/status-sync only; no content, ownership, persistence, or provider path changes.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: extend existing `.note-generation-loading` component with waveform center and duration modifier; no second loader component.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser visual check remains optional; existing transcribe page render test currently redirects its synthetic login back to `/login` before workspace assertions.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: transcription loader markup and initial server visibility.
+- `app/static/css/transcribe.css`: shared orbit duration variable plus waveform modifier.
+- `app/static/js/transcribe/app.js`: status-driven loader/transcript visibility.
+- `app/templates/transcribe/_head_assets.html`, `_shell_extras.html`: static asset cache busts.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: loader, speed, asset, and server-render regressions.
+- `docs/testing.md`, `docs/progress.md`: coverage and change record.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "generation_loading_replaces_plain_text_placeholders or splash_and_transcribe_styles_are_cacheable_static_assets"`: passed, 2 tests.
+- Transcribing-session render regression attempted but blocked before workspace render: synthetic login redirects back to `/login`; same pre-existing failure also affects `test_user_transcribe_page_shows_workspace_shell`.
+
+### Documentation
+
+- Added testing coverage note and this daily progress entry.
+
+### Risks / assumptions
+
+- `1.45` interpreted as orbit duration in seconds (`1.45s`); waveform remains `1s`.
+- Loader replaces Transcript tab body only for exact `transcribing` status. Live partial text in other statuses remains visible.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no new content rendered or exposed.
+- Ownership rules: unchanged; existing owner-only workspace render remains source.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth or query change.
+- Lifecycle/deletion checkpoint: no record lifecycle change.
+- Docs/tests checkpoint: docs updated; static regressions and JS syntax pass. Existing login-fixture blocker noted for browser render test.
+
+## 2026-07-02 Template Editor CSS Extraction
+
+### Scope
+
+- Extracted `template_editor.html` inline style block into `app/static/css/template-editor.css`.
+- Kept editor shell, sidebar list, section rows, and translucent sticky action bar page-specific.
+- Replaced editor button classes with shared `btn-primary` and `btn-secondary` component classes.
+- Kept form actions, CSRF, hidden fields, data hooks, and template mode script unchanged.
+
+### Checklist
+
+- Target behavior: template editor has no inline CSS and uses shared rounded controls while preserving editor layout and sticky action bar behavior.
+- Affected schema/modules/endpoints: template/static CSS/tests/docs only; no schema, route, or endpoint behavior changed.
+- Affected tests: static refactor assertions for template editor CSS link, no inline style, shared button classes, and page CSS ownership.
+- Architecture risks: visual drift only; form and structured-template semantics unchanged.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: reuse `components.css` for buttons/forms/flashes; keep editor-only layout in `template-editor.css`.
+- Code complete: yes for template editor extraction.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains excluded/special; `/transcribe-glm-2` route cleanup remains separate.
+
+### Files changed
+
+- `app/static/css/template-editor.css`: page-specific editor shell/sidebar/list/section/action-bar CSS.
+- `app/templates/template_editor.html`: links static editor CSS, removes inline style block, uses shared button classes.
+- `tests/test_web_refactor.py`: updates static assertions for extracted editor CSS and shared components.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "template_editor_page_uses_dedicated_full_page_layout or new_freeform_template_editor_hides_emis_sections_until_structured_mode or team_template_editor_page_keeps_team_scope_for_new_template or transcribe_template_editor_save_returns_to_transcribe or default_template_admin_routes_require_system_admin"`: passed, 4 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table and template-editor decision note.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes moderate rounded harmonisation is acceptable per user choice.
+- Assumes translucent sticky action bar should remain close to existing behavior per user choice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session/route access change; template forms unchanged except CSS classes.
+- Lifecycle/deletion checkpoint: no data lifecycle paths touched.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-01 Auth CSS Extraction
+
+### Scope
+
+- Added `app/static/css/auth.css` for login, request access, onboarding, MFA challenge, and password reset pages.
+- Replaced duplicated inline auth/recovery style blocks with linked `tokens.css`, `components.css`, and `auth.css`.
+- Kept auth page scripts/CSRF/forms/actions unchanged.
+- Removed unused `app/templates/glm-3.html`; `/transcribe-glm-2` route remains because it currently renders normal `transcribe.html` and has existing route coverage.
+
+### Checklist
+
+- Target behavior: auth/recovery pages share one shell and existing shared controls while preserving form behavior and no-JS submissions.
+- Affected schema/modules/endpoints: templates/static CSS/tests/docs only; no schema, route, or endpoint behavior changed.
+- Affected tests: auth shell static assertions and toast/static CSS assertions.
+- Architecture risks: visual drift only; auth flow semantics and CSRF remain unchanged.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: use `components.css` controls and `auth.css` layout/page-specific auth pieces.
+- Code complete: yes for auth extraction.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: admin/template-editor inline page CSS remains; `/transcribe-glm-2` duplicate route cleanup remains separate from removed unused template.
+
+### Files changed
+
+- `app/static/css/auth.css`: shared auth/recovery layout and page-specific auth pieces.
+- `app/static/css/components.css`: adds `.btn` and `.link-button` aliases for auth pages.
+- `app/templates/login.html`, `request_access.html`, `onboarding.html`, `mfa_challenge.html`, `password_reset_request.html`, `password_reset_confirm.html`: link shared CSS and remove inline style blocks.
+- `app/templates/glm-3.html`: removed unused prototype template.
+- `tests/test_admin_ui.py`: updates auth CSS/static assertions.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "login_page_exposes_bootstrap_when_database_is_empty or request_access_page_submits_public_account_request or bootstrap_redirects_to_onboarding_and_requires_totp_setup or active_templates_route_flash_messages_through_top_right_toasts or auth_recovery_pages_use_current_shell_styling or invalid_browser_route_redirects_to_login_without_auth"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes small auth visual shifts are acceptable because auth pages now share one shell and component buttons/forms/toasts.
+- Assumes deleting unused `glm-3.html` is safe because route grep shows no renderer uses that template.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: auth forms/routes unchanged; only CSS links/body classes changed.
+- Lifecycle/deletion checkpoint: no data lifecycle paths touched.
+- Docs/tests checkpoint: docs and tests updated.
+
+## 2026-07-01 Home CSS Extraction And Shared Components
+
+### Scope
+
+- Extracted the large `home.html` inline style block into static CSS.
+- Added `components.css` for shared buttons, panels, forms, pills, tabs, modals, flashes, and toasts.
+- Moved Home2 conditional styling into static `home2.css` and removed the old template partial.
+- Linked shared components into splash, transcribe, home, and template editor.
+- De-duplicated splash button CSS and transcribe toast CSS so those pages consume shared primitives.
+
+### Checklist
+
+- Target behavior: home uses existing/shared app styling where possible, with `home.css` reserved for home-only layout and state surfaces.
+- Affected schema/modules/endpoints: templates/static CSS/tests/docs only; no backend endpoints or schemas.
+- Affected tests: static asset/refactor tests, root splash render test, home/home2 render tests, toast/static CSS tests.
+- Architecture risks: CSS cascade changes can cause visual drift; forms/actions/data hooks remain untouched.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: put reused primitives in `components.css` rather than copying them into `home.css`.
+- Code complete: yes for home extraction/shared primitives slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: template editor/admin/auth still have inline page CSS; admin rounded shared-component pass remains pending.
+
+### Files changed
+
+- `app/static/css/components.css`: shared UI primitives.
+- `app/static/css/home.css`: home-only layout and domain-specific UI.
+- `app/static/css/home2.css`: extracted Home2 alternate layout.
+- `app/templates/home.html`: links static CSS assets and removes inline style block.
+- `app/templates/splashpage.html`: links `components.css`.
+- `app/templates/transcribe/_head_assets.html`: links `components.css`.
+- `app/templates/template_editor.html`: links `components.css`.
+- `app/static/css/splash.css`: drops local `.button` primitive.
+- `app/static/css/transcribe.css`: drops local toast primitive/status variants.
+- `app/templates/_home2_admin2_style.html`: removed stale template style partial.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: updated static/render assertions.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: updated plan and checkpoint.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "root_route_shows_public_splash_without_auth or home2_route_renders_admin2_styled_home_for_users_and_leaders or home_tab_navigation_updates_url_and_rejects_missing_panels or active_templates_route_flash_messages_through_top_right_toasts or home_overview_and_asset_cards_keep_white_fill_like_team_cards or non_admin_login_redirects_to_home_and_leader_sees_review_tools or home_restyled_preview_route_renders_for_signed_in_non_admin"`: passed, 7 tests.
+
+### Documentation
+
+- Updated styling condensation plan implementation status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes shared button and toast visual language is acceptable across splash/home/transcribe per user decision.
+- Assumes extracting Home2 static CSS is acceptable despite earlier default exclusion, because user explicitly chose this option.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; no route authorization or response-scope change.
+- Deletion semantics: unchanged; no destructive forms or deletion paths altered.
+- Provider rules: unchanged; provider display/selection behavior untouched.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session changes.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and tests updated.
+
+## 2026-07-01 Home Template Editor Shared Tokens
+
+### Scope
+
+- Linked `tokens.css` into `home.html` and `template_editor.html`.
+- Removed page-local token roots from both templates.
+- Switched home/template editor font declarations to shared `--font-body` and `--font-display` variables.
+- Extended shared tokens with app-page values already used by home/editor.
+
+### Checklist
+
+- Target behavior: home and template editor reuse shared visual tokens/fonts while route behavior, forms, CSRF fields, and page-specific layout stay unchanged.
+- Affected schema/modules/endpoints: static CSS and templates only; no schema, module, route, or endpoint change.
+- Affected tests: static/template refactor tests for shared token links and local-token removal.
+- Architecture risks: visual drift only, accepted for this slice to move toward shared product palette.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: extended `tokens.css` instead of creating another app-page token root.
+- Code complete: yes for first home/editor token slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: component extraction still pending; admin rounded shared-component pass remains next.
+
+### Files changed
+
+- `app/static/css/tokens.css`: adds app-page accent/shadow/radius/transition tokens.
+- `app/templates/home.html`: links tokens and consumes shared font variables.
+- `app/templates/template_editor.html`: links tokens and consumes shared font variables.
+- `tests/test_web_refactor.py`: adds static assertions for shared app-page tokens.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record audit and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "non_admin_login_redirects_to_home_and_leader_sees_review_tools or home_restyled_preview_route_renders_for_signed_in_non_admin or user_home_shows_team_stt_selection_when_configured"`: passed, 3 tests.
+- First parallel admin-focused attempt collided with the shared OpenScribe test database while `tests/test_web_refactor.py` was running; rerun sequential passed.
+
+### Documentation
+
+- Updated styling condensation plan with home/admin/template-editor classification and borderline decisions.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes small visual shift on home/editor is acceptable because user chose shared tokens over exact local colour preservation.
+- Assumes admin should be rounded/shared later, but not in this slice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; no route authorization or response-scope change.
+- Deletion semantics: unchanged; no destructive forms or deletion paths altered.
+- Provider rules: unchanged; provider display/selection behavior untouched.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session changes.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and static tests updated.
+
+## 2026-07-01 Splash Transcribe Token Harmonisation
+
+### Scope
+
+- Added `app/static/css/tokens.css` with shared splash/transcribe colour, font, radius, shadow, and compatibility alias tokens.
+- Linked shared tokens before `splash.css` and `transcribe.css`.
+- Removed duplicated `:root` token blocks from splash/transcribe CSS and routed body/display fonts through shared variables.
+- Removed stale clinical-note empty-state CSS left behind after the empty guidance markup was removed.
+
+### Checklist
+
+- Target behavior: splash and transcribe share foundational visual tokens while keeping page-specific layout/control CSS intact.
+- Affected schema/modules/endpoints: static CSS, splash/transcribe head includes, frontend/static tests; no schema or endpoint change.
+- Affected tests: splash root render assertion, transcribe asset render assertion, static frontend CSS assertions.
+- Architecture risks: token changes can create small visual drift; transcribe-specific layout and workflow selectors were not changed.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: used current splash/transcribe palette and aliases instead of inventing new styling values.
+- Code complete: yes for token harmonisation.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: component-level harmonisation still pending; auth/home/admin still have inline duplicated tokens.
+
+### Files changed
+
+- `app/static/css/tokens.css`: shared visual tokens.
+- `app/templates/splashpage.html`: links shared tokens before splash CSS.
+- `app/templates/transcribe/_head_assets.html`: links shared tokens before transcribe CSS.
+- `app/static/css/splash.css`: consumes shared font/token variables and drops local `:root` block.
+- `app/static/css/transcribe.css`: consumes shared font/token variables, drops local `:root` block, and removes stale clinical-note empty-state CSS.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: update static/link assertions for shared tokens.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record harmonisation status.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "splash or transcribe_page_includes_mobile_layout_assets or root_route_shows_public_splash_without_auth"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 11 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "root_route_shows_public_splash_without_auth or transcribe_page_includes_mobile_layout_assets or active_templates_route_flash_messages"`: passed, 3 tests.
+
+### Documentation
+
+- Updated styling condensation plan status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes shared status tokens should use transcribe runtime values (`--success #38A169`, `--warning #D69E2E`) so product-state colors remain stable.
+- Assumes splash can absorb those status token values because status colours are not central to its visible marketing layout.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; `/transcribe` authorization and owner-only context unchanged.
+- Deletion semantics: unchanged; no lifecycle or cascade path touched.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and focused static/render tests updated.
+
+## 2026-07-01 Splash And Transcribe CSS Extraction
+
+### Scope
+
+- Extracted `splashpage.html` inline CSS into `app/static/css/splash.css`.
+- Extracted `transcribe/_head_assets.html` inline CSS into `app/static/css/transcribe.css`.
+- Kept selectors and CSS bodies unchanged for visual parity; no shared token/component de-duplication yet.
+
+### Checklist
+
+- Target behavior: splash and transcribe pages load cacheable static styles instead of large inline style blocks while keeping visual output unchanged.
+- Affected schema/modules/endpoints: `splashpage.html`, `transcribe/_head_assets.html`, static CSS assets, render/static tests; no schema or endpoint change.
+- Affected tests: splash root render assertion, transcribe asset render assertion, static frontend CSS assertions.
+- Architecture risks: `/transcribe` is transcript-content UI; extraction preserved selectors and markup to avoid changing owner-only workspace behavior.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: moved existing CSS verbatim to static files instead of redesigning or merging controls prematurely.
+- Code complete: yes for first extraction slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: shared token/component split remains pending; auth/home/admin inline styles still remain.
+
+### Files changed
+
+- `app/templates/splashpage.html`: replaced inline style block with static CSS link.
+- `app/static/css/splash.css`: new extracted public landing page styles.
+- `app/templates/transcribe/_head_assets.html`: replaced inline style block with static CSS link.
+- `app/static/css/transcribe.css`: new extracted transcribe workspace styles.
+- `tests/test_web_refactor.py`: points static CSS assertions at extracted files and adds extraction regression coverage.
+- `tests/test_admin_ui.py`: checks new CSS links and reads transcribe style assertions from `transcribe.css`.
+- `docs/styling_condensation_plan.md`: records implemented extraction status.
+- `docs/progress.md`: records change and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "splash or transcribe_page_includes_mobile_layout_assets or root_route_shows_public_splash_without_auth or reorder_blocks_blank_note_lines or global_template_selector or active_templates_route_flash_messages"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 11 tests.
+
+### Documentation
+
+- Updated styling condensation plan implementation status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes visual parity is best protected by verbatim extraction before any token/component merge.
+- Assumes linked static CSS is acceptable under current CSP because existing pages already load static stylesheets.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; `/transcribe` authorization and owner-only context unchanged.
+- Deletion semantics: unchanged; no data lifecycle or cascade path touched.
+- Provider rules: unchanged; provider display/runtime selection unchanged.
+- Structured-note contract: unchanged; EMIS keys, JSON shape, and note editing behavior unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and focused static/render tests updated.
+
+## 2026-07-01 Styling Condensation Plan
+
+### Scope
+
+- Added a planning document for condensing fragmented inline template styling.
+- Prioritised `splashpage.html` as the public visual source of truth and `/transcribe` as a must-preserve workspace.
+- Excluded `*2` templates and generated OWASP report HTML from application-style consolidation scope.
+
+### Checklist
+
+- Target behavior: document where inline styles live, what is page-unique, and what can move into shared CSS without changing route behavior.
+- Affected schema/modules/endpoints: docs only; no schema, module, route, or endpoint change.
+- Affected tests: none added because this is a planning-only documentation change.
+- Architecture risks: future CSS refactor could accidentally alter `/transcribe` owner-only workspace layout; plan explicitly separates shared tokens/components from transcribe-specific workflow styling.
+- Docs referenced/updated: `docs/UI_Translation.md`, `docs/frontend-roadmap.md`, `docs/transcribe_brief.md`, this progress note, and new `docs/styling_condensation_plan.md`.
+- Reuse decision: plan reuses current splash and transcribe visual systems as extraction sources instead of inventing a new design system.
+- Code complete: yes, documentation only.
+- Tests added/updated: no, not applicable for planning document.
+- Docs added/updated: yes.
+- Open issues: implementation still needed; no CSS moved yet.
+
+### Files changed
+
+- `docs/styling_condensation_plan.md`: inventories inline styling and proposes phased central CSS extraction.
+- `docs/progress.md`: records documentation-only planning work and architecture checkpoints.
+
+### Tests
+
+- Not run. Documentation-only change.
+
+### Documentation
+
+- Added `docs/styling_condensation_plan.md`.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes `splashpage.html` should drive public/shared styling and `/transcribe` should be extracted with visual parity before any component de-duplication.
+- Assumes `admin2.html`, `_home2_admin2_style.html`, and generated ZAP report HTML are out of scope for this pass.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; plan only documents CSS extraction and warns against changing transcript-content handling.
+- Ownership rules: unchanged; `/transcribe` remains owner-only and must not move auth decisions into frontend code.
+- Deletion semantics: unchanged; plan requires destructive form targets/confirmation behavior to remain intact.
+- Provider rules: unchanged; provider labels remain display-only.
+- Structured-note contract: unchanged; EMIS keys, JSON shape, and structured-note editing behavior remain untouched.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs updated; no tests needed for planning-only change.
+
 ## 2026-07-01 Transcribe Note Empty Guidance Removal
 
 ### Scope
@@ -9172,3 +9848,26 @@
 - Auth/ownership checkpoint: no access scope or endpoint changed.
 - Lifecycle/deletion checkpoint: no deletion path changed; full-window destructive detection improves visibility.
 - Docs/tests checkpoint: regression, migration assertion, security docs, OWASP plan, and daily note updated.
+## 2026-07-12 Admin Sidebar Area Selector Polish
+
+### Scope
+- Removed shared horizontal-tab container chrome from the vertical `/admin` sidebar selector.
+- Strengthened the selected admin area with the existing accent token and label weight.
+
+### Checklist
+- Code complete: admin-only CSS override; no route, schema, or navigation-label change.
+- Tests updated: flat-sidebar regression now checks the selector override and active marker.
+- Docs updated: `docs/admin_brief.md` records the flat selector direction.
+- Open issues: browser visual verification pending; focused pytest is blocked by unavailable test PostgreSQL connection.
+
+### Files changed
+- `app/static/css/admin.css`: flattens the sidebar selector and adds its active marker.
+- `app/templates/admin.html`: bumps the admin stylesheet cache key.
+- `tests/test_admin_ui.py`: protects the admin-specific selector styling.
+- `docs/admin_brief.md`, `docs/progress.md`: document the UI decision and daily progress.
+
+### Architecture checkpoints
+- Schema: unchanged.
+- Auth/ownership: unchanged; existing system-admin rendering and tab behavior remain intact.
+- Lifecycle/deletion: unchanged.
+- Privacy/provider/structured-note contracts: unchanged; styling exposes no new data and changes no provider behavior.

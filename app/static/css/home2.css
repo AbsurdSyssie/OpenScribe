@@ -1,4 +1,5 @@
-    body.home2 {
+/* Alternate home2 layout extracted from the previous conditional template partial. */
+body.home2 {
       color-scheme: dark;
       --bg:#191919; --parchment:#1c1c1c; --card:#1b1b1b; --ink:#ededed; --slate:#c7c7c7; --muted:#9b9b9b;
       --border:#303030; --border-strong:#3d3d3d; --accent:#2383e2; --accent-soft:#4fa7ff; --accent-pale:rgba(35,131,226,.2);

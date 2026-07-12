@@ -23,13 +23,7 @@ def robots_txt():
         "\n".join(
             [
                 "User-agent: *",
-                "Disallow: /api/",
-                "Disallow: /admin",
-                "Disallow: /home",
-                "Disallow: /transcribe",
-                "Disallow: /settings",
-                "Disallow: /account",
-                "Allow: /",
+                "Disallow: /",
                 "",
             ]
         ),

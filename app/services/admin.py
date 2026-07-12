@@ -994,10 +994,21 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[st
             team_id=team_id,
         ),
     )
+    trend_points = _usage_trend_points(db, since=fourteen_day_since, team_id=team_id)
+    usage_has_activity = any(
+        point.provider_completed_count
+        or point.provider_failed_count
+        or point.provider_input_tokens
+        or point.provider_output_tokens
+        or point.ingestion_job_count
+        or point.ingestion_failed_count
+        for point in trend_points
+    )
     return {
         "usage_window_summaries": windows,
         "usage_kpi_cards": _usage_kpi_cards(current=windows[1], previous=previous_seven_day),
-        "usage_trend_points": _usage_trend_points(db, since=fourteen_day_since, team_id=team_id),
+        "usage_trend_points": trend_points,
+        "usage_has_activity": usage_has_activity,
         "usage_team_rows": _team_usage_rows(db, since=seven_day_since, team_id=team_id),
         "usage_user_rows": _user_usage_rows(db, since=seven_day_since, team_id=team_id) if team_id is not None else [],
         "usage_provider_rows": _provider_usage_rows(db, since=seven_day_since, team_id=team_id),

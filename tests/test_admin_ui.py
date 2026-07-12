@@ -241,7 +241,7 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
     assert "Guide" in home_page.text
     assert 'data-tour-overlay' in home_page.text
     assert 'data-tour-scrim="top"' in home_page.text
-    assert "background: var(--accent);" in home_page.text
+    assert "background: var(--accent);" in Path("app/static/css/components.css").read_text()
     assert "Create a new team member" in home_page.text
     assert "Account requests" in home_page.text
 
@@ -298,6 +298,7 @@ def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, ma
     assert "Your OpenScribe home" in user_response.text
     assert 'class="home2"' in user_response.text
     assert "_home2_admin2_style" not in user_response.text
+    assert '/static/css/home2.css?v=20260701-home-extract' in user_response.text
     assert 'data-tab-target="templates"' in user_response.text
     assert '<button type="button" class="tab-shell__tab" data-tab-target="team-management"' not in user_response.text
     assert 'name="return_view" value="home2"' in user_response.text
@@ -315,6 +316,7 @@ def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, ma
 
 def test_home_tab_navigation_updates_url_and_rejects_missing_panels():
     home_html = Path("app/templates/home.html").read_text()
+    components_css = Path("app/static/css/components.css").read_text()
 
     class HomeTabShellParser(HTMLParser):
         def __init__(self):
@@ -339,7 +341,7 @@ def test_home_tab_navigation_updates_url_and_rejects_missing_panels():
     parser = HomeTabShellParser()
     parser.feed(home_html)
 
-    assert "[hidden] { display: none !important; }" in home_html
+    assert "[hidden] { display: none !important; }" in components_css
     assert parser.panels_inside_shell == ["overview", "templates", "quick-actions", "smart-phrases", "ai-services", "team-management", "account-requests"]
     assert "const panelNames = new Set(panels.map((panel) => panel.dataset.tabPanel));" in home_html
     assert "if (!panelNames.has(name)) return;" in home_html
@@ -843,6 +845,9 @@ def test_root_route_shows_public_splash_without_auth(client):
 
     assert response.status_code == 200
     assert "Open-source clinical scribing" in response.text
+    assert 'href="/static/css/tokens.css?v=20260701-token-harmonise"' in response.text
+    assert 'href="/static/css/components.css?v=20260701-home-components"' in response.text
+    assert 'href="/static/css/splash.css?v=20260701-splash-token-harmonise"' in response.text
     assert 'href="/login"' in response.text
     assert 'href="/request-access"' in response.text
     assert 'src="/static/vendor/lucide/1.8.0/lucide.min.js"' in response.text
@@ -1750,6 +1755,11 @@ def test_admin_page_uses_flat_sidebar_workspace_layout(client, make_user):
     assert 'class="panel tab-shell__nav"' not in page.text
     assert "border-radius: 18px" not in page.text
 
+    admin_css = Path("app/static/css/admin.css").read_text()
+    assert ".admin-sidebar .tab-shell__nav.is-tabs-ready" in admin_css
+    assert "background: transparent;" in admin_css
+    assert '.tab-shell__tab[aria-selected="true"]::before' in admin_css
+
 
 def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(client, db_session, make_team, make_user, make_llm_config):
     team = make_team(name="Clinic Admin LLM Tiles")
@@ -2490,7 +2500,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-tour-overlay' in page.text
     assert 'data-tour-scrim="top"' in page.text
     assert 'data-tour-scrim="right"' in page.text
-    assert "background: var(--accent);" in page.text
+    assert "background: var(--accent);" in Path("app/static/css/transcribe.css").read_text()
     assert 'src="/static/vendor/lucide/1.8.0/lucide.min.js"' in page.text
     assert 'data-lucide="mic"' in page.text
     assert 'data-lucide="upload"' in page.text
@@ -2501,7 +2511,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260701-generation-loading-shared"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260702-transcript-empty-state"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -2811,6 +2821,8 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
     page = client.get("/transcribe")
 
     assert page.status_code == 200
+    assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
+    assert "/static/css/transcribe.css?v=20260702-transcript-empty-no-dot" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/transcribe/mobile.js" in page.text
     assert 'data-workspace-endpoint="' in page.text
@@ -2967,19 +2979,19 @@ def test_shared_csrf_fetch_limits_header_to_same_origin_api():
     assert "url.pathname.startsWith('/api/v1/')" in source
 
 
-def test_user_transcribe_glm_2_page_uses_alternate_template(client, make_team, make_user):
+def test_user_transcribe_page_uses_workspace_template(client, make_team, make_user):
     team = make_team(name="Clinic GLM UI")
     make_user(email="member-glm@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "member-glm@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get("/transcribe-glm-2")
+    page = client.get("/transcribe")
 
     assert page.status_code == 200
     assert "OpenScribe" in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
 
 
-def test_user_transcribe_glm_2_page_renders_workspace_values(
+def test_user_transcribe_page_renders_workspace_values(
     client,
     db_session,
     make_team,
@@ -3024,7 +3036,7 @@ def test_user_transcribe_glm_2_page_renders_workspace_values(
     db_session.commit()
 
     client.post("/login", data={"email": "member-glm-dynamic@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert "Dynamic hypertension review" in page.text
@@ -3198,7 +3210,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
     app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
-    head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+    transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
 
     assert "function rowHasMovableContent" in reorder_js
     assert "if (!rowHasMovableContent(row)) return null;" in reorder_js
@@ -3210,12 +3222,12 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260701-generation-loading-shared" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260702-transcript-empty-state" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
-    assert ".statement-row.is-blank-line .statement-drag-handle" in head_assets
+    assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
 
-def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
+def test_user_transcribe_page_exposes_workspace_hooks_and_pane_controls(
     client,
     db_session,
     make_team,
@@ -3237,7 +3249,7 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     db_session.commit()
 
     client.post("/login", data={"email": "member-glm-hooks@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert 'data-workspace-endpoint="' in page.text
@@ -3260,7 +3272,7 @@ def test_user_transcribe_glm_2_page_exposes_workspace_hooks_and_pane_controls(
     assert 'data-selected-template-mode' not in page.text
 
 
-def test_user_transcribe_glm_2_page_uses_structured_template_sections(
+def test_user_transcribe_page_uses_structured_template_sections(
     client,
     db_session,
     make_team,
@@ -3305,7 +3317,7 @@ def test_user_transcribe_glm_2_page_uses_structured_template_sections(
     db_session.commit()
 
     client.post("/login", data={"email": "glm-structured-member@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert 'data-section-key="problem"' in page.text
@@ -3313,7 +3325,7 @@ def test_user_transcribe_glm_2_page_uses_structured_template_sections(
     assert 'data-section-key="family_history"' not in page.text
 
 
-def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_generation(client, db_session, make_team, make_user):
+def test_user_transcribe_page_prioritises_latest_note_and_emis_driven_generation(client, db_session, make_team, make_user):
     team = make_team(name="Clinic GLM Note Priority")
     member = make_user(email="member-glm-note-priority@example.com", password="password-3", team=team, team_role=TeamRole.user)
     transcript = Transcript(
@@ -3331,7 +3343,7 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     db_session.commit()
 
     client.post("/login", data={"email": "member-glm-note-priority@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert "Clinical Note" in page.text
@@ -3346,7 +3358,7 @@ def test_user_transcribe_glm_2_page_prioritises_latest_note_and_emis_driven_gene
     assert 'name="context_investigations"' not in page.text
 
 
-def test_user_transcribe_glm_2_page_shows_stt_config_label(
+def test_user_transcribe_page_shows_stt_config_label(
     client,
     db_session,
     make_team,
@@ -3378,14 +3390,14 @@ def test_user_transcribe_glm_2_page_shows_stt_config_label(
     db_session.commit()
 
     client.post("/login", data={"email": "glm-stt-member@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert "Speech service:" in page.text
     assert "Parakeet Local" in page.text
 
 
-def test_user_transcribe_glm_2_page_shows_idle_status_with_team_stt_selected(
+def test_user_transcribe_page_shows_idle_status_with_team_stt_selected(
     client,
     db_session,
     make_team,
@@ -3412,7 +3424,7 @@ def test_user_transcribe_glm_2_page_shows_idle_status_with_team_stt_selected(
     db_session.commit()
 
     client.post("/login", data={"email": "glm-health-member@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert "data-active-status" in page.text
@@ -3765,6 +3777,9 @@ def test_user_transcribe_page_shows_progress_for_transcribing_session(client, db
 
     assert page.status_code == 200
     assert "Turning the recording into text." in page.text
+    assert 'data-transcription-loading' in page.text
+    assert "Transcribing your conversation" in page.text
+    assert 'data-active-draft hidden' in page.text
 
 
 def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, db_session, make_team, make_user, make_stt_config, make_stt_selection):
@@ -3944,7 +3959,7 @@ def test_user_transcribe_page_blocks_new_blank_session_when_latest_is_still_empt
     assert db_session.scalar(select(func.count(Transcript.id))) == 1
 
 
-def test_user_transcribe_glm_2_page_allows_new_session_when_latest_has_transcript_text(client, db_session, make_team, make_user):
+def test_user_transcribe_page_allows_new_session_when_latest_has_transcript_text(client, db_session, make_team, make_user):
     team = make_team(name="Clinic GLM Session Gate")
     member = make_user(email="member-glm-session@example.com", password="password-3", team=team, team_role=TeamRole.user)
     transcript = Transcript(
@@ -3961,7 +3976,7 @@ def test_user_transcribe_glm_2_page_allows_new_session_when_latest_has_transcrip
     db_session.commit()
 
     client.post("/login", data={"email": "member-glm-session@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert 'data-new-session-button' in page.text
@@ -3969,7 +3984,7 @@ def test_user_transcribe_glm_2_page_allows_new_session_when_latest_has_transcrip
     assert "Finish or delete the current empty session before creating a new one" not in page.text
 
 
-def test_user_transcribe_glm_2_page_syncs_generation_controls_after_workspace_refresh(client, db_session, make_team, make_user):
+def test_user_transcribe_page_syncs_generation_controls_after_workspace_refresh(client, db_session, make_team, make_user):
     team = make_team(name="Clinic GLM Refresh Controls")
     member = make_user(email="member-glm-refresh@example.com", password="password-3", team=team, team_role=TeamRole.user)
     transcript = Transcript(
@@ -3986,7 +4001,7 @@ def test_user_transcribe_glm_2_page_syncs_generation_controls_after_workspace_re
     db_session.commit()
 
     client.post("/login", data={"email": "member-glm-refresh@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get(f"/transcribe-glm-2?transcript_id={transcript.id}")
+    page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
     assert 'id="transcribe-bootstrap"' in page.text
@@ -4447,7 +4462,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
     workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
     sidebar_html = (root / "app" / "templates" / "transcribe" / "_sidebar.html").read_text(encoding="utf-8")
-    head_assets = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+    transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
     assert "const generateOutputTemplateSelect = document.querySelector('[data-template-select]');" in app_js
@@ -4499,9 +4514,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'Start recording or make a new consult?' in workspace_html
     assert 'data-consult-boundary-new' in workspace_html
     assert 'latestSuccessfulIngestionCompletedAt' in shell_extras
-    assert ".vad-silence-prompt" in head_assets
-    assert ".consult-boundary-modal" in head_assets
-    assert ".consult-boundary-modal__header p" in head_assets
+    assert ".vad-silence-prompt" in transcribe_css
+    assert ".consult-boundary-modal" in transcribe_css
+    assert ".consult-boundary-modal__header p" in transcribe_css
     assert "const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';" in media_js
     assert "const beginAccumulatedTimer = () => {" in media_js
     assert "const finalizeAccumulatedTimer = () => {" in media_js
@@ -4692,21 +4707,21 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "void persistNoteEditsSilently();" in app_js
     assert "window.showToast?.(message, kind);" in app_js
     assert "flashWrap.hidden = true;" in app_js
-    assert ".statement-input" in head_assets
-    assert "template-picker-button" in head_assets
-    assert "freeform-note-panel" in head_assets
-    assert ".main-panel {" in head_assets
-    assert "min-height: 100%;" in head_assets
-    assert ".record-split-button {" in head_assets
-    assert "overflow: visible;" in head_assets
-    assert ".structured-workspace {" in head_assets
-    assert "flex: 1;" in head_assets
-    assert ".dictation-global-cta" in head_assets
-    assert ".dictation-modal" in head_assets
-    assert ".dictation-compact" in head_assets
-    assert "@media (max-width: 1180px) {\n.transcript-review-grid {\ngrid-template-columns: minmax(0, 1fr);" in head_assets
-    assert ".dictation-global-cta.dictation-nudge" in head_assets
-    assert "@keyframes dictationRecordPulse" in head_assets
+    assert ".statement-input" in transcribe_css
+    assert "template-picker-button" in transcribe_css
+    assert "freeform-note-panel" in transcribe_css
+    assert ".main-panel {" in transcribe_css
+    assert "min-height: 100%;" in transcribe_css
+    assert ".record-split-button {" in transcribe_css
+    assert "overflow: visible;" in transcribe_css
+    assert ".structured-workspace {" in transcribe_css
+    assert "flex: 1;" in transcribe_css
+    assert ".dictation-global-cta" in transcribe_css
+    assert ".dictation-modal" in transcribe_css
+    assert ".dictation-compact" in transcribe_css
+    assert "@media (max-width: 1180px) {\n.transcript-review-grid {\ngrid-template-columns: minmax(0, 1fr);" in transcribe_css
+    assert ".dictation-global-cta.dictation-nudge" in transcribe_css
+    assert "@keyframes dictationRecordPulse" in transcribe_css
     assert "statement-content" in workspace_html
     assert '<div class="px-4 pt-3" hidden data-flash-wrap>' in workspace_html
     assert "data-generated-freeform-panel" in workspace_html
@@ -4807,7 +4822,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "recordToggleIcon.dataset.lucide = isRecording" in app_js
     assert "refreshIcons?.(followupHistory);" in documents_js
     assert 'data-lucide="trash-2"' in workspace_html
-    assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." in app_js
+    assert "No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds." not in app_js
+    assert "transcriptEmpty.hidden = isTranscribing || hasDraft" in app_js
     assert "not active_template_generation_input_available" in workspace_html
     assert "not active_quick_action_input_available" in workspace_html
 
@@ -4831,7 +4847,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260701-generation-loading-shared" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260702-transcript-empty-state" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -4878,21 +4894,25 @@ def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
 def test_active_templates_route_flash_messages_through_top_right_toasts():
     root = Path(__file__).resolve().parents[1]
     home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
-    transcribe_head = (root / "app" / "templates" / "transcribe" / "_head_assets.html").read_text(encoding="utf-8")
+    components_css = (root / "app" / "static" / "css" / "components.css").read_text(encoding="utf-8")
+    auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
+    transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
     admin_html = (root / "app" / "templates" / "admin.html").read_text(encoding="utf-8")
+    admin_css = (root / "app" / "static" / "css" / "admin.css").read_text(encoding="utf-8")
     login_html = (root / "app" / "templates" / "login.html").read_text(encoding="utf-8")
     onboarding_html = (root / "app" / "templates" / "onboarding.html").read_text(encoding="utf-8")
     request_access_html = (root / "app" / "templates" / "request_access.html").read_text(encoding="utf-8")
     mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
 
-    assert "top: 24px;" in home_html
+    assert "top: 24px;" in components_css
     assert "document.querySelectorAll('.flash').forEach((flash) => {" in home_html
-    assert "top: 1.5rem;" in transcribe_head
-    assert "position: fixed;" in admin_html and "data-toast-container" in admin_html
-    assert "top: 24px;" in login_html and "data-toast-container" in login_html
+    assert ".toast-container" not in transcribe_css
+    assert "position: fixed;" in components_css and "data-toast-container" in admin_html
+    assert ".toast-container" not in admin_css
+    assert "top: 24px;" in components_css and "data-toast-container" in login_html
     assert "data-toast-container" in onboarding_html
-    assert "top:24px;" in request_access_html and "data-toast-container" in request_access_html
-    assert "top:24px;" in mfa_html and "data-toast-container" in mfa_html
+    assert "data-toast-container" in request_access_html
+    assert "data-toast-container" in mfa_html
 
 
 def test_auth_recovery_pages_use_current_shell_styling():
@@ -4900,14 +4920,23 @@ def test_auth_recovery_pages_use_current_shell_styling():
     onboarding_html = (root / "app" / "templates" / "onboarding.html").read_text(encoding="utf-8")
     reset_request_html = (root / "app" / "templates" / "password_reset_request.html").read_text(encoding="utf-8")
     reset_confirm_html = (root / "app" / "templates" / "password_reset_confirm.html").read_text(encoding="utf-8")
+    login_html = (root / "app" / "templates" / "login.html").read_text(encoding="utf-8")
+    request_access_html = (root / "app" / "templates" / "request_access.html").read_text(encoding="utf-8")
+    mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
+    auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
 
-    for html in (onboarding_html, reset_request_html, reset_confirm_html):
-        assert "DM Sans" in html
-        assert "Fraunces" in html
-        assert "--bg:#FAF8F5" in html
+    for html in (login_html, request_access_html, mfa_html, onboarding_html, reset_request_html, reset_confirm_html):
+        assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in html
+        assert '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">' in html
+        assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">' in html
+        assert '<body class="auth-page' in html
+        assert "<style" not in html
         assert "panel hero" in html
-        assert "var(--accent)" in html
 
+    assert "font-family: var(--font-display);" in auth_css
+    assert "var(--accent)" in auth_css
+    assert ".auth-page--login .auth-shell" in auth_css
+    assert ".auth-page--onboarding .auth-shell" in auth_css
     assert "is-active" in onboarding_html
     assert "Account recovery" in reset_request_html
     assert "Secure account link" in reset_confirm_html
@@ -4915,11 +4944,11 @@ def test_auth_recovery_pages_use_current_shell_styling():
 
 def test_home_overview_and_asset_cards_keep_white_fill_like_team_cards():
     root = Path(__file__).resolve().parents[1]
-    home_html = (root / "app" / "templates" / "home.html").read_text(encoding="utf-8")
+    home_css = (root / "app" / "static" / "css" / "home.css").read_text(encoding="utf-8")
 
-    assert ".overview-grid .panel {\n  background: var(--card);" in home_html
-    assert ".asset-card {\n  display: grid;" in home_html
-    assert "padding: 18px;\n  background: var(--card);" in home_html
+    assert ".overview-grid .panel {\n  background: var(--card);" in home_css
+    assert ".asset-card {\n  display: grid;" in home_css
+    assert "padding: 18px;\n  background: var(--card);" in home_css
 
 
 def test_home_tab_script_finds_relocated_tab_nav():
@@ -5068,7 +5097,8 @@ def test_user_transcribe_page_shows_history_tab_empty_state(
     assert 'data-dictation-modal' in page.text
     assert 'data-dictation-compact' in page.text
     assert 'data-dictation-record-toggle' in page.text
-    assert "No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds." in page.text
+    assert "Start a recording to see your transcript" in page.text
+    assert 'data-transcript-empty' in page.text
 
 
 def test_user_transcribe_page_renders_ready_freeform_note_editor(
@@ -7057,6 +7087,18 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert "2.0 MB" in page.text
     assert "0.50" in page.text
     assert "Share of team activity" in page.text
+    assert 'class="usage-chart__bars"' in page.text
+
+
+def test_admin_page_usage_tab_compacts_empty_daily_activity(client, make_user):
+    admin = make_user(email="admin-empty-usage-ui@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get("/admin?tab=usage")
+
+    assert page.status_code == 200
+    assert "No generation or ingestion activity has been recorded in this 14-day window." in page.text
+    assert 'class="usage-chart__bars"' not in page.text
 
 
 def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_user):

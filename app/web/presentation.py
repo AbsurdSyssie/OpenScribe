@@ -895,6 +895,7 @@ def render_admin(
         "usage_kpi_cards": [],
         "usage_window_summaries": [],
         "usage_trend_points": [],
+        "usage_has_activity": False,
         "usage_team_rows": [],
         "usage_user_rows": [],
         "usage_provider_rows": [],

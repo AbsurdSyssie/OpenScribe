@@ -271,6 +271,7 @@ What it does:
 - bootstrap redirect to onboarding
 - onboarding QR code rendering for TOTP setup
 - leader home page with request-review and direct-user-create tools
+- managed-account password-generator regression coverage verifies all active leader/admin temporary-password fields use the shared 12-character Web Crypto helper, existing button classes, required character groups, overwrite confirmation, generated-value copy control, accessible show/hide state, and success/failure toasts
 - leader home page suspend/reactivate controls for manageable users
 - leader home page delete control for manageable users
 - leader home page STT selection form

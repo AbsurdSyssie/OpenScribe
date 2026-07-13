@@ -21,7 +21,7 @@
 | Account creation? | Team Members creates normal team users; separate System admins area manages admin-only accounts. |
 | Member actions? | State-aware menu; consequence-specific confirmation for destructive/high-risk actions. |
 | Account requests? | Global review; approval selects team/role; rejection requires reason. |
-| Usage? | All-team default with URL-scoped team/user drill-down; metadata only. |
+| Usage? | Global service view plus dedicated team Usage tab with scoped charts and user aggregate table; metadata only. |
 | Audit? | Safe filters in URL; never sensitive values. |
 | CSS/JS structure? | Jinja partials, progressive-enhancement JS, minimal workspace CSS, reuse site primitives; ask when reuse materially changes mockup. |
 | Form feedback? | Inline field errors + summary; site toasts; preserve non-secret input only. |
@@ -79,7 +79,7 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 - Account-request approval/rejection lives entirely in global sidebar **Requests**. Approval requires target team and role, then links to created member in that team workspace. Rejection requires a reason and remains metadata-only.
 - Global **Usage** defaults to all-team aggregates. Team rows/charts link to URL-scoped team usage, with user drill-down constrained to that team. Existing metadata-only boundary remains unchanged.
 - Global **Audit** encodes lookback, team, actor, action, outcome, and resource filter state in validated URL query parameters. URLs may contain safe operational metadata only, never content, secrets, tokens, or plaintext session identifiers.
-- Accepted sidebar inventory: Home; full Teams list; Manage teams; Account requests; System admins; Global defaults; De-ID providers; Usage; Audit; Log out. Team workspace tabs: Overview, Members, Provider policy, STT, LLM, De-identification, Defaults, Security, Danger zone.
+- Accepted sidebar inventory: Home; full Teams list; Manage teams; Account requests; System admins; Global defaults; De-ID providers; Usage; Audit; Log out. Team workspace tabs: Overview, Members, Provider policy, STT, LLM, De-identification, Defaults, Usage, Security, Danger zone.
 - Sidebar **Admin home** links to neutral `/admin`, not `/home`. It shows safe global summary counts plus explicit team-selection prompt and never auto-selects team. Brand link uses same target.
 - Sidebar **Manage teams** shows directory metadata (name, status, retention default, member count, provider-health summary), creates teams, and opens team workspaces. It does not hard-delete; deletion remains in selected team's Danger zone.
 - Team status is read-only after creation in this redesign. No status mutation is added until session, recording, provider, retention, and lifecycle effects receive separate domain design.
@@ -211,7 +211,7 @@ Preserve EMIS allowed-section validation, structured/freeform conditional fields
 | Read function | Backend | Preserve |
 |---|---|---|
 | Usage overview KPIs, charts, team/provider/model/document/ingestion/failure aggregates | `GET /admin?tab=usage` -> `admin.admin_usage_overview` and presentation helpers | [ ] |
-| Team/user scope and local usage subtabs/filters | same GET query context | [ ] |
+| Team/user scope and local usage subtabs/filters | same GET query context | [x] Dedicated team Usage tab, shared range controls/charts, and team-scoped user aggregate table wired. |
 | Security audit metadata/signals, lookback, actor/action/outcome/resource filters, caps | `GET /admin?tab=audit` -> audit query/detection services and presentation helpers | [ ] |
 
 Both areas must remain metadata-only: IDs, statuses, counts, durations, token/cost estimates, provider/model names, failure codes. No transcript, note, prompt, response, secret, token, or plaintext session identifier.

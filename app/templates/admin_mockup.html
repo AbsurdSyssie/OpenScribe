@@ -82,6 +82,35 @@
         margin: 0;
       }
 
+      .generated-password-field {
+        display: block;
+        position: relative;
+      }
+      .generated-password-field > input {
+        padding-right: 112px;
+      }
+      .generated-password-controls {
+        display: flex;
+        gap: 6px;
+        position: absolute;
+        right: 7px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      .generated-password-controls [hidden] {
+        display: none !important;
+      }
+      .generated-password-controls .btn.small {
+        border: 0;
+        min-height: 30px;
+        padding: 5px;
+      }
+      .generated-password-controls svg {
+        display: block;
+        height: 16px;
+        width: 16px;
+      }
+
       .app-shell {
         min-height: 100vh;
         display: grid;
@@ -566,6 +595,256 @@
         border-top: 1px solid var(--border);
         color: var(--accent);
         font-weight: 700;
+      }
+
+      .usage-toolbar {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .usage-toolbar label {
+        display: grid;
+        gap: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .usage-toolbar select {
+        min-width: 220px;
+      }
+      .usage-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+      }
+      .usage-table {
+        width: 100%;
+        min-width: 980px;
+        border-collapse: collapse;
+      }
+      .usage-table th,
+      .usage-table td {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: middle;
+      }
+      .usage-table th {
+        background: var(--parchment);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .usage-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .usage-table small {
+        color: var(--muted);
+      }
+      .usage-team-link {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .usage-meter {
+        width: 112px;
+        height: 5px;
+        margin-top: 6px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--border);
+      }
+      .usage-meter span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent-soft);
+      }
+      .usage-empty {
+        padding: 24px;
+        border: 1px dashed var(--border-strong);
+        color: var(--muted);
+        text-align: center;
+      }
+      .usage-page {
+        display: grid;
+        gap: 36px;
+      }
+      .usage-panel {
+        padding-top: 28px;
+        border-top: 1px solid var(--border);
+      }
+      .usage-panel > header {
+        margin-bottom: 14px;
+      }
+      .usage-panel > header p {
+        margin-top: 4px;
+        color: var(--muted);
+      }
+      .usage-kpi-grid,
+      .usage-window-grid,
+      .usage-chart-grid,
+      .usage-detail-grid {
+        display: grid;
+        gap: 14px;
+      }
+      .usage-kpi-grid {
+        display: flex;
+        gap: 0;
+        overflow-x: auto;
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .usage-window-grid,
+      .usage-detail-grid {
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      }
+      .usage-chart-grid {
+        grid-template-columns: 1fr;
+        gap: 46px;
+      }
+      .usage-card {
+        min-width: 0;
+        padding: 0;
+      }
+      .usage-card.accent {
+        flex: 1 0 190px;
+        padding: 18px 22px;
+        border-right: 1px solid var(--border);
+      }
+      .usage-card.accent:last-child { border-right: 0; }
+      .usage-eyebrow {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .usage-value {
+        margin: 8px 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 28px;
+        line-height: 1;
+      }
+      .usage-detail {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .usage-delta,
+      .usage-chip {
+        display: inline-flex;
+        width: fit-content;
+        margin-top: 9px;
+        padding: 4px 7px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.76);
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .usage-delta.good { color: var(--success); }
+      .usage-delta.warning { color: var(--warning); }
+      .usage-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .usage-chart {
+        min-height: 520px;
+        padding: 18px 0 0;
+      }
+      .usage-echart {
+        width: 100%;
+        height: 460px;
+        margin-top: 12px;
+      }
+      .usage-chart__bars {
+        display: grid;
+        grid-template-columns: repeat(30, minmax(7px, 1fr));
+        align-items: end;
+        gap: 7px;
+        min-height: 180px;
+        margin-top: 16px;
+      }
+      .usage-chart__column {
+        display: grid;
+        align-items: end;
+        gap: 7px;
+        min-width: 0;
+        text-align: center;
+      }
+      .usage-chart__stack {
+        display: flex;
+        align-items: end;
+        justify-content: center;
+        gap: 2px;
+        height: 150px;
+      }
+      .usage-chart__bar {
+        width: 100%;
+        max-width: 18px;
+        min-height: 2px;
+        background: linear-gradient(180deg, var(--accent), var(--accent-soft));
+      }
+      .usage-chart__bar.token { background: linear-gradient(180deg, #6b46c1, #b794f4); }
+      .usage-chart__bar.audio { background: linear-gradient(180deg, #b7791f, #ecc94b); }
+      .usage-chart__bar.failure {
+        background: repeating-linear-gradient(135deg, #c53030 0 4px, #e28b8b 4px 8px);
+      }
+      .usage-chart__bar.previous {
+        opacity: 0.3;
+        filter: saturate(0.65);
+      }
+      .usage-chart__legend {
+        display: flex;
+        gap: 16px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .usage-chart__legend span::before {
+        content: "";
+        display: inline-block;
+        width: 14px;
+        height: 7px;
+        margin-right: 5px;
+        background: var(--accent);
+      }
+      .usage-chart__legend .previous-key::before { opacity: 0.3; }
+      .usage-chart__label {
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .usage-detail-table {
+        overflow-x: auto;
+      }
+      .usage-window-grid .usage-card {
+        padding: 14px 18px 14px 0;
+        border-right: 1px solid var(--border);
+      }
+      .usage-window-grid .usage-card:last-child { border-right: 0; }
+      .usage-detail-grid > .usage-card {
+        padding: 0 22px 22px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .usage-detail-table table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .usage-detail-table th,
+      .usage-detail-table td {
+        padding: 9px 7px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      .usage-detail-table th {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
       }
 
       .member-toolbar {
@@ -1562,6 +1841,9 @@
                   <input
                     type="password"
                     name="temporary_password"
+                    minlength="12"
+                    autocomplete="new-password"
+                    data-generated-password
                     required /></label
                 ><button class="btn primary" type="submit">Approve</button>
               </form>
@@ -1620,6 +1902,9 @@
                     <input
                       type="password"
                       name="temporary_password"
+                      minlength="12"
+                      autocomplete="new-password"
+                      data-generated-password
                       required /></label
                   ><button class="btn primary" type="submit">
                     Create system admin
@@ -1708,22 +1993,116 @@
             </article>
             {% endfor %} {% elif active_admin_tab == 'usage' %}
             <div class="section-intro">
-              <h1>Usage</h1>
-              <p>
-                Metadata-only provider and ingestion activity across all teams.
-              </p>
+              <div class="usage-toolbar">
+                <div><h1>Usage</h1><p>Service health and consumption across all teams. Metadata only.</p></div>
+                <form method="get" action="/admin">
+                  <input type="hidden" name="tab" value="usage" />
+                  {% if selected_team_id %}<input type="hidden" name="team_id" value="{{ selected_team_id }}" />{% endif %}
+                  <label>Reporting range
+                    <select class="select-like" name="range" data-auto-submit>
+                      {% for value, label in [('30d','Last 30 days'),('90d','Last 90 days'),('1y','Last year'),('all','All available data')] %}
+                      <option value="{{ value }}"{% if usage_range_key == value %} selected{% endif %}>{{ label }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <noscript><button class="btn small" type="submit">Apply</button></noscript>
+                </form>
+              </div>
             </div>
-            {% for card in usage_kpi_cards %}
-            <article class="summary-panel">
-              <header><h3>{{ card.label }}</h3></header>
-              <strong>{{ card.value }}</strong>
-              <p>{{ card.detail }}</p>
-            </article>
+            <div class="usage-page">
+              <section class="usage-kpi-grid" aria-label="Thirty-day usage summary">
+                {% for card in usage_kpi_cards %}
+                <div class="usage-card accent">
+                  <div class="usage-eyebrow">{{ card.label }}</div>
+                  <div class="usage-value">{{ card.value }}</div>
+                  <div class="usage-detail">{{ card.detail }}</div>
+                  {% if usage_has_comparison %}<div class="usage-delta {{ card.delta_tone }}">{{ card.delta_text }} vs previous equal period</div>{% endif %}
+                </div>
+                {% endfor %}
+              </section>
+
+              <section class="usage-panel">
+                <header><h2>Window comparison</h2><p>Consumption and health across common reporting windows.</p></header>
+                <div class="usage-window-grid">
+                  {% for summary in usage_window_summaries %}
+                  <div class="usage-card">
+                    <div class="usage-eyebrow">{{ summary.label }}</div>
+                    <div class="usage-value">{{ summary.provider_completed_count }} generated</div>
+                    <div class="usage-chip-row">
+                      <span class="usage-chip">{{ summary.provider_input_tokens }} input</span>
+                      <span class="usage-chip">{{ summary.provider_output_tokens }} output</span>
+                      <span class="usage-chip">{{ summary.provider_success_rate }}% LLM success</span>
+                      <span class="usage-chip">{{ summary.ingested_hours }} audio hours</span>
+                    </div>
+                    <div class="usage-detail">{{ summary.ingestion_job_count }} speech jobs · {{ summary.provider_failed_count + summary.ingestion_failed_count }} failures</div>
+                  </div>
+                  {% endfor %}
+                </div>
+              </section>
+
+              <section class="usage-panel">
+                <header><h2>Consumption and health · {{ usage_range_label }}</h2><p>{{ usage_range_bucket|title }} aggregates{% if usage_has_comparison %}, with shaded previous-period comparison{% endif %}.</p></header>
+                {% if usage_has_activity %}
+                <div class="usage-chart-grid">
+                  {% for metric, title, detail in [('input','Input tokens','Prompt tokens consumed'),('output','Output tokens','Completion tokens produced'),('audio','Audio hours','Successfully processed audio duration'),('failure','Failures','LLM and speech failures')] %}
+                  <figure class="usage-card usage-chart">
+                    <h3>{{ title }}</h3><div class="usage-detail">{{ detail }}</div>
+                    <div class="usage-echart" data-usage-chart="{{ metric }}" role="img" aria-label="{{ title }} for {{ usage_range_label }}{% if usage_has_comparison %} and previous equal period{% endif %}"></div>
+                  </figure>
+                  {% endfor %}
+                </div>
+                {% else %}<div class="usage-empty">No generation or ingestion activity has been recorded for {{ usage_range_label|lower }}.</div>{% endif %}
+              </section>
+
+              <section class="usage-panel">
+                <div class="usage-toolbar"><div><h2>Team comparison · {{ usage_range_label }}</h2><p>Sorted by combined token and audio activity. Open team for detailed breakdown.</p></div></div>
+            {% if usage_team_rows %}
+            <div class="usage-table-wrap">
+              <table class="usage-table">
+                <thead><tr>
+                  <th>Team</th><th>Generated</th><th>Success</th>
+                  <th>Input / output / gen</th><th>Audio mix</th>
+                  <th>Uploaded</th><th>Activity share</th>
+                </tr></thead>
+                <tbody>
+                  {% for row in usage_team_rows %}
+                  <tr>
+                    <td><a class="usage-team-link" href="/admin?team_id={{ row.team_id }}&amp;team_tab=usage&amp;range={{ usage_range_key }}">{{ row.team_name }}</a><br><small>{{ row.whole_file_count }} whole-file · {{ row.live_chunk_count }} live chunk · {{ row.ingestion_failed_count }} ingestion failures</small></td>
+                    <td>{{ row.provider_completed_count }}<br><small>{{ row.provider_failed_count }} provider failures</small></td>
+                    <td>{{ row.provider_success_rate }}%<br><small>{{ row.avg_tokens_per_generation }} total avg tokens</small></td>
+                    <td>{{ row.avg_input_tokens_per_generation }} / {{ row.avg_output_tokens_per_generation }}<br><small>{{ row.avg_tokens_per_generation }} total</small></td>
+                    <td>{{ row.live_share_pct }}% live<br><small>{{ row.ingestion_failure_rate }}% ingestion failure</small></td>
+                    <td>{{ "%.1f"|format(row.ingested_megabytes) }} MB<br><small>{{ "%.2f"|format(row.ingested_hours) }} hours</small></td>
+                    <td>{{ row.activity_share_pct }}%<div class="usage-meter" aria-hidden="true"><span data-style-width-pct="{{ row.activity_share_pct }}"></span></div></td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
             {% else %}
-            <p>No usage activity in current reporting window.</p>
-            {% endfor %}<a class="panel-link" href="/legacy-admin?tab=usage"
-              >Open detailed usage reports →</a
-            >
+            <div class="usage-empty">No usage has been recorded for {{ usage_range_label|lower }}.</div>
+            {% endif %}
+              </section>
+
+              <section class="usage-panel">
+                <header><h2>Provider and activity breakdown</h2><p>Aggregate operational metadata; no transcript-derived content.</p></header>
+                <div class="usage-detail-grid">
+                  <section class="usage-card usage-detail-table"><h3>LLM providers and models</h3>
+                    {% if usage_provider_rows %}<table><thead><tr><th>Provider / model</th><th>Completed</th><th>Failed</th><th>Tokens</th><th>Latency</th></tr></thead><tbody>{% for row in usage_provider_rows %}<tr><td><strong>{{ row.provider_adapter }}</strong><br><small>{{ row.model_name }}</small></td><td>{{ row.completed_count }}</td><td>{{ row.failed_count }}</td><td>{{ row.input_tokens }} in<br>{{ row.output_tokens }} out</td><td>{{ row.avg_duration_ms }} ms<br><small>provider {{ row.avg_provider_duration_ms }} ms</small></td></tr>{% endfor %}</tbody></table>{% else %}<p class="usage-detail">No provider telemetry in this window.</p>{% endif %}
+                  </section>
+                  <section class="usage-card usage-detail-table"><h3>Speech ingestion</h3>
+                    {% if usage_ingestion_rows %}<table><thead><tr><th>Adapter</th><th>Mode</th><th>Jobs</th><th>Failures</th><th>Volume</th></tr></thead><tbody>{% for row in usage_ingestion_rows %}<tr><td>{{ row.stt_adapter_kind }}</td><td>{{ row.job_kind }}</td><td>{{ row.job_count }}</td><td>{{ row.failed_count }}<br><small>{{ row.failure_rate }}%</small></td><td>{{ row.ingested_megabytes }} MB<br><small>{{ row.ingested_hours }} h</small></td></tr>{% endfor %}</tbody></table>{% else %}<p class="usage-detail">No ingestion telemetry in this window.</p>{% endif %}
+                  </section>
+                  <section class="usage-card"><h3>Activity types</h3>
+                    {% if usage_generator_rows %}{% for row in usage_generator_rows %}<div><strong>{{ row.generator_type|replace('_', ' ')|title }}</strong><div class="usage-chip-row"><span class="usage-chip">{{ row.ready_count }} ready</span><span class="usage-chip">{{ row.failed_count }} failed</span><span class="usage-chip">{{ row.input_tokens }} input</span><span class="usage-chip">{{ row.output_tokens }} output</span></div></div>{% endfor %}{% else %}<p class="usage-detail">No generated document telemetry.</p>{% endif %}
+                  </section>
+                  <section class="usage-card"><h3>Failure hotspots</h3>
+                    {% if usage_failure_rows %}{% for row in usage_failure_rows %}<div><strong>{{ row.code }}</strong> · {{ row.count }}<div class="usage-detail">{{ row.source }}</div></div>{% endfor %}{% else %}<p class="usage-detail">No failures recorded.</p>{% endif %}
+                  </section>
+                </div>
+              </section>
+              <a class="panel-link" href="/legacy-admin?tab=usage">Open legacy usage report →</a>
+            </div>
             {% elif active_admin_tab == 'audit' %}
             <div class="section-intro">
               <h1>Security audit</h1>
@@ -1785,7 +2164,7 @@
             <nav class="tabs" aria-label="Team settings">
               {% for key, label in
               [('overview','Overview'),('members','Members'),('provider-policy','Provider
-              policy'),('stt','STT'),('llm','LLM'),('deidentification','De-identification'),('defaults','Defaults'),('security','Security'),('danger','Danger
+              policy'),('stt','STT'),('llm','LLM'),('deidentification','De-identification'),('defaults','Defaults'),('usage','Usage'),('security','Security'),('danger','Danger
               zone')] %}<a
                 class="tab{% if workspace_team_tab == key %} active{% endif %}"
                 data-tab="{{ key }}"
@@ -3207,6 +3586,77 @@
 
               <section
                 class="tab-panel"
+                data-panel="usage"
+                {% if workspace_team_tab != "usage" %}hidden{% endif %}
+              >
+                <div class="section-intro">
+                  <div class="usage-toolbar">
+                    <div><h2>Usage</h2><p>Consumption and health for {{ selected_team.name }}. Metadata only.</p></div>
+                    <form method="get" action="/admin">
+                      <input type="hidden" name="team_id" value="{{ selected_team.id }}" />
+                      <input type="hidden" name="team_tab" value="usage" />
+                      <label>Reporting range
+                        <select class="select-like" name="range" data-auto-submit>
+                          {% for value, label in [('30d','Last 30 days'),('90d','Last 90 days'),('1y','Last year'),('all','All available data')] %}
+                          <option value="{{ value }}"{% if usage_range_key == value %} selected{% endif %}>{{ label }}</option>
+                          {% endfor %}
+                        </select>
+                      </label>
+                      <noscript><button class="btn small" type="submit">Apply</button></noscript>
+                    </form>
+                  </div>
+                </div>
+
+                <div class="usage-page">
+                  <section class="usage-kpi-grid" aria-label="Team usage summary">
+                    {% for card in usage_kpi_cards %}
+                    <div class="usage-card accent">
+                      <div class="usage-eyebrow">{{ card.label }}</div>
+                      <div class="usage-value">{{ card.value }}</div>
+                      <div class="usage-detail">{{ card.detail }}</div>
+                      {% if usage_has_comparison %}<div class="usage-delta {{ card.delta_tone }}">{{ card.delta_text }} vs previous equal period</div>{% endif %}
+                    </div>
+                    {% endfor %}
+                  </section>
+
+                  <section class="usage-panel">
+                    <header><h2>Consumption and health · {{ usage_range_label }}</h2><p>{{ usage_range_bucket|title }} aggregates{% if usage_has_comparison %}, with shaded previous-period comparison{% endif %}.</p></header>
+                    {% if usage_has_activity %}
+                    <div class="usage-chart-grid">
+                      {% for metric, title, detail in [('input','Input tokens','Prompt tokens consumed'),('output','Output tokens','Completion tokens produced'),('audio','Audio hours','Successfully processed audio duration'),('failure','Failures','LLM and speech failures')] %}
+                      <figure class="usage-card usage-chart">
+                        <h3>{{ title }}</h3><div class="usage-detail">{{ detail }}</div>
+                        <div class="usage-echart" data-usage-chart="{{ metric }}" role="img" aria-label="{{ title }} for {{ selected_team.name }}"></div>
+                      </figure>
+                      {% endfor %}
+                    </div>
+                    {% else %}<div class="usage-empty">No generation or ingestion activity recorded for this team in {{ usage_range_label|lower }}.</div>{% endif %}
+                  </section>
+
+                  <section class="usage-panel">
+                    <header><h2>User usage breakdown</h2><p>Aggregate activity for users belonging to {{ selected_team.name }}.</p></header>
+                    {% if usage_user_rows %}
+                    <div class="usage-table-wrap">
+                      <table class="usage-table">
+                        <thead><tr><th>User</th><th>Generated</th><th>LLM success</th><th>Input / output</th><th>Audio</th><th>Ingestion failures</th><th>Activity share</th></tr></thead>
+                        <tbody>{% for row in usage_user_rows %}<tr>
+                          <td><strong>{{ row.full_name or row.email }}</strong><br><small>{{ row.email }}</small></td>
+                          <td>{{ row.provider_completed_count }}<br><small>{{ row.provider_failed_count }} failed</small></td>
+                          <td>{{ row.provider_success_rate }}%</td>
+                          <td>{{ row.provider_input_tokens }} / {{ row.provider_output_tokens }}<br><small>{{ row.avg_input_tokens_per_generation }} / {{ row.avg_output_tokens_per_generation }} avg</small></td>
+                          <td>{{ "%.2f"|format(row.ingested_hours) }} h<br><small>{{ row.whole_file_count }} file · {{ row.live_chunk_count }} live</small></td>
+                          <td>{{ row.ingestion_failed_count }}<br><small>{{ row.ingestion_failure_rate }}%</small></td>
+                          <td>{{ row.activity_share_pct }}%<div class="usage-meter" aria-hidden="true"><span data-style-width-pct="{{ row.activity_share_pct }}"></span></div></td>
+                        </tr>{% endfor %}</tbody>
+                      </table>
+                    </div>
+                    {% else %}<div class="usage-empty">No user usage recorded for this range.</div>{% endif %}
+                  </section>
+                </div>
+              </section>
+
+              <section
+                class="tab-panel"
                 data-panel="security"
                 {%
                 if
@@ -3375,6 +3825,8 @@
                   type="password"
                   autocomplete="new-password"
                   placeholder="Enter a temporary password"
+                  minlength="12"
+                  data-generated-password
                   required
                 />
                 <div class="field-help">
@@ -4711,5 +5163,34 @@
       });
     </script>
     {% endif %}
+    {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
+    <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>
+    <script src="/static/vendor/echarts/6.1.0/echarts.min.js"></script>
+    <script src="/static/js/admin-usage-charts.js?v=20260713-range-submit"></script>
+    {% endif %}
+    <script nonce="{{ request.state.csp_nonce }}">
+      (() => {
+        const applyPercentageStyle = (selector, property, dataKey) => {
+          document.querySelectorAll(selector).forEach((element) => {
+            const value = Number(element.dataset[dataKey]);
+            const percentage = Number.isFinite(value)
+              ? Math.max(0, Math.min(100, value))
+              : 0;
+            element.style[property] = `${percentage}%`;
+          });
+        };
+        applyPercentageStyle(
+          "[data-style-height-pct]",
+          "height",
+          "styleHeightPct",
+        );
+        applyPercentageStyle(
+          "[data-style-width-pct]",
+          "width",
+          "styleWidthPct",
+        );
+      })();
+    </script>
+    <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>
   </body>
 </html>

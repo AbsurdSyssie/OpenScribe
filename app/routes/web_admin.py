@@ -45,7 +45,7 @@ def admin_page(
             parsed_team_id = None
         if parsed_team_id is None or db.get(Team, parsed_team_id) is None:
             team_id = None
-    team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}
+    team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if team_tab in team_tabs:
         resolved_team_tab = team_tab
     elif team_id and tab == "providers":

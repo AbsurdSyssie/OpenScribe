@@ -86,7 +86,7 @@ Available metadata:
 
 ### 1. Overview band
 
-Show large KPI cards for the current 7-day window with change against the previous 7-day window:
+Default to monthly data. Show headline metrics for the current rolling 30-day window with change against the previous equal 30-day window:
 
 - completed generations
 - input tokens
@@ -115,7 +115,7 @@ Each card should include:
 
 ### 3. Daily trend charts
 
-Show 14-day charts for:
+Show 30-day charts by default for:
 
 - completed generations
 - input tokens
@@ -152,6 +152,8 @@ When a team is selected, show:
 - share of team activity
 - generation quality and ingestion mix metrics
 
+Implemented in each selected team's **Usage** tab. User rows are constrained by validated team scope and show account metadata plus aggregate counts/tokens/audio/rates only. Global Usage does not expose per-user rows.
+
 ## Comparison rules
 
 - Use equal-window comparisons for all deltas.
@@ -159,12 +161,32 @@ When a team is selected, show:
 - Use per-generation averages where token counts would otherwise reward only volume.
 - Use activity share bars for fast visual ranking.
 
+## Reporting ranges
+
+- Default URL state is `range=30d` with daily buckets.
+- `range=90d` uses daily buckets.
+- `range=1y` uses weekly buckets.
+- `range=all` starts at oldest retained provider or ingestion metadata and uses monthly buckets.
+- Invalid range values fall back to 30 days.
+- Fixed ranges compare against previous equal period. All-available range omits comparison because no earlier retained period exists.
+- ECharts zoom explores aggregate buckets already returned; changing reporting range performs a new server-side aggregate query. Raw events are never sent to chart code.
+
 ## Visual direction
 
 - Keep the page server-rendered in Jinja.
-- Prefer chart cards and comparison cards over a table-first layout.
-- Use small bar charts and in-cell meters instead of pulling in a JS chart dependency.
+- Use a graph-first layout with a single KPI rail, dominant chart canvas, and aggregate tables.
+- Do not use floating card grids for Usage. Separate sections with whitespace and restrained rules.
+- Use locally vendored Apache ECharts 6.1.0 for responsive SVG charts, axes, tooltips, zoom, and current/previous period comparisons. Do not load chart code or usage data from a third-party CDN.
 - Keep the admin visual language aligned with the current flat workspace styling.
+
+## Redesign progress
+
+- New `/admin` workspace defaults KPI rail, daily token/audio/failure charts, team comparison, and provider/activity/failure aggregates to rolling 30-day data. Full-width ECharts plots cluster solid current-period bars with shaded previous-30-day bars on a shared scale.
+- Team table reuses existing usage rollup service and links each team into URL-scoped usage view. Detailed team breakdown belongs in each team's Usage area.
+- Team workspace now includes Usage with the same reporting ranges and charts plus a team-scoped user breakdown table.
+- Security and frequent-IP reporting belongs in Audit/Security, not Usage.
+- Currency/cost reporting is excluded. Consumption uses input tokens, output tokens, audio hours, jobs, failures, rates, and latency.
+- Planned follow-up: global 24-hour/7-day/30-day/90-day/custom range control (30 days selected by default), equal-period shaded comparison series, failed-token accounting, P50/P95 latency, and URL-configured table columns/filters/grouping.
 
 ## Limits of current telemetry
 

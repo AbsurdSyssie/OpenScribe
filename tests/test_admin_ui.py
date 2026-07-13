@@ -250,6 +250,42 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
     assert logout_response.headers["location"] == "/login"
 
 
+def test_managed_account_forms_offer_secure_password_generation():
+    home_html = Path("app/templates/home.html").read_text()
+    admin_html = Path("app/templates/admin_mockup.html").read_text()
+    generator_js = Path("app/static/js/generated-password.js").read_text()
+
+    assert home_html.count("data-generated-password") == 2
+    assert admin_html.count("data-generated-password") == 3
+    for template in (home_html, admin_html):
+        assert 'minlength="12"' in template
+        assert "/static/js/generated-password.js?v=20260712-infield-controls" in template
+
+    assert "/static/css/home.css?v=20260712-password-controls" in home_html
+    assert 'id="member-password"' in admin_html
+    assert 'id="member-password"\n                  name="temporary_password"' in admin_html
+
+    assert 'const LENGTH = 12;' in generator_js
+    assert 'window.crypto.getRandomValues(value);' in generator_js
+    assert '"ABCDEFGHJKLMNPQRSTUVWXYZ"' in generator_js
+    assert '"abcdefghijkmnopqrstuvwxyz"' in generator_js
+    assert '"23456789"' in generator_js
+    assert '"!@#$%&*+-=?"' in generator_js
+    assert 'window.confirm("Replace the password currently entered?")' in generator_js
+    assert 'await navigator.clipboard.writeText(password);' in generator_js
+    assert 'document.querySelector(".app-shell") ? "btn small" : "btn-ghost-sm"' in generator_js
+    assert 'field.className = "generated-password-field";' in generator_js
+    assert 'copyButton.innerHTML = icon("copy");' in generator_js
+    assert 'generateButton.innerHTML = icon("generate");' in generator_js
+    assert 'visibilityButton.innerHTML = icon("eye");' in generator_js
+    assert 'copyButton.hidden = true;' in generator_js
+    assert 'copyButton.hidden = false;' in generator_js
+    assert '"Password copied."' in generator_js
+    assert '"Password generated and copied."' in generator_js
+    assert '"Password generated. Copy it manually."' in generator_js
+    assert 'visibilityButton.setAttribute("aria-pressed", String(!showing));' in generator_js
+
+
 def test_user_home_shows_team_stt_selection_when_configured(client, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -7392,14 +7428,14 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?tab=usage&team_id={team.id}")
+    page = client.get(f"/legacy-admin?tab=usage&team_id={team.id}")
 
     assert page.status_code == 200
     assert "Usage overview" in page.text
     assert "Last 24 hours" in page.text
     assert "Last 30 days" in page.text
     assert "Daily activity" in page.text
-    assert "Team comparison, last 7 days" in page.text
+    assert "Team comparison, last 30 days" in page.text
     assert "Provider and model mix" in page.text
     assert "Speech ingestion mix" in page.text
     assert "User activity in Clinic Usage" in page.text
@@ -7407,8 +7443,8 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert "123" in page.text
     assert "80" in page.text
     assert "43" in page.text
-    assert "Input tokens in 7 days" in page.text
-    assert "Output tokens in 7 days" in page.text
+    assert "Input tokens · Last 30 days" in page.text
+    assert "Output tokens · Last 30 days" in page.text
     assert "Input tokens" in page.text
     assert "Output tokens" in page.text
     assert "2.0 MB" in page.text
@@ -7417,14 +7453,187 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert 'class="usage-chart__bars"' in page.text
 
 
-def test_admin_page_usage_tab_compacts_empty_daily_activity(client, make_user):
-    admin = make_user(email="admin-empty-usage-ui@example.com", password="password-1", is_system_admin=True)
+def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Table")
+    admin = make_user(email="admin-usage-table@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="private-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Private title must stay hidden",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(ProviderUsageEvent(
+        team_id=team.id,
+        owner_user_id=owner.id,
+        transcript_id=transcript.id,
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.completed,
+        provider_adapter="ollama_chat",
+        model_name="clinic-model",
+        prompt_tokens=80,
+        completion_tokens=43,
+        total_tokens=123,
+        created_at=utcnow() - timedelta(days=15),
+    ))
+    db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
     page = client.get("/admin?tab=usage")
 
     assert page.status_code == 200
-    assert "No generation or ingestion activity has been recorded in this 14-day window." in page.text
+    assert "Team comparison · Last 30 days" in page.text
+    assert "vs previous equal period" in page.text
+    assert '<option value="30d" selected>Last 30 days</option>' in page.text
+    assert '<option value="all">All available data</option>' in page.text
+    assert 'class="usage-table"' in page.text
+    assert "Window comparison" in page.text
+    assert "Consumption and health · Last 30 days" in page.text
+    assert "Input tokens" in page.text
+    assert "Output tokens" in page.text
+    assert "Speech ingestion" in page.text
+    assert "Failure hotspots" in page.text
+    assert "Provider and activity breakdown" in page.text
+    assert page.text.count('class="usage-echart"') == 4
+    assert 'data-usage-chart="input"' in page.text
+    assert 'data-usage-chart="output"' in page.text
+    assert 'data-usage-chart="audio"' in page.text
+    assert 'data-usage-chart="failure"' in page.text
+    assert 'id="usage-chart-data"' in page.text
+    assert "/static/vendor/echarts/6.1.0/echarts.min.js" in page.text
+    assert "/static/js/admin-usage-charts.js?v=20260713-range-submit" in page.text
+    assert f'/admin?team_id={team.id}&amp;team_tab=usage&amp;range=30d' in page.text
+    assert "Clinic Table" in page.text
+    assert "80.0 / 43.0" in page.text
+    assert "Private title must stay hidden" not in page.text
+    assert "private-owner@example.com" not in page.text
+    assert "Origin IP" not in page.text
+
+    chart_js = Path("app/static/js/admin-usage-charts.js").read_text()
+    assert 'renderer: "svg"' in chart_js
+    assert 'name: rangeLabel' in chart_js
+    assert 'name: "Previous equal period"' in chart_js
+    assert 'type: "slider"' in chart_js
+    assert 'aria: { enabled: true }' in chart_js
+    assert "ResizeObserver" in chart_js
+    assert 'control.form?.requestSubmit()' in chart_js
+
+
+def test_new_admin_usage_range_all_includes_retained_historical_metadata(client, db_session, make_team, make_user):
+    team = make_team(name="Historical Clinic")
+    admin = make_user(email="admin-history@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="historical-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Historical confidential title",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add(ProviderUsageEvent(
+        team_id=team.id,
+        owner_user_id=owner.id,
+        transcript_id=transcript.id,
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.completed,
+        provider_adapter="ollama_chat",
+        model_name="historical-model",
+        prompt_tokens=777,
+        completion_tokens=222,
+        total_tokens=999,
+        created_at=utcnow() - timedelta(days=120),
+    ))
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    default_page = client.get("/admin?tab=usage")
+    ninety_day_page = client.get("/admin?tab=usage&range=90d")
+    yearly_page = client.get("/admin?tab=usage&range=1y")
+    all_page = client.get("/admin?tab=usage&range=all")
+    invalid_page = client.get("/admin?tab=usage&range=invalid")
+
+    team_usage_link = f'/admin?team_id={team.id}&amp;team_tab=usage&amp;range='
+    assert team_usage_link not in default_page.text
+    assert team_usage_link not in ninety_day_page.text
+    assert team_usage_link in yearly_page.text
+    assert '<option value="1y" selected>Last year</option>' in yearly_page.text
+    assert 'data-range-label="Last year"' in yearly_page.text
+    assert team_usage_link in all_page.text
+    assert '<option value="all" selected>All available data</option>' in all_page.text
+    assert 'data-range-label="All available data"' in all_page.text
+    assert 'data-has-comparison="false"' in all_page.text
+    assert "historical-model" in all_page.text
+    assert "Historical confidential title" not in all_page.text
+    assert "historical-owner@example.com" not in all_page.text
+    assert '<option value="30d" selected>Last 30 days</option>' in invalid_page.text
+
+
+def test_new_admin_team_usage_tab_scopes_charts_and_user_table(client, db_session, make_team, make_user):
+    team = make_team(name="Scoped Clinic")
+    other_team = make_team(name="Other Clinic")
+    admin = make_user(email="admin-team-usage@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="scoped-user@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    other_owner = make_user(email="other-user@example.com", password="password-3", team=other_team, team_role=TeamRole.user)
+
+    for user, user_team, tokens, title in (
+        (owner, team, 321, "Scoped confidential title"),
+        (other_owner, other_team, 987, "Other confidential title"),
+    ):
+        transcript = Transcript(
+            owner_user_id=user.id,
+            team_id=user_team.id,
+            title=title,
+            retention_days_applied=user_team.default_retention_days,
+            retention_expires_at=utcnow() + timedelta(days=user_team.default_retention_days),
+        )
+        db_session.add(transcript)
+        db_session.flush()
+        db_session.add(ProviderUsageEvent(
+            team_id=user_team.id,
+            owner_user_id=user.id,
+            transcript_id=transcript.id,
+            feature_type=ProviderFeatureType.llm_generation,
+            event_type=ProviderUsageEventType.completed,
+            provider_adapter="ollama_chat",
+            model_name="scoped-model",
+            prompt_tokens=tokens,
+            completion_tokens=10,
+            total_tokens=tokens + 10,
+        ))
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&team_tab=usage&range=90d")
+
+    assert page.status_code == 200
+    assert 'data-panel="usage"' in page.text
+    assert "Consumption and health for Scoped Clinic" in page.text
+    assert "User usage breakdown" in page.text
+    assert "scoped-user@example.com" in page.text
+    assert "other-user@example.com" not in page.text
+    assert "321" in page.text
+    assert "987" not in page.text
+    assert '<option value="90d" selected>Last 90 days</option>' in page.text
+    assert f'name="team_id" value="{team.id}"' in page.text
+    assert 'name="team_tab" value="usage"' in page.text
+    assert page.text.count('class="usage-echart"') == 4
+    assert "Scoped confidential title" not in page.text
+    assert "Other confidential title" not in page.text
+
+
+def test_admin_page_usage_tab_compacts_empty_daily_activity(client, make_user):
+    admin = make_user(email="admin-empty-usage-ui@example.com", password="password-1", is_system_admin=True)
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get("/legacy-admin?tab=usage")
+
+    assert page.status_code == 200
+    assert "No generation or ingestion activity has been recorded in this 30-day window." in page.text
     assert 'class="usage-chart__bars"' not in page.text
 
 

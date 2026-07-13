@@ -55,6 +55,8 @@ Managed accounts are created by a leader or system admin with:
 
 The temporary password is shared out-of-band by the creator.
 
+Leader and system-admin managed-account forms can generate a 12-character temporary password in place. Generated values always include uppercase, lowercase, numeric, and special characters, use browser cryptographic randomness, avoid ambiguous characters, and are copied to the clipboard when browser permission allows. Compact generate, copy, and show/hide controls sit inside the password field; copy appears after generation and remains available until the value is manually edited. The field remains populated with a warning toast when clipboard access is unavailable. Existing manually entered values require confirmation before replacement without changing server-side password policy.
+
 ### First login and restricted onboarding
 
 If the account was created with a temporary password:

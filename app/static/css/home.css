@@ -1167,3 +1167,32 @@ padding: 1rem 0;
     .provider-help { margin-bottom: 12px; }
     .inline-icon-label { display: flex; align-items: center; gap: 8px; }
     .tour-actions-buttons { display: flex; align-items: center; gap: 8px; }
+.generated-password-field {
+  display: block;
+  position: relative;
+}
+
+.generated-password-field > input {
+  padding-right: 7.75rem;
+}
+
+.generated-password-controls {
+  display: flex;
+  gap: 0.4rem;
+  position: absolute;
+  right: 0.45rem;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.generated-password-controls .btn-ghost-sm {
+  border: 0;
+  min-height: 2rem;
+  padding: 0.35rem;
+}
+
+.generated-password-controls svg {
+  display: block;
+  height: 1rem;
+  width: 1rem;
+}

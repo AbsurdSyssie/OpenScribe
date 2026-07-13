@@ -1738,7 +1738,7 @@
 
       <div class="panel">
         <h2>Daily activity</h2>
-        <p>Four aligned 14-day charts show how generation volume, token load, ingestion volume, and failures move over time.</p>
+        <p>Four aligned 30-day charts show how generation volume, token load, ingestion volume, and failures move over time.</p>
         {% if usage_has_activity %}
         <div class="usage-chart-grid">
           <article class="usage-card usage-chart">
@@ -1837,12 +1837,12 @@
           </article>
         </div>
         {% else %}
-        <div class="usage-empty">No generation or ingestion activity has been recorded in this 14-day window.</div>
+            <div class="usage-empty">No generation or ingestion activity has been recorded in this 30-day window.</div>
         {% endif %}
       </div>
 
       <div class="panel">
-        <h2>Team comparison, last 7 days</h2>
+        <h2>Team comparison, last 30 days</h2>
         <p>Compare throughput, reliability, and ingestion mix across teams. The activity share bar combines token load and processed audio volume.</p>
         {% if usage_team_rows %}
         <div class="usage-table-wrap">
@@ -1889,12 +1889,12 @@
           </table>
         </div>
         {% else %}
-        <p><small>No usage has been recorded in the last 7 days.</small></p>
+        <p><small>No usage has been recorded in the last 30 days.</small></p>
         {% endif %}
       </div>
 
       <div class="panel">
-        <h2>{% if usage_scope_team %}Team drilldown for {{ usage_scope_team.name }}{% else %}Platform breakdowns, last 7 days{% endif %}</h2>
+        <h2>{% if usage_scope_team %}Team drilldown for {{ usage_scope_team.name }}{% else %}Platform breakdowns, last 30 days{% endif %}</h2>
         <div class="usage-detail-grid">
           <article class="usage-card">
             <h3>Provider and model mix</h3>
@@ -2052,9 +2052,9 @@
           </table>
         </div>
         {% elif usage_scope_team %}
-        <p><small>No usage has been recorded for this team in the last 7 days.</small></p>
+        <p><small>No usage has been recorded for this team in the last 30 days.</small></p>
         {% else %}
-        <p><small>Select a team to see per-user usage in the last 7 days.</small></p>
+        <p><small>Select a team to see per-user usage in the last 30 days.</small></p>
         {% endif %}
       </div>
     </section>

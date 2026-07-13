@@ -846,7 +846,7 @@ def render_admin(
     extra_admin_tabs: set[str] | None = None,
     workspace_team_tab: str | None = None,
 ):
-    workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}
+    workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
         workspace_team_tab = active_admin_tab
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
@@ -911,6 +911,11 @@ def render_admin(
         "usage_kpi_cards": [],
         "usage_window_summaries": [],
         "usage_trend_points": [],
+        "usage_comparison_trend_points": [],
+        "usage_range_key": "30d",
+        "usage_range_label": "Last 30 days",
+        "usage_range_bucket": "day",
+        "usage_has_comparison": True,
         "usage_has_activity": False,
         "usage_team_rows": [],
         "usage_user_rows": [],
@@ -919,8 +924,12 @@ def render_admin(
         "usage_ingestion_rows": [],
         "usage_failure_rows": [],
     }
-    if resolved_admin_tab in {"usage", "failures"}:
-        usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
+    if resolved_admin_tab in {"usage", "failures"} or workspace_team_tab == "usage":
+        usage_context = admin_usage_overview_service(
+            db,
+            team_id=selected_uuid,
+            range_key=request.query_params.get("range", "30d"),
+        )
     audit_context = {
         "audit_since": request.query_params.get("audit_since", "24h"),
         "audit_action_filter": request.query_params.get("audit_action", ""),
@@ -1102,7 +1111,7 @@ def admin_redirect_url(
     if deidentification_provider_id:
         params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
-        if return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "security", "danger"}:
+        if return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}:
             params["team_tab"] = return_tab
         else:
             params["tab"] = return_tab

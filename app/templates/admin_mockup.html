@@ -571,6 +571,31 @@
         padding: 14px 16px;
         border-bottom: 1px solid var(--border);
       }
+      .provider-scope {
+        max-width: 520px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.78);
+      }
+      .provider-scope p {
+        margin-top: 5px;
+        color: var(--muted);
+      }
+      .provider-scope form {
+        margin-top: 16px;
+      }
+      .provider-scope label {
+        display: grid;
+        gap: 6px;
+      }
+      .provider-scope select {
+        min-height: 38px;
+        padding: 7px 9px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+      }
       .summary-list {
         margin: 0;
         padding: 0 16px;
@@ -1732,6 +1757,27 @@
                 >{% endif %}
               </article>
             </div>
+            {% elif active_admin_tab == 'providers' %}
+            <div class="panel provider-scope">
+              <div class="section-header">
+                <div>
+                  <h2>Team scope</h2>
+                  <p>Choose target team before editing provider availability or active selections.</p>
+                </div>
+              </div>
+              <form method="get" action="/admin">
+                <input type="hidden" name="tab" value="providers" />
+                <label
+                  >Team
+                  <select name="team_id" data-auto-submit>
+                    <option value="">Select a team</option>
+                    {% for team in teams %}
+                    <option value="{{ team.id }}">{{ team.name }}</option>
+                    {% endfor %}
+                  </select></label
+                >
+              </form>
+            </div>
             {% elif active_admin_tab == 'directory' %}
             <div class="section-intro">
               <h1>Manage teams</h1>
@@ -1994,7 +2040,7 @@
             {% endfor %} {% elif active_admin_tab == 'usage' %}
             <div class="section-intro">
               <div class="usage-toolbar">
-                <div><h1>Usage</h1><p>Service health and consumption across all teams. Metadata only.</p></div>
+                <div><h1>Usage</h1><p>{% if usage_scope_team %}Service health and consumption for {{ usage_scope_team.name }}. Metadata only.{% else %}Service health and consumption across all teams. Metadata only.{% endif %}</p></div>
                 <form method="get" action="/admin">
                   <input type="hidden" name="tab" value="usage" />
                   {% if selected_team_id %}<input type="hidden" name="team_id" value="{{ selected_team_id }}" />{% endif %}

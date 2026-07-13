@@ -12,6 +12,8 @@ filter, and KPI row remain clear of the rounded panel border.
 ## Scope
 
 - System-admin only.
+- `/admin?tab=usage` reports all-team aggregates and labels them as such.
+- A validated `team_id` filters the aggregates and visible scope label to that team; invalid IDs do not create a team scope.
 - No transcript text.
 - No note text.
 - No prompt text.

@@ -413,6 +413,10 @@ What it does:
 # Admin provider redesign checks
 
 Run `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or change_llm_connection"` for narrow provider detail and connection-revision coverage.
+
+`tests/test_admin_ui.py::test_admin_provider_setup_keeps_team_scope_panel_before_team_selection` verifies the compatibility `/admin?tab=providers` entry renders a metadata-only team picker, rejects invalid team scope safely, and maps a selected team to Provider policy.
+
+`tests/test_admin_ui.py::test_admin_workspace_global_sidebar_areas_render_real_controls` verifies URL-scoped Usage labels the selected team rather than claiming all-team coverage. Global Usage coverage retains the all-team label.
 # Admin provider wizard
 
 `tests/test_admin_ui.py::test_admin_workspace_provider_redesign_has_explicit_safe_actions` checks API draft/finalize wiring, response-driven rendering, named controls, removal of fabricated model data, and absence of credential references.

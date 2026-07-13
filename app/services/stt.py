@@ -1836,7 +1836,11 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
     preset = get_stt_provider_preset(provider_preset)
     bearer_token = payload.bearer_token
     if not bearer_token and target is not None and target.vault_secret_ref:
-        bearer_token = read_team_stt_bearer_token(team_id=team.id, config_id=target.id)
+        bearer_token = read_team_stt_bearer_token(
+            team_id=team.id,
+            config_id=target.id,
+            secret_ref=target.vault_secret_ref,
+        )
     if preset.requires_api_key and not bearer_token:
         raise AppError(422, "business_rule_violation", "This STT provider requires an API key", {"field": "bearer_token"})
     inspection = inspect_stt_contract(
@@ -1969,8 +1973,28 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     config.updated_by_user_id = actor.id
     result = config
     old_secret_ref = ""
+    revision_secret_ref = ""
+    rebound_secret_ref = ""
     if target is not None:
         old_secret_ref = target.vault_secret_ref
+        if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
+            revision_secret_ref = config.vault_secret_ref
+            try:
+                bearer_token = read_team_stt_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    secret_ref=revision_secret_ref,
+                )
+                rebound_secret_ref = write_team_stt_bearer_token(
+                    team_id=team.id,
+                    config_id=target.id,
+                    bearer_token=bearer_token,
+                    secret_id=uuid4(),
+                )
+            except Exception:
+                db.rollback()
+                raise
+            config.vault_secret_ref = rebound_secret_ref
         editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
         for field in editable:
             setattr(target, field, getattr(config, field))
@@ -1982,13 +2006,37 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        if rebound_secret_ref:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         _raise_stt_label_conflict_if_needed(exc)
         raise
-    if target is not None and old_secret_ref and old_secret_ref != result.vault_secret_ref:
-        try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=old_secret_ref)
-        except AppError as exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": exc.code})
+    except Exception:
+        db.rollback()
+        if rebound_secret_ref:
+            try:
+                delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+        raise
+    if target is not None:
+        obsolete_secrets = (
+            (target.id, old_secret_ref),
+            (config.id, revision_secret_ref),
+        )
+        for obsolete_config_id, obsolete_ref in obsolete_secrets:
+            if not obsolete_ref or obsolete_ref == result.vault_secret_ref:
+                continue
+            try:
+                delete_team_stt_bearer_token(
+                    team_id=team.id,
+                    config_id=obsolete_config_id,
+                    secret_ref=obsolete_ref,
+                )
+            except AppError as exc:
+                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(obsolete_config_id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(result)
     _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
     return result

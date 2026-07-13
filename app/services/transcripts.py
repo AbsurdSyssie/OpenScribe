@@ -792,14 +792,13 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     if transcript.owner_user_id != owner.id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    if transcript_is_expired(transcript):
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     return transcript
 
 
 def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
-    if transcript_is_expired(transcript):
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    return transcript
+    return _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
 
 
 def _normalize_manual_pii_type(value: str | None) -> str:
@@ -1123,6 +1122,7 @@ def delete_expired_transcripts(
             .where(Transcript.retention_expires_at <= comparison_now)
             .order_by(Transcript.retention_expires_at.asc(), Transcript.id.asc())
             .limit(batch_size)
+            .with_for_update(skip_locked=True)
         )
     )
     if not transcripts:
@@ -1639,6 +1639,8 @@ def process_transcript_ingestion_job(
         raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
     transcript = db.get(Transcript, job.transcript_id)
     if transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
+    if transcript_is_expired(transcript):
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
     if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.failed}:
         return job

@@ -6490,6 +6490,12 @@ def test_admin_page_can_delete_team_and_owned_records(
         lambda *, team_id, config_id, secret_ref=None: deleted_stt_refs.append(secret_ref),
     )
     llm_config = make_llm_config(team=team, actor=admin, label="Team LLM", available_models_json=["gpt-4o-mini"])
+    llm_secret_ref = llm_config.vault_secret_ref
+    deleted_llm_refs: list[str | None] = []
+    monkeypatch.setattr(
+        "app.services.admin.delete_team_llm_bearer_token",
+        lambda *, team_id, config_id, secret_ref=None: deleted_llm_refs.append(secret_ref),
+    )
     make_llm_selection(config=llm_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
     db_session.add(
         TeamHallucinationCheckSelection(
@@ -6536,7 +6542,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     deleted = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
 
     assert deleted.status_code == 303
-    assert deleted.headers["location"] == "/admin?tab=directory"
+    assert deleted.headers["location"] == "/legacy-admin?tab=directory"
     assert db_session.get(Team, team.id) is None
     assert db_session.get(AccountRequest, account_request.id) is None
     assert db_session.get(TeamSttConfig, stt_config.id) is None
@@ -6554,6 +6560,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     assert db_session.get(User, leader.id) is None
     assert db_session.get(User, member.id) is None
     assert deleted_stt_refs == [stt_secret_ref]
+    assert deleted_llm_refs == [llm_secret_ref]
 
 
 def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
@@ -6581,7 +6588,7 @@ def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
     )
     monkeypatch.setattr(
         "app.services.admin.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id: deleted_secret_calls.append(f"llm:{config_id}"),
+        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"llm:{config_id}"),
     )
 
     client.post("/login", data={"email": "admin-delete-team-preflight@example.com", "password": "password-1"}, follow_redirects=False)
@@ -6617,7 +6624,7 @@ def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
     )
     monkeypatch.setattr(
         "app.services.admin.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id: deleted_secret_calls.append(f"llm:{config_id}"),
+        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"llm:{config_id}"),
     )
 
     def fail_user_cleanup(db, actor, *, user):

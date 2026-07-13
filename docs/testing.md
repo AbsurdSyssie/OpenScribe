@@ -112,6 +112,8 @@ What it does:
 - workspace refreshes re-render the right-side PII table and transcript highlights from `active_transcript_pii_entities`, including newly detected clinical NLP entities, without requiring a full page reload
 - workspace PII minimisation tests verify default PII rows omit original values, owner-only reveal returns values through POST+CSRF, non-owners receive `404`, sensitive APIs are `no-store`, and plaintext response fields no longer use `_encrypted` names
 - manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
+- retention regressions verify expired roots cannot hydrate the owner workspace or reach transcript, working-note, dictation, generated-document, PII, generation, edit, delete, debug, or async-processing content paths before physical cleanup
+- retention runtime regressions verify Celery Beat queues bounded hard-delete cleanup every 10 seconds and the documented dev runtime starts and stops both worker and Beat processes
 - manual PII dedupe coverage verifies normalized value hashes are keyed owner-scoped digests rather than plain SHA-256 of low-entropy PII
 - manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation
 
@@ -174,6 +176,9 @@ What it does:
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
 - LLM provider presets covering branded provider catalog/inference, live-discovery-only manual fallback, manual model selectability after failed discovery, service-owned inspection metadata, stale model clearing/rediscovery on provider endpoint changes, OpenAI-only prefix filtering, base URL override reclassification to custom OpenAI-compatible, saved inspection metadata, and migration backfill
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
+- provider revision regressions verify blank STT/LLM revisions follow exact stored Vault references, replacement credentials are rebound to stable target-owned paths before promotion, rollback cleans only the new copy, and superseded target/draft secrets are cleaned after commit; credential removal/restoration and team deletion also use the exact stored reference
+- migration rollback coverage verifies pending provider revisions sharing root labels are removed before unconditional pre-revision label uniqueness is restored
+- CSP regressions include the admin workspace and forbid inline submit/change handlers, keeping clear-selection confirmations on delegated `data-confirm-submit` handlers
 - hallucination-check selection API coverage for system-admin-only set/read/clear using ready active team LLM configs
 - structured hallucination-check generation coverage for redacted-only checker prompt shape, exact-substring patch application, checked bucket, applied edit count, encrypted dev debug payload, and provider usage metadata
 - structured hallucination-check provider/Vault-failure coverage verifies notes still save ready/unchecked and owner-only debug includes safe failure metadata

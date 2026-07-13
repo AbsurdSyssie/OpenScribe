@@ -112,6 +112,100 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
 
 
 @pytest.mark.migration
+def test_provider_revision_downgrade_discards_pending_rows_before_restoring_label_uniqueness():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "w4x5y6z7a8b9")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000701', 'Revision Rollback', 'revision rollback', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000702', 'Rollback Admin', 'rollback-admin@example.com', 'hash',
+                    NULL, NULL, true, 'active', false, 'complete', true, true, NOW(), NOW(), NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_stt_configs (
+                    id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                    transcribe_path, auth_mode, available_models_json, file_field_name, response_text_path,
+                    extra_form_fields_json, vault_secret_ref, setup_status, is_active,
+                    created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000711', '00000000-0000-0000-0000-000000000701', NULL,
+                    'Clinic STT', 'custom_rest_openapi', 'openai_compatible_rest', 'http://127.0.0.1:7000',
+                    '/v1/audio/transcriptions', 'bearer', '[]'::json, 'file', 'text', '{}'::json,
+                    'secret:stt-root', 'ready', true, '00000000-0000-0000-0000-000000000702',
+                    '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000712', '00000000-0000-0000-0000-000000000701',
+                    '00000000-0000-0000-0000-000000000711', 'Clinic STT', 'custom_rest_openapi',
+                    'openai_compatible_rest', 'http://127.0.0.1:7001', '/v1/audio/transcriptions', 'bearer',
+                    '[]'::json, 'file', 'text', '{}'::json, 'secret:stt-draft', 'pending', true,
+                    '00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_llm_configs (
+                    id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                    auth_mode, available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000721', '00000000-0000-0000-0000-000000000701', NULL,
+                    'Clinic LLM', 'openai', 'openai_chat', 'https://api.openai.com/v1', 'bearer', '[]'::json,
+                    '{}'::json, 'ready', 'secret:llm-root', true, '00000000-0000-0000-0000-000000000702',
+                    '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000722', '00000000-0000-0000-0000-000000000701',
+                    '00000000-0000-0000-0000-000000000721', 'Clinic LLM', 'openai', 'openai_chat',
+                    'https://api.openai.com/v1', 'bearer', '[]'::json, '{}'::json, 'pending', 'secret:llm-draft',
+                    true, '00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                )
+                """
+            )
+        )
+
+    command.downgrade(alembic_config(), "v3w4x5y6z7a8")
+
+    with isolated_engine.begin() as connection:
+        inspector = inspect(connection)
+        for table, expected_label in (("team_stt_configs", "Clinic STT"), ("team_llm_configs", "Clinic LLM")):
+            assert "revision_of_config_id" not in {column["name"] for column in inspector.get_columns(table)}
+            assert connection.execute(text(f"SELECT label FROM {table}")).scalars().all() == [expected_label]
+            indexes = {index["name"]: index for index in inspector.get_indexes(table)}
+            restored_index = indexes[f"uq_{table}_team_label_lower"]
+            assert restored_index["unique"] is True
+            assert not restored_index["dialect_options"].get("postgresql_where")
+
+
+@pytest.mark.migration
 def test_security_audit_event_user_and_team_references_set_null_on_delete():
     reset_public_schema()
     command.upgrade(alembic_config(), "head")

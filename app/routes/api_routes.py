@@ -42,6 +42,7 @@ from ..services.transcripts import (
     clear_working_note as clear_working_note_service,
     get_active_owner_transcript,
     save_working_note as save_working_note_service,
+    transcript_is_expired,
     working_note_detail as working_note_detail_service,
 )
 from ..web.presentation import hallucination_check_selection_response, smart_phrase_response
@@ -1161,7 +1162,11 @@ def reveal_transcript_pii_entities(
     db: Session = Depends(get_db),
 ):
     transcript = db.get(Transcript, transcript_id)
-    if transcript is None or transcript.owner_user_id != context.user.id:
+    if (
+        transcript is None
+        or transcript.owner_user_id != context.user.id
+        or transcript_is_expired(transcript)
+    ):
         raise AppError(
             404,
             "not_found",
@@ -1454,6 +1459,7 @@ def get_generated_document_redaction_debug(
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != context.user.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    get_active_owner_transcript(db, context.user, transcript_id=document.transcript_id)
     return generated_document_redaction_debug_response(db, document)
 
 

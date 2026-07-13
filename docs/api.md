@@ -160,6 +160,8 @@ Browser navigation behavior:
 - `POST /api/v1/llm-configs/{config_id}/replace-credential`
 - `POST /api/v1/llm-configs`
 - `DELETE /api/v1/llm-configs/{config_id}`
+
+Material provider edits use pending revisions while active config ids remain stable. Blank revision credentials reuse the root config's exact stored Vault reference. Replacement credentials are rebound to a fresh root-owned Vault path before promotion; superseded root and revision paths are cleaned only after the database commit succeeds.
 - `GET /api/v1/llm-selection`
 - `GET /api/v1/llm-selection/options`
 - `POST /api/v1/llm-selection`

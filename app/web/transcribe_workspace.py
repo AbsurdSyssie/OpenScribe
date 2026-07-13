@@ -70,6 +70,7 @@ from ..services.transcripts import (
     next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     reconcile_transcript_status as reconcile_transcript_status_service,
     manual_pii_entity_value as manual_pii_entity_value_service,
+    transcript_is_expired as transcript_is_expired_service,
     transcript_draft_text as transcript_draft_text_service,
     transcript_has_working_note as transcript_has_working_note_service,
     transcript_working_note_mode as transcript_working_note_mode_service,
@@ -588,7 +589,11 @@ def resolve_transcribe_workspace(
             selected_id = None
         if selected_id is not None:
             candidate = db.get(Transcript, selected_id)
-            if candidate is not None and candidate.owner_user_id == current_user.id:
+            if (
+                candidate is not None
+                and candidate.owner_user_id == current_user.id
+                and not transcript_is_expired_service(candidate)
+            ):
                 active_transcript = candidate
     recent_transcript_page = list_transcript_history_page(
         db,

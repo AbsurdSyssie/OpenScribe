@@ -1647,7 +1647,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
             raise AppError(409, "conflict", "Cannot delete a team that still contains a system-admin account", {"team_id": str(team.id), "user_id": str(user.id)})
 
     stt_secret_deletions: list[tuple[UUID, UUID, str]] = []
-    llm_secret_deletions: list[tuple[UUID, UUID]] = []
+    llm_secret_deletions: list[tuple[UUID, UUID, str]] = []
     try:
         provider_events = db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.team_id == team.id))
         for event in provider_events:
@@ -1681,7 +1681,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
             db.delete(config)
         for config in db.scalars(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)):
             if config.vault_secret_ref:
-                llm_secret_deletions.append((team.id, config.id))
+                llm_secret_deletions.append((team.id, config.id, config.vault_secret_ref))
             db.delete(config)
 
         for template in db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == team.id)):
@@ -1712,9 +1712,9 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
                 "team_stt_secret_delete_failed",
                 extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
             )
-    for secret_team_id, config_id in llm_secret_deletions:
+    for secret_team_id, config_id, secret_ref in llm_secret_deletions:
         try:
-            delete_team_llm_bearer_token(team_id=secret_team_id, config_id=config_id)
+            delete_team_llm_bearer_token(team_id=secret_team_id, config_id=config_id, secret_ref=secret_ref)
         except AppError as exc:
             cleanup_logger.warning(
                 "team_llm_secret_delete_failed",

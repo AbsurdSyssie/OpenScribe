@@ -269,6 +269,9 @@ This keeps the first implementation practical for local STT services while still
 - manual `generic_rest` save-and-inspect validates the saved runtime contract with the bundled synthetic audio sample; it does not rely on default `/openapi.json` discovery
 - duplicate detection uses same team, adapter, base URL, and a server-side non-reversible credential fingerprint; unconfirmed duplicates warn before Vault write or provider inspection
 - saved-provider re-inspection reads the Vault reference and never asks the admin to re-enter the token
+- provider edit revisions with a blank credential read the active config's exact stored Vault reference, including generated secret suffixes
+- replacement credentials are first staged under the revision id; finalization copies the credential to a fresh target-config Vault path before atomically promoting metadata into the stable config id
+- failed promotion removes only the fresh target copy; successful promotion removes replaced target and revision secrets only after the database no longer references them
 
 First implementation rules:
 

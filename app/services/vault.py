@@ -295,16 +295,30 @@ def delete_team_stt_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: 
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
-def team_llm_secret_path(team_id: UUID, config_id: UUID) -> str:
-    return f"openscribe/llm/team/{team_id}/config/{config_id}"
+def team_llm_secret_path(team_id: UUID, config_id: UUID, *, secret_id: UUID | None = None) -> str:
+    path = f"openscribe/llm/team/{team_id}/config/{config_id}"
+    return f"{path}/{secret_id}" if secret_id is not None else path
 
 
-def team_llm_secret_ref(team_id: UUID, config_id: UUID) -> str:
-    return f"{VAULT_KV_MOUNT}:{team_llm_secret_path(team_id, config_id)}"
+def team_llm_secret_ref(team_id: UUID, config_id: UUID, *, secret_id: UUID | None = None) -> str:
+    return f"{VAULT_KV_MOUNT}:{team_llm_secret_path(team_id, config_id, secret_id=secret_id)}"
 
 
-def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token: str) -> str:
-    path = team_llm_secret_path(team_id, config_id)
+def write_team_llm_bearer_token(
+    *,
+    team_id: UUID,
+    config_id: UUID,
+    bearer_token: str,
+    secret_id: UUID | None = None,
+    secret_ref: str | None = None,
+) -> str:
+    if secret_ref is not None and secret_id is not None:
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = (
+        _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
+        if secret_ref is not None
+        else team_llm_secret_path(team_id, config_id, secret_id=secret_id)
+    )
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
     try:
         response = httpx.post(
@@ -317,7 +331,7 @@ def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token:
         raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
     if response.status_code >= 400:
         raise AppError(502, "vault_write_failed", "Vault secret write failed")
-    return team_llm_secret_ref(team_id, config_id)
+    return f"{VAULT_KV_MOUNT}:{path}"
 
 
 def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
@@ -326,9 +340,9 @@ def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str |
     mount_prefix = f"{VAULT_KV_MOUNT}:"
     if not secret_ref.startswith(mount_prefix):
         raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
-    path = secret_ref[len(mount_prefix):]
+    path = secret_ref[len(mount_prefix):].strip()
     expected_prefix = f"openscribe/llm/team/{team_id}/config/"
-    if not path.startswith(expected_prefix):
+    if not path or not path.startswith(expected_prefix):
         raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
     return path
 

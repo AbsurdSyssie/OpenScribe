@@ -52,7 +52,7 @@ def admin_page(
         resolved_team_tab = "provider-policy"
     else:
         resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
-    global_tabs = {"home", "directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"}
+    global_tabs = {"home", "providers", "directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"}
     resolved_global_tab = tab if tab in global_tabs else "home"
     return render_admin(
         request,

@@ -407,8 +407,8 @@ def test_leader_home_separates_ai_services_from_team_member_admin(client, make_t
 
     assert 'data-tab-target="ai-services"' in page.text
     assert 'data-tab-panel="ai-services"' in page.text
-    assert "service-section--stt" in page.text
-    assert "service-section--llm" in page.text
+    assert 'id="speech-service"' in page.text
+    assert 'id="writing-assistant"' in page.text
     assert "Choose speech and writing services for your team." in page.text
     assert "Speech to text" in page.text
     assert "Writing assistant" in page.text
@@ -466,7 +466,7 @@ def test_admin_providers_panel_renders_deidentification_management(client, make_
     )
 
     client.post("/login", data={"email": "deid-panel-admin@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?tab=providers&team_id={team.id}")
+    page = client.get(f"/legacy-admin?tab=providers&team_id={team.id}")
 
     assert page.status_code == 200
     assert "No explicit de-identification selection" in page.text
@@ -551,7 +551,7 @@ def test_admin_can_provision_and_assign_deidentification_provider_from_web(
     assert clinical_selection is not None
     assert clinical_selection.provider_id == provider.id
 
-    page = client.get(f"/admin?tab=providers&team_id={team.id}")
+    page = client.get(f"/legacy-admin?tab=providers&team_id={team.id}")
     assert page.status_code == 200
     assert "Selected provider for lazy redaction runs: https://deid.example.com/detect." in page.text
     assert "Active clinical NLP endpoint" in page.text
@@ -1560,14 +1560,15 @@ def test_home_restyled_team_management_uses_member_menu_without_duplicate_user_t
 
     client.post("/login", data={"email": "leader-restyled-team@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home-restyled?tab=team-management")
+    home_css = Path("app/static/css/home.css").read_text(encoding="utf-8")
 
     assert page.status_code == 200
     assert "Manage members and configuration for Clinic Restyled Team Management." in page.text
     assert "Managed users" not in page.text
     assert "Suspend" in page.text
     assert "Delete" in page.text
-    assert "overflow: visible; background: var(--card);" in page.text
-    assert ".member-menu[open] { z-index: 40; }" in page.text
+    assert "overflow: visible; background: var(--card);" in home_css
+    assert ".member-menu[open] { z-index: 40; }" in home_css
     assert "const memberMenuIdleMs = 3500;" in page.text
     assert "document.addEventListener('click', (event) =>" in page.text
     assert "if (menu.open && !menu.contains(event.target)) closeMemberMenu(menu);" in page.text
@@ -1964,6 +1965,7 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     admins = client.get("/admin?tab=system-admins")
     defaults = client.get("/admin?tab=global-defaults")
     audit = client.get("/admin?tab=audit")
+    global_usage = client.get("/admin?tab=usage")
     team_usage = client.get(f"/admin?tab=usage&team_id={team.id}")
 
     assert 'action="/admin/teams"' in directory.text
@@ -1975,7 +1977,9 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     assert 'name="is_system_admin"' in admins.text and 'value="true"' in admins.text
     assert "/legacy-admin?tab=defaults" in defaults.text
     assert 'name="audit_since"' in audit.text
-    assert "Metadata-only provider and ingestion activity" in team_usage.text
+    assert "Service health and consumption across all teams. Metadata only." in global_usage.text
+    assert "Service health and consumption for Clinic Global Admin. Metadata only." in team_usage.text
+    assert "Service health and consumption across all teams. Metadata only." not in team_usage.text
     assert "Team identity, status and operational summary" not in team_usage.text
 
 
@@ -2108,17 +2112,29 @@ def test_admin_change_llm_connection_stages_selected_revision(client, db_session
     assert root.vault_secret_ref not in page.text
 
 
-def test_admin_provider_setup_keeps_team_scope_panel_before_team_selection(client, make_user):
+def test_admin_provider_setup_keeps_team_scope_panel_before_team_selection(client, make_team, make_user):
+    team = make_team(name="Clinic Provider Entry")
     make_user(email="admin-provider-entry@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin-provider-entry@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/admin?tab=providers")
+    invalid_team_page = client.get("/admin?tab=providers&team_id=00000000-0000-0000-0000-000000000000")
+    selected_team_page = client.get(f"/admin?tab=providers&team_id={team.id}")
 
     assert page.status_code == 200
     assert 'class="panel provider-scope"' in page.text
     assert "Team scope" in page.text
     assert "Choose target team before editing provider availability or active selections." in page.text
+    assert 'action="/admin"' in page.text
+    assert 'name="tab" value="providers"' in page.text
+    assert f'value="{team.id}"' in page.text
+    assert "Clinic Provider Entry" in page.text
     assert "Configure STT, LLM, and de-identification." not in page.text
+    assert invalid_team_page.status_code == 200
+    assert 'class="panel provider-scope"' in invalid_team_page.text
+    assert selected_team_page.status_code == 200
+    assert 'data-panel="provider-policy"' in selected_team_page.text
+    assert re.search(r'class="tab active"[^>]*data-tab="provider-policy"', selected_team_page.text, re.S)
 
 
 def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(client, db_session, make_team, make_user, make_llm_config):
@@ -2133,7 +2149,7 @@ def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(clien
     )
 
     client.post("/login", data={"email": "admin-llm-tiles@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
 
     assert page.status_code == 200
     assert 'class="model-toggle-grid"' in page.text
@@ -2172,7 +2188,7 @@ def test_admin_pages_can_configure_hallucination_checker(client, db_session, mak
     )
 
     client.post("/login", data={"email": "admin-checker-ui@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&tab=providers")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
     assert page.status_code == 200
     assert "Hallucination checker" in page.text
     assert 'action="/admin/hallucination-check-selection"' in page.text
@@ -2239,7 +2255,7 @@ def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
     db_session.commit()
 
     client.post("/login", data={"email": "admin-llm-draft-ui@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={config.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers&llm_config_id={config.id}")
 
     assert page.status_code == 200
     assert "Setup incomplete" in page.text
@@ -2385,7 +2401,7 @@ def test_admin_llm_manual_model_step_shows_discovery_warning(client, db_session,
     )
     assert draft.status_code == 303
     saved = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
-    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers&llm_config_id={saved.id}")
 
     assert "Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong." in page.text
 
@@ -2599,7 +2615,7 @@ def test_admin2_audit_tab_shows_metadata_only_security_events(client, db_session
     assert "hidden-subject-hash" not in page.text
     assert "hidden-reset-subject-hash" not in page.text
 
-    legacy_page = client.get("/admin?tab=audit&audit_since=24h")
+    legacy_page = client.get("/legacy-admin?tab=audit&audit_since=24h")
     assert legacy_page.status_code == 200
     legacy_audit_section = legacy_page.text.split("Recent audit events", 1)[1].split('data-tab-panel="usage"', 1)[0]
     assert "audit-actor@example.com" in legacy_audit_section
@@ -2750,7 +2766,7 @@ def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=member.id,
@@ -2759,7 +2775,7 @@ def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -2804,7 +2820,7 @@ def test_browser_transcribe_upload_rejects_missing_csrf_token(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3129,7 +3145,7 @@ def test_transcribe_create_button_ignores_existing_generated_note_without_source
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3220,7 +3236,7 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3253,7 +3269,7 @@ def test_transcribe_template_editor_save_returns_to_transcribe(client, db_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3291,7 +3307,7 @@ def test_transcribe_quick_action_editor_save_returns_to_transcribe(client, db_se
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3367,7 +3383,7 @@ def test_user_transcribe_page_renders_workspace_values(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3421,7 +3437,7 @@ def test_user_transcribe_page_shows_owner_pii_sidebar(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3473,7 +3489,7 @@ def test_user_transcribe_page_shows_clinical_entities_in_pii_area(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3603,7 +3619,7 @@ def test_user_transcribe_page_exposes_workspace_hooks_and_pane_controls(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3671,7 +3687,7 @@ def test_user_transcribe_page_uses_structured_template_sections(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3697,7 +3713,7 @@ def test_user_transcribe_page_prioritises_latest_note_and_emis_driven_generation
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3744,7 +3760,7 @@ def test_user_transcribe_page_shows_stt_config_label(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3778,7 +3794,7 @@ def test_user_transcribe_page_shows_idle_status_with_team_stt_selected(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3886,7 +3902,7 @@ def test_user_transcribe_page_renders_live_session_controls(client, db_session, 
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -3916,7 +3932,7 @@ def test_user_transcribe_page_truncates_document_switcher_labels(client, db_sess
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3964,7 +3980,7 @@ def test_user_transcribe_page_shows_live_chunk_failure_message(client, db_sessio
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3999,7 +4015,7 @@ def test_user_transcribe_page_can_switch_blank_live_session_to_whole_file(client
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4028,7 +4044,7 @@ def test_user_transcribe_page_can_switch_ready_session_with_content_between_mode
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4054,7 +4070,7 @@ def test_user_transcribe_page_cannot_switch_mode_while_actively_recording(client
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4081,7 +4097,7 @@ def test_user_transcribe_page_cannot_switch_mode_while_ingestion_job_is_still_ru
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -4118,7 +4134,7 @@ def test_user_transcribe_page_shows_progress_for_transcribing_session(client, db
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(queued)
     db_session.flush()
@@ -4156,7 +4172,7 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(failed)
     db_session.commit()
@@ -4192,7 +4208,7 @@ def test_user_transcribe_page_hides_retry_when_failed_upload_blob_is_missing(cli
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(failed)
     db_session.commit()
@@ -4231,7 +4247,7 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(failed)
     db_session.commit()
@@ -4330,7 +4346,7 @@ def test_user_transcribe_page_allows_new_session_when_latest_has_transcript_text
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4355,7 +4371,7 @@ def test_user_transcribe_page_syncs_generation_controls_after_workspace_refresh(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4372,9 +4388,9 @@ def test_user_transcribe_page_syncs_generation_controls_after_workspace_refresh(
 def test_user_transcribe_page_can_bulk_delete_selected_sessions(client, db_session, make_team, make_user):
     team = make_team(name="Clinic North")
     member = make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
-    keep = Transcript(owner_user_id=member.id, team_id=team.id, title="Keep", ingestion_mode=TranscriptIngestionMode.whole_file, retention_days_applied=30, retention_expires_at=member.created_at)
-    delete_one = Transcript(owner_user_id=member.id, team_id=team.id, title="Delete one", ingestion_mode=TranscriptIngestionMode.whole_file, retention_days_applied=30, retention_expires_at=member.created_at)
-    delete_two = Transcript(owner_user_id=member.id, team_id=team.id, title="Delete two", ingestion_mode=TranscriptIngestionMode.live_chunked, retention_days_applied=30, retention_expires_at=member.created_at)
+    keep = Transcript(owner_user_id=member.id, team_id=team.id, title="Keep", ingestion_mode=TranscriptIngestionMode.whole_file, retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30))
+    delete_one = Transcript(owner_user_id=member.id, team_id=team.id, title="Delete one", ingestion_mode=TranscriptIngestionMode.whole_file, retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30))
+    delete_two = Transcript(owner_user_id=member.id, team_id=team.id, title="Delete two", ingestion_mode=TranscriptIngestionMode.live_chunked, retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30))
     db_session.add_all([keep, delete_one, delete_two])
     db_session.commit()
 
@@ -4407,7 +4423,7 @@ def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
         current_draft_text_encrypted="   ",
         ingestion_mode=TranscriptIngestionMode.whole_file,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     draft = Transcript(
         owner_user_id=member.id,
@@ -4416,7 +4432,7 @@ def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
         current_draft_text_encrypted="Private transcript detail",
         ingestion_mode=TranscriptIngestionMode.whole_file,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     version_only = Transcript(
         owner_user_id=member.id,
@@ -4425,7 +4441,7 @@ def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
         current_draft_text_encrypted="",
         ingestion_mode=TranscriptIngestionMode.whole_file,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     blank_version_only = Transcript(
         owner_user_id=member.id,
@@ -4434,7 +4450,7 @@ def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
         current_draft_text_encrypted="",
         ingestion_mode=TranscriptIngestionMode.whole_file,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([empty, draft, version_only, blank_version_only])
     db_session.commit()
@@ -4529,7 +4545,7 @@ def test_user_transcribe_page_can_generate_note_output_from_template(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4600,7 +4616,7 @@ def test_user_transcribe_page_shows_structured_emis_context_inputs(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4656,7 +4672,7 @@ def test_user_transcribe_page_marks_structured_template_options_for_blank_note_e
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4716,7 +4732,7 @@ def test_user_transcribe_page_enables_followups_from_structured_note_content(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -4770,7 +4786,7 @@ def test_user_transcribe_page_enables_followups_from_freeform_note_content(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5108,7 +5124,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-lucide="message-square-text"' in workspace_html
     assert 'data-lucide="sparkles"' in workspace_html
     assert '<div class="transcript-review-grid' in workspace_html
-    assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>' in workspace_html
+    assert '<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft' in workspace_html
     assert 'class="pii-sidebar" data-pii-sidebar' in workspace_html
     assert 'data-pii-table-wrap' in workspace_html
     assert 'data-pii-add-form' in workspace_html
@@ -5351,7 +5367,7 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5389,7 +5405,7 @@ def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5443,7 +5459,7 @@ def test_user_transcribe_page_shows_history_tab_empty_state(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5492,7 +5508,7 @@ def test_user_transcribe_page_renders_ready_freeform_note_editor(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5571,7 +5587,7 @@ def test_user_transcribe_page_reloads_persisted_structured_emis_context(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5635,7 +5651,7 @@ def test_user_transcribe_page_exposes_workspace_api_endpoint(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5697,7 +5713,7 @@ def test_user_transcribe_page_uses_preferred_template_as_note_default(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5728,7 +5744,7 @@ def test_user_transcribe_page_keeps_structured_output_refresh_hooks(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5797,7 +5813,7 @@ def test_user_transcribe_page_uses_generated_note_snapshot_for_structured_sectio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5873,7 +5889,7 @@ def test_local_dev_transcribe_page_shows_redaction_debug_panel(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5940,7 +5956,7 @@ def test_user_transcribe_page_can_queue_followup_generation(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -5994,7 +6010,7 @@ def test_user_transcribe_page_renders_generated_document_switchers(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -6143,7 +6159,7 @@ def test_user_transcribe_page_can_run_quick_action(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -6216,7 +6232,7 @@ def test_user_transcribe_page_rejects_oversized_quick_action_context_on_form_sub
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -6273,7 +6289,7 @@ def test_user_transcribe_page_orders_templates_and_quick_picks_from_preferences(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=member.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -6303,7 +6319,7 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_sessio
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
     assert page.status_code == 200
     assert "STT endpoints" in page.text
 
@@ -6323,7 +6339,7 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_sessio
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
@@ -6375,7 +6391,7 @@ def test_admin_page_can_manage_default_assets(client, db_session, make_user):
     persisted_quick_action = db_session.scalar(select(DefaultQuickAction).where(DefaultQuickAction.name == "Default SMS"))
     assert persisted_quick_action is not None
 
-    defaults_page = client.get("/admin?tab=defaults")
+    defaults_page = client.get("/legacy-admin?tab=defaults")
     assert defaults_page.status_code == 200
     assert "Default templates" in defaults_page.text
     assert "Default quick actions" in defaults_page.text
@@ -6741,15 +6757,15 @@ def test_admin_page_can_clear_selected_team_stt_selection(client, db_session, ma
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
 
-    page = client.get(f"/admin?team_id={team.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
     assert "Active for conversation" in page.text
     assert "Clear" in page.text
 
     cleared = client.post("/admin/stt-selection/clear", data={"team_id": str(team.id)}, follow_redirects=False)
     assert cleared.status_code == 303
-    assert cleared.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert cleared.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
 
-    page_after = client.get(f"/admin?team_id={team.id}")
+    page_after = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
     assert "Add provisioned endpoint" in page_after.text
     assert "Active for conversation" not in page_after.text
     assert db_session.scalar(
@@ -6780,7 +6796,7 @@ def test_admin_page_can_assign_stt_config_to_dictation_purpose(client, db_sessio
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
 
     selection = db_session.scalar(
         select(TeamSttSelection).where(
@@ -6801,7 +6817,7 @@ def test_admin_page_can_delete_selected_team_stt_config(client, db_session, make
     delete = client.post(f"/admin/stt-configs/{config.id}/delete", data={"team_id": str(team.id)}, follow_redirects=False)
 
     assert delete.status_code == 303
-    assert delete.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert delete.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
     assert db_session.get(TeamSttConfig, config.id) is None
 
 
@@ -6885,7 +6901,7 @@ def test_admin_page_can_save_stt_config_after_inspect_with_retyped_token(client,
     )
 
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
@@ -7034,7 +7050,7 @@ def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, mak
     make_user(email="admin-llm-brand-defaults@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin-llm-brand-defaults@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&tab=providers")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
 
     assert page.status_code == 200
     assert '<option value="mistral" data-default-base-url="https://api.mistral.ai/v1"' in page.text
@@ -7152,7 +7168,7 @@ def test_admin_page_includes_client_side_stt_adapter_toggle(client, make_team, m
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers")
 
     assert page.status_code == 200
     assert "data-stt-adapter-select" in page.text
@@ -7184,7 +7200,7 @@ def test_admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key(clien
     assert draft.status_code == 303
     saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
     assert saved_config is not None
-    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
     assert 'data-default-provider-tab="llm"' in page.text
     assert "secret-openai-key" not in page.text
     assert "Setup incomplete" in page.text
@@ -7203,7 +7219,7 @@ def test_admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key(clien
     )
 
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/legacy-admin?team_id={team.id}&tab=providers"
 
 
 def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(client, db_session, make_team, make_user, monkeypatch):
@@ -7230,7 +7246,7 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     assert draft.status_code == 303
     saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
     assert saved_config is not None
-    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
     assert 'name="preserved_bearer_token" value="bedrock-api-key"' not in page.text
     assert ">anthropic.claude-3-7-sonnet-20250219-v1:0 (saved)<" in page.text
     assert "https://bedrock-mantle.us-east-1.api.aws/v1" in page.text
@@ -7307,7 +7323,7 @@ def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(c
     assert draft.status_code == 303
     saved_config = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id))
     assert saved_config is not None
-    page = client.get(f"/admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
+    page = client.get(f"/legacy-admin?team_id={team.id}&tab=providers&llm_config_id={saved_config.id}")
     assert ">llama3.2 (saved)<" in page.text
 
     save = client.post(
@@ -7382,7 +7398,7 @@ def test_admin_page_lists_teams_users_and_account_requests(client, make_team, ma
     make_account_request(requested_name="Alice Example", requested_email="alice@example.com", requested_team_name="Clinic North")
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin")
+    page = client.get("/legacy-admin")
 
     assert page.status_code == 200
     assert "Clinic North" in page.text
@@ -7656,4 +7672,4 @@ def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_
     page = client.get("/admin?tab=providers")
 
     assert page.status_code == 200
-    assert "Usage overview" in page.text
+    assert 'class="panel provider-scope"' in page.text

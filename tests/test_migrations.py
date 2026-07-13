@@ -96,6 +96,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "user_mfa_methods",
         "user_recovery_codes",
         "transcripts",
+        "transcript_audio_cleanup_jobs",
         "transcript_ingestion_jobs",
         "transcript_versions",
     }
@@ -109,6 +110,19 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         assert "revision_of_config_id IS NULL" in indexes[f"uq_{table}_team_label_lower"]["dialect_options"]["postgresql_where"]
         assert indexes[f"uq_{table}_pending_revision"]["unique"] is True
         assert "revision_of_config_id IS NOT NULL" in indexes[f"uq_{table}_pending_revision"]["dialect_options"]["postgresql_where"]
+    with engine.connect() as connection:
+        stt_auth_modes = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'sttauthmode'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+    assert stt_auth_modes == ["bearer", "none"]
 
 
 @pytest.mark.migration
@@ -401,6 +415,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     clinical_entity_run_fks = inspector.get_foreign_keys("clinical_entity_runs")
     manual_pii_columns = {column["name"] for column in inspector.get_columns("transcript_manual_pii_entities")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
+    transcript_audio_cleanup_columns = {column["name"] for column in inspector.get_columns("transcript_audio_cleanup_jobs")}
+    transcript_audio_cleanup_fks = inspector.get_foreign_keys("transcript_audio_cleanup_jobs")
+    transcript_audio_cleanup_indexes = inspector.get_indexes("transcript_audio_cleanup_jobs")
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
     user_encryption_key_columns = {column["name"] for column in inspector.get_columns("user_encryption_keys")}
     auth_email_token_columns = {column["name"] for column in inspector.get_columns("auth_email_tokens")}
@@ -410,6 +427,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     smart_phrase_fks = inspector.get_foreign_keys("smart_phrases")
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
+    assert {"id", "secret_ref", "attempt_count", "last_error_code", "next_attempt_at", "created_at", "updated_at"} == transcript_audio_cleanup_columns
+    assert transcript_audio_cleanup_fks == []
+    assert any(item["name"] == "ix_transcript_audio_cleanup_jobs_next_attempt_at" for item in transcript_audio_cleanup_indexes)
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
     assert {"device_token_hash", "last_mfa_verified_at", "expires_at", "revoke_reason"} <= trusted_device_columns
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns

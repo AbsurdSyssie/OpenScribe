@@ -567,6 +567,8 @@ def _resolve_stt_provider_preset_for_admin_write(
 
 
 def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str | None:
+    if config.auth_mode is not SttAuthMode.bearer:
+        return None
     if not config.vault_secret_ref:
         if _stt_config_requires_saved_credential(config):
             raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
@@ -1835,7 +1837,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
     provider_preset = _resolve_stt_provider_preset_for_admin_write(provider_preset, adapter_kind, base_url)
     preset = get_stt_provider_preset(provider_preset)
     bearer_token = payload.bearer_token
-    if not bearer_token and target is not None and target.vault_secret_ref:
+    if not bearer_token and preset.requires_api_key and target is not None and target.vault_secret_ref:
         bearer_token = read_team_stt_bearer_token(
             team_id=team.id,
             config_id=target.id,
@@ -1879,7 +1881,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         adapter_kind=inspection.adapter_kind,
         base_url=inspection.base_url,
         transcribe_path=inspection.transcribe_path,
-        auth_mode=SttAuthMode.bearer,
+        auth_mode=SttAuthMode.bearer if preset.requires_api_key or payload.bearer_token else SttAuthMode.none,
         model_name=None,
         model_field_name=inspection.model_field_name,
         available_models_json=list(inspection.available_models),
@@ -1893,7 +1895,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         segment_end_field=inspection.segment_end_field,
         segment_speaker_field=inspection.segment_speaker_field,
         extra_form_fields_json=inspection.extra_form_fields_json,
-        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if target is not None else ""),
+        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if preset.requires_api_key and target is not None else ""),
         credential_status=status,
         credential_fingerprint=fingerprint,
         inspection_metadata_json=_status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=status),

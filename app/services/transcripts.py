@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     Transcript,
+    TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -139,30 +140,95 @@ def clear_ingestion_retry_source(
             db.refresh(job)
             retry_audio_logger.warning(
                 "retry_audio_delete_failed",
-                extra={"secret_ref": source_audio_vault_ref, "error_code": exc.code, "error_message": exc.message},
+                extra={"job_id": str(job.id), "error_code": exc.code},
             )
     return job
 
 
-def delete_retry_sources_for_transcripts(db: Session, *, transcript_ids: list[UUID]) -> None:
+TRANSCRIPT_AUDIO_CLEANUP_RETRY_BASE_SECONDS = 10
+TRANSCRIPT_AUDIO_CLEANUP_RETRY_MAX_SECONDS = 60 * 60
+
+
+def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: list[UUID]) -> list[UUID]:
     if not transcript_ids:
-        return
-    vault_refs = list(
-        db.scalars(
+        return []
+    vault_refs = {
+        secret_ref
+        for secret_ref in db.scalars(
             select(TranscriptIngestionJob.source_audio_vault_ref).where(
                 TranscriptIngestionJob.transcript_id.in_(transcript_ids),
                 TranscriptIngestionJob.source_audio_vault_ref.is_not(None),
             )
         )
+        if secret_ref
+    }
+    if not vault_refs:
+        return []
+    existing_jobs = {
+        job.secret_ref: job
+        for job in db.scalars(
+            select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref.in_(vault_refs))
+        )
+    }
+    cleanup_jobs: list[TranscriptAudioCleanupJob] = []
+    for secret_ref in sorted(vault_refs):
+        cleanup_job = existing_jobs.get(secret_ref)
+        if cleanup_job is None:
+            cleanup_job = TranscriptAudioCleanupJob(secret_ref=secret_ref, next_attempt_at=utcnow())
+            db.add(cleanup_job)
+        cleanup_jobs.append(cleanup_job)
+    db.flush()
+    return [cleanup_job.id for cleanup_job in cleanup_jobs]
+
+
+def process_transcript_audio_cleanup_jobs(
+    db: Session,
+    *,
+    job_ids: list[UUID] | None = None,
+    batch_size: int = 100,
+    now: datetime | None = None,
+) -> int:
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    comparison_now = now or utcnow()
+    stmt = (
+        select(TranscriptAudioCleanupJob)
+        .where(TranscriptAudioCleanupJob.next_attempt_at <= comparison_now)
+        .order_by(TranscriptAudioCleanupJob.next_attempt_at.asc(), TranscriptAudioCleanupJob.id.asc())
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
     )
-    for secret_ref in {secret_ref for secret_ref in vault_refs if secret_ref}:
+    if job_ids is not None:
+        if not job_ids:
+            return 0
+        stmt = stmt.where(TranscriptAudioCleanupJob.id.in_(job_ids))
+    cleanup_jobs = list(db.scalars(stmt))
+    deleted_count = 0
+    for cleanup_job in cleanup_jobs:
         try:
-            delete_transcript_ingestion_source_audio(secret_ref=secret_ref)
+            delete_transcript_ingestion_source_audio(secret_ref=cleanup_job.secret_ref)
         except AppError as exc:
+            retry_delay_seconds = min(
+                TRANSCRIPT_AUDIO_CLEANUP_RETRY_BASE_SECONDS * (2 ** min(cleanup_job.attempt_count, 8)),
+                TRANSCRIPT_AUDIO_CLEANUP_RETRY_MAX_SECONDS,
+            )
+            cleanup_job.attempt_count += 1
+            cleanup_job.last_error_code = exc.code
+            cleanup_job.next_attempt_at = comparison_now + timedelta(seconds=retry_delay_seconds)
+            db.add(cleanup_job)
             retry_audio_logger.warning(
                 "retry_audio_delete_failed",
-                extra={"secret_ref": secret_ref, "error_code": exc.code, "error_message": exc.message},
+                extra={
+                    "cleanup_job_id": str(cleanup_job.id),
+                    "attempt_count": cleanup_job.attempt_count,
+                    "error_code": exc.code,
+                },
             )
+        else:
+            db.delete(cleanup_job)
+            deleted_count += 1
+    db.commit()
+    return deleted_count
 
 
 def _create_transcript_row(
@@ -1091,12 +1157,13 @@ def delete_transcripts(
         _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
         for transcript_id in unique_ids
     ]
-    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcripts])
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcripts])
     deleted_count = len(transcripts)
     deleted_ids = [str(transcript.id) for transcript in transcripts]
     for transcript in transcripts:
         db.delete(transcript)
     db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     record_security_event(
         db,
         action="transcript_root_deleted",
@@ -1129,10 +1196,11 @@ def delete_expired_transcripts(
         return 0
 
     transcript_ids = [transcript.id for transcript in transcripts]
-    delete_retry_sources_for_transcripts(db, transcript_ids=transcript_ids)
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
     for transcript in transcripts:
         db.delete(transcript)
     db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     transcript_retention_logger.info(
         "expired_transcript_roots_deleted",
         extra={"deleted_count": len(transcripts)},

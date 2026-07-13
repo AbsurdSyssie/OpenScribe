@@ -339,7 +339,7 @@ Implemented now in the STT configuration slice:
 - the active team STT policy is stored separately in `team_stt_selections`
 - leaders may manage only their own team's active selection
 - system admins may manage any team's provisioned config rows and active selection, but must choose the team explicitly
-- the first auth mode is bearer token only
+- STT auth mode is explicit: `bearer` permits Vault credential reads and `none` prevents them for optional/no-auth providers
 - the first request shape is constrained REST metadata for multipart upload, not arbitrary request scripting
 - the official OpenAI adapter is a known-contract path and is intended to use the official Python SDK at runtime rather than OpenAPI discovery
 - OpenAPI inspection remains only for `generic_rest`
@@ -352,6 +352,7 @@ Implemented now in the STT configuration slice:
 - invalid first-add STT credentials remove the DB row before Vault cleanup; saved-provider delete clears active selection rows and removes the DB row before best-effort Vault cleanup
 - explicit STT credential removal clears DB references before Vault cleanup after commit; explicit LLM credential removal deletes the Vault secret before clearing the DB reference, tolerates stale/missing Vault content, fails closed if Vault delete fails, and attempts Vault restoration if the DB commit fails after a readable old token snapshot; blank secret fields do not silently remove saved secrets
 - STT re-inspection uses saved Vault references, marks rejected credentials `invalid`, and clears active STT selections that referenced the invalid provider
+- STT/LLM runtime paths require `auth_mode=bearer` before reading or forwarding a stored Vault credential, so stale references on no-auth rows cannot be sent to provider endpoints
 
 Implemented now in the first transcript chunk-ingestion slice:
 
@@ -422,6 +423,15 @@ Current limitations:
 - rotating-IP attacks are still a future hardening area
 - rate-limit events are persisted in `security_audit_events`, not a separate security-events table
 - `Retry-After` is not yet emitted on 429 responses
+
+## Transcript retry-audio deletion
+
+- transcript, user, team, and retention deletion queue each retry-audio Vault reference in `transcript_audio_cleanup_jobs` in the same database transaction that removes the transcript root
+- cleanup rows contain a Vault reference and retry metadata only; they contain no audio, transcript text, owner/team foreign keys, or other transcript-derived content
+- Vault deletion starts only after the root-deletion transaction commits; successful deletion removes the cleanup row
+- Vault failures retain the cleanup row with bounded exponential backoff, and Celery Beat retries bounded batches every 10 seconds
+- deleting an already-missing Vault path is idempotent success
+- retry logs contain cleanup/job IDs and error codes, never Vault references or confidential content
 
 ## Planned next hardening: lockouts and unlock workflow
 

@@ -72,6 +72,7 @@ from app.models import (
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
+    TranscriptAudioCleanupJob,
     TranscriptStatus,
     Transcript,
     TranscriptIngestionMode,
@@ -140,6 +141,7 @@ from app.services.transcripts import (
     create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
+    process_transcript_audio_cleanup_jobs,
     save_working_note,
     start_transcript as start_transcript_service,
 )
@@ -3271,9 +3273,29 @@ def test_llm_revision_stays_pending_then_promotes_into_active_config(
     team = make_team(name="Clinic LLM Revision")
     other_team = make_team(name="Other LLM Revision")
     admin = make_user(email="admin-llm-revision@example.com", password="password-1", is_system_admin=True)
-    active = make_llm_config(team=team, actor=admin, label="Current LLM", base_url="https://old-llm.example/v1", model_name="old-model")
-    selection = make_llm_selection(config=active, actor=admin)
-    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-model"])
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        base_url="https://old-llm.example/v1",
+        model_name="old-model",
+        available_models_json=["old-model", "shared-model"],
+    )
+    selection = make_llm_selection(
+        config=active,
+        actor=admin,
+        allowed_models_json=["old-model", "shared-model"],
+        model_name_override="shared-model",
+    )
+    checker_selection = TeamHallucinationCheckSelection(
+        team_id=team.id,
+        llm_config_id=active.id,
+        model_name_override="old-model",
+        selected_by_user_id=admin.id,
+    )
+    db_session.add(checker_selection)
+    db_session.commit()
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["shared-model", "new-model"])
     monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: f"secret:test/llm/{kwargs['config_id']}")
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda **kwargs: None)
 
@@ -3293,14 +3315,60 @@ def test_llm_revision_stays_pending_then_promotes_into_active_config(
 
     finalized = client.post(
         f"/api/v1/llm-configs/{revision_id}/finalize",
-        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current LLM", "model_name": "new-model", "is_active": True},
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current LLM", "model_name": "shared-model", "is_active": True},
     )
     assert finalized.status_code == 200
     assert finalized.json()["id"] == str(active.id)
     db_session.refresh(active)
-    assert (active.base_url, active.model_name) == ("https://new-llm.example/v1", "new-model")
+    assert (active.base_url, active.model_name) == ("https://new-llm.example/v1", "shared-model")
     assert db_session.get(TeamLlmConfig, revision_id) is None
-    assert db_session.get(TeamLlmSelection, selection.id).llm_config_id == active.id
+    persisted_selection = db_session.get(TeamLlmSelection, selection.id)
+    assert persisted_selection.llm_config_id == active.id
+    assert persisted_selection.allowed_models_json == ["shared-model"]
+    assert persisted_selection.model_name_override == "shared-model"
+    assert db_session.get(TeamHallucinationCheckSelection, checker_selection.id).model_name_override is None
+
+
+def test_llm_revision_promotion_uses_narrow_default_when_model_catalog_is_disjoint(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision Fallback")
+    admin = make_user(email="admin-llm-revision-fallback@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        provider_preset="openai",
+        model_name="old-model",
+        available_models_json=["old-model"],
+    )
+    selection = make_llm_selection(
+        config=active,
+        actor=admin,
+        allowed_models_json=["old-model"],
+        model_name_override="old-model",
+    )
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-key")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-default", "new-alternate"])
+
+    login(client, email=admin.email, password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": active.label, "model_name": "new-default", "is_active": True},
+    )
+
+    assert finalized.status_code == 200
+    persisted_selection = db_session.get(TeamLlmSelection, selection.id)
+    assert persisted_selection.llm_config_id == active.id
+    assert persisted_selection.allowed_models_json == ["new-default"]
+    assert persisted_selection.model_name_override == "new-default"
 
 
 def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_secret(
@@ -3334,6 +3402,197 @@ def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_
     db_session.refresh(llm)
     assert stt.vault_secret_ref == stt_ref and llm.vault_secret_ref == llm_ref
     assert deleted_stt == [] and deleted_llm == []
+
+
+def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token_is_kept(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic LLM No Auth Revision")
+    admin = make_user(email="admin-llm-no-auth-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        provider_preset="openai",
+        base_url="https://api.openai.com/v1",
+        model_name="old-model",
+        available_models_json=["old-model"],
+    )
+    old_secret_ref = active.vault_secret_ref
+    read_refs: list[str] = []
+    inspection_tokens: list[str | None] = []
+    deleted_refs: list[str] = []
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        read_refs.append(secret_ref)
+        return "saved-openai-key"
+
+    def fake_list_ollama(*, base_url, bearer_token):
+        inspection_tokens.append(bearer_token)
+        return ["llama3.2"]
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "optional-ollama-token"
+        return f"secret:test/llm/{config_id}"
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        db_session.refresh(active)
+        assert active.vault_secret_ref == ""
+        deleted_refs.append(secret_ref)
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", fake_list_ollama)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete)
+    login(client, email=admin.email, password="password-1")
+
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "ollama",
+            "base_url": "http://localhost:11434",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert created.status_code == 200
+    revision = db_session.get(TeamLlmConfig, UUID(created.json()["config"]["id"]))
+    assert read_refs == []
+    assert inspection_tokens == [None]
+    assert revision.auth_mode is LlmAuthMode.none
+    assert revision.vault_secret_ref == ""
+    db_session.refresh(active)
+    assert active.vault_secret_ref == old_secret_ref
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision.id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision.id), "label": active.label, "model_name": "llama3.2", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert active.auth_mode is LlmAuthMode.none
+    assert active.vault_secret_ref == ""
+    assert deleted_refs == [old_secret_ref]
+
+    optional = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "ollama",
+            "base_url": "http://localhost:11434",
+            "bearer_token": "optional-ollama-token",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert optional.status_code == 200
+    optional_revision = db_session.get(TeamLlmConfig, UUID(optional.json()["config"]["id"]))
+    assert inspection_tokens[-1] == "optional-ollama-token"
+    assert optional_revision.auth_mode is LlmAuthMode.bearer
+    assert optional_revision.vault_secret_ref == f"secret:test/llm/{optional_revision.id}"
+
+
+def test_stt_no_auth_revision_drops_saved_credential_and_optional_explicit_token_is_kept(
+    client, db_session, make_team, make_user, make_stt_config, monkeypatch
+):
+    team = make_team(name="Clinic STT No Auth Revision")
+    admin = make_user(email="admin-stt-no-auth-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Current STT",
+        adapter_kind=SttAdapterKind.openai_cloud,
+        base_url="https://api.openai.com/v1",
+        model_name="whisper-1",
+        available_models_json=["whisper-1"],
+    )
+    old_secret_ref = active.vault_secret_ref
+    read_refs: list[str] = []
+    inspection_tokens: list[str | None] = []
+    deleted_refs: list[str] = []
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        read_refs.append(secret_ref)
+        return "saved-openai-key"
+
+    def fake_inspect(db, actor, payload):
+        inspection_tokens.append(payload.bearer_token)
+        return SttInspectResult(
+            adapter_kind=SttAdapterKind.generic_rest,
+            base_url=payload.base_url,
+            openapi_path=None,
+            transcribe_path="/v1/audio/transcriptions",
+            model_name=None,
+            available_models=["parakeet"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        )
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "optional-stt-token"
+        return f"secret:test/stt/{config_id}"
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        db_session.refresh(active)
+        assert active.vault_secret_ref == ""
+        deleted_refs.append(secret_ref)
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
+    login(client, email=admin.email, password="password-1")
+
+    created = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "custom_rest_openapi",
+            "base_url": "http://127.0.0.1:9001",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert created.status_code == 200
+    revision = db_session.get(TeamSttConfig, UUID(created.json()["config"]["id"]))
+    assert read_refs == []
+    assert inspection_tokens == [None]
+    assert revision.auth_mode is SttAuthMode.none
+    assert revision.vault_secret_ref == ""
+    db_session.refresh(active)
+    assert active.vault_secret_ref == old_secret_ref
+
+    finalized = client.post(
+        f"/api/v1/stt-configs/{revision.id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision.id), "label": active.label, "model_name": "parakeet", "language": None, "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert active.auth_mode is SttAuthMode.none
+    assert active.vault_secret_ref == ""
+    assert deleted_refs == [old_secret_ref]
+
+    optional = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "custom_rest_openapi",
+            "base_url": "http://127.0.0.1:9001",
+            "bearer_token": "optional-stt-token",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert optional.status_code == 200
+    optional_revision = db_session.get(TeamSttConfig, UUID(optional.json()["config"]["id"]))
+    assert inspection_tokens[-1] == "optional-stt-token"
+    assert optional_revision.auth_mode is SttAuthMode.bearer
+    assert optional_revision.vault_secret_ref == f"secret:test/stt/{optional_revision.id}"
 
 
 def test_stt_replacement_revision_rebinds_secret_and_supports_blank_followup_revision(
@@ -3519,7 +3778,7 @@ def test_llm_revision_finalize_rejects_active_target_with_queued_document(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -3544,7 +3803,7 @@ def test_llm_revision_finalize_rejects_active_target_with_queued_document(
             document_mode=TemplateMode.freeform,
             original_output_text_encrypted="",
             edited_output_text_encrypted="",
-            retention_expires_at=owner.created_at,
+            retention_expires_at=transcript.retention_expires_at,
         )
     )
     db_session.commit()
@@ -5390,7 +5649,7 @@ def test_deidentification_provider_delete_clears_clinical_nlp_refs(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5531,7 +5790,7 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
             ingestion_mode=TranscriptIngestionMode.whole_file,
             status=TranscriptStatus.ready,
             retention_days_applied=30,
-            retention_expires_at=owner.created_at,
+            retention_expires_at=utcnow() + timedelta(days=30),
         )
         db_session.add(transcript)
         db_session.flush()
@@ -5646,7 +5905,7 @@ def test_redaction_reuse_creates_missing_clinical_run(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5781,7 +6040,7 @@ def test_clinical_detection_uses_redacted_text_for_remote_provider(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5856,7 +6115,7 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5945,7 +6204,7 @@ def test_clinical_detection_chunks_long_local_analyze_requests(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -6043,7 +6302,7 @@ def test_clinical_detection_reruns_after_provider_config_update(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -7699,6 +7958,8 @@ def test_template_generation_supports_ollama_adapter(
         available_models_json=["llama3.2"],
         has_secret=False,
     )
+    config.vault_secret_ref = f"secret:openscribe/llm/team/{team.id}/config/stale"
+    db_session.commit()
     make_llm_selection(config=config, actor=admin, allowed_models_json=["llama3.2"], model_name_override="llama3.2")
     template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="My note", prompt_text="Write a concise note.")
 
@@ -7706,10 +7967,13 @@ def test_template_generation_supports_ollama_adapter(
         id = "generated-task-2"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_ollama",
-        lambda **kwargs: ('{"title":"Ollama summary","content":"Ollama note body"}', {"input_tokens": 20, "output_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
-    )
+    monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", lambda **kwargs: pytest.fail("No-auth LLM must not read stale Vault refs"))
+
+    def fake_generate_ollama(**kwargs):
+        assert kwargs["bearer_token"] is None
+        return ('{"title":"Ollama summary","content":"Ollama note body"}', {"input_tokens": 20, "output_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9})
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_ollama", fake_generate_ollama)
 
     login(client, email="owner-ollama@example.com", password="password-2")
     saved_preferences = client.post("/api/v1/app-preferences", json={"note_generation_length": "long", "llm_detail_level": "balanced"})
@@ -8142,8 +8406,9 @@ def test_structured_hallucination_check_vault_failure_does_not_fail_document(
         calls.append(kwargs["request_body"])
         return ('{"title":"Cough review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25})
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         assert config_id == checker_config.id
+        assert secret_ref == checker_config.vault_secret_ref
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
@@ -8356,7 +8621,7 @@ def test_structured_emis_generation_snapshots_working_note_without_structured_co
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8421,7 +8686,7 @@ def test_generate_output_rejects_transient_structured_context_payload(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8731,7 +8996,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8803,7 +9068,7 @@ def test_process_generated_document_applies_manual_pii_before_provider_call(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8893,7 +9158,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8978,7 +9243,7 @@ def test_process_generated_document_redacts_dictation_only_session_before_provid
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9085,7 +9350,7 @@ def test_process_generated_document_redaction_boundary_for_static_and_structured
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9207,7 +9472,7 @@ def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9294,7 +9559,7 @@ def test_process_generated_document_uses_first_note_title_to_fill_default_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9337,7 +9602,7 @@ def test_process_generated_document_does_not_overwrite_custom_session_title(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9381,7 +9646,7 @@ def test_process_generated_document_fails_on_invalid_placeholder_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9436,7 +9701,7 @@ def test_process_generated_document_fails_on_invalid_note_json(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9471,7 +9736,7 @@ def test_local_dev_account_can_read_generated_document_redaction_debug(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9544,7 +9809,7 @@ def test_non_dev_account_cannot_read_generated_document_redaction_debug(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9608,7 +9873,7 @@ def test_local_dev_account_redaction_debug_includes_failed_provider_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9899,7 +10164,7 @@ def test_generated_document_update_saves_followup_title_and_body_for_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -10005,7 +10270,7 @@ def test_generated_document_update_rejects_duplicate_structured_section_keys(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -10130,7 +10395,7 @@ def test_generated_document_update_rejects_sections_removed_by_template(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -10411,7 +10676,7 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10475,7 +10740,7 @@ def test_structured_generated_document_keeps_allowed_sections_after_template_del
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10540,7 +10805,7 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10689,7 +10954,7 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10966,7 +11231,7 @@ def test_process_generated_document_logs_usage_metadata(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11045,7 +11310,7 @@ def test_process_generated_document_persists_provider_failure_details(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11271,7 +11536,7 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
         current_draft_text_encrypted="draft",
         status="ready",
         retention_days_applied=14,
-        retention_expires_at=team.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11437,7 +11702,7 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
         current_draft_text_encrypted="draft",
         status="failed",
         retention_days_applied=14,
-        retention_expires_at=team.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11466,6 +11731,10 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
     assert deleted.status_code == 204
     assert db_session.get(User, member.id) is None
     assert db_session.get(Transcript, transcript.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.secret_ref == "secret:openscribe/transcript-ingestion/user-best-effort/source-audio"
+    assert cleanup_job.attempt_count == 1
 
 
 def test_leader_cannot_delete_cross_team_user_or_system_admin(client, make_team, make_user):
@@ -12143,7 +12412,7 @@ def test_dev_seed_repair_resets_transcript_content_when_active_key_cannot_be_unw
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12238,7 +12507,7 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=broken_user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     healthy_transcript = Transcript(
         owner_user_id=healthy_user.id,
@@ -12255,7 +12524,7 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=healthy_user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([broken_transcript, healthy_transcript])
     db_session.commit()
@@ -12316,7 +12585,7 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12355,7 +12624,7 @@ def test_transcript_detail_includes_latest_successful_ingestion_completed_at(cli
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12394,7 +12663,7 @@ def test_transcript_detail_hides_retry_when_failed_upload_blob_is_missing(client
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12429,7 +12698,7 @@ def test_transcript_detail_includes_next_live_chunk_sequence_number(client, db_s
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12679,7 +12948,7 @@ def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_con
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12741,7 +13010,7 @@ def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -12859,7 +13128,7 @@ def test_owner_can_add_and_delete_manual_pii_entities(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12952,7 +13221,7 @@ def test_manual_pii_duplicate_lookup_accepts_legacy_sha256_hash(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -13011,7 +13280,7 @@ def test_transcript_delete_cascades_manual_pii_entities(db_session, make_team, m
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13063,7 +13332,7 @@ def test_transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_f
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -13264,7 +13533,7 @@ def test_transcribe_workspace_endpoint_does_not_health_check_stt_service(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13301,7 +13570,7 @@ def test_transcribe_workspace_stream_returns_owner_workspace_event(client, db_se
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13628,9 +13897,16 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
 
     client.post("/api/v1/auth/logout")
     login(client, email="owner@example.com", password="password-1")
+
+    def delete_source_after_root_commit(*, secret_ref):
+        assert db_session.get(Transcript, transcript_id) is None
+        cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+        assert cleanup_job is not None
+        deleted_secret_refs.append(secret_ref)
+
     monkeypatch.setattr(
         "app.services.transcripts.delete_transcript_ingestion_source_audio",
-        lambda *, secret_ref: deleted_secret_refs.append(secret_ref),
+        delete_source_after_root_commit,
     )
     deleted = client.delete(f"/api/v1/transcripts/{transcript_id}")
     assert deleted.status_code == 204
@@ -13682,6 +13958,23 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
 
     assert deleted.status_code == 204
     assert db_session.get(Transcript, transcript.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.secret_ref == "secret:openscribe/transcript-ingestion/delete-best-effort/source-audio"
+    assert cleanup_job.attempt_count == 1
+
+    deleted_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_refs.append(secret_ref),
+    )
+    cleanup_job.next_attempt_at = utcnow()
+    db_session.add(cleanup_job)
+    db_session.commit()
+
+    assert process_transcript_audio_cleanup_jobs(db_session, batch_size=10) == 1
+    assert deleted_refs == ["secret:openscribe/transcript-ingestion/delete-best-effort/source-audio"]
+    assert db_session.scalar(select(TranscriptAudioCleanupJob)) is None
 
 
 def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -13823,7 +14116,7 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -13832,7 +14125,7 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -13886,7 +14179,7 @@ def test_live_audio_chunk_upload_enforces_hourly_duration_budget(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13950,7 +14243,7 @@ def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -13959,7 +14252,7 @@ def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -14026,7 +14319,7 @@ def test_live_audio_chunk_upload_measures_duration_when_declared_value_is_missin
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14179,7 +14472,7 @@ def test_finalize_live_capture_applies_completed_chunks_and_creates_preview_reda
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14266,7 +14559,7 @@ def test_finalize_live_capture_with_pending_chunk_defers_preview_redaction(clien
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14302,7 +14595,7 @@ def test_finalize_live_capture_without_pending_chunks_marks_ready(client, db_ses
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14328,7 +14621,7 @@ def test_finalize_live_capture_rejects_non_live_transcripts(client, db_session, 
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14357,7 +14650,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14420,7 +14713,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processi
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14471,7 +14764,7 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14510,7 +14803,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14572,7 +14865,7 @@ def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(clien
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=2,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14732,7 +15025,7 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14801,7 +15094,7 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14853,7 +15146,7 @@ def test_retry_audio_file_route_rejects_when_failed_blob_is_missing(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14896,7 +15189,7 @@ def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14985,7 +15278,7 @@ def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15205,7 +15498,7 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner.id,
@@ -15214,7 +15507,7 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -15266,7 +15559,7 @@ def test_audio_file_upload_rejects_oversized_payload(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15310,7 +15603,7 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -15319,7 +15612,7 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -15365,7 +15658,7 @@ def test_audio_file_upload_enforces_hourly_upload_size_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15427,7 +15720,7 @@ def test_audio_file_upload_enforces_hourly_duration_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15490,7 +15783,7 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -15499,7 +15792,7 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -15827,7 +16120,7 @@ def test_stt_config_cannot_be_changed_while_jobs_are_in_flight(client, db_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -16035,7 +16328,7 @@ def test_retry_audio_file_route_enforces_owner_scope(client, db_session, make_te
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -16340,13 +16633,13 @@ def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
         adapter_kind=SttAdapterKind.openai_compatible_rest,
         base_url="http://127.0.0.1:9000",
         transcribe_path="/v1/audio/transcriptions",
-        auth_mode=SttAuthMode.bearer,
+        auth_mode=SttAuthMode.none,
         model_name="parakeet",
         file_field_name="file",
         language="en",
         response_text_path="text",
         extra_form_fields_json=None,
-        vault_secret_ref="",
+        vault_secret_ref="secret:openscribe/stt/team/test/config/stale",
         is_active=True,
         created_by_user_id=owner.id,
         updated_by_user_id=owner.id,
@@ -16356,6 +16649,8 @@ def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
     make_stt_selection(config=config, actor=owner)
 
     captured = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: pytest.fail("No-auth STT must not read stale Vault refs"))
 
     def fake_httpx_post(url, *, headers, data, files, timeout):
         captured["headers"] = headers

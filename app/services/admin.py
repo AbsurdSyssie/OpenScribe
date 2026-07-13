@@ -66,7 +66,7 @@ from app.services.passwords import hash_password, validate_password_strength
 from app.services.security_audit import record_security_event
 from app.services.smart_phrases import ensure_default_smart_phrase_for_user
 from app.services.stt import delete_team_stt_bearer_token
-from app.services.transcripts import delete_retry_sources_for_transcripts
+from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
 cleanup_logger = logging.getLogger("openscribe.cleanup")
@@ -1053,7 +1053,6 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
                 **current_ingestion,
             )
         )
-    trend_since = range_since if range_bucket != "day" else range_since + timedelta(days=1)
     selected_team = db.get(Team, team_id) if team_id is not None else None
     current_summary = AdminUsageWindowSummary(
         label=range_label,
@@ -1065,7 +1064,7 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
         **_provider_usage_window_summary(db, since=now, until=now, team_id=team_id),
         **_ingestion_window_summary(db, since=now, until=now, team_id=team_id),
     )
-    trend_points = _usage_trend_points(db, since=trend_since, team_id=team_id, until=now, bucket=range_bucket)
+    trend_points = _usage_trend_points(db, since=range_since, team_id=team_id, until=now, bucket=range_bucket)
     if comparison_since is not None:
         previous_summary = AdminUsageWindowSummary(
             label="Previous equal period",
@@ -1073,7 +1072,7 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
             **_ingestion_window_summary(db, since=comparison_since, until=range_since, team_id=team_id),
         )
         previous_trend_points = _usage_trend_points(
-            db, since=comparison_since + (timedelta(days=1) if range_bucket == "day" else timedelta(0)), until=range_since, team_id=team_id, bucket=range_bucket
+            db, since=comparison_since, until=range_since, team_id=team_id, bucket=range_bucket
         )
     else:
         previous_trend_points = [AdminUsageTrendPoint(label="No prior period", short_label=point.short_label) for point in trend_points]
@@ -1444,7 +1443,7 @@ def reactivate_user(db: Session, actor: User, user_id) -> User:
     return user
 
 
-def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
+def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
     linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
     for request in linked_requests:
         request.linked_user_id = None
@@ -1570,12 +1569,13 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
     transcript_rows = list(transcripts)
-    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
     for transcript in transcript_rows:
         db.delete(transcript)
 
     db.flush()
     db.delete(user)
+    return cleanup_job_ids
 
 
 def delete_user(db: Session, actor: User, user_id) -> None:
@@ -1589,8 +1589,9 @@ def delete_user(db: Session, actor: User, user_id) -> None:
     target_team_id = user.team_id
     target_team_role = user.team_role.value if user.team_role else None
     target_is_system_admin = user.is_system_admin
-    _delete_user_rows(db, actor, user=user)
+    cleanup_job_ids = _delete_user_rows(db, actor, user=user)
     db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     audit_logger.info(
         "account_lifecycle",
         extra={
@@ -1648,6 +1649,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
 
     stt_secret_deletions: list[tuple[UUID, UUID, str]] = []
     llm_secret_deletions: list[tuple[UUID, UUID, str]] = []
+    transcript_audio_cleanup_job_ids: list[UUID] = []
     try:
         provider_events = db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.team_id == team.id))
         for event in provider_events:
@@ -1691,7 +1693,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         db.flush()
 
         for user in team_users:
-            _delete_user_rows(db, actor, user=user)
+            transcript_audio_cleanup_job_ids.extend(_delete_user_rows(db, actor, user=user))
 
         if team_user_ids:
             for event in db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_(team_user_ids))):
@@ -1704,6 +1706,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         db.rollback()
         raise
 
+    process_transcript_audio_cleanup_jobs(db, job_ids=transcript_audio_cleanup_job_ids)
     for secret_team_id, config_id, secret_ref in stt_secret_deletions:
         try:
             delete_team_stt_bearer_token(team_id=secret_team_id, config_id=config_id, secret_ref=secret_ref)

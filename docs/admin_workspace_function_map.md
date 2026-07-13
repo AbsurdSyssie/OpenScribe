@@ -27,7 +27,7 @@
 | Form feedback? | Inline field errors + summary; site toasts; preserve non-secret input only. |
 | Provider wizard refresh/cancel? | Server-backed drafts restore non-secret state; cancel explicitly deletes pending row and safely cleans Vault reference. |
 | Provider wizard complexity? | Simple preset path; custom providers reveal progressive Advanced configuration containing every existing expert field. Render only backend-registered provider presets, never mock-only brands. |
-| Provider edit safety? | One Edit action reuses add wizard and stages inspected revision for all supported settings. Blank credential securely reuses active root's saved Vault reference; replacement input stages new reference. Active config remains usable until atomic promotion. |
+| Provider edit safety? | One Edit action reuses add wizard and stages inspected revision for all supported settings. Blank credential reuses active root's saved Vault reference only when the new preset requires it; no-auth transitions stage no reference. Replacement input stages new reference. Active config remains usable until atomic promotion. |
 | Sidebar? | Admin home, Teams, Manage teams, Account requests, System admins, Global defaults, De-ID providers, Usage, Audit, Log out. |
 | Manage teams? | Metadata directory, create, open; deletion stays in team Danger zone; team status read-only. |
 | Responsive target? | Laptop/tablet fully usable; mobile operable with collapsed/stacked/scrollable layout. |
@@ -65,6 +65,7 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
   - `deidentification`: view available/assigned providers and attach/detach them for selected team.
 - Runtime selection is never hidden inside provider provisioning; “available/configured” and “actively used” remain distinct states.
 - STT/LLM revision drafts self-link to a ready provider root. Root IDs and selection foreign keys remain stable at promotion; pending revisions never appear in normal provider lists, selection candidates, or runtime resolution.
+- LLM promotion reconciles dependent model policy transactionally: preserve only still-advertised allowed models, narrow a disjoint allowlist to the new provider default, replace invalid team defaults, and clear invalid checker overrides without changing provider/config selection ids.
 - One pending revision is allowed per provider root. Revision labels may match their root because normalized label uniqueness applies only to root configs.
 - Revision cancellation commits row deletion before cleaning its staged Vault secret. Promotion copies the staged secret reference to the stable root, deletes the revision atomically, then cleans the replaced root secret after commit.
 - Downgrading across provider-revision support discards pending STT/LLM revision rows before restoring unconditional team-label uniqueness. Active provider roots remain; staged Vault references may require operator cleanup after rollback.

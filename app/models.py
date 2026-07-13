@@ -90,6 +90,7 @@ class MfaMethodType(str, enum.Enum):
 
 class SttAuthMode(str, enum.Enum):
     bearer = "bearer"
+    none = "none"
 
 
 class SttAdapterKind(str, enum.Enum):
@@ -1311,6 +1312,23 @@ class TranscriptIngestionJob(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     transcript: Mapped[Transcript] = relationship(back_populates="ingestion_jobs")
+
+
+class TranscriptAudioCleanupJob(Base):
+    __tablename__ = "transcript_audio_cleanup_jobs"
+    __table_args__ = (
+        UniqueConstraint("secret_ref", name="uq_transcript_audio_cleanup_job_secret_ref"),
+        CheckConstraint("attempt_count >= 0", name="ck_transcript_audio_cleanup_attempt_count_nonnegative"),
+        Index("ix_transcript_audio_cleanup_jobs_next_attempt_at", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class GeneratedDocument(Base):

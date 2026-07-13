@@ -214,9 +214,10 @@ Supported metadata fields:
 
 Secret fields:
 
-- bearer token only in the first implementation
+- optional bearer token; `auth_mode=none` is explicit for providers configured without one
 - stored in Vault
 - represented in Postgres only by `vault_secret_ref`
+- runtime reads the Vault reference only when `auth_mode=bearer`
 
 ## URL and transport rules
 

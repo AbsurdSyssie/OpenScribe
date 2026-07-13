@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-13 Review security, lifecycle, and usage fixes
+
+- Prevented blank revisions to no-auth STT/LLM providers from inheriting or forwarding saved Vault credentials; runtime credential reads now require explicit bearer auth.
+- Reconciled team LLM allowlists/defaults and hallucination-check overrides when a promoted or reinspected provider removes models, without widening team access.
+- Added FK-free `transcript_audio_cleanup_jobs` outbox so transcript, retention, user, team, and maintenance deletion paths commit durable retry-audio Vault references before root cascades.
+- Added immediate post-commit cleanup plus bounded Celery retry with backoff; Vault references and confidential content are absent from cleanup logs.
+- Corrected stale active API fixtures to use future transcript expiry while preserving explicit retention tests and generated-document root expiry.
+- Aligned 30-day and 90-day Usage charts with exact KPI/table boundaries, including the partial first calendar day and excluding pre-boundary activity.
+- Schema checkpoint: one new metadata-only cleanup table and migration; no ownership/content foreign keys.
+- Auth/ownership checkpoint: owner, leader, and system-admin authorization unchanged.
+- Lifecycle/deletion checkpoint: database deletion remains immediate; Vault outages retain a durable cleanup reference instead of orphaning audio.
+- Docs/tests checkpoint: migration, deletion-path, retry, active-fixture, and Usage boundary coverage updated with security/API/database/testing notes.
+- Provider config IDs and selection ownership remain stable; structured-note contracts are unchanged.
+- Final repository verification: 861 tests passed; only existing deprecation warnings remain.
+
 ## 2026-07-12 Contextual Provider Wizard Errors
 
 ### Scope

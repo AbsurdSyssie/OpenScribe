@@ -260,6 +260,40 @@ def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object
     }
 
 
+def _reconcile_llm_config_model_selections(db: Session, *, config: TeamLlmConfig) -> None:
+    provider_models = list(
+        dict.fromkeys(model.strip() for model in (config.available_models_json or []) if model and model.strip())
+    )
+    default_model = config.model_name if config.model_name in provider_models else (provider_models[0] if provider_models else None)
+    selection = db.scalar(
+        select(TeamLlmSelection)
+        .where(TeamLlmSelection.llm_config_id == config.id)
+        .with_for_update()
+    )
+    if selection is not None:
+        allowed_models = [model for model in (selection.allowed_models_json or []) if model in provider_models]
+        if not allowed_models and default_model:
+            allowed_models = [default_model]
+        if selection.model_name_override not in allowed_models:
+            if default_model:
+                if default_model not in allowed_models:
+                    allowed_models = [default_model]
+                selection.model_name_override = default_model
+            else:
+                selection.model_name_override = allowed_models[0] if allowed_models else None
+        selection.allowed_models_json = allowed_models
+        db.add(selection)
+
+    checker_selection = db.scalar(
+        select(TeamHallucinationCheckSelection)
+        .where(TeamHallucinationCheckSelection.llm_config_id == config.id)
+        .with_for_update()
+    )
+    if checker_selection is not None and checker_selection.model_name_override and checker_selection.model_name_override not in provider_models:
+        checker_selection.model_name_override = None
+        db.add(checker_selection)
+
+
 def _discovery_metadata(
     *,
     provider_preset: str,
@@ -448,7 +482,11 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
 
 def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> LlmConfigInspectResult:
     config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
-    bearer_token = read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref) if config.vault_secret_ref else None
+    bearer_token = (
+        read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+        if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
+        else None
+    )
     inspection = inspect_llm_contract(
         db,
         actor,
@@ -467,6 +505,7 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
             config.model_name = inspection.model_name
     config.updated_by_user_id = actor.id
     db.add(config)
+    _reconcile_llm_config_model_selections(db, config=config)
     db.commit()
     db.refresh(config)
     return inspection
@@ -550,7 +589,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     preset = get_llm_provider_preset(provider_preset)
     adapter_kind = preset.adapter_kind
     bearer_token = payload.bearer_token
-    if not bearer_token and target is not None and target.vault_secret_ref:
+    if not bearer_token and preset.requires_bearer_token and target is not None and target.vault_secret_ref:
         bearer_token = read_team_llm_bearer_token(
             team_id=team.id,
             config_id=target.id,
@@ -587,7 +626,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         available_models_json=list(inspection.available_models),
         inspection_metadata_json=_inspection_metadata(inspection),
         setup_status=LlmConfigSetupStatus.pending_model_selection,
-        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if target is not None else ""),
+        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if preset.requires_bearer_token and target is not None else ""),
         is_active=False,
         created_by_user_id=actor.id,
         updated_by_user_id=actor.id,
@@ -684,6 +723,7 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         db.delete(config)
         result = target
     db.add(result)
+    _reconcile_llm_config_model_selections(db, config=result)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -986,6 +1026,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     elif creating:
         raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
 
+    _reconcile_llm_config_model_selections(db, config=config)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -1341,6 +1382,6 @@ def resolve_user_llm(db: Session, actor: User) -> tuple[TeamLlmSelection, TeamLl
 
 def read_active_team_llm_bearer_token(db: Session, *, team_id: UUID) -> str:
     _, config, _ = resolve_team_llm(db, team_id=team_id)
-    if not config.vault_secret_ref:
+    if config.auth_mode is not LlmAuthMode.bearer or not config.vault_secret_ref:
         raise AppError(422, "business_rule_violation", "No stored API key is configured for this LLM provider", {"team_id": str(team_id)})
     return read_team_llm_bearer_token(team_id=team_id, config_id=config.id, secret_ref=config.vault_secret_ref)

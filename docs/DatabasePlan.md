@@ -1008,6 +1008,12 @@ children. Production therefore runs both Celery worker and Beat processes.
 Team retention changes apply to transcripts created afterward and do not extend
 or recalculate existing fixed expiry timestamps.
 
+Vault-backed retry audio uses a transactionally written,
+`transcript_audio_cleanup_jobs` outbox with no transcript, user, or team foreign
+keys. Root deletion and the cleanup reference commit together before any Vault
+delete call. Successful or already-absent Vault deletes remove the outbox row;
+failures retain metadata-only retry state for bounded scheduled processing.
+
 ## 15.2 Generated document deletion
 
 When a generated document is deleted manually:

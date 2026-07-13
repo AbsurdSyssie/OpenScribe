@@ -89,6 +89,8 @@ OPENSCRIBE_PASSWORD='password-1' \
 
 What it does:
 
+- auth-shell and browser-JS harness regressions track the current shared stylesheet assets and all exported document-navigation helpers without coupling to retired cache keys or inline font names
+
 - logs in through the real auth flow
 - prompts for TOTP only if the login comes back as `pending_mfa`
 - starts a `whole_file` transcript
@@ -176,7 +178,9 @@ What it does:
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
 - LLM provider presets covering branded provider catalog/inference, live-discovery-only manual fallback, manual model selectability after failed discovery, service-owned inspection metadata, stale model clearing/rediscovery on provider endpoint changes, OpenAI-only prefix filtering, base URL override reclassification to custom OpenAI-compatible, saved inspection metadata, and migration backfill
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
-- provider revision regressions verify blank STT/LLM revisions follow exact stored Vault references, replacement credentials are rebound to stable target-owned paths before promotion, rollback cleans only the new copy, and superseded target/draft secrets are cleaned after commit; credential removal/restoration and team deletion also use the exact stored reference
+- provider revision regressions verify required-token blank STT/LLM revisions follow exact stored Vault references, no-auth revisions do not inspect or persist old credentials, explicit optional tokens remain bearer-authenticated, replacement credentials are rebound to stable target-owned paths before promotion, and superseded target/draft secrets are cleaned after commit
+- LLM promotion/reinspection regressions verify selected model allowlists cannot retain removed provider models, disjoint catalogs narrow to the promoted default, invalid team defaults reconcile, and invalid hallucination-check overrides clear without changing selected provider ids
+- no-auth STT/LLM runtime regressions verify stale Vault references are neither read nor forwarded unless the saved config explicitly uses bearer auth
 - migration rollback coverage verifies pending provider revisions sharing root labels are removed before unconditional pre-revision label uniqueness is restored
 - CSP regressions include the admin workspace and forbid inline submit/change handlers, keeping clear-selection confirmations on delegated `data-confirm-submit` handlers
 - hallucination-check selection API coverage for system-admin-only set/read/clear using ready active team LLM configs
@@ -359,6 +363,7 @@ What it does:
 - admin team hard delete removing team users, team-owned configs, team assets, transcript-derived rows, account requests, and team usage metadata
 - admin team hard delete preflighting system-admin membership before deleting Vault-backed provider secrets
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
+- transcript, user, team, and retention deletion committing a FK-free retry-audio cleanup job before Vault deletion, retaining failed deletions for scheduled retry, and treating an already-missing Vault path as success
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
 - de-identification provider validation rejecting secret-bearing extra headers/body fields, including nested body JSON keys, and bearer-auth providers without a Vault-backed token
 - shared NLP endpoint inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, clinical-NLP `label`/`confidence` response adjustment, and no token echo
@@ -403,6 +408,7 @@ What it does:
 ### Migrations
 
 - `alembic upgrade head` builds the expected schema from scratch
+- head schema includes the FK-free `transcript_audio_cleanup_jobs` outbox, its due-time index, retry metadata, and unique Vault reference
 - head schema includes account-request, session, trusted-device, MFA, and recovery-code tables
 - migration behavior and database safety rules are documented in [dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
 

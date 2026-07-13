@@ -171,6 +171,7 @@ Implemented in each selected team's **Usage** tab. User rows are constrained by 
 - `range=all` starts at oldest retained provider or ingestion metadata and uses monthly buckets.
 - Invalid range values fall back to 30 days.
 - Fixed ranges compare against previous equal period. All-available range omits comparison because no earlier retained period exists.
+- Fixed ranges use exact rolling timestamp boundaries for KPI cards, tables, and charts. Daily charts retain the partial first calendar-day bucket instead of dropping its first 24 hours; events before the exact boundary remain excluded.
 - ECharts zoom explores aggregate buckets already returned; changing reporting range performs a new server-side aggregate query. Raw events are never sent to chart code.
 
 ## Visual direction

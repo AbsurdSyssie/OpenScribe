@@ -4,7 +4,7 @@ from uuid import UUID
 from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
-from app.services.transcripts import delete_expired_transcripts, process_transcript_ingestion_job
+from app.services.transcripts import delete_expired_transcripts, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 
 
 @celery_app.task(name="openscribe.process_transcript_ingestion_job")
@@ -38,3 +38,9 @@ def delete_expired_transcripts_task(*, batch_size: int = 100) -> int:
         while deleted := delete_expired_transcripts(db, batch_size=batch_size):
             deleted_count += deleted
     return deleted_count
+
+
+@celery_app.task(name="openscribe.process_transcript_audio_cleanup_jobs")
+def process_transcript_audio_cleanup_jobs_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return process_transcript_audio_cleanup_jobs(db, batch_size=batch_size)

@@ -4,9 +4,14 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.celery_app import celery_app
+from app.errors import AppError
 from app.models import (
     GeneratedDocument,
     Transcript,
+    TranscriptAudioCleanupJob,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptStatus,
     TranscriptVersion,
@@ -69,6 +74,37 @@ def test_retention_cleanup_is_bounded_and_idempotent(db_session, make_team, make
     assert db_session.get(Transcript, second.id) is not None
     assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 1
     assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 0
+
+
+def test_retention_cleanup_preserves_failed_vault_deletion_for_retry(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Retention Vault Retry Team")
+    owner = make_user(email="retention-vault-retry@example.com", password="password-1", team=team)
+    now = utcnow()
+    expired = _make_transcript(db_session, owner=owner, title="Expired audio", expires_at=now)
+    secret_ref = "secret:openscribe/transcript-ingestion/retention-retry/source-audio"
+    db_session.add(
+        TranscriptIngestionJob(
+            transcript_id=expired.id,
+            owner_user_id=owner.id,
+            team_id=team.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.wav",
+            source_audio_vault_ref=secret_ref,
+            status=TranscriptIngestionJobStatus.failed,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    assert delete_expired_transcripts(db_session, now=now, batch_size=10) == 1
+    assert db_session.get(Transcript, expired.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.secret_ref == secret_ref
+    assert cleanup_job.attempt_count == 1
 
 
 def test_expired_transcript_is_hidden_from_history_and_detail(client, db_session, make_team, make_user):
@@ -149,6 +185,11 @@ def test_retention_cleanup_task_has_timely_beat_schedule():
     assert schedule["task"] == "openscribe.delete_expired_transcripts"
     assert schedule["schedule"] == 10.0
     assert schedule["options"] == {"expires": 10.0}
+
+    audio_cleanup_schedule = celery_app.conf.beat_schedule["retry-transcript-audio-cleanup-every-10-seconds"]
+    assert audio_cleanup_schedule["task"] == "openscribe.process_transcript_audio_cleanup_jobs"
+    assert audio_cleanup_schedule["schedule"] == 10.0
+    assert audio_cleanup_schedule["options"] == {"expires": 10.0}
 
 
 def test_dev_runtime_starts_and_stops_retention_scheduler():

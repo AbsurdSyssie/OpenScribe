@@ -52,6 +52,7 @@ from app.models import (
     TemplateMode,
     TemplateScope,
     Transcript,
+    TranscriptAudioCleanupJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
     TranscriptIngestionJob,
@@ -65,6 +66,7 @@ from app.models import (
     utcnow,
 )
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
+from app.services.admin import admin_usage_overview
 from app.services.dictations import update_post_consultation_dictation
 from app.schemas.llm import LlmConfigInspectResult
 from app.schemas.stt import SttInspectResult
@@ -3170,7 +3172,6 @@ def test_transcribe_create_button_ignores_existing_generated_note_without_source
         )
     )
     db_session.commit()
-
     client.post("/login", data={"email": "old-note-create-member@example.com", "password": "password-3"}, follow_redirects=False)
     page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
@@ -6537,6 +6538,16 @@ def test_admin_page_can_delete_team_and_owned_records(
     )
     db_session.add(transcript)
     db_session.flush()
+    retry_audio_ref = "secret:openscribe/transcript-ingestion/team-delete/source-audio"
+    db_session.add(
+        make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="team-delete.wav",
+            status=TranscriptIngestionJobStatus.failed,
+            source_audio_vault_ref=retry_audio_ref,
+        )
+    )
     db_session.add(
         ProviderUsageEvent(
             team_id=team.id,
@@ -6553,6 +6564,10 @@ def test_admin_page_can_delete_team_and_owned_records(
         )
     )
     db_session.commit()
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
 
     client.post("/login", data={"email": "admin-delete-team@example.com", "password": "password-1"}, follow_redirects=False)
     deleted = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
@@ -6575,6 +6590,10 @@ def test_admin_page_can_delete_team_and_owned_records(
     assert db_session.scalar(select(func.count()).select_from(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_([leader.id, member.id]))) == 0
     assert db_session.get(User, leader.id) is None
     assert db_session.get(User, member.id) is None
+    audio_cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert audio_cleanup_job is not None
+    assert audio_cleanup_job.secret_ref == retry_audio_ref
+    assert audio_cleanup_job.attempt_count == 1
     assert deleted_stt_refs == [stt_secret_ref]
     assert deleted_llm_refs == [llm_secret_ref]
 
@@ -7543,6 +7562,92 @@ def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_se
     assert 'aria: { enabled: true }' in chart_js
     assert "ResizeObserver" in chart_js
     assert 'control.form?.requestSubmit()' in chart_js
+
+
+@pytest.mark.parametrize(("range_key", "range_days"), (("30d", 30), ("90d", 90)))
+def test_admin_usage_trends_include_first_partial_day(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+    range_key,
+    range_days,
+):
+    team = make_team(name=f"Boundary Clinic {range_key}")
+    owner = make_user(email=f"usage-boundary-{range_key}@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    now = utcnow().replace(hour=12, minute=0, second=0, microsecond=0)
+    range_since = now - timedelta(days=range_days)
+    monkeypatch.setattr("app.services.admin.utcnow", lambda: now)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Boundary usage",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ProviderUsageEvent(
+                team_id=team.id,
+                owner_user_id=owner.id,
+                transcript_id=transcript.id,
+                feature_type=ProviderFeatureType.llm_generation,
+                event_type=ProviderUsageEventType.completed,
+                provider_adapter="ollama_chat",
+                model_name="boundary-model",
+                prompt_tokens=123,
+                completion_tokens=45,
+                total_tokens=168,
+                created_at=range_since + timedelta(hours=1),
+            ),
+            ProviderUsageEvent(
+                team_id=team.id,
+                owner_user_id=owner.id,
+                transcript_id=transcript.id,
+                feature_type=ProviderFeatureType.llm_generation,
+                event_type=ProviderUsageEventType.completed,
+                provider_adapter="ollama_chat",
+                model_name="outside-model",
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_tokens=1998,
+                created_at=range_since - timedelta(seconds=1),
+            ),
+            make_ingestion_job_for_transcript(
+                transcript,
+                job_kind=TranscriptIngestionJobKind.audio_file,
+                source_filename="inside.wav",
+                status=TranscriptIngestionJobStatus.applied,
+                source_audio_duration_seconds=3600.0,
+                created_at=range_since + timedelta(hours=1),
+            ),
+            make_ingestion_job_for_transcript(
+                transcript,
+                job_kind=TranscriptIngestionJobKind.audio_file,
+                source_filename="outside.wav",
+                status=TranscriptIngestionJobStatus.applied,
+                source_audio_duration_seconds=7200.0,
+                created_at=range_since - timedelta(seconds=1),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    overview = admin_usage_overview(db_session, team_id=team.id, range_key=range_key)
+
+    first_bucket = overview["usage_comparison_trend_points"][0]
+    assert first_bucket["current_input"] == 123
+    assert first_bucket["current_output"] == 45
+    assert first_bucket["current_audio"] == 1.0
+    assert sum(point["current_input"] for point in overview["usage_comparison_trend_points"]) == 123
+    assert sum(point["current_output"] for point in overview["usage_comparison_trend_points"]) == 45
+    assert sum(point["current_audio"] for point in overview["usage_comparison_trend_points"]) == 1.0
+    kpi_values = {card.label: card.value for card in overview["usage_kpi_cards"]}
+    assert kpi_values[f"Input tokens · Last {range_days} days"] == "123"
+    assert kpi_values[f"Output tokens · Last {range_days} days"] == "45"
+    assert kpi_values["Audio processed"] == "1.00h"
 
 
 def test_new_admin_usage_range_all_includes_retained_historical_metadata(client, db_session, make_team, make_user):

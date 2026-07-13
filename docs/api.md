@@ -141,6 +141,7 @@ Browser navigation behavior:
 - runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
 - STT draft finalization and draft credential replacement take `config_id` from the path; JSON bodies include team/label/model or replacement token fields only and do not require a duplicate body `config_id`
+- STT provider revisions inherit a blank credential only when the resolved target preset requires an API key. Moving to an optional/no-auth preset without supplying a token stores `auth_mode=none` and no Vault reference; supplying an optional token stores `auth_mode=bearer`.
 - STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
 - blank `bearer_token` on edit keeps the saved credential only when `credential_action` is `keep`; `remove` clears credential-derived state and deletes the saved Vault secret
 - create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
@@ -161,7 +162,7 @@ Browser navigation behavior:
 - `POST /api/v1/llm-configs`
 - `DELETE /api/v1/llm-configs/{config_id}`
 
-Material provider edits use pending revisions while active config ids remain stable. Blank revision credentials reuse the root config's exact stored Vault reference. Replacement credentials are rebound to a fresh root-owned Vault path before promotion; superseded root and revision paths are cleaned only after the database commit succeeds.
+Material provider edits use pending revisions while active config ids remain stable. Blank revision credentials reuse the root config's exact stored Vault reference only for presets that require a token. Moving to Ollama without a submitted token stores `auth_mode=none` and no Vault reference; an explicitly submitted optional token stores `auth_mode=bearer`. Replacement credentials are rebound to a fresh root-owned Vault path before promotion; superseded root and revision paths are cleaned only after the database commit succeeds.
 - `GET /api/v1/llm-selection`
 - `GET /api/v1/llm-selection/options`
 - `POST /api/v1/llm-selection`
@@ -179,9 +180,9 @@ Material provider edits use pending revisions while active config ids remain sta
 - LLM inspect accepts branded `provider_preset` values and returns `provider_preset`, `provider_display_name`, `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, manual-required, and failed discovery states
 - LLM inspect remains scoped to known protocol adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 - LLM draft creation is system-admin-only; it saves the submitted credential to Vault, stores discovered model metadata, returns `has_secret=true`, and never returns raw keys or Vault refs
-- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's active LLM selection
+- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's selected config id. If the promoted model catalog changed, the leader-approved allowlist is intersected with the new catalog; an empty intersection narrows to the new provider default, invalid team defaults move to that model, and invalid hallucination-check overrides clear to the same config's default.
 - LLM credential replacement reruns discovery, clears availability, and returns the config to `pending_model_selection`
-- saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
+- saved LLM provider inspect uses an existing Vault-backed credential only when `auth_mode=bearer`, refreshes sanitized available-model metadata, reconciles model selections, and never returns the raw key
 - LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
 - LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
 - persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
@@ -741,6 +742,13 @@ Current whole-file ingestion behavior:
   - or a generic team-leader message when no active leader email is available
 
 System-admin or leader authority does not grant transcript-content access.
+
+Transcript-root deletion commits the database root cascade before deleting any
+Vault-backed retry audio. `DELETE /api/v1/transcripts/{transcript_id}`, user
+deletion, team deletion, and retention cleanup persist a metadata-only cleanup
+job in that same transaction. A Vault outage does not restore or expose the
+deleted transcript: cleanup is retried durably until the Vault path is deleted
+or confirmed already absent.
 
 ### Provider model enforcement
 

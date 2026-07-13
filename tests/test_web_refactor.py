@@ -238,10 +238,10 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     assert components_link in home_template
     assert components_link in template_editor
     assert components_link in admin_template
-    assert '<link rel="stylesheet" href="/static/css/home.css?v=20260701-home-extract">' in home_template
+    assert '<link rel="stylesheet" href="/static/css/home.css?v=20260712-password-controls">' in home_template
     assert '<link rel="stylesheet" href="/static/css/home2.css?v=20260701-home-extract">' in home_template
     assert '<link rel="stylesheet" href="/static/css/template-editor.css?v=20260702-template-editor-extract">' in template_editor
-    assert '<link rel="stylesheet" href="/static/css/admin.css?v=20260702-admin-extract">' in admin_template
+    assert '<link rel="stylesheet" href="/static/css/admin.css?v=20260712-team-scope">' in admin_template
     assert "<style" not in home_template
     assert "<style" not in template_editor
     assert "<style" not in admin_template

@@ -33,6 +33,11 @@ celery_app.conf.update(
             "schedule": 10.0,
             "options": {"expires": 10.0},
         },
+        "retry-transcript-audio-cleanup-every-10-seconds": {
+            "task": "openscribe.process_transcript_audio_cleanup_jobs",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
     },
 )
 

@@ -57,6 +57,7 @@ if [[ "${DEV_RESTART_EXISTING_PROCESSES:-true}" == "true" ]]; then
   pkill -f 'fastapi.*app/main.py' 2>/dev/null || true
   pkill -f 'uvicorn.*app.main:app' 2>/dev/null || true
   pkill -f 'celery -A app.celery_app:celery_app worker' 2>/dev/null || true
+  pkill -f 'celery -A app.celery_app:celery_app beat' 2>/dev/null || true
   pkill -f 'brave-browser.*--remote-debugging-port=9222' 2>/dev/null || true
 
   sleep 1
@@ -114,6 +115,7 @@ if [[ "${DEV_SEED_TEST_ACCOUNTS:-true}" == "true" ]]; then
 fi
 
 CELERY_WORKER_PID=""
+CELERY_BEAT_PID=""
 BRAVE_PID=""
 
 cleanup() {
@@ -121,6 +123,10 @@ cleanup() {
 
   if [[ -n "${CELERY_WORKER_PID}" ]]; then
     kill "${CELERY_WORKER_PID}" 2>/dev/null || true
+  fi
+
+  if [[ -n "${CELERY_BEAT_PID}" ]]; then
+    kill "${CELERY_BEAT_PID}" 2>/dev/null || true
   fi
 
   if [[ -n "${BRAVE_PID}" ]]; then
@@ -138,6 +144,9 @@ if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   echo "Starting Celery worker..."
   .venv/bin/celery -A app.celery_app:celery_app worker --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_WORKER_PID=$!
+  echo "Starting Celery Beat for retention cleanup..."
+  .venv/bin/celery -A app.celery_app:celery_app beat --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
+  CELERY_BEAT_PID=$!
 fi
 
 if [[ "${DEV_START_BRAVE:-true}" == "true" ]]; then

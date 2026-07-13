@@ -51,8 +51,8 @@ alembic upgrade head
 
 This starts Docker services, initializes or unseals the persistent local Vault, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
-It also starts a local Celery worker by default so queued transcript-ingestion jobs are processed during manual testing.
-Before launching, it now proactively stops any existing OpenScribe FastAPI dev server and Celery worker processes so stale workers do not keep consuming jobs with old Python code.
+It also starts a local Celery worker and Celery Beat scheduler by default. Queued transcript-ingestion jobs are processed during manual testing, and Beat queues transcript-retention cleanup every 10 seconds.
+Before launching, it now proactively stops any existing OpenScribe FastAPI dev server, Celery worker, and Celery Beat processes so stale processes do not keep consuming or scheduling jobs with old Python code.
 It also checks the configured FastAPI port before starting Celery or Brave; if another process still owns the port, it exits with a direct `APP_PORT`/stop-process message instead of leaving a worker running after server startup fails.
 It exports derived dev defaults such as `APP_PORT` and `APP_BIND_HOST` before running child Python checks, so missing optional `.env` values still use the documented defaults.
 It also purges stale queued Celery tasks by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
@@ -63,6 +63,9 @@ Important:
 
 - if you change transcript/job enums, Celery task code, or other worker-loaded Python models, restart `./start-dev.sh`
 - `./start-dev.sh` now replaces existing OpenScribe dev server and Celery worker processes automatically; set `DEV_RESTART_EXISTING_PROCESSES=false` only if you explicitly do not want that behavior
+- expired transcript roots become inaccessible at their fixed `retention_expires_at` timestamp; cleanup physically deletes roots and cascading transcript-derived children on the next 10-second scheduler pass
+- retention cleanup drains expired roots in locked 100-row batches; queued cleanup messages expire after 10 seconds so a stopped worker does not later replay stale scheduler backlog
+- production deployments must run both a Celery worker and Celery Beat with the same application configuration; a worker without Beat does not schedule retention cleanup
 - if port `APP_PORT` is owned by an unrelated process, stop it or change `APP_PORT` in `.env`
 - `APP_HOST` now defaults to `0.0.0.0`
 - `./start-dev.sh` allows the FastAPI frontend bind off-box by default; set `APP_HOST=127.0.0.1` and `DEV_ALLOW_REMOTE_BIND=false` if you want localhost-only app access
@@ -231,7 +234,7 @@ python scripts/send_test_email.py --to you@example.com
 For `MAIL_TRANSPORT=resend`, the test script uses `RESEND_API_KEY` or `RESEND_API_KEY_VAULT_REF`, `MAIL_FROM_ADDRESS`, `MAIL_FROM_NAME`, `MAIL_REPLY_TO`, and `APP_PUBLIC_URL`.
 Do not commit the Resend API key.
 
-You can disable the worker startup in `./start-dev.sh` with:
+You can disable both Celery worker and Beat startup in `./start-dev.sh` with:
 
 ```bash
 DEV_START_CELERY=false

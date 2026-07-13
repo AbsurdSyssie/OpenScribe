@@ -66,6 +66,7 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 - STT/LLM revision drafts self-link to a ready provider root. Root IDs and selection foreign keys remain stable at promotion; pending revisions never appear in normal provider lists, selection candidates, or runtime resolution.
 - One pending revision is allowed per provider root. Revision labels may match their root because normalized label uniqueness applies only to root configs.
 - Revision cancellation commits row deletion before cleaning its staged Vault secret. Promotion copies the staged secret reference to the stable root, deletes the revision atomically, then cleans the replaced root secret after commit.
+- Downgrading across provider-revision support discards pending STT/LLM revision rows before restoring unconditional team-label uniqueness. Active provider roots remain; staged Vault references may require operator cleanup after rollback.
 - De-identification provisioning remains global for this redesign even though team-scoped provisioning may be preferable later. Selected team's De-identification tab shows assigned providers first, then available global providers with attach action.
 - Canonical language: **detach/remove from team** deletes only assignment; **delete provider** is global and may affect multiple teams. Global edit/delete controls must disclose cross-team scope and impact.
 - Sidebar includes a separate global **De-ID providers** management area. It owns provider create, inspect/ping, edit, and global delete. Team rows never expose global deletion.
@@ -98,6 +99,7 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 - Existing server routes and service authorization remain source of truth; visual navigation does not grant access.
 - Provider secrets remain write-only and Vault-backed. UI may show secret-present/health state, never raw saved values.
 - Destructive actions remain explicit POST operations with CSRF protection and confirmation. Team deletion must preserve blocker preflight and full cleanup semantics.
+- Admin workspace confirmations use nonce-backed delegated handlers through `data-confirm-submit`; inline event attributes are forbidden by CSP.
 - Provider inspection/test uses synthetic content only. Runtime transcript content never appears here.
 - User/team ownership, retention, encryption, structured-note contract, and transcript-root cascades are not redesigned by this work.
 

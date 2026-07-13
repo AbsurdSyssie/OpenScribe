@@ -551,7 +551,11 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     adapter_kind = preset.adapter_kind
     bearer_token = payload.bearer_token
     if not bearer_token and target is not None and target.vault_secret_ref:
-        bearer_token = read_team_llm_bearer_token(team_id=team.id, config_id=target.id)
+        bearer_token = read_team_llm_bearer_token(
+            team_id=team.id,
+            config_id=target.id,
+            secret_ref=target.vault_secret_ref,
+        )
     if preset.requires_bearer_token and not bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires an API key", {"field": "bearer_token"})
     raw_label = (payload.label or "").strip()
@@ -589,14 +593,29 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
+    written_secret_ref = ""
     try:
         db.flush()
         if payload.bearer_token:
             config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+            written_secret_ref = config.vault_secret_ref
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        if written_secret_ref:
+            try:
+                delete_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=written_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         _raise_llm_label_conflict_if_needed(exc)
+        raise
+    except Exception:
+        db.rollback()
+        if written_secret_ref:
+            try:
+                delete_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=written_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         raise
     db.refresh(config)
     _record_llm_audit(db, action="llm_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
@@ -637,8 +656,28 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     config.updated_by_user_id = actor.id
     result = config
     old_secret_ref = ""
+    revision_secret_ref = ""
+    rebound_secret_ref = ""
     if target is not None:
         old_secret_ref = target.vault_secret_ref
+        if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
+            revision_secret_ref = config.vault_secret_ref
+            try:
+                bearer_token = read_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    secret_ref=revision_secret_ref,
+                )
+                rebound_secret_ref = write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=target.id,
+                    bearer_token=bearer_token,
+                    secret_id=uuid4(),
+                )
+            except Exception:
+                db.rollback()
+                raise
+            config.vault_secret_ref = rebound_secret_ref
         for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "setup_status", "vault_secret_ref", "is_active"):
             setattr(target, field, getattr(config, field))
         target.updated_by_user_id = actor.id
@@ -649,13 +688,37 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        if rebound_secret_ref:
+            try:
+                delete_team_llm_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         _raise_llm_label_conflict_if_needed(exc)
         raise
-    if target is not None and old_secret_ref and old_secret_ref != result.vault_secret_ref:
-        try:
-            delete_team_llm_bearer_token(team_id=team.id, config_id=target.id, secret_ref=old_secret_ref)
-        except AppError as exc:
-            logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": exc.code})
+    except Exception:
+        db.rollback()
+        if rebound_secret_ref:
+            try:
+                delete_team_llm_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
+            except AppError as cleanup_exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+        raise
+    if target is not None:
+        obsolete_secrets = (
+            (target.id, old_secret_ref),
+            (config.id, revision_secret_ref),
+        )
+        for obsolete_config_id, obsolete_ref in obsolete_secrets:
+            if not obsolete_ref or obsolete_ref == result.vault_secret_ref:
+                continue
+            try:
+                delete_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=obsolete_config_id,
+                    secret_ref=obsolete_ref,
+                )
+            except AppError as exc:
+                logger.warning("llm_config_secret_cleanup_failed", extra={"config_id": str(obsolete_config_id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(result)
     _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
     return result
@@ -903,17 +966,19 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
 
     deleted_secret_before_commit = False
     bearer_token_for_restore: str | None = None
+    deleted_secret_ref = ""
     if replacing_secret and payload.bearer_token:
         config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
     elif removing_secret:
         if config.vault_secret_ref:
+            deleted_secret_ref = config.vault_secret_ref
             try:
-                bearer_token_for_restore = read_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=config.vault_secret_ref)
+                bearer_token_for_restore = read_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=deleted_secret_ref)
             except AppError as exc:
                 if exc.code != "vault_read_failed":
                     raise
                 logger.warning("llm_config_secret_restore_snapshot_missing", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
-            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id)
+            delete_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=deleted_secret_ref)
             deleted_secret_before_commit = True
         config.vault_secret_ref = ""
     elif adapter_kind is LlmAdapterKind.ollama_chat and creating:
@@ -926,7 +991,12 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     except IntegrityError as exc:
         if deleted_secret_before_commit and bearer_token_for_restore:
             try:
-                write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=bearer_token_for_restore)
+                write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token_for_restore,
+                    secret_ref=deleted_secret_ref,
+                )
             except AppError as restore_exc:
                 logger.warning("llm_config_secret_restore_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": restore_exc.code})
         db.rollback()
@@ -935,7 +1005,12 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     except Exception:
         if deleted_secret_before_commit and bearer_token_for_restore:
             try:
-                write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=bearer_token_for_restore)
+                write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token_for_restore,
+                    secret_ref=deleted_secret_ref,
+                )
             except AppError as exc:
                 logger.warning("llm_config_secret_restore_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
         raise

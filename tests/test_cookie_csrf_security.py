@@ -439,7 +439,11 @@ def test_transcribe_tailwind_build_includes_runtime_js_classes():
 
 
 def test_home_and_admin_templates_do_not_use_inline_script_handlers():
-    for path in [Path("app/templates/home.html"), Path("app/templates/admin.html")]:
+    for path in [
+        Path("app/templates/home.html"),
+        Path("app/templates/admin.html"),
+        Path("app/templates/admin_mockup.html"),
+    ]:
         content = path.read_text()
         assert "onsubmit=" not in content, f"inline submit handler left in {path}"
         assert "onchange=" not in content, f"inline change handler left in {path}"

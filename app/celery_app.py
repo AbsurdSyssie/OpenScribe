@@ -28,9 +28,10 @@ celery_app.conf.update(
     task_eager_propagates=True,
     timezone="UTC",
     beat_schedule={
-        "delete-expired-transcripts-hourly": {
+        "delete-expired-transcripts-every-10-seconds": {
             "task": "openscribe.delete_expired_transcripts",
-            "schedule": 3600.0,
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
         },
     },
 )

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -72,7 +73,13 @@ def test_retention_cleanup_is_bounded_and_idempotent(db_session, make_team, make
 
 def test_expired_transcript_is_hidden_from_history_and_detail(client, db_session, make_team, make_user):
     team = make_team(name="Visibility Retention Team")
-    owner = make_user(email="retention-visibility@example.com", password="password-1", team=team)
+    owner = make_user(
+        email="retention-visibility@example.com",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
     expired = _make_transcript(db_session, owner=owner, title="Expired", expires_at=utcnow() - timedelta(seconds=1))
     active = _make_transcript(db_session, owner=owner, title="Active", expires_at=utcnow() + timedelta(days=1))
 
@@ -88,8 +95,65 @@ def test_expired_transcript_is_hidden_from_history_and_detail(client, db_session
     assert detail.json()["error"]["code"] == "not_found"
 
 
-def test_retention_cleanup_task_has_hourly_beat_schedule():
-    schedule = celery_app.conf.beat_schedule["delete-expired-transcripts-hourly"]
+def test_expired_transcript_is_rejected_by_workspace_and_owner_content_routes(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Expired Content Gate Team")
+    owner = make_user(
+        email="expired-content-gate@example.com",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    expired = _make_transcript(
+        db_session,
+        owner=owner,
+        title="Confidential expired session",
+        expires_at=utcnow() - timedelta(seconds=1),
+    )
+    expired.current_draft_text_encrypted = "confidential transcript body"
+    db_session.add(expired)
+    db_session.commit()
+
+    login = client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"})
+    assert login.status_code == 200
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={expired.id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["active_transcript"] is None
+    assert workspace.json()["recent_transcripts"] == []
+    assert workspace.json()["generated_documents"] == []
+    assert "confidential transcript body" not in workspace.text
+
+    requests = [
+        client.patch(f"/api/v1/transcripts/{expired.id}", json={"title": "Changed"}),
+        client.get(f"/api/v1/transcripts/{expired.id}/working-note"),
+        client.get(f"/api/v1/transcripts/{expired.id}/post-consultation-dictation"),
+        client.get(f"/api/v1/transcripts/{expired.id}/generated-documents"),
+        client.post(f"/api/v1/transcripts/{expired.id}/pii-entities/reveal"),
+        client.delete(f"/api/v1/transcripts/{expired.id}"),
+    ]
+    for response in requests:
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
+    assert db_session.get(Transcript, expired.id) is not None
+
+
+def test_retention_cleanup_task_has_timely_beat_schedule():
+    schedule = celery_app.conf.beat_schedule["delete-expired-transcripts-every-10-seconds"]
 
     assert schedule["task"] == "openscribe.delete_expired_transcripts"
-    assert schedule["schedule"] == 3600.0
+    assert schedule["schedule"] == 10.0
+    assert schedule["options"] == {"expires": 10.0}
+
+
+def test_dev_runtime_starts_and_stops_retention_scheduler():
+    script = Path("start-dev.sh").read_text()
+
+    assert "celery -A app.celery_app:celery_app beat" in script
+    assert 'CELERY_BEAT_PID=""' in script
+    assert 'kill "${CELERY_BEAT_PID}"' in script

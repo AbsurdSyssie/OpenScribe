@@ -11,15 +11,11 @@ from app.schemas import PostConsultationDictationDetail
 from app.services.audio import enforce_whole_file_duration_limit, enforce_whole_file_upload_size, normalize_audio_to_wav_16k_mono
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from app.services.stt import transcribe_with_team_stt
+from app.services.transcripts import get_active_owner_transcript
 
 
 def _get_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != owner.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
-    return transcript
+    return get_active_owner_transcript(db, owner, transcript_id=transcript_id)
 
 
 def dictation_combined_text(db: Session, *, dictation: PostConsultationDictation) -> str | None:

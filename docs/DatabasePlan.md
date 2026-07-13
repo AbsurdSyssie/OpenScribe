@@ -1000,10 +1000,11 @@ This applies to:
 * retention-based delete
 * system-level user deletion cascade
 
-Expired transcript roots are excluded from transcript history and direct detail
-access as soon as `retention_expires_at` is reached. An hourly Celery Beat task
-hard-deletes expired roots in bounded batches; database cascades remove
-transcript-derived children.
+Expired transcript roots are rejected by the central owner-content gate as soon
+as `retention_expires_at` is reached, including workspace hydration and mutation
+paths. Celery Beat queues hard-delete cleanup every 10 seconds, and the worker
+drains locked bounded batches; database cascades remove transcript-derived
+children. Production therefore runs both Celery worker and Beat processes.
 Team retention changes apply to transcripts created afterward and do not extend
 or recalculate existing fixed expiry timestamps.
 

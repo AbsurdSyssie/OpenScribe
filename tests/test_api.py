@@ -91,7 +91,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttInspectResult
 from app.services.audio import (
@@ -114,7 +114,7 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
-from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, upsert_llm_config as upsert_llm_config_service
+from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
@@ -3335,6 +3335,175 @@ def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_
     assert stt.vault_secret_ref == stt_ref and llm.vault_secret_ref == llm_ref
     assert deleted_stt == [] and deleted_llm == []
 
+
+def test_stt_replacement_revision_rebinds_secret_and_supports_blank_followup_revision(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinic STT Secret Rebind")
+    admin = make_user(email="admin-stt-secret-rebind@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Rebound STT",
+        base_url="https://api.openai.com/v1",
+        model_name="whisper-1",
+        available_models_json=["whisper-1"],
+    )
+    make_stt_selection(config=active, actor=admin)
+    secret_store: dict[str, str] = {}
+
+    def secret_ref(config_id, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/stt/team/{team.id}/config/{config_id}{suffix}"
+
+    active.vault_secret_ref = secret_ref(active.id, uuid4())
+    secret_store[active.vault_secret_ref] = "old-stt-key"
+    db_session.commit()
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        ref = secret_ref(config_id, secret_id)
+        secret_store[ref] = bearer_token
+        return ref
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        return secret_store[secret_ref]
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        secret_store.pop(secret_ref, None)
+
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
+    monkeypatch.setattr(
+        "app.services.stt.inspect_stt_contract",
+        lambda *args, **kwargs: SttInspectResult(
+            adapter_kind=SttAdapterKind.openai_compatible_rest,
+            base_url="https://api.openai.com/v1",
+            openapi_path=None,
+            transcribe_path="/audio/transcriptions",
+            model_name=None,
+            available_models=["whisper-1"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        ),
+    )
+    login(client, email=admin.email, password="password-1")
+
+    first = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "new-stt-key", "revision_of_config_id": str(active.id)},
+    )
+    assert first.status_code == 200
+    first_revision_id = UUID(first.json()["config"]["id"])
+    promoted = client.post(
+        f"/api/v1/stt-configs/{first_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(first_revision_id), "label": active.label, "model_name": "whisper-1", "language": None, "is_active": True},
+    )
+    assert promoted.status_code == 200
+    db_session.refresh(active)
+    assert f"/config/{active.id}/" in active.vault_secret_ref
+    assert _read_saved_stt_bearer_token(team_id=team.id, config=active) == "new-stt-key"
+    assert all(f"/config/{first_revision_id}" not in ref for ref in secret_store)
+
+    second = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert second.status_code == 200
+    second_revision_id = UUID(second.json()["config"]["id"])
+    finalized = client.post(
+        f"/api/v1/stt-configs/{second_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(second_revision_id), "label": active.label, "model_name": "whisper-1", "language": None, "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert _read_saved_stt_bearer_token(team_id=team.id, config=active) == "new-stt-key"
+
+
+def test_llm_replacement_revision_rebinds_secret_and_supports_blank_followup_revision(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Secret Rebind")
+    admin = make_user(email="admin-llm-secret-rebind@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Rebound LLM",
+        provider_preset="openai",
+        base_url="https://api.openai.com/v1",
+        model_name="model-a",
+        available_models_json=["model-a"],
+    )
+    make_llm_selection(config=active, actor=admin)
+    secret_store: dict[str, str] = {}
+
+    def secret_ref(config_id, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/llm/team/{team.id}/config/{config_id}{suffix}"
+
+    active.vault_secret_ref = secret_ref(active.id, uuid4())
+    secret_store[active.vault_secret_ref] = "old-llm-key"
+    db_session.commit()
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        ref = secret_ref(config_id, secret_id)
+        secret_store[ref] = bearer_token
+        return ref
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        return secret_store[secret_ref]
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        secret_store.pop(secret_ref, None)
+
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+    login(client, email=admin.email, password="password-1")
+
+    first = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "new-llm-key", "revision_of_config_id": str(active.id)},
+    )
+    assert first.status_code == 200
+    first_revision_id = UUID(first.json()["config"]["id"])
+    promoted = client.post(
+        f"/api/v1/llm-configs/{first_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(first_revision_id), "label": active.label, "model_name": "model-a", "is_active": True},
+    )
+    assert promoted.status_code == 200
+    db_session.refresh(active)
+    assert f"/config/{active.id}/" in active.vault_secret_ref
+    assert read_active_team_llm_bearer_token(db_session, team_id=team.id) == "new-llm-key"
+    assert all(f"/config/{first_revision_id}" not in ref for ref in secret_store)
+
+    second = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert second.status_code == 200
+    second_revision_id = UUID(second.json()["config"]["id"])
+    finalized = client.post(
+        f"/api/v1/llm-configs/{second_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(second_revision_id), "label": active.label, "model_name": "model-a", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert read_active_team_llm_bearer_token(db_session, team_id=team.id) == "new-llm-key"
+
 def test_llm_revision_finalize_rejects_active_target_with_queued_document(
     client, db_session, make_team, make_user, make_llm_config, monkeypatch
 ):
@@ -3858,8 +4027,8 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     deleted: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret@example.com", password="password-1")
     updated = client.post(
@@ -3892,9 +4061,9 @@ def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_sess
     original_commit = db_session.commit
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
     login(client, email="admin-remove-llm-secret-order@example.com", password="password-1")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: events.append("delete"))
     monkeypatch.setattr(db_session, "commit", lambda: (events.append("commit"), original_commit())[1])
     updated = client.post(
         "/api/v1/llm-configs",
@@ -3925,9 +4094,18 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
     events: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
-    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda *, team_id, config_id, bearer_token: events.append(f"restore:{bearer_token}") or original_ref)
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
+    monkeypatch.setattr(
+        "app.services.llm.delete_team_llm_bearer_token",
+        lambda *, team_id, config_id, secret_ref=None: events.append(f"delete:{secret_ref}"),
+    )
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_bearer_token",
+        lambda *, team_id, config_id, bearer_token, secret_id=None, secret_ref=None: events.append(
+            f"restore:{bearer_token}:{secret_ref}"
+        )
+        or original_ref,
+    )
     monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
 
     with pytest.raises(RuntimeError, match="commit failed"):
@@ -3946,7 +4124,10 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
             ),
         )
 
-    assert events == ["delete", "restore:saved-ollama-secret"]
+    assert events == [
+        f"delete:{original_ref}",
+        f"restore:saved-ollama-secret:{original_ref}",
+    ]
     db_session.rollback()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
@@ -3960,9 +4141,9 @@ def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_sessi
     original_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
 
-    def fail_delete(*, team_id, config_id):
+    def fail_delete(*, team_id, config_id, secret_ref=None):
         raise AppError(502, "vault_unavailable", "Vault unavailable")
 
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fail_delete)
@@ -4003,11 +4184,11 @@ def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_ses
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
 
-    def fail_read(*, team_id, config_id):
+    def fail_read(*, team_id, config_id, secret_ref=None):
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fail_read)
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret-stale-ref@example.com", password="password-1")
     removed = client.post(
@@ -4135,7 +4316,7 @@ def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(cli
     config = make_llm_config(team=team, actor=admin, available_models_json=["old-model"], model_name="old-model", has_secret=True)
     reads: list[str] = []
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         reads.append(str(config_id))
         return "saved-llm-key"
 
@@ -4214,7 +4395,7 @@ def test_llm_endpoint_change_with_kept_secret_rediscover_models(client, db_sessi
     config = make_llm_config(team=team, actor=admin, available_models_json=["gpt-4.1"], model_name="gpt-4.1", has_secret=True)
     reads: list[str] = []
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         reads.append(str(config_id))
         return "saved-router-key"
 
@@ -4256,7 +4437,7 @@ def test_llm_endpoint_change_with_failed_rediscovery_clears_stale_models(client,
     def fail_discovery(**kwargs):
         raise AppError(502, "llm_inspection_failed", "Could not load available models")
 
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-router-key")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-router-key")
     monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
     login(client, email="admin-llm-clear-stale@example.com", password="password-1")
     updated = client.post(
@@ -4287,7 +4468,7 @@ def test_saved_llm_inspection_failure_persists_metadata_without_overwriting_mode
     def fail_discovery(**kwargs):
         raise AppError(502, "llm_inspection_failed", "Could not load available models")
 
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-llm-key")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-llm-key")
     monkeypatch.setattr("app.services.llm._list_openai_chat_models", fail_discovery)
     login(client, email="admin-saved-llm-inspect-fail@example.com", password="password-1")
     inspected = client.post(f"/api/v1/llm-configs/{config.id}/inspect?team_id={team.id}")
@@ -9484,7 +9665,7 @@ def test_owner_can_delete_generated_document_and_sections_cascade(client, db_ses
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9552,7 +9733,7 @@ def test_generated_document_update_saves_note_content_and_detects_revision_confl
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -10574,7 +10755,7 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10691,9 +10872,12 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
             "is_active": True,
         },
     )
-    assert finalized.status_code == 200
-    assert finalized.json()["setup_status"] == "ready"
-    assert finalized.json()["is_active"] is True
+    assert_error(
+        finalized,
+        status_code=409,
+        code="conflict",
+        message="Cannot edit this LLM config while generated documents are queued or processing",
+    )
 
     config.is_active = False
     db_session.add(config)
@@ -12298,7 +12482,7 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()

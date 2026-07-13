@@ -41,7 +41,7 @@ Preview note:
 
 Quick start:
 
-- run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker, and launch the dev server
+- run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker plus Beat retention scheduler, and launch the dev server
 - local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`; copy the current `.env.example` if these are missing
 - production must set `APP_ENV=production` and `COOKIE_SECURE_MODE=always`; CSRF secret material is read from `CSRF_SECRET`/`SECRET_KEY` when set, otherwise the app creates or reuses a stable Vault KV secret
 - production must choose HSTS ownership: keep `HSTS_SOURCE=app` when OpenScribe emits `Strict-Transport-Security`, set `HSTS_SOURCE=proxy` when Cloudflare/reverse proxy emits HSTS for all responses, or set `HSTS_SOURCE=proxy_static_fallback` when the proxy covers dynamic pages but misses `/static/` assets

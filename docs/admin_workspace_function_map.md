@@ -4,8 +4,8 @@
 
 | Question | Decision |
 |---|---|
-| Migration routes? | New design owns `/admin`; current functional design moves to `/legacy-admin`; `/admin2` stays unchanged. |
-| May internal `/admin` contain mock panels? | Yes on redesign branch; incomplete redesign never merges to user-facing `master`. |
+| Migration routes? | Functional `admin.html` owns canonical `/admin`; `/legacy-admin` remains compatible; `/admin2` stays unchanged. |
+| May user-facing `/admin` contain mock panels? | No. `admin_mockup.html` remains gated until complete preservation/release verification. |
 | Primary organisation? | Mockup's team-first workspace; plug controls into extant functions before workflow redesign. |
 | Team-list scaling? | Render full environment list; no search/pagination now. |
 | Navigation state? | Validated `team_id` and `team_tab` URL state; links work without JavaScript. |
@@ -42,13 +42,13 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 
 ## Migration routing decision
 
-- `/admin` hosts the new, incrementally completed design based on `admin_mockup.html`.
-- `/legacy-admin` hosts the current functional `admin.html` workspace during migration.
+- `/admin` hosts functional `admin.html` and is the user-facing canonical route.
+- `/legacy-admin` remains a compatible functional `admin.html` route during migration.
 - Existing POST action routes remain under `/admin/...`; `legacy-admin` names the browser page, not a duplicate backend API.
 - Redirects after mutations must return to the initiating workspace during migration. New and legacy pages therefore need an explicit, validated return-workspace mechanism rather than blindly returning every action to `/admin`.
 - `/legacy-admin` is temporary and may be removed only after every applicable preservation row in this document passes verification.
 - Access control is identical for both browser pages: system-admin only, metadata only.
-- Migration occurs in an internal development environment. `/admin` may show incomplete mock panels while work proceeds; production users will not receive the route switch until the whole redesign passes its release gate.
+- `admin_mockup.html` redesign work remains gated. It must not replace functional `/admin` until the whole redesign passes its release gate.
 - Incomplete controls must be recognisable as mock/incomplete and must not invoke mutation routes accidentally. Functional status remains tracked by this checklist, not inferred from visual completeness.
 - Mockup information architecture is the accepted starting structure: team selection in the sidebar; team-level tabs in the workspace; global requests, usage, and audit navigation outside those tabs.
 - First implementation pass wires mockup buttons and controls to extant routes/services one-by-one. Backend behavior is reused before any workflow redesign is considered.
@@ -109,8 +109,8 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 
 | Preserve | Browser entry / backend | Redesign check |
 |---|---|---|
-| Load new admin workspace and selected tab/team/provider context | `GET /admin` -> new mockup-based template using existing presentation context | [ ] |
-| Load temporary current workspace | `GET /legacy-admin` -> current `admin.html` and presentation context | [ ] |
+| Load canonical functional workspace | `GET /admin` -> `admin.html` using existing presentation context | [x] |
+| Load compatible functional workspace | `GET /legacy-admin` -> `admin.html` and presentation context | [x] |
 | Preserve initiating workspace after POST redirect | validated new/legacy return context in `web_admin.py` | [ ] |
 | Existing alternate workspace | `GET /admin2`; retained unchanged as secondary developer reference, not official fallback or source of truth | [ ] |
 | Sign out | `POST /logout` | [ ] |
@@ -252,7 +252,7 @@ Both areas must remain metadata-only: IDs, statuses, counts, durations, token/co
 
 ## Mockup-first wiring sequence
 
-1. [ ] Swap browser routing: new `/admin`, current `/legacy-admin`, unchanged `/admin2`.
+1. [ ] Release-gated browser routing: do not replace functional `/admin` with redesign until all parity checks pass; retain `/legacy-admin` and `/admin2` behavior.
 2. [ ] Build shared shell, full team sidebar, no-team empty state, and URL-backed navigation.
 3. [ ] Wire read-only Team Overview.
 4. [ ] Wire Members and account lifecycle/recovery.
@@ -290,6 +290,8 @@ Across slices:
 - [ ] Security review confirms metadata-only admin visibility, write-only secrets, CSRF, authorization, safe redirects, and destructive-action semantics.
 - [ ] Docs and final progress/change summary are complete.
 - [ ] Semantic browser E2E tests cover team/URL navigation, member lifecycle, provider inspect/finalize/cancel, provider policy, team-deletion confirmation/blockers, and initiating-workspace redirect preservation. Avoid pixel-perfect screenshot assertions.
+
+The current redesign-specific regressions in `tests/test_admin_ui.py` are intentionally skipped while `admin_mockup.html` is not user-facing. Unskip and satisfy them as part of this gate; skipped coverage is not release evidence.
 
 Development uses one long-lived redesign branch with small, reviewable commits per slice. Regularly incorporate current `master` and rerun affected parity checks so the final merge does not hide accumulated drift.
 

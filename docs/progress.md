@@ -1,5 +1,36 @@
 # Progress
 
+## 2026-07-14 Admin release gate enforcement
+
+### Scope
+
+- Restored functional `admin.html` as canonical user-facing `/admin` template.
+- Kept `/legacy-admin`, `/admin2`, and validated POST return-workspace redirects unchanged.
+- Kept `admin_mockup.html` redesign gated pending full preservation-map release evidence.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing functional admin template and return-view redirect helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin-only, metadata-only surface remains enforced.
+- Lifecycle/deletion checkpoint: unchanged; existing CSRF-protected mutation routes and redirect targets retained.
+- Docs/tests checkpoint: canonical template and all supported return-workspace redirects covered; redesign-only UI regressions remain explicitly skipped, not release evidence.
+- Open issue / escalate to Sol: redesign remains incomplete; do not route it to `/admin` until every release-gate row in `docs/admin_workspace_function_map.md` has evidence.
+
+### Files changed
+
+- `app/routes/web_admin.py`: canonical template selection.
+- `tests/test_admin_ui.py`: functional `/admin` markers and workspace/legacy/admin2 POST redirect regressions.
+- `docs/admin_brief.md`, `docs/admin_workspace_function_map.md`, `docs/progress.md`: release-gate routing record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py`: 201 passed, 13 skipped. Skips are redesign-only UI regressions held behind release gate.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, deletion, provider resolution, and structured-note contracts unchanged.
+
 ## 2026-07-14 Transcript audio cleanup live-reference guard
 
 ### Scope
@@ -10350,5 +10381,6 @@ Added narrow STT/LLM detail updates and revision-based connection-change actions
 - Added response-driven safe provider, endpoint, status, warning/note, and model rendering; credentials are cleared after staging and never rendered.
 - Added awaited draft deletion on cancel/backdrop/Escape, with modal retained on cleanup failure. Back locks after successful draft creation. Browser unload stale-draft cleanup remains open.
 - Architecture: system-admin and team checks remain in API services; Vault references/raw provider responses stay outside DOM; no transcript content, ownership, deletion cascade, provider fallback, or structured-note contract changed.
+- 2026-07-14 STT auth-mode guard: centralized service validation now rejects `auth_mode=none` for `openai_cloud` and `elevenlabs_speech_to_text` before any config or Vault-reference mutation, including `credential_action=keep` updates. Custom no-auth adapters remain allowed. Focused API and service regressions cover both adapters and unchanged saved references.
 - 2026-07-12 provider-policy redesign: replaced summary cards with functional six-row policy table using existing visual language and always-visible accessible selects. Added provider-driven STT/LLM/checker model synchronization, compact writing-assistant visible-model checkboxes, state-dependent clear actions, explicit Presidio fallback, and empty-provider links.
 - Checklist: code complete; focused UI/POST coverage updated; admin brief, testing guide, and function map updated. No schema/API/service changes. Architecture checkpoints: metadata-only UI preserves transcript privacy; existing system-admin/team ownership guards remain authoritative; clear routes remove selections only and do not alter provider/deletion lifecycle; provider fallback/resolution and structured-note contracts remain unchanged.

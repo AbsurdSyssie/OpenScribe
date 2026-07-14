@@ -1,11 +1,11 @@
 # Admin Brief
 
-## Redesign branch routing
+## Admin release routing
 
-- `/admin` is the in-progress mockup-based team-first workspace.
-- `/legacy-admin` renders the current fully functional `admin.html` workspace during migration.
+- `/admin` renders functional `admin.html`; this is user-facing canonical admin route.
+- `/legacy-admin` remains functional compatibility route using `admin.html`.
 - `/admin2` remains unchanged as a secondary developer reference.
-- `master` is user-facing; incomplete redesign work must not merge until the preservation/release gate in `docs/admin_workspace_function_map.md` passes.
+- `admin_mockup.html` redesign remains gated and must not replace `/admin` until preservation/release gate in `docs/admin_workspace_function_map.md` passes.
 - Existing mutation endpoints remain under `/admin/...`; validated `return_view` values preserve the initiating workspace.
 - Current wired redesign slices include team member creation/lifecycle/recovery actions, team De-ID provider attach/detach, team hard-delete, and future-only team retention-default updates.
 

@@ -60,6 +60,12 @@ ELEVENLABS_PREFERRED_STT_MODELS = (
     "scribe_v1",
 )
 ELEVENLABS_SYNC_STT_MODEL_IDS = set(ELEVENLABS_PREFERRED_STT_MODELS)
+STT_ADAPTERS_REQUIRING_BEARER_AUTH = frozenset(
+    {
+        SttAdapterKind.openai_cloud,
+        SttAdapterKind.elevenlabs_speech_to_text,
+    }
+)
 DEEPGRAM_MIP_OPT_OUT_FIELD = "mip_opt_out"
 DEEPGRAM_MIP_OPT_OUT_TRUE = "true"
 DEEPGRAM_TRUE_VALUES = {"true", "1", "yes", "on"}
@@ -556,6 +562,8 @@ def _resolve_stt_provider_preset_for_admin_write(
 
 
 def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str | None:
+    if _stt_config_requires_saved_credential(config) and config.auth_mode is not SttAuthMode.bearer:
+        raise _missing_stt_credential_error(team_id=team_id, config_id=config.id)
     if config.auth_mode is not SttAuthMode.bearer:
         return None
     if not config.vault_secret_ref:
@@ -571,11 +579,24 @@ def _read_saved_stt_bearer_token(*, team_id: UUID, config: TeamSttConfig) -> str
 
 
 def _stt_config_requires_saved_credential(config: TeamSttConfig) -> bool:
+    if config.adapter_kind in STT_ADAPTERS_REQUIRING_BEARER_AUTH:
+        return True
     try:
         preset = get_stt_provider_preset(resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url))
     except ValueError:
-        return config.adapter_kind is SttAdapterKind.openai_cloud
-    return preset.requires_api_key or config.adapter_kind is SttAdapterKind.openai_cloud
+        return False
+    return preset.requires_api_key
+
+
+def _validate_stt_auth_mode_for_adapter(*, adapter_kind: SttAdapterKind, auth_mode: SttAuthMode) -> None:
+    """Reject no-auth configs for provider-specific adapters with mandatory keys."""
+    if adapter_kind in STT_ADAPTERS_REQUIRING_BEARER_AUTH and auth_mode is not SttAuthMode.bearer:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "This STT adapter requires auth_mode=bearer",
+            {"field": "auth_mode", "adapter_kind": adapter_kind.value},
+        )
 
 
 def _read_stt_snapshot_bearer_token(
@@ -1979,25 +2000,27 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
             except Exception:
                 db.rollback()
                 raise
-            config.vault_secret_ref = rebound_secret_ref
-        editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
-        for field in editable:
-            setattr(target, field, getattr(config, field))
-        target.updated_by_user_id = actor.id
-        db.delete(config)
-        result = target
-    db.add(result)
-    if target is not None:
-        queue_provider_secret_cleanup(
-            db,
-            kind=ProviderSecretCleanupKind.stt,
-            secret_refs=[
-                secret_ref
-                for secret_ref in (old_secret_ref, revision_secret_ref)
-                if secret_ref and secret_ref != result.vault_secret_ref
-            ],
-        )
     try:
+        if rebound_secret_ref:
+            config.vault_secret_ref = rebound_secret_ref
+        if target is not None:
+            editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
+            for field in editable:
+                setattr(target, field, getattr(config, field))
+            target.updated_by_user_id = actor.id
+            db.delete(config)
+            result = target
+        db.add(result)
+        if target is not None:
+            queue_provider_secret_cleanup(
+                db,
+                kind=ProviderSecretCleanupKind.stt,
+                secret_refs=[
+                    secret_ref
+                    for secret_ref in (old_secret_ref, revision_secret_ref)
+                    if secret_ref and secret_ref != result.vault_secret_ref
+                ],
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -2037,28 +2060,28 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
     )
     old_secret_ref = config.vault_secret_ref
     new_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=uuid4())
-    config.vault_secret_ref = new_secret_ref
-    config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
-    config.credential_status = _inspection_status(inspection, had_secret=True)
-    config.available_models_json = list(inspection.available_models)
-    config.provider_preset = provider_preset
-    config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
-        config.extra_form_fields_json,
-        provider_preset=provider_preset,
-        adapter_kind=config.adapter_kind,
-        base_url=config.base_url,
-        reject_explicit_non_true=True,
-    )
-    if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
-        config.model_name = None
-    config.inspection_metadata_json = _status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=config.credential_status)
-    config.setup_status = SttConfigSetupStatus.pending_model_selection
-    config.is_active = False
-    config.updated_by_user_id = actor.id
-    db.add(config)
-    if old_secret_ref and old_secret_ref != new_secret_ref:
-        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
     try:
+        config.vault_secret_ref = new_secret_ref
+        config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
+        config.credential_status = _inspection_status(inspection, had_secret=True)
+        config.available_models_json = list(inspection.available_models)
+        config.provider_preset = provider_preset
+        config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
+            config.extra_form_fields_json,
+            provider_preset=provider_preset,
+            adapter_kind=config.adapter_kind,
+            base_url=config.base_url,
+            reject_explicit_non_true=True,
+        )
+        if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
+            config.model_name = None
+        config.inspection_metadata_json = _status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=config.credential_status)
+        config.setup_status = SttConfigSetupStatus.pending_model_selection
+        config.is_active = False
+        config.updated_by_user_id = actor.id
+        db.add(config)
+        if old_secret_ref and old_secret_ref != new_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
         db.commit()
     except Exception:
         db.rollback()
@@ -2072,6 +2095,7 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset = _resolve_stt_provider_preset_for_admin_write(payload.provider_preset, payload.adapter_kind, payload.base_url)
+    _validate_stt_auth_mode_for_adapter(adapter_kind=payload.adapter_kind, auth_mode=payload.auth_mode)
     if provider_preset == SttProviderPreset.deepgram.value and payload.adapter_kind is not SttAdapterKind.generic_rest:
         raise AppError(422, "business_rule_violation", "Deepgram STT must use the Deepgram generic REST contract", {"field": "adapter_kind"})
     extra_form_fields_json = _normalize_deepgram_extra_query_params(
@@ -2278,11 +2302,11 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             else:
                 config.credential_status = _inspection_status(inspection, had_secret=True)
                 config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
-        pending_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=None if creating else uuid4())
-        config.vault_secret_ref = pending_secret_ref
-        config.credential_fingerprint = fingerprint
-
     try:
+        if replacing_secret and payload.bearer_token:
+            pending_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=None if creating else uuid4())
+            config.vault_secret_ref = pending_secret_ref
+            config.credential_fingerprint = fingerprint
         if delete_after_commit:
             queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[delete_secret_ref])
         elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:

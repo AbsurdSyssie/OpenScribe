@@ -564,7 +564,7 @@ Implemented now for `whole_file`:
 - newly queued whole-file jobs no longer persist raw source audio blobs in Postgres while the owner-content encryption layer is still pending
 - newly uploaded whole-file retry audio is stored behind a Vault ref on the ingestion job rather than as a raw DB blob
 - whole-file retry remains available when the failed job still has stored retry audio, either through the legacy blob column or the Vault-backed source-audio ref
-- transcript-root deletion and user deletion attempt best-effort cleanup of any Vault-backed retry audio before the owning transcript rows are deleted, without blocking the delete path on a transient Vault outage
+- transcript-root deletion and user deletion queue each retry-audio Vault ref in a durable FK-free cleanup outbox in the same transaction that deletes the owning rows; after commit/cascade, cleanup deletes unreferenced Vault audio and retries transient failures, while a live ingestion-job reference prevents deletion
 - applied whole-file jobs keep byte and duration telemetry so rolling hourly budgets continue to count recently completed uploads
 - the browser microphone-batch UX now uses browser `MicVAD` locally to keep voiced segments plus short buffer, then posts one captured WAV blob into the same file-ingestion route rather than introducing a separate STT processing path
 

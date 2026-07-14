@@ -663,8 +663,11 @@ Current whole-file ingestion behavior:
 - whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
+- after successful ingestion, the source reference is cleared from the job in the same commit that records a durable audio-cleanup outbox intent; a failed immediate Vault delete retries from that intent rather than restoring the job reference
+- before deleting queued retry audio, cleanup rechecks that no ingestion job still references its Vault ref; a live reference removes stale cleanup intent and preserves retry data
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
 - transcript, user, team, and retention deletion commit retry-audio Vault references to a durable cleanup outbox before owning rows are removed; transient Vault outages retain retry metadata without delaying database hard deletion
+- if committing a newly written source-audio reference fails, rollback compensation commits a cleanup intent in a fresh transaction; only if that cannot persist does validated direct Vault deletion run, and failure of both paths is explicit
 - applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads
 - file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
 - file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`

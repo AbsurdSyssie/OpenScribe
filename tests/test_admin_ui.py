@@ -27,6 +27,7 @@ from app.models import (
     GeneratedDocumentStatus,
     LlmAdapterKind,
     ProviderSecretCleanupJob,
+    ProviderSecretCleanupKind,
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
@@ -287,6 +288,21 @@ def test_managed_account_forms_offer_secure_password_generation():
     assert '"Password generated and copied."' in generator_js
     assert '"Password generated. Copy it manually."' in generator_js
     assert 'visibilityButton.setAttribute("aria-pressed", String(!showing));' in generator_js
+
+
+def test_admin_home_without_team_guards_missing_member_modal_controls(client, make_user):
+    make_user(email="admin-no-team-modal@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": "admin-no-team-modal@example.com", "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/admin")
+    admin_html = Path("app/templates/admin_mockup.html").read_text()
+
+    assert page.status_code == 200
+    assert 'id="add-member-button"' not in page.text
+    assert "if (addMemberButton && addMemberModal && cancelAddMember) {" in admin_html
+    guarded_listener = admin_html.index('addMemberButton.addEventListener("click", openAddMemberModal);')
+    guard = admin_html.index("if (addMemberButton && addMemberModal && cancelAddMember) {")
+    assert guard < guarded_listener
 
 
 def test_user_home_shows_team_stt_selection_when_configured(client, make_team, make_user, make_stt_config, make_stt_selection):
@@ -6502,18 +6518,8 @@ def test_admin_page_can_delete_team_and_owned_records(
     stt_config = make_stt_config(team=team, actor=admin, label="Team STT")
     make_stt_selection(config=stt_config, actor=admin)
     stt_secret_ref = stt_config.vault_secret_ref
-    deleted_stt_refs: list[str | None] = []
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_stt_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_stt_refs.append(secret_ref),
-    )
     llm_config = make_llm_config(team=team, actor=admin, label="Team LLM", available_models_json=["gpt-4o-mini"])
     llm_secret_ref = llm_config.vault_secret_ref
-    deleted_llm_refs: list[str | None] = []
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_llm_refs.append(secret_ref),
-    )
     make_llm_selection(config=llm_config, actor=admin, allowed_models_json=["gpt-4o-mini"], model_name_override="gpt-4o-mini")
     db_session.add(
         TeamHallucinationCheckSelection(
@@ -6595,8 +6601,15 @@ def test_admin_page_can_delete_team_and_owned_records(
     assert audio_cleanup_job is not None
     assert audio_cleanup_job.secret_ref == retry_audio_ref
     assert audio_cleanup_job.attempt_count == 1
-    assert deleted_stt_refs == [stt_secret_ref]
-    assert deleted_llm_refs == [llm_secret_ref]
+    provider_cleanup_jobs = db_session.scalars(
+        select(ProviderSecretCleanupJob).where(
+            ProviderSecretCleanupJob.secret_ref.in_([stt_secret_ref, llm_secret_ref])
+        )
+    ).all()
+    assert {(job.kind, job.secret_ref) for job in provider_cleanup_jobs} == {
+        (ProviderSecretCleanupKind.stt, stt_secret_ref),
+        (ProviderSecretCleanupKind.llm, llm_secret_ref),
+    }
 
 
 def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(

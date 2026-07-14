@@ -4574,17 +4574,19 @@
         addMemberButton.focus();
       }
 
-      addMemberButton.addEventListener("click", openAddMemberModal);
-      cancelAddMember.addEventListener("click", closeAddMemberModal);
+      if (addMemberButton && addMemberModal && cancelAddMember) {
+        addMemberButton.addEventListener("click", openAddMemberModal);
+        cancelAddMember.addEventListener("click", closeAddMemberModal);
 
-      addMemberModal.addEventListener("click", (event) => {
-        if (event.target === addMemberModal) closeAddMemberModal();
-      });
+        addMemberModal.addEventListener("click", (event) => {
+          if (event.target === addMemberModal) closeAddMemberModal();
+        });
 
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !addMemberModal.hidden)
-          closeAddMemberModal();
-      });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !addMemberModal.hidden)
+            closeAddMemberModal();
+        });
+      }
 
       if (memberSearch) {
         memberSearch.addEventListener("input", () => {

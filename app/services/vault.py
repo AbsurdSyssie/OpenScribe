@@ -631,6 +631,15 @@ def read_transcript_ingestion_source_audio(*, secret_ref: str) -> bytes:
 
 def delete_transcript_ingestion_source_audio(*, secret_ref: str) -> None:
     mount, path = _split_secret_ref(secret_ref)
+    path_parts = path.split("/")
+    if mount != VAULT_KV_MOUNT or len(path_parts) != 4 or path_parts[:2] != ["openscribe", "transcript-ingestion"] or path_parts[3] != "source-audio":
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    try:
+        job_id = UUID(path_parts[2])
+    except ValueError as exc:
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid") from exc
+    if path != transcript_ingestion_source_audio_path(job_id):
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
     url = _kv_url_for_path(mount=mount, path=path, endpoint="metadata")
     try:
         response = httpx.delete(

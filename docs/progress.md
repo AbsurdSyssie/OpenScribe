@@ -1,5 +1,138 @@
 # Progress
 
+## 2026-07-14 Transcript audio cleanup live-reference guard
+
+### Scope
+
+- Added a live `TranscriptIngestionJob.source_audio_vault_ref` check before retry-audio Vault deletion.
+- Live refs now remove stale cleanup rows instead of deleting active owner retry audio.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused provider-secret cleanup outbox guard pattern.
+- Schema checkpoint: no schema change; existing FK-free audio cleanup outbox reused.
+- Auth/ownership checkpoint: unchanged; worker checks opaque Vault refs only and exposes no audio content.
+- Lifecycle/deletion checkpoint: stale cleanup intent is discarded when a job still owns the ref; unreferenced refs retain existing retry/delete behavior.
+- Docs/tests checkpoint: regression test covers queued cleanup plus a live failed ingestion retry source.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/transcripts.py`: live-ref guard in transcript-audio cleanup worker.
+- `tests/test_retention.py`: no-data-loss cleanup-worker regression.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: lifecycle and coverage contract.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript audio/ref value logged.
+- Ownership rules: active owner retry source remains available.
+- Deletion semantics: only stale outbox row is removed; unreferenced refs still use durable retry cleanup.
+- Provider rules and structured-note contract: unchanged.
+
+## 2026-07-14 Provider cleanup lifecycle test alignment
+
+### Scope
+
+- Replaced obsolete immediate Vault-delete assertions with DB-first durable-outbox assertions for STT, LLM, and de-identification credentials.
+- Added API-path checks for exact cleanup ref/kind persistence, rollback compensation, retry, and worker deletion.
+
+### Checklist
+
+- Schema checkpoint: no schema change; existing FK-free cleanup outbox reused.
+- Auth/ownership checkpoint: unchanged.
+- Lifecycle/deletion checkpoint: DB change and cleanup intent commit before worker deletion; failed writes retain durable cleanup responsibility.
+- Docs/tests checkpoint: focused provider API and cleanup-worker tests run.
+
+### Files changed
+
+- `tests/test_api.py`: durable provider-cleanup lifecycle expectations and worker coverage.
+- `docs/progress.md`: test-alignment record.
+
+### Tests
+
+- Focused provider API selection: 14 passed.
+- `tests/test_provider_secret_cleanup.py`: 14 passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: synthetic Vault refs only.
+- Ownership rules: unchanged.
+- Deletion semantics: durable DB outbox precedes external deletion; worker retries failures.
+- Provider rules: exact refs and cleanup kinds remain verified.
+- Structured-note contract: unchanged.
+
+## 2026-07-14 Transcript audio cleanup reliability follow-up
+
+### Scope
+
+- Successful ingestion now clears source-audio refs from ingestion jobs while committing durable audio cleanup intent in same transaction.
+- New Vault audio writes whose ingestion commit fails now roll back before durable compensation enqueue; validated direct deletion is fallback, and dual failure is explicit.
+
+### Checklist
+
+- Schema checkpoint: existing FK-free `transcript_audio_cleanup_jobs` reused; no migration.
+- Auth/ownership checkpoint: unchanged; cleanup rows remain content-free and have no ownership foreign keys.
+- Lifecycle/deletion checkpoint: source-audio cleanup survives immediate Vault failure without restoring a job ref; transcript-root deletion remains DB-first.
+- Docs/tests checkpoint: API/testing contract and focused cleanup/compensation coverage updated.
+- Open issues: none.
+
+## 2026-07-14 Admin no-team modal guard and deletion regression
+
+### Scope
+
+- Guarded member-modal listeners in no-team `/admin` view, where member controls are intentionally absent.
+- Updated team hard-delete UI regression for durable DB-first provider-secret cleanup jobs.
+
+### Checklist
+
+- Target/schema/modules: admin mockup JavaScript and admin UI tests only; no schema, endpoint, or service behavior change.
+- Auth/ownership: unchanged; admin remains metadata-only.
+- Lifecycle/deletion: team cascade remains immediate; provider secret refs stay in durable post-commit cleanup jobs.
+- Docs/tests: updated `docs/testing.md`, `docs/progress.md`, and focused tests.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/admin_mockup.html`: conditionally bind member-modal events only when controls exist.
+- `tests/test_admin_ui.py`: guard regression plus current durable-cleanup assertions for team deletion.
+- `docs/testing.md`, `docs/progress.md`: test contract and change record.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, provider selection, and EMIS structured-note contract unchanged.
+- Deletion rules preserved: team records/content delete transactionally; external provider-secret cleanup remains durable and DB-first.
+
+## 2026-07-14 Retention Celery bounded-task fix
+
+### Scope
+
+- Changed retention Celery task from unbounded drain loop to one bounded service batch per invocation.
+- Kept immediate expiry visibility gate and service-level hard-delete/root-cascade behavior unchanged.
+- Confirmed Beat uses a 10-second task expiry; concurrent workers use `FOR UPDATE SKIP LOCKED` and can only claim distinct roots.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused existing bounded deletion service and row locking.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: unchanged; task has no content-read path.
+- Lifecycle/deletion checkpoint: each claimed expired root still hard-deletes immediately with existing cascades; backlog waits only for later scheduled task invocations.
+- Docs/tests checkpoint: task backlog regression and retention operations docs updated.
+- Open issues: none.
+
+### Files changed
+
+- `app/tasks.py`: one retention task invocation now invokes deletion service once.
+- `tests/test_retention.py`: verifies a backlog larger than task batch leaves rows after task returns.
+- `docs/DatabasePlan.md`, `docs/testing.md`, `docs/progress.md`: record batch and Beat-overlap contract.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript-derived content logged or exposed.
+- Ownership rules: unchanged.
+- Deletion semantics: expiry gate remains immediate; claimed roots still cascade-delete immediately.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+
 ## 2026-07-14 Provider cleanup re-review follow-up
 
 ### Scope

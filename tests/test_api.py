@@ -44,6 +44,7 @@ from app.models import (
     ProviderUsageEventType,
     ProviderCredentialStatus,
     ProviderSecretCleanupJob,
+    ProviderSecretCleanupKind,
     PromptTemplate,
     PromptTemplateVersion,
     PostConsultationDictation,
@@ -117,6 +118,7 @@ from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
 from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
+from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
@@ -143,6 +145,7 @@ from app.services.transcripts import (
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
     process_transcript_audio_cleanup_jobs,
+    queue_audio_chunk_ingestion,
     save_working_note,
     start_transcript as start_transcript_service,
 )
@@ -209,6 +212,15 @@ def assert_error(response, *, status_code: int, code: str, message: str):
     assert body["error"]["code"] == code
     assert body["error"]["message"] == message
     return body["error"].get("details")
+
+
+def assert_provider_cleanup_job(db_session, *, secret_ref: str, kind: ProviderSecretCleanupKind):
+    cleanup_job = db_session.scalar(
+        select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == secret_ref)
+    )
+    assert cleanup_job is not None
+    assert cleanup_job.kind is kind
+    return cleanup_job
 
 
 def login(client, *, email: str, password: str):
@@ -1176,19 +1188,27 @@ def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_sessi
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
-def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+def test_stt_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-draft-cleanup@example.com", password="password-1", is_system_admin=True)
     written_config_ids: list[str] = []
-    deleted_config_ids: list[str] = []
 
     monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
     monkeypatch.setattr(
         "app.services.stt.write_team_stt_bearer_token",
         lambda *, team_id, config_id, bearer_token: written_config_ids.append(str(config_id)) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("insert", {}, Exception("duplicate"))))
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(IntegrityError):
         create_stt_config_draft(
@@ -1198,8 +1218,9 @@ def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_t
         )
 
     assert written_config_ids
-    assert deleted_config_ids == written_config_ids
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
+    secret_ref = f"secret:openscribe/stt/team/{team.id}/config/{written_config_ids[0]}"
+    assert_provider_cleanup_job(db_session, secret_ref=secret_ref, kind=ProviderSecretCleanupKind.stt)
 
 
 def test_stt_draft_replace_commit_failure_preserves_old_secret_and_queues_new_orphan(db_session, make_team, make_user, monkeypatch):
@@ -1473,10 +1494,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-remove-stt-secret@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
-    deleted: list[str] = []
-
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
-
+    old_secret_ref = config.vault_secret_ref
     login(client, email="admin-remove-stt-secret@example.com", password="password-1")
     updated = client.post(
         "/api/v1/stt-configs",
@@ -1504,7 +1522,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     assert persisted.credential_fingerprint is None
     assert persisted.credential_status is ProviderCredentialStatus.unknown
     assert persisted.inspection_metadata_json == {"status": "unknown", "reason": "credential_removed"}
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.stt)
 
 
 def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(client, db_session, make_team, make_user, monkeypatch):
@@ -1808,19 +1826,19 @@ def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(c
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=admin)
     secret_ref = config.vault_secret_ref
-    deleted_refs: list[str | None] = []
-
-    def fake_delete_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
-        deleted_refs.append(secret_ref)
-
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
-
     login(client, email="admin@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/stt-configs/{config.id}?team_id={team.id}")
     assert deleted.status_code == 204
 
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is None
+    cleanup_job = assert_provider_cleanup_job(db_session, secret_ref=secret_ref, kind=ProviderSecretCleanupKind.stt)
+    deleted_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_refs.append(kwargs["secret_ref"]),
+    )
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
     assert deleted_refs == [secret_ref]
 
     selection = client.get(f"/api/v1/stt-selection?team_id={team.id}")
@@ -3436,7 +3454,6 @@ def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token
     old_secret_ref = active.vault_secret_ref
     read_refs: list[str] = []
     inspection_tokens: list[str | None] = []
-    deleted_refs: list[str] = []
 
     def fake_read(*, team_id, config_id, secret_ref=None):
         read_refs.append(secret_ref)
@@ -3450,15 +3467,9 @@ def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token
         assert bearer_token == "optional-ollama-token"
         return f"secret:test/llm/{config_id}"
 
-    def fake_delete(*, team_id, config_id, secret_ref=None):
-        db_session.refresh(active)
-        assert active.vault_secret_ref == ""
-        deleted_refs.append(secret_ref)
-
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", fake_list_ollama)
     monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete)
     login(client, email=admin.email, password="password-1")
 
     created = client.post(
@@ -3487,7 +3498,7 @@ def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token
     db_session.refresh(active)
     assert active.auth_mode is LlmAuthMode.none
     assert active.vault_secret_ref == ""
-    assert deleted_refs == [old_secret_ref]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
 
     optional = client.post(
         "/api/v1/llm-configs/drafts",
@@ -3523,7 +3534,6 @@ def test_stt_no_auth_revision_drops_saved_credential_and_optional_explicit_token
     old_secret_ref = active.vault_secret_ref
     read_refs: list[str] = []
     inspection_tokens: list[str | None] = []
-    deleted_refs: list[str] = []
 
     def fake_read(*, team_id, config_id, secret_ref=None):
         read_refs.append(secret_ref)
@@ -3554,15 +3564,9 @@ def test_stt_no_auth_revision_drops_saved_credential_and_optional_explicit_token
         assert bearer_token == "optional-stt-token"
         return f"secret:test/stt/{config_id}"
 
-    def fake_delete(*, team_id, config_id, secret_ref=None):
-        db_session.refresh(active)
-        assert active.vault_secret_ref == ""
-        deleted_refs.append(secret_ref)
-
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
     monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
     monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
     login(client, email=admin.email, password="password-1")
 
     created = client.post(
@@ -3591,7 +3595,7 @@ def test_stt_no_auth_revision_drops_saved_credential_and_optional_explicit_token
     db_session.refresh(active)
     assert active.auth_mode is SttAuthMode.none
     assert active.vault_secret_ref == ""
-    assert deleted_refs == [old_secret_ref]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.stt)
 
     optional = client.post(
         "/api/v1/stt-configs/drafts",
@@ -3687,7 +3691,8 @@ def test_stt_replacement_revision_rebinds_secret_and_supports_blank_followup_rev
     db_session.refresh(active)
     assert f"/config/{active.id}/" in active.vault_secret_ref
     assert _read_saved_stt_bearer_token(team_id=team.id, config=active) == "new-stt-key"
-    assert all(f"/config/{first_revision_id}" not in ref for ref in secret_store)
+    retired_secret_ref = next(ref for ref in secret_store if f"/config/{first_revision_id}" in ref)
+    assert_provider_cleanup_job(db_session, secret_ref=retired_secret_ref, kind=ProviderSecretCleanupKind.stt)
 
     second = client.post(
         "/api/v1/stt-configs/drafts",
@@ -3762,7 +3767,8 @@ def test_llm_replacement_revision_rebinds_secret_and_supports_blank_followup_rev
     db_session.refresh(active)
     assert f"/config/{active.id}/" in active.vault_secret_ref
     assert read_active_team_llm_bearer_token(db_session, team_id=team.id) == "new-llm-key"
-    assert all(f"/config/{first_revision_id}" not in ref for ref in secret_store)
+    retired_secret_ref = next(ref for ref in secret_store if f"/config/{first_revision_id}" in ref)
+    assert_provider_cleanup_job(db_session, secret_ref=retired_secret_ref, kind=ProviderSecretCleanupKind.llm)
 
     second = client.post(
         "/api/v1/llm-configs/drafts",
@@ -4298,11 +4304,10 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     team = make_team(name="Clinic Ollama Remove")
     admin = make_user(email="admin-remove-llm-secret@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    deleted: list[str] = []
+    old_secret_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret@example.com", password="password-1")
     updated = client.post(
@@ -4324,21 +4329,29 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     assert persisted is not None
     assert persisted.auth_mode.value == "none"
     assert persisted.vault_secret_ref == ""
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
 
 
-def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_queues_vault_secret_with_db_reference_change(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Remove Ordering")
     admin = make_user(email="admin-remove-llm-secret-order@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    events: list[str] = []
-    original_commit = db_session.commit
+    old_secret_ref = config.vault_secret_ref
+    queued_refs: list[str] = []
+    from app.services import llm as llm_service
+
+    original_queue = llm_service.queue_provider_secret_cleanup
+
+    def observe_queue(db, *, kind, secret_refs):
+        assert db.get(TeamLlmConfig, config.id).vault_secret_ref == ""
+        assert kind is ProviderSecretCleanupKind.llm
+        queued_refs.extend(secret_refs)
+        return original_queue(db, kind=kind, secret_refs=secret_refs)
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
     login(client, email="admin-remove-llm-secret-order@example.com", password="password-1")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: events.append("delete"))
-    monkeypatch.setattr(db_session, "commit", lambda: (events.append("commit"), original_commit())[1])
+    monkeypatch.setattr(llm_service, "queue_provider_secret_cleanup", observe_queue)
     updated = client.post(
         "/api/v1/llm-configs",
         json={
@@ -4354,33 +4367,32 @@ def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_sess
     )
 
     assert updated.status_code == 200
-    assert events[-2:] == ["delete", "commit"]
+    assert queued_refs == [old_secret_ref]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
 
 
-def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_commit_failure_leaves_existing_credential_live(db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Commit Failure")
     admin = make_user(email="admin-remove-llm-secret-commit-fails@example.com", password="password-1", is_system_admin=True)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     original_ref = config.vault_secret_ref
-    events: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
-    monkeypatch.setattr(
-        "app.services.llm.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: events.append(f"delete:{secret_ref}"),
-    )
-    monkeypatch.setattr(
-        "app.services.llm.write_team_llm_bearer_token",
-        lambda *, team_id, config_id, bearer_token, secret_id=None, secret_ref=None: events.append(
-            f"restore:{bearer_token}:{secret_ref}"
-        )
-        or original_ref,
-    )
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise RuntimeError("commit failed")
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(RuntimeError, match="commit failed"):
         upsert_llm_config_service(
@@ -4398,17 +4410,13 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
             ),
         )
 
-    assert events == [
-        f"delete:{original_ref}",
-        f"restore:saved-ollama-secret:{original_ref}",
-    ]
-    db_session.rollback()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == original_ref
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == original_ref)) is None
 
 
-def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_retries_vault_cleanup_after_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Cleanup Failure")
     admin = make_user(email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
@@ -4417,10 +4425,10 @@ def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_sessi
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
 
-    def fail_delete(*, team_id, config_id, secret_ref=None):
+    def fail_delete(**kwargs):
         raise AppError(502, "vault_unavailable", "Vault unavailable")
 
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fail_delete)
+    monkeypatch.setattr("app.services.provider_secret_cleanup.delete_provider_secret_by_ref", fail_delete)
 
     login(client, email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1")
     removed = client.post(
@@ -4437,24 +4445,28 @@ def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_sessi
         },
     )
 
-    assert_error(
-        removed,
-        status_code=502,
-        code="vault_unavailable",
-        message="Vault unavailable",
-    )
+    assert removed.status_code == 200
     db_session.expire_all()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
-    assert persisted.vault_secret_ref == original_ref
-    assert persisted.auth_mode.value == "bearer"
+    assert persisted.vault_secret_ref == ""
+    assert persisted.auth_mode.value == "none"
+    cleanup_job = assert_provider_cleanup_job(db_session, secret_ref=original_ref, kind=ProviderSecretCleanupKind.llm)
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 0
+    db_session.refresh(cleanup_job)
+    assert cleanup_job.attempt_count == 1
+    monkeypatch.setattr("app.services.provider_secret_cleanup.delete_provider_secret_by_ref", lambda **kwargs: None)
+    cleanup_job.next_attempt_at = utcnow()
+    db_session.commit()
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
+    assert db_session.get(ProviderSecretCleanupJob, cleanup_job.id) is None
 
 
 def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Stale Secret Ref")
     admin = make_user(email="admin-remove-llm-secret-stale-ref@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    deleted: list[str] = []
+    old_secret_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
 
@@ -4462,7 +4474,6 @@ def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_ses
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fail_read)
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret-stale-ref@example.com", password="password-1")
     removed = client.post(
@@ -4480,7 +4491,7 @@ def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_ses
     )
 
     assert removed.status_code == 200
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
@@ -5544,7 +5555,7 @@ def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_tok
     )
 
 
-def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commit_failure(
+def test_deidentification_provider_upsert_commit_failure_durably_queues_pending_secret(
     db_session,
     make_user,
     make_deidentification_provider,
@@ -5564,22 +5575,23 @@ def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commi
         has_secret=True,
     )
     old_secret_ref = provider.vault_secret_ref
-    new_secret_ref = f"secret:openscribe/deidentification/provider/{provider.id}/replacement"
-    deleted_secret_refs: list[str] = []
+    new_secret_ref = f"secret:openscribe/deidentification/provider/{provider.id}/{uuid4()}"
 
     monkeypatch.setattr(
         "app.services.deidentification.write_deidentification_bearer_token",
         lambda *, provider_id, bearer_token, secret_id=None: new_secret_ref,
     )
-    monkeypatch.setattr(
-        "app.services.deidentification.delete_deidentification_bearer_token",
-        lambda *, provider_id, secret_ref=None: deleted_secret_refs.append(secret_ref or ""),
-    )
+    original_commit = db_session.commit
+    commit_attempts = 0
 
-    def fail_commit():
-        raise RuntimeError("synthetic commit failure")
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise RuntimeError("synthetic commit failure")
+        return original_commit()
 
-    monkeypatch.setattr(db_session, "commit", fail_commit)
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(RuntimeError, match="synthetic commit failure"):
         upsert_deidentification_provider(
@@ -5596,8 +5608,11 @@ def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commi
             ),
         )
 
-    assert deleted_secret_refs == [new_secret_ref]
-    db_session.rollback()
+    assert_provider_cleanup_job(
+        db_session,
+        secret_ref=new_secret_ref,
+        kind=ProviderSecretCleanupKind.deidentification,
+    )
     assert db_session.get(DeidentificationProvider, provider.id).vault_secret_ref == old_secret_ref
 
 
@@ -5619,18 +5634,21 @@ def test_deidentification_provider_delete_defers_vault_cleanup_until_after_db_co
         has_secret=True,
     )
     old_secret_ref = provider.vault_secret_ref
-    deleted_secret_refs: list[str] = []
-
-    def fake_delete_secret(*, provider_id, secret_ref=None):
-        assert db_session.get(DeidentificationProvider, provider.id) is None
-        deleted_secret_refs.append(secret_ref or "")
-
-    monkeypatch.setattr("app.services.deidentification.delete_deidentification_bearer_token", fake_delete_secret)
-
     login(client, email="deid-delete-vault-admin@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/deidentification-providers/{provider.id}")
 
     assert deleted.status_code == 204
+    cleanup_job = assert_provider_cleanup_job(
+        db_session,
+        secret_ref=old_secret_ref,
+        kind=ProviderSecretCleanupKind.deidentification,
+    )
+    deleted_secret_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_secret_refs.append(kwargs["secret_ref"]),
+    )
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
     assert deleted_secret_refs == [old_secret_ref]
 
 
@@ -14041,6 +14059,48 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job.stt_segment_speaker_field == "speaker_id"
 
 
+def test_live_audio_chunk_commit_failure_queues_written_vault_audio_for_cleanup(db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Audio rollback cleanup")
+    owner = make_user(email="audio-rollback-owner@example.com", password="password-1", team=team)
+    admin = make_user(email="audio-rollback-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    transcript = start_transcript_service(
+        db_session,
+        owner,
+        TranscriptStart(title="Rollback audio", ingestion_mode=TranscriptIngestionMode.live_chunked),
+    )
+    secret_ref = "secret:openscribe/transcript-ingestion/55555555-5555-5555-5555-555555555555/source-audio"
+    original_commit = db_session.commit
+    attempts = 0
+
+    def fail_first_commit():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise IntegrityError("insert", {}, Exception("synthetic commit failure"))
+        return original_commit()
+
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 12.0)
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", lambda **kwargs: secret_ref)
+    monkeypatch.setattr(db_session, "commit", fail_first_commit)
+
+    with pytest.raises(IntegrityError, match="synthetic commit failure"):
+        queue_audio_chunk_ingestion(
+            db_session,
+            owner,
+            transcript_id=transcript.id,
+            filename="chunk.webm",
+            source_audio_bytes=b"audio",
+            chunk_sequence_no=1,
+            declared_duration_seconds=12,
+        )
+
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+    assert cleanup_job is not None
+    assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript.id)) is None
+
+
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -15980,7 +16040,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     assert detected_texts == ["earlier transcript\nfull file transcript"]
 
 
-def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+def test_processing_audio_file_job_clears_vault_ref_and_queues_cleanup_when_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-cleanup-fail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     admin = make_user(email="admin-cleanup-fail@example.com", password="password-2", is_system_admin=True)
@@ -16023,7 +16083,10 @@ def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(cli
     assert processed.status is TranscriptIngestionJobStatus.applied
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert refreshed_job is not None
-    assert refreshed_job.source_audio_vault_ref is not None
+    assert refreshed_job.source_audio_vault_ref is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.attempt_count == 1
 
 
 def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_changes(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):

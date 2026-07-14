@@ -1,7 +1,9 @@
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+import pytest
+
+from sqlalchemy import func, select
 
 from app.celery_app import celery_app
 from app import tasks as celery_tasks
@@ -18,7 +20,12 @@ from app.models import (
     TranscriptVersion,
     utcnow,
 )
-from app.services.transcripts import delete_expired_transcripts
+from app.services.transcripts import (
+    delete_expired_transcripts,
+    process_transcript_audio_cleanup_jobs,
+    queue_orphan_transcript_audio_after_rollback,
+    queue_transcript_audio_cleanup,
+)
 
 
 def _make_transcript(db_session, *, owner, title: str, expires_at):
@@ -77,6 +84,23 @@ def test_retention_cleanup_is_bounded_and_idempotent(db_session, make_team, make
     assert delete_expired_transcripts(db_session, now=now, batch_size=1) == 0
 
 
+def test_retention_cleanup_task_processes_one_bounded_batch_and_returns(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Task Bounded Retention Team")
+    owner = make_user(email="task-bounded-retention@example.com", password="password-1", team=team)
+    now = utcnow()
+    for index in range(3):
+        _make_transcript(
+            db_session,
+            owner=owner,
+            title=f"Expired {index}",
+            expires_at=now - timedelta(days=index + 1),
+        )
+    monkeypatch.setattr(celery_tasks, "SessionLocal", lambda: db_session)
+
+    assert celery_tasks.delete_expired_transcripts_task(batch_size=2) == 2
+    assert db_session.scalar(select(func.count()).select_from(Transcript)) == 1
+
+
 def test_retention_cleanup_preserves_failed_vault_deletion_for_retry(db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Retention Vault Retry Team")
     owner = make_user(email="retention-vault-retry@example.com", password="password-1", team=team)
@@ -106,6 +130,88 @@ def test_retention_cleanup_preserves_failed_vault_deletion_for_retry(db_session,
     assert cleanup_job is not None
     assert cleanup_job.secret_ref == secret_ref
     assert cleanup_job.attempt_count == 1
+
+
+def test_audio_rollback_compensation_persists_cleanup_job(db_session):
+    secret_ref = "secret:openscribe/transcript-ingestion/22222222-2222-2222-2222-222222222222/source-audio"
+
+    queue_orphan_transcript_audio_after_rollback(db_session, secret_ref=secret_ref)
+
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+    assert cleanup_job is not None
+
+
+def test_audio_cleanup_worker_never_deletes_live_ingestion_retry_source(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Live audio cleanup guard")
+    owner = make_user(email="live-audio-cleanup-owner@example.com", password="password-1", team=team)
+    transcript = _make_transcript(
+        db_session,
+        owner=owner,
+        title="Retry source remains live",
+        expires_at=utcnow() + timedelta(days=1),
+    )
+    secret_ref = "secret:openscribe/transcript-ingestion/55555555-5555-5555-5555-555555555555/source-audio"
+    ingestion_job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.wav",
+        source_audio_vault_ref=secret_ref,
+        status=TranscriptIngestionJobStatus.failed,
+    )
+    db_session.add(ingestion_job)
+    queue_transcript_audio_cleanup(db_session, secret_refs=[secret_ref])
+    db_session.commit()
+    deleted_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_refs.append(secret_ref),
+    )
+
+    assert process_transcript_audio_cleanup_jobs(db_session, batch_size=10) == 0
+    assert deleted_refs == []
+    assert db_session.get(TranscriptIngestionJob, ingestion_job.id).source_audio_vault_ref == secret_ref
+    assert db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref)) is None
+
+
+def test_audio_rollback_compensation_falls_back_to_validated_direct_deletion(db_session, monkeypatch):
+    secret_ref = "secret:openscribe/transcript-ingestion/33333333-3333-3333-3333-333333333333/source-audio"
+    queued_attempts = []
+    deleted_refs = []
+
+    def fail_enqueue(*args, **kwargs):
+        queued_attempts.append(kwargs["secret_refs"])
+        raise AppError(502, "database_unavailable", "Database unavailable")
+
+    monkeypatch.setattr("app.services.transcripts.queue_transcript_audio_cleanup", fail_enqueue)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_refs.append(secret_ref),
+    )
+
+    queue_orphan_transcript_audio_after_rollback(db_session, secret_ref=secret_ref)
+
+    assert len(queued_attempts) == 2
+    assert deleted_refs == [secret_ref]
+
+
+def test_audio_rollback_compensation_fails_when_enqueue_and_direct_deletion_fail(db_session, monkeypatch):
+    secret_ref = "secret:openscribe/transcript-ingestion/44444444-4444-4444-4444-444444444444/source-audio"
+
+    monkeypatch.setattr(
+        "app.services.transcripts.queue_transcript_audio_cleanup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AppError(502, "database_unavailable", "Database unavailable")),
+    )
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda **kwargs: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault unavailable")),
+    )
+
+    with pytest.raises(AppError, match="could not be durably queued or deleted") as exc_info:
+        queue_orphan_transcript_audio_after_rollback(db_session, secret_ref=secret_ref)
+
+    assert exc_info.value.code == "transcript_audio_cleanup_compensation_failed"
 
 
 def test_expired_transcript_is_hidden_from_history_and_detail(client, db_session, make_team, make_user):

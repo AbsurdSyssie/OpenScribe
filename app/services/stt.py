@@ -1894,23 +1894,23 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
-    secret_written = False
+    written_secret_ref = ""
     try:
         db.flush()
         if payload.bearer_token:
-            config.vault_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-            secret_written = True
+            written_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+            config.vault_secret_ref = written_secret_ref
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        if secret_written:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=config.vault_secret_ref)
+        if written_secret_ref:
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=written_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
         raise
     except Exception:
         db.rollback()
-        if secret_written:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=config.vault_secret_ref)
+        if written_secret_ref:
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=written_secret_ref)
         raise
     db.refresh(config)
     _record_stt_audit(db, action="stt_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))

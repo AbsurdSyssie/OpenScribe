@@ -144,7 +144,7 @@ if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   echo "Starting Celery worker..."
   .venv/bin/celery -A app.celery_app:celery_app worker --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_WORKER_PID=$!
-  echo "Starting Celery Beat for retention cleanup..."
+  echo "Starting Celery Beat for scheduled retention and Vault cleanup..."
   .venv/bin/celery -A app.celery_app:celery_app beat --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_BEAT_PID=$!
 fi

@@ -2,9 +2,11 @@
 
 import logging
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -22,6 +24,17 @@ from app.services.vault import delete_provider_secret_by_ref
 logger = logging.getLogger("openscribe.cleanup")
 PROVIDER_SECRET_CLEANUP_RETRY_BASE_SECONDS = 10
 PROVIDER_SECRET_CLEANUP_RETRY_MAX_SECONDS = 60 * 60
+PROVIDER_SECRET_CLEANUP_COMPENSATION_ENQUEUE_ATTEMPTS = 2
+
+
+def _provider_secret_cleanup_insert(db: Session):
+    """Return an INSERT supporting unique-ref conflict suppression for this DB."""
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        return postgresql_insert(ProviderSecretCleanupJob)
+    if dialect_name == "sqlite":
+        return sqlite_insert(ProviderSecretCleanupJob)
+    raise AppError(500, "provider_secret_cleanup_enqueue_unsupported", "Provider secret cleanup enqueue is not supported by this database")
 
 
 def queue_provider_secret_cleanup(
@@ -34,21 +47,30 @@ def queue_provider_secret_cleanup(
     refs = sorted({ref for ref in secret_refs if ref})
     if not refs:
         return []
-    existing = {
+    insert = _provider_secret_cleanup_insert(db)
+    for secret_ref in refs:
+        db.execute(
+            insert.values(
+                id=uuid4(),
+                kind=kind,
+                secret_ref=secret_ref,
+                next_attempt_at=utcnow(),
+            ).on_conflict_do_nothing(index_elements=["secret_ref"])
+        )
+
+    # A conflicting PostgreSQL INSERT can be another transaction's row. Read
+    # after every insert attempt so the transaction sees its committed value,
+    # then verify it was not queued under a different provider kind.
+    jobs_by_ref = {
         job.secret_ref: job
         for job in db.scalars(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref.in_(refs)))
     }
-    jobs: list[ProviderSecretCleanupJob] = []
+    if len(jobs_by_ref) != len(refs):
+        raise AppError(500, "provider_secret_cleanup_enqueue_failed", "Provider secret cleanup could not be durably queued")
     for secret_ref in refs:
-        job = existing.get(secret_ref)
-        if job is None:
-            job = ProviderSecretCleanupJob(kind=kind, secret_ref=secret_ref, next_attempt_at=utcnow())
-            db.add(job)
-        elif job.kind != kind:
+        if jobs_by_ref[secret_ref].kind != kind:
             raise AppError(500, "provider_secret_cleanup_kind_conflict", "Provider secret cleanup reference has conflicting kind")
-        jobs.append(job)
-    db.flush()
-    return [job.id for job in jobs]
+    return [jobs_by_ref[secret_ref].id for secret_ref in refs]
 
 
 def queue_orphan_provider_secret_after_rollback(
@@ -60,12 +82,39 @@ def queue_orphan_provider_secret_after_rollback(
     """Persist compensation after caller rollback leaves a newly written Vault secret orphaned."""
     if not secret_ref:
         return
+    enqueue_error_code = "database_error"
+    for attempt in range(1, PROVIDER_SECRET_CLEANUP_COMPENSATION_ENQUEUE_ATTEMPTS + 1):
+        try:
+            queue_provider_secret_cleanup(db, kind=kind, secret_refs=[secret_ref])
+            db.commit()
+            return
+        except Exception as exc:
+            enqueue_error_code = exc.code if isinstance(exc, AppError) else "database_error"
+            try:
+                db.rollback()
+            except Exception:
+                enqueue_error_code = "database_rollback_error"
+            logger.warning(
+                "provider_secret_orphan_enqueue_retry_failed",
+                extra={"kind": kind.value, "attempt": attempt, "error_code": enqueue_error_code},
+            )
+
+    # This function only compensates a secret written in a transaction that
+    # has already rolled back. The Vault helper revalidates kind and ref shape
+    # before deleting; do not include either value in logs or raised details.
     try:
-        queue_provider_secret_cleanup(db, kind=kind, secret_refs=[secret_ref])
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("provider_secret_orphan_enqueue_failed", extra={"kind": kind.value})
+        delete_provider_secret_by_ref(kind=kind, secret_ref=secret_ref)
+    except Exception as exc:
+        delete_error_code = exc.code if isinstance(exc, AppError) else "vault_delete_error"
+        logger.error(
+            "provider_secret_orphan_compensation_failed",
+            extra={"kind": kind.value, "enqueue_error_code": enqueue_error_code, "delete_error_code": delete_error_code},
+        )
+        raise AppError(
+            502,
+            "provider_secret_cleanup_compensation_failed",
+            "Provider credential cleanup could not be durably queued or deleted",
+        ) from exc
 
 
 def _is_live_provider_secret_ref(db: Session, *, secret_ref: str) -> bool:

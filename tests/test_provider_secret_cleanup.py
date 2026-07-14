@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from app.errors import AppError
@@ -95,6 +96,95 @@ def test_cleanup_job_is_deduplicated_by_exact_secret_ref(db_session):
 
     assert db_session.scalars(select(ProviderSecretCleanupJob)).all()[0].secret_ref == secret_ref
     assert len(db_session.scalars(select(ProviderSecretCleanupJob)).all()) == 1
+
+
+def test_cleanup_enqueue_conflict_rereads_existing_job_and_preserves_kind(db_session):
+    secret_ref = _ref("44444444-4444-4444-4444-444444444444")
+    existing = ProviderSecretCleanupJob(
+        kind=ProviderSecretCleanupKind.deidentification,
+        secret_ref=secret_ref,
+        next_attempt_at=utcnow(),
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    job_ids = queue_provider_secret_cleanup(
+        db_session,
+        kind=ProviderSecretCleanupKind.deidentification,
+        secret_refs=[secret_ref],
+    )
+    db_session.commit()
+
+    assert job_ids == [existing.id]
+    assert db_session.scalars(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == secret_ref)).all() == [existing]
+
+
+def test_cleanup_enqueue_conflict_rejects_different_kind(db_session):
+    secret_ref = _ref("55555555-5555-5555-5555-555555555555")
+    db_session.add(
+        ProviderSecretCleanupJob(
+            kind=ProviderSecretCleanupKind.deidentification,
+            secret_ref=secret_ref,
+            next_attempt_at=utcnow(),
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(AppError, match="conflicting kind") as exc_info:
+        queue_provider_secret_cleanup(db_session, kind=ProviderSecretCleanupKind.stt, secret_refs=[secret_ref])
+
+    assert exc_info.value.code == "provider_secret_cleanup_kind_conflict"
+
+
+def test_rollback_compensation_falls_back_to_validated_direct_deletion(db_session, monkeypatch):
+    secret_ref = _ref("66666666-6666-6666-6666-666666666666")
+    queued_attempts = []
+    deleted = []
+
+    def fail_enqueue(*args, **kwargs):
+        queued_attempts.append(kwargs["secret_refs"])
+        raise AppError(502, "database_unavailable", "Database unavailable")
+
+    monkeypatch.setattr("app.services.provider_secret_cleanup.queue_provider_secret_cleanup", fail_enqueue)
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted.append((kwargs["kind"], kwargs["secret_ref"])),
+    )
+
+    queue_orphan_provider_secret_after_rollback(
+        db_session,
+        kind=ProviderSecretCleanupKind.deidentification,
+        secret_ref=secret_ref,
+    )
+
+    assert len(queued_attempts) == 2
+    assert deleted == [(ProviderSecretCleanupKind.deidentification, secret_ref)]
+
+
+def test_rollback_compensation_raises_when_enqueue_and_direct_deletion_fail(db_session, monkeypatch):
+    secret_ref = _ref("77777777-7777-7777-7777-777777777777")
+    deleted = []
+
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.queue_provider_secret_cleanup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AppError(502, "database_unavailable", "Database unavailable")),
+    )
+
+    def fail_delete(**kwargs):
+        deleted.append((kwargs["kind"], kwargs["secret_ref"]))
+        raise AppError(502, "vault_unavailable", "Vault unavailable")
+
+    monkeypatch.setattr("app.services.provider_secret_cleanup.delete_provider_secret_by_ref", fail_delete)
+
+    with pytest.raises(AppError, match="could not be durably queued or deleted") as exc_info:
+        queue_orphan_provider_secret_after_rollback(
+            db_session,
+            kind=ProviderSecretCleanupKind.deidentification,
+            secret_ref=secret_ref,
+        )
+
+    assert exc_info.value.code == "provider_secret_cleanup_compensation_failed"
+    assert deleted == [(ProviderSecretCleanupKind.deidentification, secret_ref)]
 
 
 def test_deidentification_delete_queues_secret_before_provider_row_is_removed(

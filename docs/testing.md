@@ -365,6 +365,8 @@ What it does:
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
 - STT, LLM, de-identification, revision, draft, replacement, and team deletion committing provider-secret cleanup intents before database references disappear
 - provider-secret cleanup retrying Vault failures, treating missing paths as success, and rechecking live references before deletion
+- cleanup-outbox downgrades blocking while pending audio or provider jobs retain the only durable Vault references
+- Celery Beat registering and scheduling retention, retry-audio, and provider-secret cleanup tasks every 10 seconds
 - provider revision and STT no-auth downgrades blocking when rollback would discard a Vault reference or leave incompatible rows
 - transcript, user, team, and retention deletion committing a FK-free retry-audio cleanup job before Vault deletion, retaining failed deletions for scheduled retry, and treating an already-missing Vault path as success
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user

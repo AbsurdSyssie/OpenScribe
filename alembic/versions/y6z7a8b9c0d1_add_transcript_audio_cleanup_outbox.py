@@ -37,5 +37,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    cleanup_jobs = sa.table("transcript_audio_cleanup_jobs", sa.column("id", sa.UUID()))
+    pending_cleanup = op.get_bind().execute(sa.select(cleanup_jobs.c.id).limit(1)).first()
+    if pending_cleanup is not None:
+        raise RuntimeError(
+            "Cannot downgrade transcript audio cleanup while pending jobs retain Vault references; "
+            "process or remediate them first."
+        )
     op.drop_index("ix_transcript_audio_cleanup_jobs_next_attempt_at", table_name="transcript_audio_cleanup_jobs")
     op.drop_table("transcript_audio_cleanup_jobs")

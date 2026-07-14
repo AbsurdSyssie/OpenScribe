@@ -349,8 +349,8 @@ Implemented now in the STT configuration slice:
 - onboarding-only and pending-MFA sessions are blocked from STT management routes
 - STT save-and-inspect stores submitted credentials once in Vault, records only a Vault reference plus a server-side HMAC fingerprint for duplicate warnings, and never returns raw credentials
 - unconfirmed duplicate STT credentials warn before Vault write and before provider inspection
-- invalid first-add STT credentials remove the DB row before Vault cleanup; saved-provider delete clears active selection rows and removes the DB row before best-effort Vault cleanup
-- explicit STT credential removal clears DB references before Vault cleanup after commit; explicit LLM credential removal deletes the Vault secret before clearing the DB reference, tolerates stale/missing Vault content, fails closed if Vault delete fails, and attempts Vault restoration if the DB commit fails after a readable old token snapshot; blank secret fields do not silently remove saved secrets
+- invalid first-add STT credentials roll back the DB row and durably queue or directly delete the newly written Vault secret; saved-provider deletion clears selections and commits cleanup intent with the removed DB reference
+- explicit STT/LLM credential removal and replacement commit the retired exact Vault reference to the provider cleanup outbox in the same transaction that changes the DB reference; blank secret fields do not silently remove saved secrets
 - STT re-inspection uses saved Vault references, marks rejected credentials `invalid`, and clears active STT selections that referenced the invalid provider
 - STT/LLM runtime paths require `auth_mode=bearer` before reading or forwarding a stored Vault credential, so stale references on no-auth rows cannot be sent to provider endpoints
 

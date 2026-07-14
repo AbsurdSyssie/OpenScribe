@@ -4,6 +4,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.celery_app import celery_app
+from app import tasks as celery_tasks
 from app.errors import AppError
 from app.models import (
     GeneratedDocument,
@@ -190,6 +191,15 @@ def test_retention_cleanup_task_has_timely_beat_schedule():
     assert audio_cleanup_schedule["task"] == "openscribe.process_transcript_audio_cleanup_jobs"
     assert audio_cleanup_schedule["schedule"] == 10.0
     assert audio_cleanup_schedule["options"] == {"expires": 10.0}
+
+    provider_cleanup_schedule = celery_app.conf.beat_schedule["retry-provider-secret-cleanup-every-10-seconds"]
+    assert provider_cleanup_schedule["task"] == "openscribe.process_provider_secret_cleanup_jobs"
+    assert provider_cleanup_schedule["schedule"] == 10.0
+    assert provider_cleanup_schedule["options"] == {"expires": 10.0}
+
+    assert celery_tasks.delete_expired_transcripts_task.name in celery_app.tasks
+    assert celery_tasks.process_transcript_audio_cleanup_jobs_task.name in celery_app.tasks
+    assert celery_tasks.process_provider_secret_cleanup_jobs_task.name in celery_app.tasks
 
 
 def test_dev_runtime_starts_and_stops_retention_scheduler():

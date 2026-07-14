@@ -1,5 +1,41 @@
 # Progress
 
+## 2026-07-14 Provider cleanup re-review follow-up
+
+### Scope
+
+- Made provider cleanup enqueue race-safe with database-native conflict suppression and kind verification.
+- Made rollback compensation retry durable enqueue, fall back to validated direct Vault deletion, and fail explicitly if neither succeeds.
+- Blocked audio/provider cleanup-outbox downgrades while rows retain the only durable Vault references.
+- Added provider Beat coverage, ignored its local schedule artifact, and corrected stale lifecycle/operations documentation.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: enqueue conflict, compensation fallback/failure, downgrade blocking, and task schedule/registration coverage.
+- Docs added/updated: API, security, setup, testing, and progress.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/provider_secret_cleanup.py`, `app/services/stt.py`: reliable enqueue and rollback compensation.
+- cleanup outbox migrations: fail-safe downgrade guards.
+- migration/provider/retention tests: reliability and scheduler regressions.
+- `.gitignore`, `start-dev.sh`, lifecycle/operations docs: Beat artifact and operational contract.
+
+### Tests
+
+- Full affected provider cleanup, retention, and migration suites: 46 passed.
+- Focused reliability/downgrade/Beat selection: 19 passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: cleanup logs still exclude Vault refs, credentials, and transcript-derived content.
+- Ownership rules: unchanged.
+- Deletion semantics: normal deletion remains DB-first; rollback compensation cannot silently discard cleanup responsibility.
+- Provider rules: exact refs remain Vault-backed and are deleted only after validation or durable queueing.
+- Structured-note contract: unchanged.
+
 ## 2026-07-14 Durable provider cleanup and merge review fixes
 
 ### Scope

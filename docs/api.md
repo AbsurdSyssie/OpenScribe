@@ -664,7 +664,7 @@ Current whole-file ingestion behavior:
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
-- transcript deletion and user deletion now attempt best-effort cleanup of any Vault-backed retry audio before the owning rows are removed, without blocking the hard-delete path on a transient Vault outage
+- transcript, user, team, and retention deletion commit retry-audio Vault references to a durable cleanup outbox before owning rows are removed; transient Vault outages retain retry metadata without delaying database hard deletion
 - applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads
 - file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
 - file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`

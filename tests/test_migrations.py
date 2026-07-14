@@ -271,6 +271,53 @@ def test_stt_no_auth_downgrade_blocks_while_configs_use_none():
 
 
 @pytest.mark.migration
+def test_provider_cleanup_downgrade_blocks_while_jobs_retain_vault_refs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO provider_secret_cleanup_jobs (id, secret_ref, kind)
+            VALUES (
+                '00000000-0000-0000-0000-000000000741',
+                'secret:openscribe/llm/team/00000000-0000-0000-0000-000000000742/config/00000000-0000-0000-0000-000000000743',
+                'llm'
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="pending jobs retain Vault references"):
+        command.downgrade(alembic_config(), "y6z7a8b9c0d1")
+
+    with isolated_engine.connect() as connection:
+        assert inspect(connection).has_table("provider_secret_cleanup_jobs")
+        assert connection.execute(text("SELECT count(*) FROM provider_secret_cleanup_jobs")).scalar_one() == 1
+
+
+@pytest.mark.migration
+def test_audio_cleanup_downgrade_blocks_while_jobs_retain_vault_refs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "y6z7a8b9c0d1")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO transcript_audio_cleanup_jobs (id, secret_ref)
+            VALUES (
+                '00000000-0000-0000-0000-000000000751',
+                'secret:openscribe/transcript-ingestion/00000000-0000-0000-0000-000000000752/source-audio'
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="pending jobs retain Vault references"):
+        command.downgrade(alembic_config(), "x5y6z7a8b9c0")
+
+    with isolated_engine.connect() as connection:
+        assert inspect(connection).has_table("transcript_audio_cleanup_jobs")
+        assert connection.execute(text("SELECT count(*) FROM transcript_audio_cleanup_jobs")).scalar_one() == 1
+
+
+@pytest.mark.migration
 def test_security_audit_event_user_and_team_references_set_null_on_delete():
     reset_public_schema()
     command.upgrade(alembic_config(), "head")

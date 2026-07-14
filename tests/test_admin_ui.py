@@ -26,6 +26,7 @@ from app.models import (
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
+    ProviderSecretCleanupJob,
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
@@ -6616,16 +6617,6 @@ def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
     llm_config = make_llm_config(team=team, actor=admin, label="Preflight LLM")
     db_session.commit()
 
-    deleted_secret_calls: list[str] = []
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_stt_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"stt:{config_id}"),
-    )
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"llm:{config_id}"),
-    )
-
     client.post("/login", data={"email": "admin-delete-team-preflight@example.com", "password": "password-1"}, follow_redirects=False)
     blocked = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
 
@@ -6634,7 +6625,7 @@ def test_admin_team_delete_checks_system_admin_members_before_vault_cleanup(
     assert db_session.get(Team, team.id) is not None
     assert db_session.get(TeamSttConfig, stt_config.id) is not None
     assert db_session.get(TeamLlmConfig, llm_config.id) is not None
-    assert deleted_secret_calls == []
+    assert db_session.scalar(select(ProviderSecretCleanupJob)) is None
 
 
 def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
@@ -6652,16 +6643,6 @@ def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
     stt_config = make_stt_config(team=team, actor=admin, label="Deferred STT")
     llm_config = make_llm_config(team=team, actor=admin, label="Deferred LLM")
 
-    deleted_secret_calls: list[str] = []
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_stt_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"stt:{config_id}"),
-    )
-    monkeypatch.setattr(
-        "app.services.admin.delete_team_llm_bearer_token",
-        lambda *, team_id, config_id, secret_ref=None: deleted_secret_calls.append(f"llm:{config_id}"),
-    )
-
     def fail_user_cleanup(db, actor, *, user):
         raise AppError(409, "conflict", "Synthetic user cleanup failure")
 
@@ -6676,7 +6657,7 @@ def test_admin_team_delete_defers_vault_cleanup_until_after_db_commit(
     assert db_session.get(User, member.id) is not None
     assert db_session.get(TeamSttConfig, stt_config.id) is not None
     assert db_session.get(TeamLlmConfig, llm_config.id) is not None
-    assert deleted_secret_calls == []
+    assert db_session.scalar(select(ProviderSecretCleanupJob)) is None
 
 
 def test_import_team_assets_to_defaults_copies_latest_team_assets(db_session, make_team, make_user, make_template, make_quick_action, make_default_template):

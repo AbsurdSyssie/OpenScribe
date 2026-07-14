@@ -181,15 +181,15 @@ Audit payloads should contain IDs, provider type, team ID, status, sanitized err
 
 ## Completion Checklist
 
-- Code complete: pending.
-- Tests added/updated: pending.
-- Docs added/updated: this plan created; implementation docs pending.
-- Open issues: exact endpoint names and schema names should follow current code during implementation.
+- Code complete: provider create, revision, replacement, removal, and deletion paths use DB-first durable cleanup.
+- Tests added/updated: provider cleanup worker, lifecycle integration, migration rollback, and team deletion coverage added.
+- Docs added/updated: security, STT, LLM, testing, and progress notes describe the implemented contract.
+- Open issues: production requires Celery Beat and workers to process cleanup jobs; failed jobs remain durable and retry indefinitely.
 
 ## Architecture Checkpoint Summary
 
 - Privacy boundaries: inspection uses metadata/synthetic-only provider calls; no transcript-derived content added to admin flow.
 - Ownership rules: provider provisioning remains system-admin scoped; team/user content ownership unchanged.
-- Deletion semantics: invalid first-add cleanup and provider deletion preserve DB-first then Vault cleanup order.
+- Deletion semantics: invalid first-add cleanup and provider deletion preserve DB-first then durable outbox/Vault cleanup order.
 - Provider rules: raw credentials remain Vault-backed; team selection/fallback remains policy-driven.
 - Structured-note contract: no EMIS or generated-document JSON contract change.

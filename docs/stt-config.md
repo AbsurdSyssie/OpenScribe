@@ -22,6 +22,8 @@ Add the first STT-management surface with:
 
 This configuration model now feeds the transcript-ingestion runtime. Users consume only the resolved active team STT selection during chunk or file upload.
 
+Credential replacement writes a versioned Vault secret, commits the new database reference and an outbox intent for the retired reference atomically, then lets the scheduled cleanup worker delete Vault data. Deletion, draft cancellation, revision promotion, and team deletion use the same FK-free durable cleanup path. The worker never deletes a reference still present in any provider configuration.
+
 ## Why this shape
 
 The broader architecture already defines a future provider layer with:

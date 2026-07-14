@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 import httpx
+import re
 import hvac
 from hvac import exceptions as hvac_exceptions
 
@@ -384,6 +385,36 @@ def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: 
     if response.status_code in {200, 204, 404}:
         return
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
+
+
+def delete_provider_secret_by_ref(*, kind, secret_ref: str) -> None:
+    """Delete one validated provider ref without rebuilding a path from deleted DB rows."""
+    from app.models import ProviderSecretCleanupKind
+
+    if not isinstance(kind, ProviderSecretCleanupKind):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(prefix):].strip()
+    uuid_pattern = r"[0-9a-fA-F-]{36}"
+    patterns = {
+        ProviderSecretCleanupKind.stt: rf"openscribe/stt/team/{uuid_pattern}/config/{uuid_pattern}(?:/{uuid_pattern})?",
+        ProviderSecretCleanupKind.llm: rf"openscribe/llm/team/{uuid_pattern}/config/{uuid_pattern}(?:/{uuid_pattern})?",
+        ProviderSecretCleanupKind.deidentification: rf"openscribe/deidentification/provider/{uuid_pattern}(?:/{uuid_pattern})?",
+    }
+    if not re.fullmatch(patterns[kind], path):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    try:
+        response = httpx.delete(
+            f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/metadata/{path}",
+            headers=_vault_headers(),
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code not in {200, 204, 404}:
+        raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
 def deidentification_secret_path(provider_id: UUID, *, secret_id: UUID | None = None) -> str:

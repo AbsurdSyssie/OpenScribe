@@ -36,6 +36,7 @@ from app.models import (
     TeamLlmSelection,
     TeamRole,
     TeamSttConfig,
+    ProviderSecretCleanupKind,
     TeamSttSelection,
     TemplateScope,
     Transcript,
@@ -61,15 +62,13 @@ from app.schemas import (
 from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
-from app.services.llm import delete_team_llm_bearer_token
 from app.services.passwords import hash_password, validate_password_strength
 from app.services.security_audit import record_security_event
 from app.services.smart_phrases import ensure_default_smart_phrase_for_user
-from app.services.stt import delete_team_stt_bearer_token
+from app.services.provider_secret_cleanup import queue_provider_secret_cleanup
 from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
-cleanup_logger = logging.getLogger("openscribe.cleanup")
 MIN_RETENTION_DAYS = 1
 MAX_RETENTION_DAYS = int(os.getenv("MAX_RETENTION_DAYS", "90"))
 
@@ -1647,8 +1646,6 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
             )
             raise AppError(409, "conflict", "Cannot delete a team that still contains a system-admin account", {"team_id": str(team.id), "user_id": str(user.id)})
 
-    stt_secret_deletions: list[tuple[UUID, UUID, str]] = []
-    llm_secret_deletions: list[tuple[UUID, UUID, str]] = []
     transcript_audio_cleanup_job_ids: list[UUID] = []
     try:
         provider_events = db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.team_id == team.id))
@@ -1679,11 +1676,11 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
 
         for config in db.scalars(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)):
             if config.vault_secret_ref:
-                stt_secret_deletions.append((team.id, config.id, config.vault_secret_ref))
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[config.vault_secret_ref])
             db.delete(config)
         for config in db.scalars(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)):
             if config.vault_secret_ref:
-                llm_secret_deletions.append((team.id, config.id, config.vault_secret_ref))
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[config.vault_secret_ref])
             db.delete(config)
 
         for template in db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == team.id)):
@@ -1707,22 +1704,6 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         raise
 
     process_transcript_audio_cleanup_jobs(db, job_ids=transcript_audio_cleanup_job_ids)
-    for secret_team_id, config_id, secret_ref in stt_secret_deletions:
-        try:
-            delete_team_stt_bearer_token(team_id=secret_team_id, config_id=config_id, secret_ref=secret_ref)
-        except AppError as exc:
-            cleanup_logger.warning(
-                "team_stt_secret_delete_failed",
-                extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
-            )
-    for secret_team_id, config_id, secret_ref in llm_secret_deletions:
-        try:
-            delete_team_llm_bearer_token(team_id=secret_team_id, config_id=config_id, secret_ref=secret_ref)
-        except AppError as exc:
-            cleanup_logger.warning(
-                "team_llm_secret_delete_failed",
-                extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
-            )
     record_security_event(
         db,
         action="team_deleted",

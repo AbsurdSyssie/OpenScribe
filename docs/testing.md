@@ -363,6 +363,9 @@ What it does:
 - admin team hard delete removing team users, team-owned configs, team assets, transcript-derived rows, account requests, and team usage metadata
 - admin team hard delete preflighting system-admin membership before deleting Vault-backed provider secrets
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
+- STT, LLM, de-identification, revision, draft, replacement, and team deletion committing provider-secret cleanup intents before database references disappear
+- provider-secret cleanup retrying Vault failures, treating missing paths as success, and rechecking live references before deletion
+- provider revision and STT no-auth downgrades blocking when rollback would discard a Vault reference or leave incompatible rows
 - transcript, user, team, and retention deletion committing a FK-free retry-audio cleanup job before Vault deletion, retaining failed deletions for scheduled retry, and treating an already-missing Vault path as success
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
 - de-identification provider validation rejecting secret-bearing extra headers/body fields, including nested body JSON keys, and bearer-auth providers without a Vault-backed token
@@ -381,6 +384,8 @@ What it does:
 - leader home AI-services UI exposing team de-identification selection and clear-to-built-in-fallback behavior
 - leader home AI-services UI exposing clinical NLP enable/disable separately from PII redaction selection
 - home tabs initializing after the navigation moved above the tab shell
+- workspace SSE fallback polling remaining active while `EventSource` is still connecting
+- transcribe loading indicators honoring `prefers-reduced-motion`
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe editable-note empty guidance hiding on initial render and generated-output refresh once structured/freeform note rows contain content
 - transcribe structured/freeform line reordering blocking blank placeholder rows by mouse drag and consuming blocked keyboard shortcuts so browser history navigation does not fire

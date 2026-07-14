@@ -68,6 +68,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "generated_documents",
         "post_consultation_dictation_segments",
         "post_consultation_dictations",
+            "provider_secret_cleanup_jobs",
             "provider_usage_events",
             "quick_actions",
             "quick_action_versions",
@@ -110,6 +111,21 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         assert "revision_of_config_id IS NULL" in indexes[f"uq_{table}_team_label_lower"]["dialect_options"]["postgresql_where"]
         assert indexes[f"uq_{table}_pending_revision"]["unique"] is True
         assert "revision_of_config_id IS NOT NULL" in indexes[f"uq_{table}_pending_revision"]["dialect_options"]["postgresql_where"]
+    provider_cleanup_columns = {column["name"] for column in inspector.get_columns("provider_secret_cleanup_jobs")}
+    provider_cleanup_fks = inspector.get_foreign_keys("provider_secret_cleanup_jobs")
+    provider_cleanup_indexes = inspector.get_indexes("provider_secret_cleanup_jobs")
+    assert {
+        "id",
+        "secret_ref",
+        "kind",
+        "attempt_count",
+        "last_error_code",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+    } == provider_cleanup_columns
+    assert provider_cleanup_fks == []
+    assert any(item["name"] == "ix_provider_secret_cleanup_jobs_next_attempt_at" for item in provider_cleanup_indexes)
     with engine.connect() as connection:
         stt_auth_modes = connection.execute(
             text(
@@ -126,7 +142,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
 
 
 @pytest.mark.migration
-def test_provider_revision_downgrade_discards_pending_rows_before_restoring_label_uniqueness():
+def test_provider_revision_downgrade_blocks_while_pending_rows_hold_vault_refs():
     reset_public_schema()
     command.upgrade(alembic_config(), "w4x5y6z7a8b9")
 
@@ -206,17 +222,52 @@ def test_provider_revision_downgrade_discards_pending_rows_before_restoring_labe
             )
         )
 
-    command.downgrade(alembic_config(), "v3w4x5y6z7a8")
+    with pytest.raises(RuntimeError, match="contains pending revisions"):
+        command.downgrade(alembic_config(), "v3w4x5y6z7a8")
 
     with isolated_engine.begin() as connection:
         inspector = inspect(connection)
-        for table, expected_label in (("team_stt_configs", "Clinic STT"), ("team_llm_configs", "Clinic LLM")):
-            assert "revision_of_config_id" not in {column["name"] for column in inspector.get_columns(table)}
-            assert connection.execute(text(f"SELECT label FROM {table}")).scalars().all() == [expected_label]
-            indexes = {index["name"]: index for index in inspector.get_indexes(table)}
-            restored_index = indexes[f"uq_{table}_team_label_lower"]
-            assert restored_index["unique"] is True
-            assert not restored_index["dialect_options"].get("postgresql_where")
+        for table in ("team_stt_configs", "team_llm_configs"):
+            assert "revision_of_config_id" in {column["name"] for column in inspector.get_columns(table)}
+            assert connection.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 2
+
+
+@pytest.mark.migration
+def test_stt_no_auth_downgrade_blocks_while_configs_use_none():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "x5y6z7a8b9c0")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+            VALUES ('00000000-0000-0000-0000-000000000731', 'No Auth Rollback', 'no auth rollback', 'active', 30, NOW(), NOW())
+        """))
+        connection.execute(text("""
+            INSERT INTO users (
+                id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000732', 'Rollback Admin', 'no-auth-rollback@example.com', 'hash',
+                NULL, NULL, true, 'active', false, 'complete', true, true, NOW(), NOW(), NULL
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO team_stt_configs (
+                id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                transcribe_path, auth_mode, available_models_json, file_field_name, response_text_path,
+                extra_form_fields_json, vault_secret_ref, setup_status, is_active,
+                created_by_user_id, updated_by_user_id, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000733', '00000000-0000-0000-0000-000000000731', NULL,
+                'Local no auth', 'custom_rest_openapi', 'openai_compatible_rest', 'http://127.0.0.1:7000',
+                '/v1/audio/transcriptions', 'none', '[]'::json, 'file', 'text', '{}'::json, '', 'ready', true,
+                '00000000-0000-0000-0000-000000000732', '00000000-0000-0000-0000-000000000732', NOW(), NOW()
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="auth_mode='none'"):
+        command.downgrade(alembic_config(), "w4x5y6z7a8b9")
 
 
 @pytest.mark.migration

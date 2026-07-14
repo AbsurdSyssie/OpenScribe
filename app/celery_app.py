@@ -38,6 +38,11 @@ celery_app.conf.update(
             "schedule": 10.0,
             "options": {"expires": 10.0},
         },
+        "retry-provider-secret-cleanup-every-10-seconds": {
+            "task": "openscribe.process_provider_secret_cleanup_jobs",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
     },
 )
 

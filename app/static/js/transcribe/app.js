@@ -1840,7 +1840,12 @@ let statusDetailsHideTimer = null;
       };
 
       const isWorkspaceRealtimeConnected = () => {
-        return Boolean(window.EventSource && workspaceEventSource && !workspaceStreamFallbackPolling);
+        return Boolean(
+          window.EventSource
+          && workspaceEventSource
+          && workspaceEventSource.readyState === window.EventSource.OPEN
+          && !workspaceStreamFallbackPolling
+        );
       };
 
       const shouldUseWorkspacePollingFallback = () => {

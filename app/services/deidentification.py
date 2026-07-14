@@ -14,6 +14,7 @@ from app.models import (
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     DeidentificationProvider,
+    ProviderSecretCleanupKind,
     Team,
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
@@ -37,10 +38,10 @@ from app.services.vault import (
     write_deidentification_bearer_token,
 )
 from app.services.security_audit import record_security_event
+from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 
 
 BUILTIN_DEIDENTIFICATION_PROVIDER_ID = UUID("00000000-0000-0000-0000-00000000d1d1")
-cleanup_logger = logging.getLogger("openscribe.cleanup")
 
 
 def _record_deid_audit(db: Session, *, action: str, actor: User, provider_id: UUID | None = None, team_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -72,16 +73,6 @@ def _dereference(document: dict[str, Any], value: Any) -> Any:
     if isinstance(value, list):
         return [_dereference(document, item) for item in value]
     return value
-
-
-def _delete_deidentification_secret_best_effort(*, provider_id: UUID, secret_ref: str, event: str) -> None:
-    try:
-        delete_deidentification_bearer_token(provider_id=provider_id, secret_ref=secret_ref)
-    except AppError as exc:
-        cleanup_logger.warning(
-            event,
-            extra={"provider_id": str(provider_id), "error_code": exc.code},
-        )
 
 
 def _resolve_team(db: Session, *, team_id: UUID) -> Team:
@@ -830,23 +821,19 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
     elif provider.auth_mode is DeidentificationAuthMode.none:
         provider.vault_secret_ref = ""
 
+    if old_secret_ref and old_secret_ref != provider.vault_secret_ref:
+        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.deidentification, secret_refs=[old_secret_ref])
     try:
         db.commit()
     except Exception:
         db.rollback()
         if pending_secret_ref:
-            _delete_deidentification_secret_best_effort(
-                provider_id=provider.id,
+            queue_orphan_provider_secret_after_rollback(
+                db,
+                kind=ProviderSecretCleanupKind.deidentification,
                 secret_ref=pending_secret_ref,
-                event="deidentification_pending_secret_delete_failed",
             )
         raise
-    if old_secret_ref and old_secret_ref != provider.vault_secret_ref:
-        _delete_deidentification_secret_best_effort(
-            provider_id=provider.id,
-            secret_ref=old_secret_ref,
-            event="deidentification_old_secret_delete_failed",
-        )
     db.refresh(provider)
     _record_deid_audit(
         db,
@@ -881,14 +868,13 @@ def delete_deidentification_provider(db: Session, actor: User, *, provider_id: U
         db.add(run)
     if selections or clinical_nlp_selections or assignments or clinical_entity_runs:
         db.flush()
+    queue_provider_secret_cleanup(
+        db,
+        kind=ProviderSecretCleanupKind.deidentification,
+        secret_refs=[old_secret_ref],
+    )
     db.delete(provider)
     db.commit()
-    if old_secret_ref:
-        _delete_deidentification_secret_best_effort(
-            provider_id=provider_id,
-            secret_ref=old_secret_ref,
-            event="deidentification_deleted_provider_secret_delete_failed",
-        )
     _record_deid_audit(db, action="deidentification_provider_deleted", actor=actor, provider_id=provider_id)
 
 

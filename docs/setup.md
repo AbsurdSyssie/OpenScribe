@@ -67,8 +67,8 @@ Important:
 - retention cleanup drains expired roots in locked 100-row batches; queued cleanup messages expire after 10 seconds so a stopped worker does not later replay stale scheduler backlog
 - production deployments must run both a Celery worker and Celery Beat with the same application configuration; a worker without Beat does not schedule retention or durable Vault cleanup
 - if port `APP_PORT` is owned by an unrelated process, stop it or change `APP_PORT` in `.env`
-- `APP_HOST` now defaults to `0.0.0.0`
-- `./start-dev.sh` allows the FastAPI frontend bind off-box by default; set `APP_HOST=127.0.0.1` and `DEV_ALLOW_REMOTE_BIND=false` if you want localhost-only app access
+- `APP_HOST` defaults to `127.0.0.1`
+- `./start-dev.sh` keeps the FastAPI frontend localhost-only by default; off-box access requires explicit `APP_HOST=0.0.0.0` and `DEV_ALLOW_REMOTE_BIND=true`
 - `./start-dev.sh` also refuses non-local Docker port publication for Postgres, Redis, or Vault unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
 - `./start-dev.sh` stores the local Vault root token and unseal key in `.local/vault/`; that directory is ignored by git and should be treated as local secret material
 - `./start-dev.sh` now purges queued Celery tasks before the dev worker starts; set `DEV_PURGE_CELERY_QUEUE=false` only if you intentionally want to keep the existing dev queue
@@ -252,16 +252,16 @@ DEV_START_CELERY=false
 
 ## Local network exposure
 
-The checked-in dev defaults now expose only the app itself off-box:
+The checked-in dev defaults keep every service localhost-only:
 
 - Docker publishes Postgres, Redis, and Vault on `127.0.0.1` only
-- FastAPI defaults to `APP_HOST=0.0.0.0`
+- FastAPI defaults to `APP_HOST=127.0.0.1`
 
-If you want localhost-only app access instead, override it in `.env`:
+To expose only FastAPI on the local network, opt in explicitly in `.env`:
 
 ```bash
-APP_HOST=127.0.0.1
-DEV_ALLOW_REMOTE_BIND=false
+APP_HOST=0.0.0.0
+DEV_ALLOW_REMOTE_BIND=true
 ```
 
 That only affects the FastAPI bind and the startup guard. Postgres, Redis, and Vault remain localhost-only unless you deliberately change the Docker port bindings and enable `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`.

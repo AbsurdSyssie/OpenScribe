@@ -35,6 +35,7 @@ Current behavior:
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
+- admin UI static regressions verify no-team Admin home safely skips member-modal listeners when member controls are not rendered
 - admin UI regression tests verify hallucination checker provider selection uses discovered model dropdowns instead of free-text checker model entry
 - transcribe UI static regressions verify generated notes expose hallucination check status/debug panel and refresh the document navigator cache-bust token
 - mail-service tests verify disabled/stdout/resend configuration validation, stdout local delivery, skipped delivery when mail is disabled, hidden Resend API key repr behavior, Resend API payload/header construction, provider-error mapping, and Vault-ref API key resolution
@@ -115,7 +116,7 @@ What it does:
 - workspace PII minimisation tests verify default PII rows omit original values, owner-only reveal returns values through POST+CSRF, non-owners receive `404`, sensitive APIs are `no-store`, and plaintext response fields no longer use `_encrypted` names
 - manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
 - retention regressions verify expired roots cannot hydrate the owner workspace or reach transcript, working-note, dictation, generated-document, PII, generation, edit, delete, debug, or async-processing content paths before physical cleanup
-- retention runtime regressions verify Celery Beat queues bounded hard-delete cleanup every 10 seconds and the documented dev runtime starts and stops both worker and Beat processes
+- retention runtime regressions verify Celery Beat queues bounded hard-delete cleanup every 10 seconds, each task returns after one batch while backlog remains for later runs, and the documented dev runtime starts and stops both worker and Beat processes
 - manual PII dedupe coverage verifies normalized value hashes are keyed owner-scoped digests rather than plain SHA-256 of low-entropy PII
 - manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation
 
@@ -369,6 +370,8 @@ What it does:
 - Celery Beat registering and scheduling retention, retry-audio, and provider-secret cleanup tasks every 10 seconds
 - provider revision and STT no-auth downgrades blocking when rollback would discard a Vault reference or leave incompatible rows
 - transcript, user, team, and retention deletion committing a FK-free retry-audio cleanup job before Vault deletion, retaining failed deletions for scheduled retry, and treating an already-missing Vault path as success
+- successful ingestion clearing its job source reference only after committing durable audio cleanup intent; failed enqueue-transaction compensation retries durable queueing, then validated direct deletion, and reports dual failure
+- transcript-audio cleanup rechecking live ingestion refs before Vault deletion, removing stale cleanup intent without deleting active retry audio
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
 - de-identification provider validation rejecting secret-bearing extra headers/body fields, including nested body JSON keys, and bearer-auth providers without a Vault-backed token
 - shared NLP endpoint inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, clinical-NLP `label`/`confidence` response adjustment, and no token echo

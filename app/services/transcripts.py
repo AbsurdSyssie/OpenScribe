@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -128,25 +130,96 @@ def clear_ingestion_retry_source(
         job.source_audio_size_bytes = None
         job.source_audio_duration_seconds = None
     db.add(job)
+    cleanup_job_ids = (
+        queue_transcript_audio_cleanup(db, secret_refs=[source_audio_vault_ref])
+        if clear_storage and delete_backing_secret and source_audio_vault_ref
+        else []
+    )
     db.commit()
     db.refresh(job)
-    if clear_storage and delete_backing_secret and source_audio_vault_ref:
-        try:
-            delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
-        except AppError as exc:
-            job.source_audio_vault_ref = source_audio_vault_ref
-            db.add(job)
-            db.commit()
-            db.refresh(job)
-            retry_audio_logger.warning(
-                "retry_audio_delete_failed",
-                extra={"job_id": str(job.id), "error_code": exc.code},
-            )
+    if cleanup_job_ids:
+        process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     return job
 
 
 TRANSCRIPT_AUDIO_CLEANUP_RETRY_BASE_SECONDS = 10
 TRANSCRIPT_AUDIO_CLEANUP_RETRY_MAX_SECONDS = 60 * 60
+TRANSCRIPT_AUDIO_CLEANUP_COMPENSATION_ENQUEUE_ATTEMPTS = 2
+
+
+def _transcript_audio_cleanup_insert(db: Session):
+    """Return an INSERT supporting unique-ref conflict suppression for this DB."""
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        return postgresql_insert(TranscriptAudioCleanupJob)
+    if dialect_name == "sqlite":
+        return sqlite_insert(TranscriptAudioCleanupJob)
+    raise AppError(500, "transcript_audio_cleanup_enqueue_unsupported", "Transcript audio cleanup enqueue is not supported by this database")
+
+
+def queue_transcript_audio_cleanup(
+    db: Session,
+    *,
+    secret_refs: list[str] | tuple[str, ...] | set[str],
+) -> list[UUID]:
+    """Queue audio refs within caller transaction before their final DB reference disappears."""
+    refs = sorted({ref for ref in secret_refs if ref})
+    if not refs:
+        return []
+    insert = _transcript_audio_cleanup_insert(db)
+    for secret_ref in refs:
+        db.execute(
+            insert.values(
+                id=uuid4(),
+                secret_ref=secret_ref,
+                next_attempt_at=utcnow(),
+            ).on_conflict_do_nothing(index_elements=["secret_ref"])
+        )
+    jobs_by_ref = {
+        job.secret_ref: job
+        for job in db.scalars(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref.in_(refs)))
+    }
+    if len(jobs_by_ref) != len(refs):
+        raise AppError(500, "transcript_audio_cleanup_enqueue_failed", "Transcript audio cleanup could not be durably queued")
+    return [jobs_by_ref[secret_ref].id for secret_ref in refs]
+
+
+def queue_orphan_transcript_audio_after_rollback(db: Session, *, secret_ref: str) -> None:
+    """Compensate a Vault audio write after its owning ingestion transaction rolls back."""
+    if not secret_ref:
+        return
+    enqueue_error_code = "database_error"
+    for attempt in range(1, TRANSCRIPT_AUDIO_CLEANUP_COMPENSATION_ENQUEUE_ATTEMPTS + 1):
+        try:
+            queue_transcript_audio_cleanup(db, secret_refs=[secret_ref])
+            db.commit()
+            return
+        except Exception as exc:
+            enqueue_error_code = exc.code if isinstance(exc, AppError) else "database_error"
+            try:
+                db.rollback()
+            except Exception:
+                enqueue_error_code = "database_rollback_error"
+            retry_audio_logger.warning(
+                "transcript_audio_orphan_enqueue_retry_failed",
+                extra={"attempt": attempt, "error_code": enqueue_error_code},
+            )
+
+    # Ref was written by a transaction already rolled back. Vault helper checks
+    # the exact transcript-ingestion ref shape before deletion.
+    try:
+        delete_transcript_ingestion_source_audio(secret_ref=secret_ref)
+    except Exception as exc:
+        delete_error_code = exc.code if isinstance(exc, AppError) else "vault_delete_error"
+        retry_audio_logger.error(
+            "transcript_audio_orphan_compensation_failed",
+            extra={"enqueue_error_code": enqueue_error_code, "delete_error_code": delete_error_code},
+        )
+        raise AppError(
+            502,
+            "transcript_audio_cleanup_compensation_failed",
+            "Transcript audio cleanup could not be durably queued or deleted",
+        ) from exc
 
 
 def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: list[UUID]) -> list[UUID]:
@@ -164,21 +237,16 @@ def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: l
     }
     if not vault_refs:
         return []
-    existing_jobs = {
-        job.secret_ref: job
-        for job in db.scalars(
-            select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref.in_(vault_refs))
-        )
-    }
-    cleanup_jobs: list[TranscriptAudioCleanupJob] = []
-    for secret_ref in sorted(vault_refs):
-        cleanup_job = existing_jobs.get(secret_ref)
-        if cleanup_job is None:
-            cleanup_job = TranscriptAudioCleanupJob(secret_ref=secret_ref, next_attempt_at=utcnow())
-            db.add(cleanup_job)
-        cleanup_jobs.append(cleanup_job)
-    db.flush()
-    return [cleanup_job.id for cleanup_job in cleanup_jobs]
+    return queue_transcript_audio_cleanup(db, secret_refs=vault_refs)
+
+
+def _is_live_transcript_ingestion_source_audio_ref(db: Session, *, secret_ref: str) -> bool:
+    """Return whether an ingestion job still owns this retry-audio ref."""
+    return db.scalar(
+        select(TranscriptIngestionJob.id)
+        .where(TranscriptIngestionJob.source_audio_vault_ref == secret_ref)
+        .limit(1)
+    ) is not None
 
 
 def process_transcript_audio_cleanup_jobs(
@@ -205,6 +273,12 @@ def process_transcript_audio_cleanup_jobs(
     cleanup_jobs = list(db.scalars(stmt))
     deleted_count = 0
     for cleanup_job in cleanup_jobs:
+        if _is_live_transcript_ingestion_source_audio_ref(db, secret_ref=cleanup_job.secret_ref):
+            # A rollback/commit outcome can be ambiguous. The ref is still
+            # retry source data, so discard stale cleanup intent rather than
+            # risking deletion of owner content.
+            db.delete(cleanup_job)
+            continue
         try:
             delete_transcript_ingestion_source_audio(secret_ref=cleanup_job.secret_ref)
         except AppError as exc:
@@ -1309,10 +1383,8 @@ def queue_audio_chunk_ingestion(
         db.commit()
     except Exception:
         if source_audio_vault_ref is not None:
-            try:
-                delete_transcript_ingestion_source_audio(secret_ref=source_audio_vault_ref)
-            except AppError:
-                pass
+            db.rollback()
+            queue_orphan_transcript_audio_after_rollback(db, secret_ref=source_audio_vault_ref)
         raise
     db.refresh(transcript)
     db.refresh(job)
@@ -1458,10 +1530,8 @@ def queue_audio_file_ingestion(
         db.commit()
     except Exception:
         if source_audio_vault_ref is None and persisted_source_audio_vault_ref is not None:
-            try:
-                delete_transcript_ingestion_source_audio(secret_ref=persisted_source_audio_vault_ref)
-            except AppError:
-                pass
+            db.rollback()
+            queue_orphan_transcript_audio_after_rollback(db, secret_ref=persisted_source_audio_vault_ref)
         raise
     db.refresh(transcript)
     db.refresh(job)

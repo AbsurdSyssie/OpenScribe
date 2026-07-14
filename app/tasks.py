@@ -34,11 +34,8 @@ def enqueue_generated_document_job(*, document_id: UUID):
 
 @celery_app.task(name="openscribe.delete_expired_transcripts")
 def delete_expired_transcripts_task(*, batch_size: int = 100) -> int:
-    deleted_count = 0
     with SessionLocal() as db:
-        while deleted := delete_expired_transcripts(db, batch_size=batch_size):
-            deleted_count += deleted
-    return deleted_count
+        return delete_expired_transcripts(db, batch_size=batch_size)
 
 
 @celery_app.task(name="openscribe.process_transcript_audio_cleanup_jobs")

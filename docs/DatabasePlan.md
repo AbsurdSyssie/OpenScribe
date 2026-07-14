@@ -1002,9 +1002,13 @@ This applies to:
 
 Expired transcript roots are rejected by the central owner-content gate as soon
 as `retention_expires_at` is reached, including workspace hydration and mutation
-paths. Celery Beat queues hard-delete cleanup every 10 seconds, and the worker
-drains locked bounded batches; database cascades remove transcript-derived
-children. Production therefore runs both Celery worker and Beat processes.
+paths. Celery Beat queues hard-delete cleanup every 10 seconds. Each task
+invocation deletes at most one locked bounded batch, then returns; later Beat
+runs drain any backlog. Beat tasks expire after one interval, preventing stale
+queued work from accumulating. Concurrent workers can process distinct batches;
+`FOR UPDATE SKIP LOCKED` prevents them from deleting the same root. Database
+cascades remove transcript-derived children. Production therefore runs both
+Celery worker and Beat processes.
 Team retention changes apply to transcripts created afterward and do not extend
 or recalculate existing fixed expiry timestamps.
 

@@ -11,6 +11,8 @@ LLM provider setup is stateful:
 
 Pending providers are visible only to system admins as `Setup incomplete`. Team leaders and users never receive pending providers from selection-option routes and cannot select a pending provider by ID. Selectable providers must be `ready`, `is_active=true`, and have a non-empty `model_name`.
 
+Credential replacement uses a versioned Vault path rather than overwriting the live path before database commit. Replacement, removal, draft cancellation, revision promotion, provider deletion, and team deletion commit a FK-free cleanup intent with the exact retired reference; a scheduled worker retries Vault deletion and first verifies the reference is no longer live.
+
 ## Preset Layer
 
 The admin UI exposes branded presets:

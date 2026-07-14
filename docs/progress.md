@@ -1,5 +1,52 @@
 # Progress
 
+## 2026-07-14 Durable provider cleanup and merge review fixes
+
+### Scope
+
+- Added durable DB-first Vault cleanup for retired STT, LLM, and de-identification credentials across replacement, draft, revision, provider, and team deletion paths.
+- Added safe migration rollback guards, SSE fallback correction, and reduced-motion support.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: provider cleanup, lifecycle integration, migration rollback, SSE, and reduced-motion coverage.
+- Docs added/updated: security, provider lifecycle, STT, LLM, testing, and progress notes.
+- Open issues: production requires Celery Beat/workers; the generated local `celerybeat-schedule` file remains untracked and excluded from this change.
+
+### Files changed
+
+- `app/models.py`, new migration, `app/services/provider_secret_cleanup.py`, `app/tasks.py`, `app/celery_app.py`: FK-free provider cleanup outbox and retry worker.
+- `app/services/stt.py`, `app/services/llm.py`, `app/services/deidentification.py`, `app/services/admin.py`, `app/services/vault.py`: transactional enqueue, versioned replacement refs, exact-ref deletion, and team cleanup integration.
+- provider/admin/API/migration/web tests: lifecycle and UI regressions.
+- transcribe JavaScript/CSS: OPEN-only SSE connection detection and reduced-motion behavior.
+
+### Tests
+
+- Focused provider cleanup: 10 passed.
+- Focused API replacement/lifecycle: 3 passed.
+- Focused team deletion: 2 passed.
+- Focused migration rollback: 2 passed.
+- Focused web cleanup/SSE/reduced-motion: 7 passed in the initial targeted run.
+
+### Documentation
+
+- Documented DB/outbox/Vault ordering, exact-ref live checks, indefinite retry, migration rollback guards, and operational worker dependency.
+
+### Risks / assumptions
+
+- Cleanup rows intentionally contain Vault references and retry metadata only; no transcript-derived content or ownership foreign keys.
+- Global de-identification providers remain independent of team deletion.
+- Migration downgrade now blocks rather than silently deleting incompatible provider rows.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript/note content enters cleanup rows or logs.
+- Ownership rules: provider provisioning remains system-admin-only; team/user content access unchanged.
+- Deletion semantics: database deletion remains immediate while external secret deletion is durable and retryable.
+- Provider rules: credentials remain Vault-backed; exact refs are removed only after no live provider row references them.
+- Structured-note contract: unchanged.
+
 ## 2026-07-13 Review security, lifecycle, and usage fixes
 
 - Prevented blank revisions to no-auth STT/LLM providers from inheriting or forwarding saved Vault credentials; runtime credential reads now require explicit bearer auth.

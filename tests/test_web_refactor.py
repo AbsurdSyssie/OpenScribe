@@ -282,12 +282,20 @@ def test_workspace_refresh_burst_uses_polling_fallback_only():
     app_js = Path("app/static/js/transcribe/app.js").read_text()
 
     assert "const isWorkspaceRealtimeConnected = () =>" in app_js
-    assert "return Boolean(window.EventSource && workspaceEventSource && !workspaceStreamFallbackPolling);" in app_js
+    assert "workspaceEventSource.readyState === window.EventSource.OPEN" in app_js
     assert "const shouldUseWorkspacePollingFallback = () => {\n        return !isWorkspaceRealtimeConnected();\n      };" in app_js
     assert "const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {\n        clearWorkspaceRefreshBurst();\n        if (!shouldUseWorkspacePollingFallback()) return;" in app_js
     assert "workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);\n            if (!shouldUseWorkspacePollingFallback()) return;\n            void fetchWorkspace();" in app_js
     assert "workspaceEventSource.addEventListener('open', () => {\n          workspaceStreamFallbackPolling = false;\n          clearWorkspaceRefreshBurst();" in app_js
     assert "if (transcriptId && shouldUseWorkspacePollingFallback())" in app_js
+
+
+def test_transcribe_loading_animation_respects_reduced_motion():
+    css = Path("app/static/css/transcribe.css").read_text()
+
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert ".note-generation-loading__dot-wrap" in css
+    assert ".note-generation-loading__waveform span" in css
 
 
 def test_transcribe_transcript_render_guard_owns_transcript_dom_updates():

@@ -2900,6 +2900,14 @@ to { transform: rotate(360deg); }
 50% { transform: scale(1.15); opacity: 1; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .note-generation-loading__dot-wrap,
+  .note-generation-loading__star,
+  .note-generation-loading__waveform span {
+    animation: none;
+  }
+}
+
 @keyframes note-generation-waveform {
 0%, 100% { transform: scaleY(0.65); }
 50% { transform: scaleY(1.15); }

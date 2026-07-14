@@ -43,6 +43,7 @@ from app.models import (
     ProviderUsageEvent,
     ProviderUsageEventType,
     ProviderCredentialStatus,
+    ProviderSecretCleanupJob,
     PromptTemplate,
     PromptTemplateVersion,
     PostConsultationDictation,
@@ -1201,7 +1202,7 @@ def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_t
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
-def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session, make_team, make_user, monkeypatch):
+def test_stt_draft_replace_commit_failure_preserves_old_secret_and_queues_new_orphan(db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-draft-replace-cleanup@example.com", password="password-1", is_system_admin=True)
     secrets_by_ref: dict[str, str] = {}
@@ -1253,7 +1254,17 @@ def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session,
     )
     old_secret_ref = config.vault_secret_ref
 
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("update", {}, Exception("duplicate"))))
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_first_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("update", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_first_commit)
 
     with pytest.raises(IntegrityError):
         replace_stt_config_draft_credential(
@@ -1262,8 +1273,12 @@ def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session,
             SttConfigDraftReplaceCredential(team_id=team.id, config_id=config.id, bearer_token="new-token"),
         )
 
-    assert secrets_by_ref == {old_secret_ref: "old-token"}
-    assert deleted_refs and old_secret_ref not in deleted_refs
+    new_secret_refs = set(secrets_by_ref) - {old_secret_ref}
+    assert secrets_by_ref[old_secret_ref] == "old-token"
+    assert len(new_secret_refs) == 1
+    assert deleted_refs == []
+    orphan_cleanup_ref = next(iter(new_secret_refs))
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == orphan_cleanup_ref)) is not None
     db_session.expire_all()
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is not None
@@ -3920,7 +3935,7 @@ def test_llm_draft_replace_credential_reruns_discovery_and_resets_pending(
     )
     monkeypatch.setattr(
         "app.services.llm.write_team_llm_bearer_token",
-        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        lambda *, team_id, config_id, bearer_token, secret_id=None: writes.append(bearer_token)
         or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/new",
     )
 
@@ -11063,7 +11078,7 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
     )
     monkeypatch.setattr(
         "app.services.llm.write_team_llm_bearer_token",
-        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        lambda *, team_id, config_id, bearer_token, secret_id=None: writes.append(bearer_token)
         or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/replacement",
     )
     corrected = client.post(

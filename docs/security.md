@@ -433,6 +433,15 @@ Current limitations:
 - deleting an already-missing Vault path is idempotent success
 - retry logs contain cleanup/job IDs and error codes, never Vault references or confidential content
 
+## Provider credential deletion
+
+- STT, LLM, and de-identification credential retirement writes an exact Vault reference to the FK-free `provider_secret_cleanup_jobs` outbox in the same transaction that removes or replaces the database reference
+- provider configuration deletion, draft cancellation, revision promotion, replacement, and team deletion never depend on a best-effort post-commit delete
+- replacement credentials use versioned Vault paths so a failed database commit cannot overwrite the still-live credential
+- the cleanup worker rechecks all provider tables before deleting; a reference that became live again is preserved and its stale cleanup intent is removed
+- Vault failures retain the cleanup row and retry with bounded exponential backoff; an already-missing Vault path is idempotent success
+- cleanup logs contain cleanup IDs, provider kind, attempt counts, and error codes only; they never contain Vault references or credentials
+
 ## Planned next hardening: lockouts and unlock workflow
 
 This is intentionally not implemented in the current slice.

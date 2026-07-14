@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User, utcnow
+from app.models import ProviderCredentialStatus, ProviderSecretCleanupKind, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User, utcnow
 from app.schemas import (
     SttConfigDraftCreate,
     SttConfigDraftReplaceCredential,
@@ -38,6 +38,7 @@ from app.services.stt_presets import (
 )
 from app.services.security_audit import record_security_event
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
+from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.provider_inspection import (
     dereference_openapi_document,
     display_default_from_schema_property,
@@ -337,30 +338,18 @@ def delete_stt_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             {"config_id": str(config.id)},
         )
     revisions = list(db.scalars(select(TeamSttConfig).where(TeamSttConfig.revision_of_config_id == config.id))) if config.revision_of_config_id is None else []
-    revision_secrets = [(item.id, item.vault_secret_ref) for item in revisions]
+    revision_secrets = [item.vault_secret_ref for item in revisions if item.vault_secret_ref]
     secret_team_id = config.team_id
     secret_config_id = config.id
     secret_ref = config.vault_secret_ref
     _clear_stt_selections_for_config(db, config_id=config.id)
+    queue_provider_secret_cleanup(
+        db,
+        kind=ProviderSecretCleanupKind.stt,
+        secret_refs=[*revision_secrets, secret_ref],
+    )
     db.delete(config)
     db.commit()
-    for revision_id, revision_ref in revision_secrets:
-        if revision_ref:
-            try:
-                delete_team_stt_bearer_token(team_id=secret_team_id, config_id=revision_id, secret_ref=revision_ref)
-            except AppError as exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(revision_id), "team_id": str(secret_team_id), "error_code": exc.code})
-    secret_still_referenced = bool(secret_ref) and db.scalar(
-        select(TeamSttConfig.id).where(TeamSttConfig.vault_secret_ref == secret_ref).limit(1)
-    ) is not None
-    if not secret_still_referenced:
-        try:
-            delete_team_stt_bearer_token(team_id=secret_team_id, config_id=secret_config_id, secret_ref=secret_ref or None)
-        except AppError as exc:
-            logger.warning(
-                "stt_config_secret_cleanup_failed",
-                extra={"config_id": str(secret_config_id), "team_id": str(secret_team_id), "error_code": exc.code},
-            )
     _record_stt_audit(db, action="stt_config_deleted", actor=actor, team_id=secret_team_id, config_id=secret_config_id)
 
 
@@ -1915,19 +1904,13 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
     except IntegrityError as exc:
         db.rollback()
         if secret_written:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=config.vault_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
         raise
     except Exception:
         db.rollback()
         if secret_written:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=config.vault_secret_ref)
         raise
     db.refresh(config)
     _record_stt_audit(db, action="stt_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
@@ -2004,41 +1987,29 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
         db.delete(config)
         result = target
     db.add(result)
+    if target is not None:
+        queue_provider_secret_cleanup(
+            db,
+            kind=ProviderSecretCleanupKind.stt,
+            secret_refs=[
+                secret_ref
+                for secret_ref in (old_secret_ref, revision_secret_ref)
+                if secret_ref and secret_ref != result.vault_secret_ref
+            ],
+        )
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         if rebound_secret_ref:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=rebound_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
         raise
     except Exception:
         db.rollback()
         if rebound_secret_ref:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=target.id, secret_ref=rebound_secret_ref)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(target.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=rebound_secret_ref)
         raise
-    if target is not None:
-        obsolete_secrets = (
-            (target.id, old_secret_ref),
-            (config.id, revision_secret_ref),
-        )
-        for obsolete_config_id, obsolete_ref in obsolete_secrets:
-            if not obsolete_ref or obsolete_ref == result.vault_secret_ref:
-                continue
-            try:
-                delete_team_stt_bearer_token(
-                    team_id=team.id,
-                    config_id=obsolete_config_id,
-                    secret_ref=obsolete_ref,
-                )
-            except AppError as exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(obsolete_config_id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(result)
     _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
     return result
@@ -2085,20 +2056,14 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
     config.is_active = False
     config.updated_by_user_id = actor.id
     db.add(config)
+    if old_secret_ref and old_secret_ref != new_secret_ref:
+        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
     try:
         db.commit()
     except Exception:
         db.rollback()
-        try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=new_secret_ref)
-        except AppError as cleanup_exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
+        queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=new_secret_ref)
         raise
-    if old_secret_ref and old_secret_ref != new_secret_ref:
-        try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=old_secret_ref)
-        except AppError as cleanup_exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
     db.refresh(config)
     _record_stt_audit(db, action="stt_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, credential_status=_enum_value(config.credential_status))
     return config, inspection
@@ -2318,34 +2283,22 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.credential_fingerprint = fingerprint
 
     try:
+        if delete_after_commit:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[delete_secret_ref])
+        elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
         db.commit()
     except IntegrityError as exc:
-        if pending_secret_ref:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=pending_secret_ref)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         db.rollback()
+        if pending_secret_ref:
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=pending_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
         raise
     except Exception:
-        if pending_secret_ref:
-            try:
-                delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=pending_secret_ref)
-            except AppError as cleanup_exc:
-                logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": cleanup_exc.code})
         db.rollback()
+        if pending_secret_ref:
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=pending_secret_ref)
         raise
-    if delete_after_commit:
-        try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=delete_secret_ref)
-        except AppError as exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
-    elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:
-        try:
-            delete_team_stt_bearer_token(team_id=team.id, config_id=config.id, secret_ref=old_secret_ref)
-        except AppError as exc:
-            logger.warning("stt_config_secret_cleanup_failed", extra={"config_id": str(config.id), "team_id": str(team.id), "error_code": exc.code})
     db.refresh(config)
     _record_stt_audit(
         db,

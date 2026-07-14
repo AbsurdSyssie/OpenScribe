@@ -25,11 +25,17 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table in ("team_llm_configs", "team_stt_configs"):
-        # Revision rows may intentionally reuse their root config's label. They
-        # cannot be represented by the pre-revision schema, so discard them
-        # before restoring unconditional normalized-label uniqueness.
         revision_table = sa.table(table, sa.column("revision_of_config_id", sa.UUID()))
-        op.execute(revision_table.delete().where(revision_table.c.revision_of_config_id.is_not(None)))
+        pending_revision = op.get_bind().execute(
+            sa.select(revision_table.c.revision_of_config_id)
+            .where(revision_table.c.revision_of_config_id.is_not(None))
+            .limit(1)
+        ).first()
+        if pending_revision is not None:
+            raise RuntimeError(
+                f"Cannot downgrade provider revisions while {table} contains pending revisions; "
+                "cancel or finalize them first so Vault references are preserved."
+            )
         op.drop_index(f"uq_{table}_pending_revision", table_name=table)
         op.drop_index(f"uq_{table}_team_label_lower", table_name=table)
         op.create_index(f"uq_{table}_team_label_lower", table, ["team_id", sa.text("lower(btrim(label))")], unique=True)

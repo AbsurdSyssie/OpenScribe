@@ -711,25 +711,27 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
             except Exception:
                 db.rollback()
                 raise
-            config.vault_secret_ref = rebound_secret_ref
-        for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "setup_status", "vault_secret_ref", "is_active"):
-            setattr(target, field, getattr(config, field))
-        target.updated_by_user_id = actor.id
-        db.delete(config)
-        result = target
-    db.add(result)
-    _reconcile_llm_config_model_selections(db, config=result)
-    if target is not None:
-        queue_provider_secret_cleanup(
-            db,
-            kind=ProviderSecretCleanupKind.llm,
-            secret_refs=[
-                secret_ref
-                for secret_ref in (old_secret_ref, revision_secret_ref)
-                if secret_ref and secret_ref != result.vault_secret_ref
-            ],
-        )
     try:
+        if rebound_secret_ref:
+            config.vault_secret_ref = rebound_secret_ref
+        if target is not None:
+            for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "setup_status", "vault_secret_ref", "is_active"):
+                setattr(target, field, getattr(config, field))
+            target.updated_by_user_id = actor.id
+            db.delete(config)
+            result = target
+        db.add(result)
+        _reconcile_llm_config_model_selections(db, config=result)
+        if target is not None:
+            queue_provider_secret_cleanup(
+                db,
+                kind=ProviderSecretCleanupKind.llm,
+                secret_refs=[
+                    secret_ref
+                    for secret_ref in (old_secret_ref, revision_secret_ref)
+                    if secret_ref and secret_ref != result.vault_secret_ref
+                ],
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -781,23 +783,23 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
         bearer_token=payload.bearer_token,
         secret_id=uuid4(),
     )
-    config.vault_secret_ref = new_secret_ref
-    config.available_models_json = list(inspection.available_models)
-    if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
-        config.model_name = None
-    config.inspection_metadata_json = _inspection_metadata(inspection)
-    if has_in_flight_jobs and was_ready and existing_model_name and (not inspection.available_models or existing_model_name in inspection.available_models):
-        config.model_name = existing_model_name
-        config.setup_status = LlmConfigSetupStatus.ready
-        config.is_active = was_active
-    else:
-        config.setup_status = LlmConfigSetupStatus.pending_model_selection
-        config.is_active = False
-    config.updated_by_user_id = actor.id
-    db.add(config)
-    if old_secret_ref and old_secret_ref != new_secret_ref:
-        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
     try:
+        config.vault_secret_ref = new_secret_ref
+        config.available_models_json = list(inspection.available_models)
+        if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
+            config.model_name = None
+        config.inspection_metadata_json = _inspection_metadata(inspection)
+        if has_in_flight_jobs and was_ready and existing_model_name and (not inspection.available_models or existing_model_name in inspection.available_models):
+            config.model_name = existing_model_name
+            config.setup_status = LlmConfigSetupStatus.ready
+            config.is_active = was_active
+        else:
+            config.setup_status = LlmConfigSetupStatus.pending_model_selection
+            config.is_active = False
+        config.updated_by_user_id = actor.id
+        db.add(config)
+        if old_secret_ref and old_secret_ref != new_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
         db.commit()
     except Exception:
         db.rollback()
@@ -1004,29 +1006,29 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     deleted_secret_ref = ""
     pending_secret_ref = ""
     old_secret_ref = config.vault_secret_ref if not creating else ""
-    if replacing_secret and payload.bearer_token:
-        config.vault_secret_ref = write_team_llm_bearer_token(
-            team_id=team.id,
-            config_id=config.id,
-            bearer_token=payload.bearer_token,
-            secret_id=uuid4() if not creating else None,
-        )
-        pending_secret_ref = config.vault_secret_ref
-    elif removing_secret:
-        if config.vault_secret_ref:
-            deleted_secret_ref = config.vault_secret_ref
-        config.vault_secret_ref = ""
-    elif adapter_kind is LlmAdapterKind.ollama_chat and creating:
-        config.vault_secret_ref = ""
-    elif creating:
-        raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
-
-    _reconcile_llm_config_model_selections(db, config=config)
-    if deleted_secret_ref:
-        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[deleted_secret_ref])
-    elif old_secret_ref and old_secret_ref != pending_secret_ref:
-        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
     try:
+        if replacing_secret and payload.bearer_token:
+            pending_secret_ref = write_team_llm_bearer_token(
+                team_id=team.id,
+                config_id=config.id,
+                bearer_token=payload.bearer_token,
+                secret_id=uuid4() if not creating else None,
+            )
+            config.vault_secret_ref = pending_secret_ref
+        elif removing_secret:
+            if config.vault_secret_ref:
+                deleted_secret_ref = config.vault_secret_ref
+            config.vault_secret_ref = ""
+        elif adapter_kind is LlmAdapterKind.ollama_chat and creating:
+            config.vault_secret_ref = ""
+        elif creating:
+            raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
+
+        _reconcile_llm_config_model_selections(db, config=config)
+        if deleted_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[deleted_secret_ref])
+        elif old_secret_ref and old_secret_ref != pending_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
         db.commit()
     except IntegrityError as exc:
         db.rollback()

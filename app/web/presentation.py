@@ -1071,7 +1071,7 @@ def render_admin(
         **usage_context,
         **audit_context,
     }
-    resolved_template_name = template_name or ("admin_mockup.html" if admin_return_view == "workspace" else "admin.html")
+    resolved_template_name = template_name or "admin.html"
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
 
 

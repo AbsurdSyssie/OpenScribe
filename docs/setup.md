@@ -56,7 +56,7 @@ Before launching, it now proactively stops any existing OpenScribe FastAPI dev s
 It also checks the configured FastAPI port before starting Celery or Brave; if another process still owns the port, it exits with a direct `APP_PORT`/stop-process message instead of leaving a worker running after server startup fails.
 It exports derived dev defaults such as `APP_PORT` and `APP_BIND_HOST` before running child Python checks, so missing optional `.env` values still use the documented defaults.
 It also purges stale queued Celery tasks by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
-The default dev configuration keeps Postgres, Redis, and Vault on localhost while exposing FastAPI for reverse-proxied or off-box frontend access.
+The default dev configuration keeps FastAPI, Postgres, Redis, and Vault on localhost. Off-box FastAPI access requires explicit `APP_HOST=0.0.0.0` and `DEV_ALLOW_REMOTE_BIND=true` configuration.
 Before the server starts, `./start-dev.sh` now also checks the live Docker port bindings for Postgres, Redis, and Vault and prints an error to the terminal if any of them are published beyond localhost.
 
 Important:

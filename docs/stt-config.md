@@ -282,6 +282,7 @@ First implementation rules:
 - blank secret field on edit keeps the current secret only with `credential_action=keep`
 - `credential_action=remove` clears the DB secret reference and deletes the Vault secret after the DB commit
 - system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth; browser forms default those optional-token adapters to `credential_action=keep` so a blank token is saved as no credential instead of a failed replacement
+- `openai_cloud` and `elevenlabs_speech_to_text` require `auth_mode=bearer`; an update cannot set `auth_mode=none`, including `credential_action=keep` with an existing Vault reference
 - `openai_cloud` still requires a saved API key
 - if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
 - saved-config diagnostics surface safe provider failure metadata to system admins, including HTTP status and provider error code such as `quota_exceeded`, without exposing raw secrets or provider error messages

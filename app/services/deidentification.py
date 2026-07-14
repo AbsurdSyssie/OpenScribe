@@ -811,19 +811,19 @@ def upsert_deidentification_provider(db: Session, actor: User, payload: Deidenti
         provider.updated_by_user_id = actor.id
         db.add(provider)
 
-    if provider.auth_mode is DeidentificationAuthMode.bearer and payload.bearer_token:
-        pending_secret_ref = write_deidentification_bearer_token(
-            provider_id=provider.id,
-            bearer_token=payload.bearer_token,
-            secret_id=uuid4(),
-        )
-        provider.vault_secret_ref = pending_secret_ref
-    elif provider.auth_mode is DeidentificationAuthMode.none:
-        provider.vault_secret_ref = ""
-
-    if old_secret_ref and old_secret_ref != provider.vault_secret_ref:
-        queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.deidentification, secret_refs=[old_secret_ref])
     try:
+        if provider.auth_mode is DeidentificationAuthMode.bearer and payload.bearer_token:
+            pending_secret_ref = write_deidentification_bearer_token(
+                provider_id=provider.id,
+                bearer_token=payload.bearer_token,
+                secret_id=uuid4(),
+            )
+            provider.vault_secret_ref = pending_secret_ref
+        elif provider.auth_mode is DeidentificationAuthMode.none:
+            provider.vault_secret_ref = ""
+
+        if old_secret_ref and old_secret_ref != provider.vault_secret_ref:
+            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.deidentification, secret_refs=[old_secret_ref])
         db.commit()
     except Exception:
         db.rollback()

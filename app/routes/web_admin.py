@@ -52,8 +52,8 @@ def admin_page(
         resolved_team_tab = "provider-policy"
     else:
         resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
-    global_tabs = {"home", "providers", "directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"}
-    resolved_global_tab = tab if tab in global_tabs else "home"
+    functional_tabs = {"providers", "directory", "requests", "usage", "defaults", "audit"}
+    resolved_global_tab = tab if tab in functional_tabs else "providers"
     return render_admin(
         request,
         db,
@@ -67,8 +67,9 @@ def admin_page(
         active_admin_tab=resolved_global_tab,
         admin_page_route="/admin",
         admin_return_view="workspace",
-        template_name="admin_mockup.html",
-        extra_admin_tabs=global_tabs,
+        # /admin is user-facing. Keep incomplete redesign mockup gated until
+        # its preservation-map release criteria are complete.
+        template_name="admin.html",
         workspace_team_tab=resolved_team_tab,
     )
 
@@ -1043,7 +1044,7 @@ def admin_update_stt_config_details(request: Request, config_id: UUID, team_id: 
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT details request"
         code = exc.status_code if isinstance(exc, AppError) else 400
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace", template_name="admin_mockup.html")
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace")
     return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1450,7 +1451,7 @@ def admin_update_llm_config_details(request: Request, config_id: UUID, team_id: 
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM details request"
         code = exc.status_code if isinstance(exc, AppError) else 400
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace", template_name="admin_mockup.html")
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace")
     return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
 
 

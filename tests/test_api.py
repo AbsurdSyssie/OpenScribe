@@ -94,9 +94,9 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot, upsert_stt_config as upsert_stt_config_service
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttInspectResult
+from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
 from app.services.audio import (
     AUDIO_FFMPEG_TIMEOUT_SECONDS,
     WHOLE_FILE_MAX_DURATION_SECONDS,
@@ -1449,6 +1449,152 @@ def test_system_admin_can_provision_openai_compatible_stt_without_secret(client,
     persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == UUID(body["id"])))
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url", "model_name"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1", "whisper-1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io", "scribe_v2"),
+    ],
+)
+def test_system_admin_stt_update_rejects_no_auth_for_credential_required_adapter(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    adapter_kind,
+    base_url,
+    model_name,
+):
+    team = make_team(name=f"Clinic Required Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-required-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Saved credential config",
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model_name=model_name,
+        has_secret=True,
+    )
+    original_ref = config.vault_secret_ref
+
+    login(client, email=admin.email, password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Must not persist",
+            "adapter_kind": adapter_kind.value,
+            "base_url": base_url,
+            "auth_mode": "none",
+            "credential_action": "keep",
+            "model_name": model_name,
+            "is_active": False,
+        },
+    )
+
+    assert_error(
+        updated,
+        status_code=422,
+        code="business_rule_violation",
+        message="This STT adapter requires auth_mode=bearer",
+    )
+    db_session.refresh(config)
+    assert config.label == "Saved credential config"
+    assert config.auth_mode is SttAuthMode.bearer
+    assert config.vault_secret_ref == original_ref
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url", "model_name"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1", "whisper-1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io", "scribe_v2"),
+    ],
+)
+def test_upsert_stt_config_service_rejects_no_auth_for_credential_required_adapter(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    adapter_kind,
+    base_url,
+    model_name,
+):
+    team = make_team(name=f"Clinic Service Required Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-service-required-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Saved service credential config",
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model_name=model_name,
+        has_secret=True,
+    )
+    original_ref = config.vault_secret_ref
+
+    with pytest.raises(AppError, match="auth_mode=bearer") as exc_info:
+        upsert_stt_config_service(
+            db_session,
+            admin,
+            SttConfigUpsert(
+                config_id=config.id,
+                team_id=team.id,
+                label="Must not persist",
+                adapter_kind=adapter_kind,
+                base_url=base_url,
+                auth_mode=SttAuthMode.none,
+                credential_action="keep",
+                model_name=model_name,
+                is_active=False,
+            ),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "business_rule_violation"
+    db_session.refresh(config)
+    assert config.label == "Saved service credential config"
+    assert config.auth_mode is SttAuthMode.bearer
+    assert config.vault_secret_ref == original_ref
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io"),
+    ],
+)
+def test_required_stt_adapter_runtime_rejects_legacy_no_auth_config(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+    adapter_kind,
+    base_url,
+):
+    team = make_team(name=f"Clinic Legacy Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-legacy-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, adapter_kind=adapter_kind, base_url=base_url, has_secret=True)
+    config.provider_preset = SttProviderPreset.custom_rest_openapi.value
+    config.auth_mode = SttAuthMode.none
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.stt.read_team_stt_bearer_token",
+        lambda **kwargs: pytest.fail("legacy invalid config must fail before Vault read"),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        _read_saved_stt_bearer_token(team_id=team.id, config=config)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "stt_config_secret_missing"
 
 
 def test_system_admin_edit_preserves_saved_stt_secret_when_token_blank(client, db_session, make_team, make_user, make_stt_config, monkeypatch):

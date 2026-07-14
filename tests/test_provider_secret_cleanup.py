@@ -4,6 +4,8 @@ from sqlalchemy import select
 from app.errors import AppError
 from app.models import (
     DeidentificationProvider,
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
     LlmAdapterKind,
     ProviderSecretCleanupJob,
     ProviderSecretCleanupKind,
@@ -12,16 +14,18 @@ from app.models import (
     TeamSttConfig,
     utcnow,
 )
+from app.schemas.deidentification import DeidentificationProviderUpsert
 from app.schemas.llm import LlmConfigDraftReplaceCredential, LlmConfigInspectResult
+from app.schemas.stt import SttConfigDraftReplaceCredential, SttInspectResult
 from app.services.admin import delete_team
 from app.services.provider_secret_cleanup import (
     process_provider_secret_cleanup_jobs,
     queue_orphan_provider_secret_after_rollback,
     queue_provider_secret_cleanup,
 )
-from app.services.deidentification import delete_deidentification_provider
+from app.services.deidentification import delete_deidentification_provider, upsert_deidentification_provider
 from app.services.llm import delete_llm_config, replace_llm_config_draft_credential
-from app.services.stt import delete_stt_config
+from app.services.stt import delete_stt_config, replace_stt_config_draft_credential
 
 
 def _ref(provider_id):
@@ -357,6 +361,147 @@ def test_llm_draft_credential_replacement_versions_ref_and_queues_old_ref(
     cleanup_job = db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == old_secret_ref))
     assert cleanup_job is not None
     assert cleanup_job.kind is ProviderSecretCleanupKind.llm
+
+
+def test_llm_replacement_queue_failure_compensates_only_new_vault_ref(
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    monkeypatch,
+):
+    team = make_team(name="LLM replacement queue failure")
+    admin = make_user(email="llm-replace-queue-failure@example.com", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, label="LLM replacement queue failure")
+    old_secret_ref = config.vault_secret_ref
+    new_secret_ref = f"{old_secret_ref}/new"
+    inspection = LlmConfigInspectResult(
+        provider_preset=config.provider_preset,
+        provider_display_name="OpenAI",
+        base_url=config.base_url,
+        adapter_kind=LlmAdapterKind.openai_chat,
+        model_name="gpt-4o-mini",
+        available_models=["gpt-4o-mini"],
+        discovery_status="fetched",
+        default_model_source="provider",
+        requires_bearer_token=True,
+        supports_model_discovery=True,
+    )
+    monkeypatch.setattr("app.services.llm.inspect_llm_contract", lambda *args, **kwargs: inspection)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: new_secret_ref)
+    monkeypatch.setattr(
+        "app.services.llm.queue_provider_secret_cleanup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AppError(500, "queue_failed", "synthetic queue failure")),
+    )
+
+    with pytest.raises(AppError, match="synthetic queue failure"):
+        replace_llm_config_draft_credential(
+            db_session,
+            admin,
+            LlmConfigDraftReplaceCredential(team_id=team.id, config_id=config.id, bearer_token="replacement-token"),
+        )
+
+    assert db_session.get(TeamLlmConfig, config.id).vault_secret_ref == old_secret_ref
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == old_secret_ref)) is None
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == new_secret_ref)) is not None
+
+
+def test_stt_replacement_queue_failure_compensates_only_new_vault_ref(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="STT replacement queue failure")
+    admin = make_user(email="stt-replace-queue-failure@example.com", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, label="STT replacement queue failure")
+    old_secret_ref = config.vault_secret_ref
+    new_secret_ref = f"{old_secret_ref}/new"
+    inspection = SttInspectResult(
+        base_url=config.base_url,
+        openapi_path=None,
+        adapter_kind=config.adapter_kind,
+        transcribe_path=config.transcribe_path,
+        model_name=config.model_name,
+        model_field_name=config.model_field_name,
+        file_field_name=config.file_field_name,
+        language=config.language,
+        language_field_name=config.language_field_name,
+        response_text_path=config.response_text_path,
+        segments_path=config.segments_path,
+        segment_text_field=config.segment_text_field,
+        segment_start_field=config.segment_start_field,
+        segment_end_field=config.segment_end_field,
+        segment_speaker_field=config.segment_speaker_field,
+        extra_form_fields_json=config.extra_form_fields_json,
+        candidate_paths=[],
+        operation_summary=None,
+        available_models=[config.model_name],
+        field_tips=[],
+        notes=[],
+    )
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: inspection)
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", lambda **kwargs: new_secret_ref)
+    monkeypatch.setattr(
+        "app.services.stt.queue_provider_secret_cleanup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AppError(500, "queue_failed", "synthetic queue failure")),
+    )
+
+    with pytest.raises(AppError, match="synthetic queue failure"):
+        replace_stt_config_draft_credential(
+            db_session,
+            admin,
+            SttConfigDraftReplaceCredential(team_id=team.id, config_id=config.id, bearer_token="replacement-token"),
+        )
+
+    assert db_session.get(TeamSttConfig, config.id).vault_secret_ref == old_secret_ref
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == old_secret_ref)) is None
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == new_secret_ref)) is not None
+
+
+def test_deidentification_replacement_queue_failure_compensates_only_new_vault_ref(
+    db_session,
+    make_user,
+    make_deidentification_provider,
+    monkeypatch,
+):
+    admin = make_user(email="deid-replace-queue-failure@example.com", is_system_admin=True)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Deid replacement queue failure",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://deid.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.bearer,
+        has_secret=True,
+    )
+    old_secret_ref = provider.vault_secret_ref
+    new_secret_ref = f"{old_secret_ref}/new"
+    monkeypatch.setattr("app.services.deidentification.write_deidentification_bearer_token", lambda **kwargs: new_secret_ref)
+    monkeypatch.setattr(
+        "app.services.deidentification.queue_provider_secret_cleanup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AppError(500, "queue_failed", "synthetic queue failure")),
+    )
+
+    with pytest.raises(AppError, match="synthetic queue failure"):
+        upsert_deidentification_provider(
+            db_session,
+            admin,
+            DeidentificationProviderUpsert(
+                provider_id=provider.id,
+                label=provider.label,
+                adapter_kind=DeidentificationAdapterKind.generic_rest,
+                base_url="https://deid.example.com",
+                detect_path="/detect",
+                auth_mode=DeidentificationAuthMode.bearer,
+                bearer_token="replacement-token",
+            ),
+        )
+
+    assert db_session.get(DeidentificationProvider, provider.id).vault_secret_ref == old_secret_ref
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == old_secret_ref)) is None
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == new_secret_ref)) is not None
 
 
 def test_team_delete_queues_stt_and_llm_refs_without_direct_vault_deletion(

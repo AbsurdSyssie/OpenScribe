@@ -1979,17 +1979,47 @@
                 team assets are not overwritten.
               </p>
             </div>
-            <a class="btn primary" href="/legacy-admin?tab=defaults"
-              >Manage global templates and quick actions</a
+            <a class="btn primary" href="/admin/templates/editor?scope=default&amp;return_view=workspace&amp;return_tab=global-defaults"
+              >New default template</a
             >
             <div class="summary-grid">
               <article class="summary-panel">
                 <h3>Templates</h3>
                 <strong>{{ default_templates|length }}</strong>
+                {% for template in default_templates %}
+                <div class="inspection-row">
+                  <span><strong>{{ template.name }}</strong><br /><small>{{ 'Enabled' if template.is_active else 'Disabled' }}</small></span>
+                  <span class="quick-actions">
+                    <a class="btn small" href="/admin/templates/editor?scope=default&amp;template_id={{ template.id }}&amp;return_view=workspace&amp;return_tab=global-defaults">Edit</a>
+                    <form method="post" action="/admin/default-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="workspace" /><input type="hidden" name="return_tab" value="global-defaults" /><button class="btn small" type="submit">Duplicate</button></form>
+                    <form method="post" action="/admin/default-templates/{{ template.id }}/delete" data-confirm-submit="Delete this default template permanently?"><input type="hidden" name="return_view" value="workspace" /><input type="hidden" name="return_tab" value="global-defaults" /><button class="btn small danger" type="submit">Delete</button></form>
+                  </span>
+                </div>
+                {% endfor %}
               </article>
               <article class="summary-panel">
                 <h3>Quick actions</h3>
                 <strong>{{ default_quick_actions|length }}</strong>
+                <form method="post" action="/admin/default-quick-actions">
+                  <input type="hidden" name="quick_action_id" value="{{ default_quick_action.id if default_quick_action else '' }}" />
+                  <input type="hidden" name="return_view" value="workspace" />
+                  <input type="hidden" name="return_tab" value="global-defaults" />
+                  <label>Name <input name="name" maxlength="255" required value="{{ default_quick_action.name if default_quick_action else '' }}" /></label>
+                  <label>Description <input name="description" value="{{ default_quick_action.description if default_quick_action else '' }}" /></label>
+                  <label>Action text <textarea name="prompt_text" required>{{ default_quick_action_latest_version.prompt_text if default_quick_action_latest_version else '' }}</textarea></label>
+                  <label><input type="checkbox" name="is_active" value="true" {% if not default_quick_action or default_quick_action.is_active %}checked{% endif %} /> Active</label>
+                  <button class="btn primary" type="submit">{{ 'Save quick action' if default_quick_action else 'Create quick action' }}</button>
+                </form>
+                {% for quick_action in default_quick_actions %}
+                <div class="inspection-row">
+                  <span><strong>{{ quick_action.name }}</strong><br /><small>{{ quick_action.description or '' }}</small></span>
+                  <span class="quick-actions">
+                    <a class="btn small" href="/admin?tab=global-defaults&amp;default_quick_action_id={{ quick_action.id }}">Edit</a>
+                    <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="workspace" /><input type="hidden" name="return_tab" value="global-defaults" /><button class="btn small" type="submit">Duplicate</button></form>
+                    <form method="post" action="/admin/default-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this default quick action permanently?"><input type="hidden" name="return_view" value="workspace" /><input type="hidden" name="return_tab" value="global-defaults" /><button class="btn small danger" type="submit">Delete</button></form>
+                  </span>
+                </div>
+                {% endfor %}
               </article>
             </div>
             {% elif active_admin_tab == 'deid-providers' %}
@@ -2000,8 +2030,8 @@
                 providers. Edits may affect multiple teams.
               </p>
             </div>
-            <a class="btn primary" href="/legacy-admin?tab=providers"
-              >Create or inspect global provider</a
+            <a class="btn primary" href="/admin?tab=deid-providers&amp;deidentification_provider_id=new"
+              >Add global provider</a
             >{% for provider in deidentification_providers %}
             <article class="summary-panel">
               <header><h3>{{ provider.label }}</h3></header>
@@ -2014,7 +2044,7 @@
               <div class="quick-actions">
                 <a
                   class="btn small"
-                  href="/legacy-admin?tab=providers&amp;deidentification_provider_id={{ provider.id }}"
+                  href="/admin?tab=deid-providers&amp;deidentification_provider_id={{ provider.id }}"
                   >Edit</a
                 >
                 <form
@@ -2037,7 +2067,38 @@
               </div>
               {% endif %}
             </article>
-            {% endfor %} {% elif active_admin_tab == 'usage' %}
+            {% endfor %}
+            <article class="summary-panel">
+              <header><h3>{% if deidentification_form.provider_id %}Edit global provider{% else %}Add global provider{% endif %}</h3></header>
+              <p>Bearer tokens are write-only and stored through Vault when saved.</p>
+              <form method="post" action="/admin/deidentification-providers">
+                <input type="hidden" name="provider_id" value="{{ deidentification_form.provider_id }}" />
+                <input type="hidden" name="return_view" value="workspace" />
+                <input type="hidden" name="return_tab" value="deid-providers" />
+                <input type="hidden" name="adapter_kind" value="{{ deidentification_form.adapter_kind }}" />
+                <input type="hidden" name="request_language_field" value="{{ deidentification_form.request_language_field }}" />
+                <input type="hidden" name="extra_headers_json" value="{{ deidentification_form.extra_headers_json }}" />
+                <input type="hidden" name="extra_body_json" value="{{ deidentification_form.extra_body_json }}" />
+                <input type="hidden" name="response_score_field" value="{{ deidentification_form.response_score_field }}" />
+                <input type="hidden" name="response_model_version_path" value="{{ deidentification_form.response_model_version_path }}" />
+                <input type="hidden" name="entity_type_map_json" value="{{ deidentification_form.entity_type_map_json }}" />
+                <label>Label <input name="label" required maxlength="255" value="{{ deidentification_form.label }}" /></label>
+                <label>Base URL <input type="url" name="base_url" required value="{{ deidentification_form.base_url }}" /></label>
+                <label>Detect path <input name="detect_path" required value="{{ deidentification_form.detect_path }}" /></label>
+                <label>Auth mode <select name="auth_mode"><option value="none" {% if deidentification_form.auth_mode == 'none' %}selected{% endif %}>none</option><option value="bearer" {% if deidentification_form.auth_mode == 'bearer' %}selected{% endif %}>bearer</option></select></label>
+                <label>Bearer token <input type="password" name="bearer_token" autocomplete="new-password" /></label>
+                <label>Request text field <input name="request_text_field" required value="{{ deidentification_form.request_text_field }}" /></label>
+                <label>Response entities path <input name="response_entities_path" required value="{{ deidentification_form.response_entities_path }}" /></label>
+                <label>Response start field <input name="response_start_field" required value="{{ deidentification_form.response_start_field }}" /></label>
+                <label>Response end field <input name="response_end_field" required value="{{ deidentification_form.response_end_field }}" /></label>
+                <label>Response type field <input name="response_type_field" required value="{{ deidentification_form.response_type_field }}" /></label>
+                <label><input type="checkbox" name="clinical_detection_enabled" value="true" {% if deidentification_form.clinical_detection_enabled %}checked{% endif %} /> Clinical NLP capable</label>
+                <label><input type="checkbox" name="clinical_detection_allow_unredacted" value="true" {% if deidentification_form.clinical_detection_allow_unredacted %}checked{% endif %} /> Allow unredacted clinical NLP only on local/private endpoints</label>
+                <label><input type="checkbox" name="is_active" value="true" {% if deidentification_form.is_active %}checked{% endif %} /> Active</label>
+                <button class="btn primary" type="submit">{{ 'Save provider' if deidentification_form.provider_id else 'Create provider' }}</button>
+              </form>
+            </article>
+            {% elif active_admin_tab == 'usage' %}
             <div class="section-intro">
               <div class="usage-toolbar">
                 <div><h1>Usage</h1><p>{% if usage_scope_team %}Service health and consumption for {{ usage_scope_team.name }}. Metadata only.{% else %}Service health and consumption across all teams. Metadata only.{% endif %}</p></div>
@@ -2147,7 +2208,6 @@
                   </section>
                 </div>
               </section>
-              <a class="panel-link" href="/legacy-admin?tab=usage">Open legacy usage report →</a>
             </div>
             {% elif active_admin_tab == 'audit' %}
             <div class="section-intro">

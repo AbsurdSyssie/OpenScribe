@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app import tasks as celery_tasks
@@ -22,6 +23,7 @@ from app.models import (
 )
 from app.services.transcripts import (
     delete_expired_transcripts,
+    process_transcript_ingestion_job,
     process_transcript_audio_cleanup_jobs,
     queue_orphan_transcript_audio_after_rollback,
     queue_transcript_audio_cleanup,
@@ -129,6 +131,104 @@ def test_retention_cleanup_preserves_failed_vault_deletion_for_retry(db_session,
     cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
     assert cleanup_job is not None
     assert cleanup_job.secret_ref == secret_ref
+    assert cleanup_job.attempt_count == 1
+
+
+def test_ingestion_worker_deletes_already_expired_root_and_queues_retry_audio_cleanup(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Expired ingestion worker team")
+    owner = make_user(email="expired-ingestion-worker@example.com", password="password-1", team=team)
+    expired = _make_transcript(
+        db_session,
+        owner=owner,
+        title="Expired before worker",
+        expires_at=utcnow() - timedelta(seconds=1),
+    )
+    secret_ref = "secret:openscribe/transcript-ingestion/66666666-6666-6666-6666-666666666666/source-audio"
+    job = TranscriptIngestionJob(
+        transcript_id=expired.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.wav",
+        source_audio_vault_ref=secret_ref,
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    provider_called = False
+
+    def fail_if_provider_called(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("expired transcript must not reach STT provider")
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fail_if_provider_called)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    assert process_transcript_ingestion_job(db_session, job_id=job.id) is None
+    assert provider_called is False
+    assert db_session.get(Transcript, expired.id) is None
+    assert db_session.get(TranscriptIngestionJob, job.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+    assert cleanup_job is not None
+    assert cleanup_job.attempt_count == 1
+
+
+@pytest.mark.parametrize("failure_kind", ["app_error", "unexpected"])
+def test_ingestion_failure_deletes_root_expired_during_failure_path(
+    db_session, make_team, make_user, monkeypatch, failure_kind
+):
+    team = make_team(name=f"Expiry failure {failure_kind} team")
+    owner = make_user(email=f"expiry-failure-{failure_kind}@example.com", password="password-1", team=team)
+    transcript = _make_transcript(
+        db_session,
+        owner=owner,
+        title="Expires while ingesting",
+        expires_at=utcnow() + timedelta(days=1),
+    )
+    secret_ref = f"secret:openscribe/transcript-ingestion/{failure_kind}/source-audio"
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="recording.wav",
+        source_audio_vault_ref=secret_ref,
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+
+    def expire_then_fail(*args, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            expiring = concurrent_db.get(Transcript, transcript_id)
+            assert expiring is not None
+            expiring.retention_expires_at = utcnow() - timedelta(seconds=1)
+            concurrent_db.commit()
+        if failure_kind == "app_error":
+            raise AppError(502, "vault_read_failed", "Audio source unavailable")
+        raise RuntimeError("audio worker failure")
+
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", expire_then_fail)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+    assert cleanup_job is not None
     assert cleanup_job.attempt_count == 1
 
 

@@ -15,6 +15,7 @@ import pyotp
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
@@ -15012,6 +15013,56 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
     assert processed.error_code == "ingestion_processing_stale"
 
 
+def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_call(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Ingestion claim team")
+    owner = make_user(email="owner-ingestion-claim@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    provider_calls = 0
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"audio")
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+
+    def fake_transcribe(db, **kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        with Session(bind=db_session.get_bind(), future=True) as duplicate_worker_db:
+            duplicate = process_transcript_ingestion_job(duplicate_worker_db, job_id=job.id)
+            assert duplicate is not None
+            assert duplicate.status is TranscriptIngestionJobStatus.processing
+        return "first result"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe)
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
+
+    assert provider_calls == 1
+    assert processed is not None
+    assert processed.status is TranscriptIngestionJobStatus.applied
+
+
 def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_job(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -15071,6 +15122,122 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
     refreshed_transcript = db_session.get(Transcript, transcript.id)
     assert refreshed_transcript is not None
     assert refreshed_transcript.status is TranscriptStatus.failed
+
+
+def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Midflight expiry team")
+    owner = make_user(email="owner-midflight-expiry@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Expiring visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/midflight-expiry/source-audio",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def expire_during_provider_call(db, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            expiring = concurrent_db.get(Transcript, transcript_id)
+            assert expiring is not None
+            expiring.retention_expires_at = utcnow() - timedelta(seconds=1)
+            concurrent_db.commit()
+        return "late confidential text"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", expire_during_provider_call)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+    assert db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript_id)) is None
+    cleanup_job = db_session.scalar(
+        select(TranscriptAudioCleanupJob).where(
+            TranscriptAudioCleanupJob.secret_ref == "secret:openscribe/transcript-ingestion/midflight-expiry/source-audio"
+        )
+    )
+    assert cleanup_job is not None
+    assert cleanup_job.attempt_count == 1
+
+
+def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Midflight deletion team")
+    owner = make_user(email="owner-midflight-deletion@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Deleted visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def delete_during_provider_call(db, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            deleted_transcript = concurrent_db.get(Transcript, transcript_id)
+            assert deleted_transcript is not None
+            concurrent_db.delete(deleted_transcript)
+            concurrent_db.commit()
+        return "late confidential text"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", delete_during_provider_call)
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+    assert db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript_id)) is None
 
 
 def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(client, db_session, make_team, make_user):

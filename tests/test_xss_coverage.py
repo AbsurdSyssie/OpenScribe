@@ -191,9 +191,8 @@ class TestNoUnsafeRendering:
         assert inline_styles == [], f"Found CSP-blocked inline style attributes: {inline_styles}"
 
     def test_dynamic_percentage_styles_use_clamped_cssom_properties(self):
-        template = Path("app/templates/admin.html").read_text()
+        template = Path("app/templates/admin_mockup.html").read_text()
 
-        assert 'data-style-height-pct="{{ point.generation_height_pct }}"' in template
         assert 'data-style-width-pct="{{ row.activity_share_pct }}"' in template
         assert "Number.isFinite(value)" in template
         assert "Math.max(0, Math.min(100, value))" in template

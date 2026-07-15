@@ -19,7 +19,7 @@
   {% set current_template = default_template if is_default_editor else (team_template if is_team_editor else personal_template) %}
   {% set current_version = default_template_latest_version if is_default_editor else (team_template_latest_version if is_team_editor else personal_template_latest_version) %}
   {% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
-  {% set back_url = admin_page_route ~ '?tab=defaults' if is_default_editor else ('/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates') %}
+  {% set back_url = admin_page_route ~ '?tab=' ~ default_template_return_tab if is_default_editor else ('/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates') %}
   {% set editor_action = '/admin/default-templates' if is_default_editor else ('/home/team-templates' if is_team_editor else '/home/personal-templates') %}
   {% set scope_value = 'default' if is_default_editor else ('team' if is_team_editor else 'personal') %}
   {% set save_label = 'Save default template' if is_default_editor and current_template else 'Create default template' if is_default_editor else ('Save team template' if is_team_editor and current_template else 'Create team template' if is_team_editor else 'Save personal template' if current_template else 'Create personal template') %}
@@ -39,7 +39,7 @@
         <div class="template-list">
           {% for template in template_list %}
           {% set latest_version = template.versions|sort(attribute='version_no')|last %}
-          <a class="template-list-item{% if current_template and template.id == current_template.id %} is-current{% endif %}" href="{{ '/admin/templates/editor?scope=default&template_id=' ~ template.id ~ '&return_view=' ~ admin_return_view if is_default_editor else ('/home/templates/editor?scope=' ~ scope_value ~ '&template_id=' ~ template.id ~ (('&return_view=' ~ home_return_view) if home_return_view else '') ~ (('&queued_transcript_id=' ~ queued_transcript_id) if queued_transcript_id else '') ~ (('&transcribe_tab=' ~ transcribe_return_tab) if transcribe_return_tab else '')) }}">
+          <a class="template-list-item{% if current_template and template.id == current_template.id %} is-current{% endif %}" href="{{ '/admin/templates/editor?scope=default&template_id=' ~ template.id ~ '&return_view=' ~ admin_return_view ~ '&return_tab=' ~ default_template_return_tab if is_default_editor else ('/home/templates/editor?scope=' ~ scope_value ~ '&template_id=' ~ template.id ~ (('&return_view=' ~ home_return_view) if home_return_view else '') ~ (('&queued_transcript_id=' ~ queued_transcript_id) if queued_transcript_id else '') ~ (('&transcribe_tab=' ~ transcribe_return_tab) if transcribe_return_tab else '')) }}">
             <strong>{{ template.name }}</strong>
             <small>{{ latest_version.mode.value }}{% if template.description %} · {{ template.description }}{% endif %}</small>
           </a>
@@ -66,6 +66,9 @@
         <form method="post" action="{{ editor_action }}" class="template-form">
           <input type="hidden" name="template_id" value="{{ current_template.id if current_template else '' }}">
           <input type="hidden" name="return_view" value="{{ admin_return_view if is_default_editor else home_return_view }}">
+          {% if is_default_editor %}
+          <input type="hidden" name="return_tab" value="{{ default_template_return_tab }}">
+          {% endif %}
           {% if not is_default_editor %}
           <input type="hidden" name="return_tab" value="templates">
           <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">

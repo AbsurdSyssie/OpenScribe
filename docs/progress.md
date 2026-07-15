@@ -1,12 +1,47 @@
 # Progress
 
-## 2026-07-14 Admin release gate enforcement
+## 2026-07-15 Global default-template editor return flow
 
 ### Scope
 
-- Restored functional `admin.html` as canonical user-facing `/admin` template.
-- Kept `/legacy-admin`, `/admin2`, and validated POST return-workspace redirects unchanged.
-- Kept `admin_mockup.html` redesign gated pending full preservation-map release evidence.
+- Canonical Global defaults template editor now preserves validated `return_tab=global-defaults` through create, edit, duplicate, save, delete, cancel, and editor-list navigation.
+- Explicit legacy `return_view=legacy&return_tab=defaults` remains compatibility-only.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing admin return-view and redirect helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin checks and CSRF dependencies remain existing route controls.
+- Lifecycle/deletion checkpoint: delete remains existing immediate confirmed default-template deletion; redirect target only changed.
+- Docs/tests checkpoint: focused admin flow regression added and documented.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, provider rules, and structured-note contract unchanged. No transcript-derived content enters this flow.
+
+## 2026-07-14 Admin promotion/deprecation fixes
+
+### Scope
+
+- Defaulted absent or invalid admin `return_view` values to canonical `/admin`; explicit `legacy` remains the only path to `/legacy-admin` and `admin.html`.
+- Replaced canonical Global defaults and De-ID legacy links with canonical functional controls/forms.
+- Migrated direct admin UI regressions to canonical workspace coverage while retaining one compatibility-route assertion.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing mutation routes, CSRF dependencies, and return-route helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin-only metadata surface remains authoritative.
+- Lifecycle/deletion checkpoint: default/de-identification deletes retain existing explicit POST confirmation and backend semantics.
+- Docs/tests checkpoint: canonical routing and compatibility boundary documented; focused canonical-admin tests passed.
+- Open issue / escalate to Sol: none.
+
+## 2026-07-14 Admin release gate enforcement (superseded)
+
+### Scope
+
+- Superseded by Admin promotion/deprecation fixes above.
 
 ### Checklist
 
@@ -10384,3 +10419,9 @@ Added narrow STT/LLM detail updates and revision-based connection-change actions
 - 2026-07-14 STT auth-mode guard: centralized service validation now rejects `auth_mode=none` for `openai_cloud` and `elevenlabs_speech_to_text` before any config or Vault-reference mutation, including `credential_action=keep` updates. Custom no-auth adapters remain allowed. Focused API and service regressions cover both adapters and unchanged saved references.
 - 2026-07-12 provider-policy redesign: replaced summary cards with functional six-row policy table using existing visual language and always-visible accessible selects. Added provider-driven STT/LLM/checker model synchronization, compact writing-assistant visible-model checkboxes, state-dependent clear actions, explicit Presidio fallback, and empty-provider links.
 - Checklist: code complete; focused UI/POST coverage updated; admin brief, testing guide, and function map updated. No schema/API/service changes. Architecture checkpoints: metadata-only UI preserves transcript privacy; existing system-admin/team ownership guards remain authoritative; clear routes remove selections only and do not alter provider/deletion lifecycle; provider fallback/resolution and structured-note contracts remain unchanged.
+## 2026-07-14 - Admin workspace promotion and retention race fix
+
+- Promoted `admin_mockup.html` to canonical `/admin`; retained deprecated `admin.html` only at `/legacy-admin` without regression coverage.
+- Added a post-provider transcript row lock and expiry check so STT results cannot recreate or persist transcript-derived content after retention expiry.
+- Mid-flight expiry now hard-deletes the transcript root and uses the durable retry-audio cleanup path.
+- Added targeted ingestion-race and canonical admin workspace coverage.

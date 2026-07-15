@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -1590,12 +1590,123 @@ def retry_audio_file_ingestion(
     return transcript, retry_job, source_audio_blob, latest_job
 
 
-def _mark_job_processing(db: Session, job: TranscriptIngestionJob) -> None:
-    job.status = TranscriptIngestionJobStatus.processing
-    job.started_at = utcnow()
-    db.add(job)
-    db.commit()
+_TERMINAL_INGESTION_JOB_STATUSES = frozenset(
+    {
+        TranscriptIngestionJobStatus.completed,
+        TranscriptIngestionJobStatus.applied,
+        TranscriptIngestionJobStatus.failed,
+    }
+)
+
+
+def _release_ingestion_transaction(db: Session) -> None:
+    """Release worker-row locks before an idempotent ingestion return."""
+    if db.in_transaction():
+        db.rollback()
+
+
+def _return_released_ingestion_job(db: Session, job: TranscriptIngestionJob) -> TranscriptIngestionJob:
+    """Return stable job metadata without retaining a transaction or row lock."""
     db.refresh(job)
+    db.expunge(job)
+    _release_ingestion_transaction(db)
+    return job
+
+
+def _lock_ingestion_job_and_transcript(
+    db: Session,
+    *,
+    job_id: UUID,
+) -> tuple[TranscriptIngestionJob, Transcript] | None:
+    """Lock root before child job, matching transcript-root deletion lock order."""
+    job = db.scalar(
+        select(TranscriptIngestionJob)
+        .where(TranscriptIngestionJob.id == job_id)
+        .execution_options(populate_existing=True)
+    )
+    if job is None:
+        _release_ingestion_transaction(db)
+        return None
+
+    transcript = db.scalar(
+        select(Transcript)
+        .where(Transcript.id == job.transcript_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if transcript is None:
+        _release_ingestion_transaction(db)
+        return None
+
+    job = db.scalar(
+        select(TranscriptIngestionJob)
+        .where(TranscriptIngestionJob.id == job_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if job is None:
+        _release_ingestion_transaction(db)
+        return None
+    return job, transcript
+
+
+def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript) -> None:
+    """Durably queue retry-audio cleanup before root cascade, then release its lock."""
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id])
+    db.delete(transcript)
+    db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
+
+
+def _claim_queued_ingestion_job(
+    db: Session,
+    *,
+    job_id: UUID,
+) -> tuple[TranscriptIngestionJob, Transcript] | TranscriptIngestionJob | None:
+    """Claim queued work once; terminal, in-flight, missing, and expired work is idempotent."""
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+    if locked is None:
+        return None
+    job, transcript = locked
+
+    if transcript_is_expired(transcript):
+        _delete_expired_ingestion_transcript(db, transcript=transcript)
+        return None
+    if job.status in _TERMINAL_INGESTION_JOB_STATUSES or job.status is TranscriptIngestionJobStatus.processing:
+        return _return_released_ingestion_job(db, job)
+
+    claimed_job_id = job.id
+    # SQLite ignores SELECT ... FOR UPDATE. End its read transaction before
+    # conditional UPDATE so competing workers observe the committed claim
+    # instead of colliding on an older read snapshot.
+    if db.get_bind().dialect.name == "sqlite":
+        db.commit()
+
+    claim = db.execute(
+        update(TranscriptIngestionJob)
+        .where(
+            TranscriptIngestionJob.id == claimed_job_id,
+            TranscriptIngestionJob.status == TranscriptIngestionJobStatus.queued,
+        )
+        .values(status=TranscriptIngestionJobStatus.processing, started_at=utcnow())
+    )
+    if claim.rowcount != 1:
+        _release_ingestion_transaction(db)
+        return None
+    db.commit()
+    locked = _lock_ingestion_job_and_transcript(db, job_id=claimed_job_id)
+    if locked is None:
+        return None
+    job, transcript = locked
+    if transcript_is_expired(transcript):
+        _delete_expired_ingestion_transcript(db, transcript=transcript)
+        return None
+    if job.status is not TranscriptIngestionJobStatus.processing:
+        return _return_released_ingestion_job(db, job)
+    db.expunge(job)
+    db.expunge(transcript)
+    _release_ingestion_transaction(db)
+    return job, transcript
 
 
 def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
@@ -1771,19 +1882,13 @@ def process_transcript_ingestion_job(
     *,
     job_id: UUID,
     legacy_audio_bytes: bytes | None = None,
-) -> TranscriptIngestionJob:
-    job = db.get(TranscriptIngestionJob, job_id)
-    if job is None:
-        raise AppError(404, "not_found", "Transcript ingestion job not found", {"resource": "transcript_ingestion_job", "job_id": str(job_id)})
-    transcript = db.get(Transcript, job.transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
-    if transcript_is_expired(transcript):
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(job.transcript_id)})
-    if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.failed}:
-        return job
-
-    _mark_job_processing(db, job)
+) -> TranscriptIngestionJob | None:
+    claimed = _claim_queued_ingestion_job(db, job_id=job_id)
+    if claimed is None:
+        return None
+    if isinstance(claimed, TranscriptIngestionJob):
+        return claimed
+    job, transcript = claimed
 
     try:
         audio_bytes = _read_queued_source_audio(db, job, legacy_audio_bytes=legacy_audio_bytes)
@@ -1814,10 +1919,16 @@ def process_transcript_ingestion_job(
             filename=normalized_audio.filename,
             content_type=normalized_audio.content_type,
         )
-        db.refresh(job)
-        db.refresh(transcript)
-        if job.status in {TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.failed}:
-            return job
+        _release_ingestion_transaction(db)
+        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+        if locked is None:
+            return None
+        job, transcript = locked
+        if transcript_is_expired(transcript):
+            _delete_expired_ingestion_transcript(db, transcript=transcript)
+            return None
+        if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+            return _return_released_ingestion_job(db, job)
         now = utcnow()
         job.result_text_encrypted = encrypt_text_for_owner(
             db,
@@ -1879,15 +1990,34 @@ def process_transcript_ingestion_job(
             db.refresh(transcript)
             _apply_completed_live_chunks(db, transcript)
     except AppError as exc:
+        _release_ingestion_transaction(db)
+        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+        if locked is None:
+            return None
+        job, transcript = locked
+        if transcript_is_expired(transcript):
+            _delete_expired_ingestion_transcript(db, transcript=transcript)
+            return None
+        if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+            return _return_released_ingestion_job(db, job)
         _mark_job_failed(db, transcript, job, code=exc.code, message=exc.message)
-        db.refresh(job)
-        return job
+        return _return_released_ingestion_job(db, job)
     except Exception as exc:  # pragma: no cover
+        _release_ingestion_transaction(db)
+        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+        if locked is None:
+            return None
+        job, transcript = locked
+        if transcript_is_expired(transcript):
+            _delete_expired_ingestion_transcript(db, transcript=transcript)
+            return None
+        if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+            return _return_released_ingestion_job(db, job)
         _mark_job_failed(db, transcript, job, code="ingestion_failed", message="Transcript ingestion job failed")
+        _release_ingestion_transaction(db)
         raise AppError(502, "ingestion_failed", "Transcript ingestion job failed") from exc
 
-    db.refresh(job)
-    return job
+    return _return_released_ingestion_job(db, job)
 
 
 def attach_task_id_to_ingestion_job(db: Session, *, job_id: UUID, task_id: str | None) -> TranscriptIngestionJob:

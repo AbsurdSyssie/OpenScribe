@@ -845,6 +845,7 @@ def render_admin(
     template_name: str | None = None,
     extra_admin_tabs: set[str] | None = None,
     workspace_team_tab: str | None = None,
+    default_template_return_tab: str = "global-defaults",
 ):
     workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
@@ -893,7 +894,17 @@ def render_admin(
     selected_default_quick_action = next((quick_action for quick_action in default_quick_actions if str(quick_action.id) == selected_default_quick_action_id), None)
     default_template_latest_version = _latest_template_version(selected_default_template) if selected_default_template is not None else None
     default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
-    available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults", "audit"}
+    available_admin_tabs = {
+        "providers",
+        "directory",
+        "requests",
+        "system-admins",
+        "global-defaults",
+        "deid-providers",
+        "usage",
+        "defaults",
+        "audit",
+    }
     if extra_admin_tabs:
         available_admin_tabs = available_admin_tabs | extra_admin_tabs
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
@@ -1063,6 +1074,7 @@ def render_admin(
         "admin_page_route": admin_page_route,
         "admin_return_view": admin_return_view,
         "workspace_team_tab": workspace_team_tab,
+        "default_template_return_tab": default_template_return_tab,
         "message": message,
         "message_kind": message_kind,
         "recovery_temporary_password": recovery_temporary_password,
@@ -1071,24 +1083,35 @@ def render_admin(
         **usage_context,
         **audit_context,
     }
-    resolved_template_name = template_name or "admin.html"
+    resolved_template_name = template_name or ("admin.html" if admin_return_view == "legacy" else "admin_mockup.html")
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
 
 
 def admin_page_route_from_return_view(return_view: str | None) -> str:
-    if return_view == "workspace":
-        return "/admin"
+    if return_view == "legacy":
+        return "/legacy-admin"
     if return_view == "admin2":
         return "/admin2"
-    return "/admin-restyled" if return_view == "restyled" else "/legacy-admin"
+    if return_view == "restyled":
+        return "/admin-restyled"
+    return "/admin"
 
 
 def admin_return_view_value(return_view: str | None) -> str:
-    if return_view == "workspace":
-        return "workspace"
+    if return_view == "legacy":
+        return "legacy"
     if return_view == "admin2":
         return "admin2"
-    return "restyled" if return_view == "restyled" else "legacy"
+    if return_view == "restyled":
+        return "restyled"
+    return "workspace"
+
+
+def default_template_return_tab(return_view: str | None, return_tab: str | None) -> str:
+    """Resolve supported return tabs for default-template editing."""
+    if admin_return_view_value(return_view) == "legacy":
+        return "defaults"
+    return "global-defaults"
 
 
 def admin_redirect_url(
@@ -1100,7 +1123,8 @@ def admin_redirect_url(
     llm_config_id: str | None = None,
     deidentification_provider_id: str | None = None,
 ) -> str:
-    base = admin_page_route_from_return_view(return_view)
+    resolved_return_view = admin_return_view_value(return_view)
+    base = admin_page_route_from_return_view(resolved_return_view)
     params: dict[str, str] = {}
     if team_id:
         params["team_id"] = team_id
@@ -1111,7 +1135,7 @@ def admin_redirect_url(
     if deidentification_provider_id:
         params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
-        if return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}:
+        if resolved_return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}:
             params["team_tab"] = return_tab
         else:
             params["tab"] = return_tab

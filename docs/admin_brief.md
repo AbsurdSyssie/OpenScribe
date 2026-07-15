@@ -2,11 +2,13 @@
 
 ## Admin release routing
 
-- `/admin` renders functional `admin.html`; this is user-facing canonical admin route.
-- `/legacy-admin` remains functional compatibility route using `admin.html`.
+- `/admin` renders `admin_mockup.html`; this is the user-facing canonical admin route.
+- `/legacy-admin` retains deprecated `admin.html` as an untested compatibility route.
 - `/admin2` remains unchanged as a secondary developer reference.
-- `admin_mockup.html` redesign remains gated and must not replace `/admin` until preservation/release gate in `docs/admin_workspace_function_map.md` passes.
+- `admin_mockup.html` has passed its release decision and replaced the deprecated admin page.
 - Existing mutation endpoints remain under `/admin/...`; validated `return_view` values preserve the initiating workspace.
+- Absent or invalid `return_view` values resolve to canonical `/admin`; only explicit `legacy` resolves to `/legacy-admin` and deprecated `admin.html`.
+- Default-template create, edit, duplicate, save, delete, cancel, and sidebar navigation initiated from `/admin?tab=global-defaults` carry validated `return_tab=global-defaults` and return to that canonical page. Legacy `defaults` return behavior remains only for an explicit `return_view=legacy` request.
 - Current wired redesign slices include team member creation/lifecycle/recovery actions, team De-ID provider attach/detach, team hard-delete, and future-only team retention-default updates.
 
 ## Purpose

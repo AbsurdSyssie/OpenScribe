@@ -4,8 +4,8 @@
 
 | Question | Decision |
 |---|---|
-| Migration routes? | Functional `admin.html` owns canonical `/admin`; `/legacy-admin` remains compatible; `/admin2` stays unchanged. |
-| May user-facing `/admin` contain mock panels? | No. `admin_mockup.html` remains gated until complete preservation/release verification. |
+| Migration routes? | `admin_mockup.html` owns canonical `/admin`; deprecated `admin.html` remains at `/legacy-admin` without regression coverage; `/admin2` stays unchanged. |
+| May user-facing `/admin` contain mock panels? | No. Promotion makes the workspace functional, not a visual mock. |
 | Primary organisation? | Mockup's team-first workspace; plug controls into extant functions before workflow redesign. |
 | Team-list scaling? | Render full environment list; no search/pagination now. |
 | Navigation state? | Validated `team_id` and `team_tab` URL state; links work without JavaScript. |
@@ -31,7 +31,7 @@
 | Sidebar? | Admin home, Teams, Manage teams, Account requests, System admins, Global defaults, De-ID providers, Usage, Audit, Log out. |
 | Manage teams? | Metadata directory, create, open; deletion stays in team Danger zone; team status read-only. |
 | Responsive target? | Laptop/tablet fully usable; mobile operable with collapsed/stacked/scrollable layout. |
-| Development/release? | Long-lived redesign branch, small slice commits, sync master; full parity/security gate before merge to user-facing master. |
+| Development/release? | Workspace promoted on `UI_Updates`; preserve focused security and route coverage before merge. |
 | Browser testing? | Semantic E2E for critical workflows; no pixel-perfect snapshots. |
 
 ## Purpose
@@ -42,13 +42,13 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 
 ## Migration routing decision
 
-- `/admin` hosts functional `admin.html` and is the user-facing canonical route.
-- `/legacy-admin` remains a compatible functional `admin.html` route during migration.
+- `/admin` hosts `admin_mockup.html` and is the user-facing canonical route.
+- `/legacy-admin` retains deprecated `admin.html` temporarily and has no regression-test contract.
 - Existing POST action routes remain under `/admin/...`; `legacy-admin` names the browser page, not a duplicate backend API.
 - Redirects after mutations must return to the initiating workspace during migration. New and legacy pages therefore need an explicit, validated return-workspace mechanism rather than blindly returning every action to `/admin`.
-- `/legacy-admin` is temporary and may be removed only after every applicable preservation row in this document passes verification.
+- `/legacy-admin` is temporary and may be removed separately from canonical workspace development.
 - Access control is identical for both browser pages: system-admin only, metadata only.
-- `admin_mockup.html` redesign work remains gated. It must not replace functional `/admin` until the whole redesign passes its release gate.
+- `admin_mockup.html` is promoted; applicable preservation rows now describe ongoing canonical workspace coverage.
 - Incomplete controls must be recognisable as mock/incomplete and must not invoke mutation routes accidentally. Functional status remains tracked by this checklist, not inferred from visual completeness.
 - Mockup information architecture is the accepted starting structure: team selection in the sidebar; team-level tabs in the workspace; global requests, usage, and audit navigation outside those tabs.
 - First implementation pass wires mockup buttons and controls to extant routes/services one-by-one. Backend behavior is reused before any workflow redesign is considered.
@@ -109,8 +109,8 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 
 | Preserve | Browser entry / backend | Redesign check |
 |---|---|---|
-| Load canonical functional workspace | `GET /admin` -> `admin.html` using existing presentation context | [x] |
-| Load compatible functional workspace | `GET /legacy-admin` -> `admin.html` and presentation context | [x] |
+| Load canonical functional workspace | `GET /admin` -> `admin_mockup.html` using existing presentation context | [x] |
+| Load deprecated compatibility workspace | `GET /legacy-admin` -> `admin.html` and presentation context | [x] |
 | Preserve initiating workspace after POST redirect | validated new/legacy return context in `web_admin.py` | [ ] |
 | Existing alternate workspace | `GET /admin2`; retained unchanged as secondary developer reference, not official fallback or source of truth | [ ] |
 | Sign out | `POST /logout` | [ ] |

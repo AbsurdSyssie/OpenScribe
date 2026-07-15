@@ -18,6 +18,7 @@ from ..services.llm import (
     update_llm_config_details as update_llm_config_details_service,
 )
 from ..services.stt import update_stt_config_details as update_stt_config_details_service
+from ..web.presentation import default_template_return_tab as resolve_default_template_return_tab
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -52,7 +53,17 @@ def admin_page(
         resolved_team_tab = "provider-policy"
     else:
         resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
-    functional_tabs = {"providers", "directory", "requests", "usage", "defaults", "audit"}
+    functional_tabs = {
+        "providers",
+        "directory",
+        "requests",
+        "system-admins",
+        "global-defaults",
+        "deid-providers",
+        "usage",
+        "defaults",
+        "audit",
+    }
     resolved_global_tab = tab if tab in functional_tabs else "providers"
     return render_admin(
         request,
@@ -67,9 +78,7 @@ def admin_page(
         active_admin_tab=resolved_global_tab,
         admin_page_route="/admin",
         admin_return_view="workspace",
-        # /admin is user-facing. Keep incomplete redesign mockup gated until
-        # its preservation-map release criteria are complete.
-        template_name="admin.html",
+        template_name="admin_mockup.html",
         workspace_team_tab=resolved_team_tab,
     )
 
@@ -306,6 +315,7 @@ def admin_template_editor_page(
     message: str | None = None,
     message_kind: str = "success",
     return_view: str = "",
+    return_tab: str = "",
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -313,8 +323,9 @@ def admin_template_editor_page(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return_tab = resolve_default_template_return_tab(return_view, return_tab)
     if scope != "default":
-        return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab), status_code=status.HTTP_303_SEE_OTHER)
     safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
     return render_admin(
         request,
@@ -323,9 +334,10 @@ def admin_template_editor_page(
         selected_default_template_id=template_id,
         message=message,
         message_kind=safe_message_kind,
-        active_admin_tab="defaults",
+        active_admin_tab=return_tab,
         admin_page_route=_admin_page_route_from_return_view(return_view),
         admin_return_view=_admin_return_view_value(return_view),
+        default_template_return_tab=return_tab,
         template_name="template_editor.html",
     )
 
@@ -335,6 +347,7 @@ def admin_upsert_default_template(
     request: Request,
     template_id: str = Form(""),
     return_view: str = Form(""),
+    return_tab: str = Form(""),
     name: str = Form(...),
     description: str = Form(""),
     prompt_text: str = Form(...),
@@ -356,6 +369,7 @@ def admin_upsert_default_template(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return_tab = resolve_default_template_return_tab(return_view, return_tab)
     try:
         template_mode = TemplateMode(mode)
         template = upsert_default_template_service(
@@ -394,13 +408,17 @@ def admin_upsert_default_template(
             message=detail,
             message_kind="error",
             status_code=status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab,
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
+            default_template_return_tab=return_tab,
             template_name="template_editor.html",
         )
     return RedirectResponse(
-        url=f"/admin/templates/editor?scope=default&template_id={template.id}&return_view={_admin_return_view_value(return_view)}",
+        url=(
+            f"/admin/templates/editor?scope=default&template_id={template.id}"
+            f"&return_view={_admin_return_view_value(return_view)}&return_tab={return_tab}"
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -410,6 +428,7 @@ def admin_delete_default_template(
     request: Request,
     template_id: UUID,
     return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -418,6 +437,7 @@ def admin_delete_default_template(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return_tab = resolve_default_template_return_tab(return_view, return_tab)
     try:
         delete_default_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
@@ -429,11 +449,12 @@ def admin_delete_default_template(
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab,
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
+            default_template_return_tab=return_tab,
         )
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab="defaults"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/default-templates/{template_id}/duplicate", response_class=HTMLResponse)
@@ -441,6 +462,7 @@ def admin_duplicate_default_template(
     request: Request,
     template_id: UUID,
     return_view: str = Form(""),
+    return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -449,6 +471,7 @@ def admin_duplicate_default_template(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return_tab = resolve_default_template_return_tab(return_view, return_tab)
     try:
         duplicated = duplicate_default_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
@@ -460,12 +483,16 @@ def admin_duplicate_default_template(
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_admin_tab="defaults",
+            active_admin_tab=return_tab,
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
+            default_template_return_tab=return_tab,
         )
     return RedirectResponse(
-        url=f"/admin/templates/editor?scope=default&template_id={duplicated.id}&return_view={_admin_return_view_value(return_view)}",
+        url=(
+            f"/admin/templates/editor?scope=default&template_id={duplicated.id}"
+            f"&return_view={_admin_return_view_value(return_view)}&return_tab={return_tab}"
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

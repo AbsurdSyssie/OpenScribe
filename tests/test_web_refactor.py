@@ -222,11 +222,9 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
 def test_home_and_template_editor_reuse_shared_visual_tokens():
     home_template = Path("app/templates/home.html").read_text()
     template_editor = Path("app/templates/template_editor.html").read_text()
-    admin_template = Path("app/templates/admin.html").read_text()
     home_css = Path("app/static/css/home.css").read_text()
     home2_css = Path("app/static/css/home2.css").read_text()
     template_editor_css = Path("app/static/css/template-editor.css").read_text()
-    admin_css = Path("app/static/css/admin.css").read_text()
     components_css = Path("app/static/css/components.css").read_text()
     tokens_css = Path("app/static/css/tokens.css").read_text()
 
@@ -234,42 +232,28 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     components_link = '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">'
     assert token_link in home_template
     assert token_link in template_editor
-    assert token_link in admin_template
     assert components_link in home_template
     assert components_link in template_editor
-    assert components_link in admin_template
     assert '<link rel="stylesheet" href="/static/css/home.css?v=20260712-password-controls">' in home_template
     assert '<link rel="stylesheet" href="/static/css/home2.css?v=20260701-home-extract">' in home_template
     assert '<link rel="stylesheet" href="/static/css/template-editor.css?v=20260702-template-editor-extract">' in template_editor
-    assert '<link rel="stylesheet" href="/static/css/admin.css?v=20260712-team-scope">' in admin_template
     assert "<style" not in home_template
     assert "<style" not in template_editor
-    assert "<style" not in admin_template
     assert ":root" not in home_template
     assert ":root" not in template_editor
-    assert ":root" not in admin_css
     assert 'font-family: "DM Sans"' not in home_template
     assert 'font-family: "DM Sans"' not in template_editor
-    assert 'font-family: "DM Sans"' not in admin_template
-    assert 'font-family: "DM Sans"' not in admin_css
     assert 'font-family: "Fraunces"' not in home_template
     assert 'font-family: "Fraunces"' not in template_editor
-    assert 'font-family: "Fraunces"' not in admin_template
-    assert 'font-family: "Fraunces"' not in admin_css
     assert "font-family: var(--font-body);" in home_css
     assert "font-family: var(--font-display);" in home_css
     assert "font-family: var(--font-body);" in template_editor_css
     assert "font-family: var(--font-display);" in template_editor_css
-    assert "font-family: var(--font-body);" in admin_css
-    assert "font-family: var(--font-display);" in admin_css
     assert ".action-bar" in template_editor_css
     assert ".template-list-item" in template_editor_css
     assert "button, .button-link" not in template_editor_css
     assert "class=\"btn-secondary\"" in template_editor
     assert "class=\"btn-primary\"" in template_editor
-    assert ".admin-shell" in admin_css
-    assert "border-radius: var(--radius-lg);" in admin_css
-    assert ".toast-container" not in admin_css
     assert "--accent-warm" in tokens_css
     assert "--shadow-inset" in tokens_css
     assert "--radius-xl" in tokens_css

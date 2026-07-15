@@ -590,7 +590,8 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     preset = get_llm_provider_preset(provider_preset)
     adapter_kind = preset.adapter_kind
     bearer_token = payload.bearer_token
-    if not bearer_token and preset.requires_bearer_token and target is not None and target.vault_secret_ref:
+    inherits_bearer_token = not bearer_token and preset.requires_bearer_token and target is not None and bool(target.vault_secret_ref)
+    if inherits_bearer_token:
         bearer_token = read_team_llm_bearer_token(
             team_id=team.id,
             config_id=target.id,
@@ -627,7 +628,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         available_models_json=list(inspection.available_models),
         inspection_metadata_json=_inspection_metadata(inspection),
         setup_status=LlmConfigSetupStatus.pending_model_selection,
-        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if preset.requires_bearer_token and target is not None else ""),
+        vault_secret_ref="pending" if bearer_token else "",
         is_active=False,
         created_by_user_id=actor.id,
         updated_by_user_id=actor.id,
@@ -636,9 +637,21 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     written_secret_ref = ""
     try:
         db.flush()
-        if payload.bearer_token:
-            config.vault_secret_ref = write_team_llm_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
-            written_secret_ref = config.vault_secret_ref
+        if bearer_token:
+            if inherits_bearer_token:
+                written_secret_ref = write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token,
+                    secret_id=uuid4(),
+                )
+            else:
+                written_secret_ref = write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token,
+                )
+            config.vault_secret_ref = written_secret_ref
         db.commit()
     except IntegrityError as exc:
         db.rollback()

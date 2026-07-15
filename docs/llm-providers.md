@@ -66,7 +66,7 @@ Bearer tokens remain Vault-backed. API responses expose `has_secret` only and ne
 
 Required-token presets must have an existing or replacement Vault-backed token. Ollama can be saved without a token for local deployments.
 
-Blank revision credentials are inherited only by required-token presets. Revising a credentialed provider to Ollama with no submitted token creates a no-auth draft and retires the old Vault reference only after promotion commits. Supplying an optional Ollama token keeps bearer authentication. Runtime and saved inspection read a Vault reference only when the config's `auth_mode` is `bearer`.
+Blank revision credentials are inherited only by required-token presets. The draft reads the target token for inspection, then immediately writes it to a unique versioned Vault path owned by the draft config; it never persists the target reference. This lets root credential replacement and retired-reference cleanup proceed without breaking a pending revision. Revising a credentialed provider to Ollama with no submitted token creates a no-auth draft and retires the old Vault reference only after promotion commits. Supplying an optional Ollama token keeps bearer authentication. Runtime and saved inspection read a Vault reference only when the config's `auth_mode` is `bearer`.
 
 When a ready provider's model catalog changes, OpenScribe reconciles dependent selections in the same database transaction. Existing leader-approved models are retained only when still advertised; a disjoint catalog narrows access to the new provider default. Removed team-default models move to that default, and a removed hallucination-check override clears so the checker uses the same provider config's default rather than another provider.
 

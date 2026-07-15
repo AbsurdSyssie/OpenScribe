@@ -11,6 +11,7 @@ Repeatable XSS checks and the current probe plan are documented in [security-xss
 - deletion remains immediate where the architecture says deletion is final
 - transcript retention snapshots are server-owned from team policy; users cannot extend retention through transcript create/start/update payloads
 - provider secrets must not be stored raw in the database
+- required-auth provider revisions that reuse a saved token must copy it into a draft-owned versioned Vault reference before the draft database commit; rollback compensation durably queues any newly written draft reference, and retired-reference cleanup must retain its live-reference guard
 - session identifiers, recovery codes, and password material must not be stored in plaintext form where hashing is sufficient
 
 ## Authentication and onboarding model

@@ -256,7 +256,10 @@ The backend:
 
 The worker path then:
 
-- normalizes the uploaded audio to a canonical backend format before provider submission
+- reads and normalizes the queued audio to a canonical backend format before provider submission
+- validates whole-file duration from normalized audio before any processing claim
+- atomically claims `queued -> processing` only after reversible local preparation; a successful claim immediately precedes the irreversible external STT dispatch boundary
+- if transcript deletion or expiry commits before that claim, the provider is not called; if it commits after claim, root cascade and durable Vault-source cleanup remain authoritative and late provider output is discarded
 - resolves the active team transcription selection and Vault-backed credential reference
 - fetches the secret from Vault
 - forwards the chunk to the external STT endpoint
@@ -599,6 +602,8 @@ Implemented now:
 
 - live chunk uploads normalize audio through `ffmpeg` before STT submission
 - whole-file uploads normalize audio through `ffmpeg` before STT submission
+- worker ordering is `read -> normalize -> whole-file duration validation -> atomic queued-to-processing claim -> STT dispatch`; preparation is reversible, while a successful claim is the documented irreversible dispatch boundary
+- deletion or retention expiry that wins before the claim prevents the STT call; deletion after claim still immediately cascades local transcript/job rows and queues durable Vault-source cleanup, and the worker drops any late provider result
 - whole-file uploads are bounded by:
   - raw upload size cap: `200 MB`
   - normalized duration cap: `4 hours`

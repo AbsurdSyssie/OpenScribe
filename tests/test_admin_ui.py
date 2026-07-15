@@ -1684,21 +1684,36 @@ def test_home_page_uses_flat_sidebar_workspace_layout(client, make_team, make_us
     assert 'class="home-sidebar"' not in page.text
 
 
-def test_admin_restyled_preview_route_renders_for_system_admin(client, make_team, make_user):
+def test_admin_restyled_compatibility_route_redirects_system_admin_to_canonical_workspace(client, make_team, make_user):
     team = make_team(name="Clinic Admin Preview")
     admin = make_user(email="admin-preview@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin-preview@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin-restyled?team_id={team.id}")
+    page = client.get(
+        f"/admin-restyled?team_id={team.id}&team_tab=llm&stt_config_id=stt-id&llm_config_id=llm-id"
+        "&deidentification_provider_id=deid-id&default_template_id=template-id&default_quick_action_id=action-id"
+        "&tab=providers&range=30d&audit_since=24h&audit_action=user_locked",
+        follow_redirects=False,
+    )
 
-    assert page.status_code == 200
-    assert "Configure STT, LLM, and de-identification." in page.text
-    assert "STT endpoints" in page.text
-    assert "Provisioned endpoints" in page.text
-    assert 'data-provider-tab-nav' in page.text
-    assert 'data-provider-tab-target="llm"' in page.text
-    assert 'form method="get" action="/admin-restyled"' in page.text
-    assert 'name="return_view" value="restyled"' in page.text
+    assert page.status_code == 307
+    assert page.headers["location"] == (
+        f"/admin?team_id={team.id}&stt_config_id=stt-id&llm_config_id=llm-id"
+        "&deidentification_provider_id=deid-id&default_template_id=template-id&default_quick_action_id=action-id"
+        "&tab=providers&team_tab=llm&range=30d&audit_since=24h&audit_action=user_locked"
+    )
+
+
+def test_admin_restyled_compatibility_route_keeps_system_admin_gate(client, make_team, make_user):
+    team = make_team(name="Clinic Admin Compatibility Auth")
+    make_user(email="admin-restyled-auth@example.com", password="password-1", is_system_admin=True)
+    make_user(email="member-restyled-auth@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "member-restyled-auth@example.com", "password": "password-2"}, follow_redirects=False)
+    page = client.get("/admin-restyled", follow_redirects=False)
+
+    assert page.status_code == 403
+    assert "location" not in page.headers
 
 
 def test_admin2_preview_route_renders_for_system_admin(client, make_team, make_user):
@@ -1905,6 +1920,7 @@ def test_invalid_or_absent_admin_return_view_defaults_to_canonical_workspace(ret
     ("return_view", "return_tab", "expected_location"),
     [
         ("workspace", "members", "/admin?team_id={team_id}&team_tab=members"),
+        ("restyled", "members", "/admin?team_id={team_id}&team_tab=members"),
         ("legacy", "directory", "/legacy-admin?team_id={team_id}&tab=directory"),
         ("admin2", "directory", "/admin2?team_id={team_id}&tab=directory"),
         ("unknown", "directory", "/admin?team_id={team_id}&tab=directory"),
@@ -2524,7 +2540,7 @@ def test_admin2_llm_new_provider_uses_draft_button(client, make_team, make_user)
     assert "Check API key and find models" in page.text
 
 
-def test_admin_restyled_stt_config_redirect_preserves_preview_route(client, db_session, make_team, make_user):
+def test_admin_restyled_stt_config_redirect_normalizes_to_canonical_workspace(client, db_session, make_team, make_user):
     team = make_team(name="Clinic Admin Restyled STT")
     make_user(email="admin-restyled-stt@example.com", password="password-1", is_system_admin=True)
 
@@ -2548,7 +2564,7 @@ def test_admin_restyled_stt_config_redirect_preserves_preview_route(client, db_s
     )
 
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin-restyled?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
@@ -2754,7 +2770,7 @@ def test_admin_audit_tab_clamps_overflowing_lookback(client, make_user):
     assert page.status_code == 200
 
 
-def test_admin_restyled_account_request_reject_preserves_preview_route(client, db_session, make_team, make_user, make_account_request):
+def test_admin_restyled_account_request_reject_redirects_to_canonical_workspace(client, db_session, make_team, make_user, make_account_request):
     make_team(name="Clinic Admin Requests")
     make_user(email="admin-restyled-requests@example.com", password="password-1", is_system_admin=True)
     account_request = make_account_request(
@@ -2775,7 +2791,7 @@ def test_admin_restyled_account_request_reject_preserves_preview_route(client, d
     )
 
     assert rejected.status_code == 303
-    assert rejected.headers["location"] == "/admin-restyled?tab=requests"
+    assert rejected.headers["location"] == "/admin?tab=requests"
     db_session.refresh(account_request)
     assert account_request.status.value == "rejected"
 

@@ -1,5 +1,32 @@
 # Progress
 
+## 2026-07-15 Final merge-review compatibility and XSS fixes
+
+### Scope
+
+- Removed workspace loading-message `|safe`; fixed `<br>` markup now supplies optional second line while message variables remain escaped.
+- Changed authenticated system-admin `GET /admin-restyled` to compatibility redirect `/admin`, preserving supported entity, tab, usage-range, and audit-filter query state; stale admin `return_view=restyled` now resolves to canonical workspace redirects.
+- Corrected local dev bind docs and admin workspace implementation/coverage claims.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing admin return-view/redirect helpers and template escaping.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: compatibility redirect runs only after existing full-session and system-admin gates.
+- Lifecycle/deletion checkpoint: unchanged; redirect/template changes do not alter mutation, deletion, retention, or cascade paths.
+- Docs/tests checkpoint: README, function map, focused regressions, and this progress entry updated.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy/ownership: transcript-derived content remains owner-only; admin remains system-admin metadata surface.
+- Deletion/provider/structured-note contracts: unchanged; no service, provider-resolution, persistence, or structured-output behavior changed.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_xss_coverage.py tests/test_web_refactor.py tests/test_admin_ui.py -k "safe_filter or generation_loading or admin_restyled or admin_post_redirects or canonical_admin_route or admin2_preview or legacy_admin or return_view"`: 18 passed, 249 deselected.
+- `git diff --check`: passed.
+
 ## 2026-07-15 Transcript ingestion preparation-before-dispatch boundary
 
 ### Scope

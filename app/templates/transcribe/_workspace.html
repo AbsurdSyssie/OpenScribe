@@ -10,11 +10,11 @@
 {% endif %}
 </div>
 {%- endmacro %}
-{% macro generation_loading(label, message) -%}
+{% macro generation_loading(label, message, detail=none) -%}
 <div class="note-generation-loading" role="status" aria-live="polite">
 {{ loading_orbit() }}
 <h2>Generating your {{ label }}</h2>
-<p>{{ message | safe }}</p>
+<p>{{ message }}{% if detail %}<br>{{ detail }}{% endif %}</p>
 </div>
 {%- endmacro %}
 
@@ -433,8 +433,9 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text %}
 {{ latest_generated_document.edited_output_text }}
 {% elif latest_generated_document and latest_generated_document.status.value in ["queued", "processing"] %}
-{% set note_generation_loading_message = 'Waiting for transcription to finish before writing your note.' if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else "This usually takes a few seconds.<br>We're preparing your clinical note..." %}
-{{ generation_loading('note', note_generation_loading_message) }}
+{% set note_generation_loading_message = 'Waiting for transcription to finish before writing your note.' if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else 'This usually takes a few seconds.' %}
+{% set note_generation_loading_detail = none if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else "We're preparing your clinical note..." %}
+{{ generation_loading('note', note_generation_loading_message, note_generation_loading_detail) }}
 {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
 <span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
 {% elif latest_generated_document %}
@@ -567,6 +568,7 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
 {% elif latest_followup_document and latest_followup_document.status.value in ["queued", "processing"] %}
+{% set followup_generation_loading_detail = none %}
 {% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
 {% if latest_followup_document.generator_type and latest_followup_document.generator_type.value == "quick_action" %}
 {% set followup_generation_loading_message = 'Waiting for transcription to finish before running this quick action.' %}
@@ -574,9 +576,10 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% set followup_generation_loading_message = 'Waiting for transcription to finish before writing your follow-up.' %}
 {% endif %}
 {% else %}
-{% set followup_generation_loading_message = "This usually takes a few seconds.<br>We're preparing your follow-up..." %}
+{% set followup_generation_loading_message = 'This usually takes a few seconds.' %}
+{% set followup_generation_loading_detail = "We're preparing your follow-up..." %}
 {% endif %}
-{{ generation_loading('follow-up', followup_generation_loading_message) }}
+{{ generation_loading('follow-up', followup_generation_loading_message, followup_generation_loading_detail) }}
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
 <span class="text-slate">The latest follow-up could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
 {% else %}

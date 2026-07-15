@@ -1,5 +1,7 @@
 """Admin browser routes extracted from app.main."""
 
+from urllib.parse import urlencode
+
 from .. import main as main_module
 from ..main import *  # noqa: F401,F403
 from ..main import (
@@ -32,6 +34,9 @@ def admin_page(
     default_quick_action_id: str | None = None,
     tab: str | None = None,
     team_tab: str | None = None,
+    range: str | None = None,
+    audit_since: str | None = None,
+    audit_action: str | None = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -127,6 +132,10 @@ def admin_restyled_page(
     default_template_id: str | None = None,
     default_quick_action_id: str | None = None,
     tab: str | None = None,
+    team_tab: str | None = None,
+    range: str | None = None,
+    audit_since: str | None = None,
+    audit_action: str | None = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -134,20 +143,27 @@ def admin_restyled_page(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(
-        request,
-        db,
-        current_user=context.user,
-        selected_team_id=team_id,
-        selected_stt_config_id=stt_config_id,
-        selected_llm_config_id=llm_config_id,
-        selected_deidentification_provider_id=deidentification_provider_id,
-        selected_default_template_id=default_template_id,
-        selected_default_quick_action_id=default_quick_action_id,
-        active_admin_tab=tab,
-        admin_page_route="/admin-restyled",
-        admin_return_view="restyled",
-    )
+    params = {
+        key: value
+        for key, value in {
+            "team_id": team_id,
+            "stt_config_id": stt_config_id,
+            "llm_config_id": llm_config_id,
+            "deidentification_provider_id": deidentification_provider_id,
+            "default_template_id": default_template_id,
+            "default_quick_action_id": default_quick_action_id,
+            "tab": tab,
+            "team_tab": team_tab,
+            "range": range,
+            "audit_since": audit_since,
+            "audit_action": audit_action,
+        }.items()
+        if value is not None
+    }
+    location = "/admin"
+    if params:
+        location = f"{location}?{urlencode(params)}"
+    return RedirectResponse(url=location, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/admin2", response_class=HTMLResponse)

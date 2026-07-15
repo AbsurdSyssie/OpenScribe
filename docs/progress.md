@@ -1,5 +1,1348 @@
 # Progress
 
+## 2026-07-15 Final merge-review compatibility and XSS fixes
+
+### Scope
+
+- Removed workspace loading-message `|safe`; fixed `<br>` markup now supplies optional second line while message variables remain escaped.
+- Changed authenticated system-admin `GET /admin-restyled` to compatibility redirect `/admin`, preserving supported entity, tab, usage-range, and audit-filter query state; stale admin `return_view=restyled` now resolves to canonical workspace redirects.
+- Corrected local dev bind docs and admin workspace implementation/coverage claims.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing admin return-view/redirect helpers and template escaping.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: compatibility redirect runs only after existing full-session and system-admin gates.
+- Lifecycle/deletion checkpoint: unchanged; redirect/template changes do not alter mutation, deletion, retention, or cascade paths.
+- Docs/tests checkpoint: README, function map, focused regressions, and this progress entry updated.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy/ownership: transcript-derived content remains owner-only; admin remains system-admin metadata surface.
+- Deletion/provider/structured-note contracts: unchanged; no service, provider-resolution, persistence, or structured-output behavior changed.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_xss_coverage.py tests/test_web_refactor.py tests/test_admin_ui.py -k "safe_filter or generation_loading or admin_restyled or admin_post_redirects or canonical_admin_route or admin2_preview or legacy_admin or return_view"`: 18 passed, 249 deselected.
+- `git diff --check`: passed.
+
+## 2026-07-15 Transcript ingestion preparation-before-dispatch boundary
+
+### Scope
+
+- Moved queued source-audio read, normalization, and whole-file duration validation before atomic `queued -> processing` claim.
+- Defined successful claim immediately before `transcribe_with_stt_snapshot` as irreversible external-dispatch boundary.
+- Added deterministic deletion-after-preparation/before-claim regression: no provider call; root/job cascade remains immediate.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing conditional claim, root lock order, cascade deletion, and durable audio-cleanup outbox.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; worker has no new content visibility or authorization path.
+- Lifecycle/deletion checkpoint: deletion/expiry before claim blocks provider dispatch; after claim existing root cascade, Vault cleanup queue, and late-result discard remain authoritative.
+- Docs/tests checkpoint: capture contract updated; focused worker regressions added/run.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy: normalized audio remains transient; no audio/text/ref logged.
+- Ownership: transcript root and owner scope unchanged.
+- Deletion: root deletion remains immediate; pre-claim delete prevents external STT, post-claim delete discards late result and retains durable cleanup.
+- Provider: queue-time STT snapshot unchanged; one successful conditional claim remains single dispatch gate across Postgres and SQLite.
+- Structured-note contract: unchanged.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "processing_transcript_ingestion_job_claims_queued_job_before_provider_call or processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim or processing_transcript_ingestion_job_does_not_revive_midflight_failed_job or processing_transcript_ingestion_job_deletes_root_that_expires_midflight or processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call or processing_audio_file_job_appends_transcript_draft_and_marks_ready or processing_audio_file_job_clears_vault_ref_and_queues_cleanup_when_delete_fails or processing_audio_file_job_fails_when_normalized_duration_exceeds_limit or processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missing"`: 9 passed.
+- `.venv/bin/pytest -q tests/test_retention.py -k "ingestion_worker_deletes_already_expired_root_and_queues_retry_audio_cleanup or ingestion_failure_deletes_root_expired_during_failure_path"`: 3 passed.
+- `git diff --check`: passed.
+
+## 2026-07-15 Global default-template editor return flow
+
+### Scope
+
+- Canonical Global defaults template editor now preserves validated `return_tab=global-defaults` through create, edit, duplicate, save, delete, cancel, and editor-list navigation.
+- Explicit legacy `return_view=legacy&return_tab=defaults` remains compatibility-only.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing admin return-view and redirect helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin checks and CSRF dependencies remain existing route controls.
+- Lifecycle/deletion checkpoint: delete remains existing immediate confirmed default-template deletion; redirect target only changed.
+- Docs/tests checkpoint: focused admin flow regression added and documented.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, provider rules, and structured-note contract unchanged. No transcript-derived content enters this flow.
+
+## 2026-07-14 Admin promotion/deprecation fixes
+
+### Scope
+
+- Defaulted absent or invalid admin `return_view` values to canonical `/admin`; explicit `legacy` remains the only path to `/legacy-admin` and `admin.html`.
+- Replaced canonical Global defaults and De-ID legacy links with canonical functional controls/forms.
+- Migrated direct admin UI regressions to canonical workspace coverage while retaining one compatibility-route assertion.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing mutation routes, CSRF dependencies, and return-route helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin-only metadata surface remains authoritative.
+- Lifecycle/deletion checkpoint: default/de-identification deletes retain existing explicit POST confirmation and backend semantics.
+- Docs/tests checkpoint: canonical routing and compatibility boundary documented; focused canonical-admin tests passed.
+- Open issue / escalate to Sol: none.
+
+## 2026-07-14 Admin release gate enforcement (superseded)
+
+### Scope
+
+- Superseded by Admin promotion/deprecation fixes above.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing functional admin template and return-view redirect helpers.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; system-admin-only, metadata-only surface remains enforced.
+- Lifecycle/deletion checkpoint: unchanged; existing CSRF-protected mutation routes and redirect targets retained.
+- Docs/tests checkpoint: canonical template and all supported return-workspace redirects covered; redesign-only UI regressions remain explicitly skipped, not release evidence.
+- Open issue / escalate to Sol: redesign remains incomplete; do not route it to `/admin` until every release-gate row in `docs/admin_workspace_function_map.md` has evidence.
+
+### Files changed
+
+- `app/routes/web_admin.py`: canonical template selection.
+- `tests/test_admin_ui.py`: functional `/admin` markers and workspace/legacy/admin2 POST redirect regressions.
+- `docs/admin_brief.md`, `docs/admin_workspace_function_map.md`, `docs/progress.md`: release-gate routing record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py`: 201 passed, 13 skipped. Skips are redesign-only UI regressions held behind release gate.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, deletion, provider resolution, and structured-note contracts unchanged.
+
+## 2026-07-14 Transcript audio cleanup live-reference guard
+
+### Scope
+
+- Added a live `TranscriptIngestionJob.source_audio_vault_ref` check before retry-audio Vault deletion.
+- Live refs now remove stale cleanup rows instead of deleting active owner retry audio.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused provider-secret cleanup outbox guard pattern.
+- Schema checkpoint: no schema change; existing FK-free audio cleanup outbox reused.
+- Auth/ownership checkpoint: unchanged; worker checks opaque Vault refs only and exposes no audio content.
+- Lifecycle/deletion checkpoint: stale cleanup intent is discarded when a job still owns the ref; unreferenced refs retain existing retry/delete behavior.
+- Docs/tests checkpoint: regression test covers queued cleanup plus a live failed ingestion retry source.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/transcripts.py`: live-ref guard in transcript-audio cleanup worker.
+- `tests/test_retention.py`: no-data-loss cleanup-worker regression.
+- `docs/api.md`, `docs/testing.md`, `docs/progress.md`: lifecycle and coverage contract.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript audio/ref value logged.
+- Ownership rules: active owner retry source remains available.
+- Deletion semantics: only stale outbox row is removed; unreferenced refs still use durable retry cleanup.
+- Provider rules and structured-note contract: unchanged.
+
+## 2026-07-14 Provider cleanup lifecycle test alignment
+
+### Scope
+
+- Replaced obsolete immediate Vault-delete assertions with DB-first durable-outbox assertions for STT, LLM, and de-identification credentials.
+- Added API-path checks for exact cleanup ref/kind persistence, rollback compensation, retry, and worker deletion.
+
+### Checklist
+
+- Schema checkpoint: no schema change; existing FK-free cleanup outbox reused.
+- Auth/ownership checkpoint: unchanged.
+- Lifecycle/deletion checkpoint: DB change and cleanup intent commit before worker deletion; failed writes retain durable cleanup responsibility.
+- Docs/tests checkpoint: focused provider API and cleanup-worker tests run.
+
+### Files changed
+
+- `tests/test_api.py`: durable provider-cleanup lifecycle expectations and worker coverage.
+- `docs/progress.md`: test-alignment record.
+
+### Tests
+
+- Focused provider API selection: 14 passed.
+- `tests/test_provider_secret_cleanup.py`: 14 passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: synthetic Vault refs only.
+- Ownership rules: unchanged.
+- Deletion semantics: durable DB outbox precedes external deletion; worker retries failures.
+- Provider rules: exact refs and cleanup kinds remain verified.
+- Structured-note contract: unchanged.
+
+## 2026-07-14 Transcript audio cleanup reliability follow-up
+
+### Scope
+
+- Successful ingestion now clears source-audio refs from ingestion jobs while committing durable audio cleanup intent in same transaction.
+- New Vault audio writes whose ingestion commit fails now roll back before durable compensation enqueue; validated direct deletion is fallback, and dual failure is explicit.
+
+### Checklist
+
+- Schema checkpoint: existing FK-free `transcript_audio_cleanup_jobs` reused; no migration.
+- Auth/ownership checkpoint: unchanged; cleanup rows remain content-free and have no ownership foreign keys.
+- Lifecycle/deletion checkpoint: source-audio cleanup survives immediate Vault failure without restoring a job ref; transcript-root deletion remains DB-first.
+- Docs/tests checkpoint: API/testing contract and focused cleanup/compensation coverage updated.
+- Open issues: none.
+
+## 2026-07-14 Admin no-team modal guard and deletion regression
+
+### Scope
+
+- Guarded member-modal listeners in no-team `/admin` view, where member controls are intentionally absent.
+- Updated team hard-delete UI regression for durable DB-first provider-secret cleanup jobs.
+
+### Checklist
+
+- Target/schema/modules: admin mockup JavaScript and admin UI tests only; no schema, endpoint, or service behavior change.
+- Auth/ownership: unchanged; admin remains metadata-only.
+- Lifecycle/deletion: team cascade remains immediate; provider secret refs stay in durable post-commit cleanup jobs.
+- Docs/tests: updated `docs/testing.md`, `docs/progress.md`, and focused tests.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/admin_mockup.html`: conditionally bind member-modal events only when controls exist.
+- `tests/test_admin_ui.py`: guard regression plus current durable-cleanup assertions for team deletion.
+- `docs/testing.md`, `docs/progress.md`: test contract and change record.
+
+### Architecture checkpoint summary
+
+- Privacy, ownership, provider selection, and EMIS structured-note contract unchanged.
+- Deletion rules preserved: team records/content delete transactionally; external provider-secret cleanup remains durable and DB-first.
+
+## 2026-07-14 Retention Celery bounded-task fix
+
+### Scope
+
+- Changed retention Celery task from unbounded drain loop to one bounded service batch per invocation.
+- Kept immediate expiry visibility gate and service-level hard-delete/root-cascade behavior unchanged.
+- Confirmed Beat uses a 10-second task expiry; concurrent workers use `FOR UPDATE SKIP LOCKED` and can only claim distinct roots.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused existing bounded deletion service and row locking.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: unchanged; task has no content-read path.
+- Lifecycle/deletion checkpoint: each claimed expired root still hard-deletes immediately with existing cascades; backlog waits only for later scheduled task invocations.
+- Docs/tests checkpoint: task backlog regression and retention operations docs updated.
+- Open issues: none.
+
+### Files changed
+
+- `app/tasks.py`: one retention task invocation now invokes deletion service once.
+- `tests/test_retention.py`: verifies a backlog larger than task batch leaves rows after task returns.
+- `docs/DatabasePlan.md`, `docs/testing.md`, `docs/progress.md`: record batch and Beat-overlap contract.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript-derived content logged or exposed.
+- Ownership rules: unchanged.
+- Deletion semantics: expiry gate remains immediate; claimed roots still cascade-delete immediately.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+
+## 2026-07-14 Provider cleanup re-review follow-up
+
+### Scope
+
+- Made provider cleanup enqueue race-safe with database-native conflict suppression and kind verification.
+- Made rollback compensation retry durable enqueue, fall back to validated direct Vault deletion, and fail explicitly if neither succeeds.
+- Blocked audio/provider cleanup-outbox downgrades while rows retain the only durable Vault references.
+- Added provider Beat coverage, ignored its local schedule artifact, and corrected stale lifecycle/operations documentation.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: enqueue conflict, compensation fallback/failure, downgrade blocking, and task schedule/registration coverage.
+- Docs added/updated: API, security, setup, testing, and progress.
+- Open issues: none.
+
+### Files changed
+
+- `app/services/provider_secret_cleanup.py`, `app/services/stt.py`: reliable enqueue and rollback compensation.
+- cleanup outbox migrations: fail-safe downgrade guards.
+- migration/provider/retention tests: reliability and scheduler regressions.
+- `.gitignore`, `start-dev.sh`, lifecycle/operations docs: Beat artifact and operational contract.
+
+### Tests
+
+- Full affected provider cleanup, retention, and migration suites: 46 passed.
+- Focused reliability/downgrade/Beat selection: 19 passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: cleanup logs still exclude Vault refs, credentials, and transcript-derived content.
+- Ownership rules: unchanged.
+- Deletion semantics: normal deletion remains DB-first; rollback compensation cannot silently discard cleanup responsibility.
+- Provider rules: exact refs remain Vault-backed and are deleted only after validation or durable queueing.
+- Structured-note contract: unchanged.
+
+## 2026-07-14 Durable provider cleanup and merge review fixes
+
+### Scope
+
+- Added durable DB-first Vault cleanup for retired STT, LLM, and de-identification credentials across replacement, draft, revision, provider, and team deletion paths.
+- Added safe migration rollback guards, SSE fallback correction, and reduced-motion support.
+
+### Checklist
+
+- Code complete: yes.
+- Tests added/updated: provider cleanup, lifecycle integration, migration rollback, SSE, and reduced-motion coverage.
+- Docs added/updated: security, provider lifecycle, STT, LLM, testing, and progress notes.
+- Open issues: production requires Celery Beat/workers; the generated local `celerybeat-schedule` file remains untracked and excluded from this change.
+
+### Files changed
+
+- `app/models.py`, new migration, `app/services/provider_secret_cleanup.py`, `app/tasks.py`, `app/celery_app.py`: FK-free provider cleanup outbox and retry worker.
+- `app/services/stt.py`, `app/services/llm.py`, `app/services/deidentification.py`, `app/services/admin.py`, `app/services/vault.py`: transactional enqueue, versioned replacement refs, exact-ref deletion, and team cleanup integration.
+- provider/admin/API/migration/web tests: lifecycle and UI regressions.
+- transcribe JavaScript/CSS: OPEN-only SSE connection detection and reduced-motion behavior.
+
+### Tests
+
+- Focused provider cleanup: 10 passed.
+- Focused API replacement/lifecycle: 3 passed.
+- Focused team deletion: 2 passed.
+- Focused migration rollback: 2 passed.
+- Focused web cleanup/SSE/reduced-motion: 7 passed in the initial targeted run.
+
+### Documentation
+
+- Documented DB/outbox/Vault ordering, exact-ref live checks, indefinite retry, migration rollback guards, and operational worker dependency.
+
+### Risks / assumptions
+
+- Cleanup rows intentionally contain Vault references and retry metadata only; no transcript-derived content or ownership foreign keys.
+- Global de-identification providers remain independent of team deletion.
+- Migration downgrade now blocks rather than silently deleting incompatible provider rows.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: no transcript/note content enters cleanup rows or logs.
+- Ownership rules: provider provisioning remains system-admin-only; team/user content access unchanged.
+- Deletion semantics: database deletion remains immediate while external secret deletion is durable and retryable.
+- Provider rules: credentials remain Vault-backed; exact refs are removed only after no live provider row references them.
+- Structured-note contract: unchanged.
+
+## 2026-07-13 Review security, lifecycle, and usage fixes
+
+- Prevented blank revisions to no-auth STT/LLM providers from inheriting or forwarding saved Vault credentials; runtime credential reads now require explicit bearer auth.
+- Reconciled team LLM allowlists/defaults and hallucination-check overrides when a promoted or reinspected provider removes models, without widening team access.
+- Added FK-free `transcript_audio_cleanup_jobs` outbox so transcript, retention, user, team, and maintenance deletion paths commit durable retry-audio Vault references before root cascades.
+- Added immediate post-commit cleanup plus bounded Celery retry with backoff; Vault references and confidential content are absent from cleanup logs.
+- Corrected stale active API fixtures to use future transcript expiry while preserving explicit retention tests and generated-document root expiry.
+- Aligned 30-day and 90-day Usage charts with exact KPI/table boundaries, including the partial first calendar day and excluding pre-boundary activity.
+- Schema checkpoint: one new metadata-only cleanup table and migration; no ownership/content foreign keys.
+- Auth/ownership checkpoint: owner, leader, and system-admin authorization unchanged.
+- Lifecycle/deletion checkpoint: database deletion remains immediate; Vault outages retain a durable cleanup reference instead of orphaning audio.
+- Docs/tests checkpoint: migration, deletion-path, retry, active-fixture, and Usage boundary coverage updated with security/API/database/testing notes.
+- Provider config IDs and selection ownership remain stable; structured-note contracts are unchanged.
+- Final repository verification: 861 tests passed; only existing deprecation warnings remain.
+
+## 2026-07-12 Contextual Provider Wizard Errors
+
+### Scope
+
+- Replaced small STT/LLM wizard error text with prominent accessible alerts and safe provider-specific guidance.
+- Preserved API error status, code, message, and explicit field name without retaining arbitrary nested details.
+- Highlighted explicitly identified invalid controls and focused either that control or the alert.
+
+### Checklist
+
+- Target behavior: provider failures remain visible, actionable, accessible, and free of raw provider or secret detail.
+- Affected schema/modules/endpoints: admin mockup template JavaScript/CSS only; no backend or schema change.
+- Affected tests: focused admin provider wizard template regression.
+- Architecture risks: server error messages remain the trusted user-safe summary; nested API details are discarded except allowlisted field targeting.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: one shared alert renderer and guidance mapper serve both LLM and STT wizards.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/admin_mockup.html`: alert markup/styles, structured error parsing, guidance, field state, and focus handling.
+- `tests/test_admin_ui.py`: safe structured parsing, alert accessibility/style, guidance, and field-error regressions.
+- `docs/testing.md`, `docs/progress.md`: test contract and implementation record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or provider_wizards_render_safe_contextual_errors or change_llm_connection"`: passed, 3 tests.
+- `git diff --check`: passed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: arbitrary nested provider responses and secret values are never rendered or retained on client errors.
+- Ownership rules: unchanged; existing system-admin provider routes and team scope remain intact.
+- Deletion semantics: unchanged; failed draft cleanup now uses same prominent safe alert.
+- Provider rules: unchanged; UI guidance does not alter provider inspection, fallback, credential, or selection behavior.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no auth or authorization change.
+- Lifecycle/deletion checkpoint: draft cleanup behavior unchanged except error presentation.
+- Docs/tests checkpoint: focused regression and docs added.
+
+## 2026-07-12 Transcript Retention Enforcement
+
+### Scope
+
+- Enforced fixed team retention expiry in transcript history, direct detail, and latest-session selection.
+- Added bounded transcript-root cleanup and hourly Celery Beat scheduling.
+- Preserved root cascades for working notes, versions, generated documents, redaction data, and ingestion jobs.
+
+### Checklist
+
+- Target behavior: expired notes become unavailable immediately and transcript roots are hard-deleted hourly.
+- Affected schema/modules/endpoints: transcript service, transcript history/detail APIs, Celery task/config; no schema change.
+- Affected tests: expiry boundary, root cascade, bounded/idempotent cleanup, API visibility, scheduler registration, existing Vault-failure deletion fixture.
+- Architecture risks: retry-audio Vault deletion remains best-effort under existing deletion semantics; durable cleanup outbox remains open architecture work.
+- Docs referenced/updated: `docs/DatabasePlan.md`, `docs/progress.md`.
+- Reuse decision: reused transcript-root relationships and retry-source cleanup instead of child-specific note deletion.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: production must run Celery Beat as well as workers; existing transcript expiry timestamps are not recalculated from later team setting changes.
+
+### Files changed
+
+- `app/services/transcripts.py`: active-expiry guards and bounded root cleanup.
+- `app/web/transcribe_workspace.py`, `app/routes/api_routes.py`: expired transcript visibility enforcement.
+- `app/tasks.py`, `app/celery_app.py`: cleanup task and hourly schedule.
+- `tests/test_retention.py`, `tests/test_api.py`: retention and deletion regressions.
+- `docs/DatabasePlan.md`, `docs/progress.md`: operational and architecture behavior.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_retention.py`: passed, 4 tests.
+- `.venv/bin/pytest -q tests/test_retention.py tests/test_api.py -k "transcript_delete_is_owner_only or transcript_delete_still_succeeds or can_create_new_session or transcript_history"`: passed, 2 tests selected.
+- Full `tests/test_api.py` regression reached 56% with 202 tests passing before exposing unrelated legacy fixtures whose expiry equals creation time; central write-path expiry enforcement was narrowed rather than rewriting unrelated fixtures.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: expired transcript-derived content is hidden immediately; no content is logged.
+- Ownership rules: existing owner-only checks remain; expiry returns not-found only after ownership validation.
+- Deletion semantics: cleanup deletes transcript roots and relies on existing cascades; no independent note lifecycle added.
+- Provider rules: unchanged; retry-audio Vault cleanup follows existing best-effort deletion behavior.
+- Structured-note contract: unchanged; working notes disappear with transcript root.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: owner access remains mandatory; history and direct detail hide expired owner content while cleanup removes its root.
+- Lifecycle/deletion checkpoint: fixed expiry now triggers bounded hard deletion; later team setting changes do not extend existing content.
+- Docs/tests checkpoint: retention docs and focused tests added.
+
+## 2026-07-02 Legacy Loader, Route, And Usage Spacing Cleanup
+
+### Scope
+
+- Removed obsolete standalone `loading_animation.html` after confirming active note/follow-up loading markup and styles live in transcribe workspace assets.
+- Removed obsolete `/transcribe-glm-2` alias and moved its coverage to `/transcribe`.
+- Replaced empty 14-day usage charts with a compact no-activity message; real activity keeps the full charts.
+
+### Checklist
+
+- Target behavior: no unused standalone loader or alias route; empty usage dashboard avoids oversized blank chart cards.
+- Affected schema/modules/endpoints: transcribe browser route, usage presentation data, admin template/CSS/tests/docs; no schema change.
+- Affected tests: loader/route static assertions, normal transcribe route coverage, empty/active usage render coverage.
+- Architecture risks: no transcript ownership, data, provider, deletion, or structured-note behavior changed.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: retain active loader in transcribe-specific CSS rather than preserving the unused standalone demo.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains inline by explicit user decision.
+
+### Files changed
+
+- `loading_animation.html`: removed unused standalone demo.
+- `app/routes/web_transcribe.py`: removes obsolete `/transcribe-glm-2` alias.
+- `app/services/admin.py`, `app/web/presentation.py`: supply `usage_has_activity` for empty-dashboard rendering.
+- `app/templates/admin.html`, `app/static/css/admin.css`: compact empty daily-activity state.
+- `tests/test_admin_ui.py`, `tests/test_web_refactor.py`: migrate route coverage and add loader/usage regression tests.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record cleanup.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "legacy_glm_transcribe_route_is_removed or generation_loading_replaces_plain_text_placeholders or user_transcribe_page_uses_workspace_template or user_transcribe_page_renders_workspace_values or user_transcribe_page_exposes_workspace_hooks_and_pane_controls or user_transcribe_page_uses_structured_template_sections or user_transcribe_page_prioritises_latest_note_and_emis_driven_generation or user_transcribe_page_shows_stt_config_label or user_transcribe_page_shows_idle_status_with_team_stt_selected or user_transcribe_page_allows_new_session_when_latest_has_transcript_text or user_transcribe_page_syncs_generation_controls_after_workspace_refresh or admin_page_usage_tab"`: passed, 13 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 13 tests.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged; `/transcribe` owner checks remain the sole supported workspace route.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session change.
+- Lifecycle/deletion checkpoint: no record lifecycle path changed.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-02 Admin CSS Extraction
+
+### Scope
+
+- Extracted `admin.html` inline style block into `app/static/css/admin.css`.
+- Linked `tokens.css`, `components.css`, and `admin.css` from `admin.html`.
+- Removed admin-local token root and direct font-family names in favour of shared font variables.
+- Moderately harmonised admin surfaces with shared radii and shared feedback primitives while keeping dense admin layout CSS local.
+
+### Checklist
+
+- Target behavior: admin page has no inline CSS, uses shared tokens/components, and preserves all admin form actions, data hooks, and role-gated content.
+- Affected schema/modules/endpoints: template/static CSS/tests/docs only; no schema, route, endpoint, provider, or deletion behavior changed.
+- Affected tests: static refactor assertions and admin toast/static CSS assertions.
+- Architecture risks: visual drift in admin management UI only; destructive/provider controls must remain clear and unchanged semantically.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: use `components.css` for tokens-adjacent primitives and feedback; keep admin shell, provider cards, usage charts, tables, and destructive form grouping in `admin.css`.
+- Code complete: yes for admin extraction/harmonisation slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains inline by prior special/excluded decision.
+
+### Files changed
+
+- `app/templates/admin.html`: links static stylesheets and removes inline style block.
+- `app/static/css/admin.css`: admin page-specific shell, provider, directory, usage, table, modal, and responsive CSS.
+- `tests/test_web_refactor.py`: adds admin static CSS/link/no-inline assertions.
+- `tests/test_admin_ui.py`: points admin toast assertion at shared components/admin CSS split.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "home_and_template_editor_reuse_shared_visual_tokens or active_templates_route_flash_messages_through_top_right_toasts or root_route_shows_public_splash_without_auth or admin_page"`: passed, 25 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_cookie_csrf_security.py -k "home_and_admin_templates_do_not_use_inline_script_handlers or web_refactor"`: passed, 13 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table and authenticated app audit notes.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes moderate admin visual harmonisation is acceptable: rounded panels/forms/cards, shared feedback, local dense layouts.
+- Assumes `admin2.html` remains out of scope unless explicitly requested.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session/route access change; admin page controls and hidden fields unchanged.
+- Lifecycle/deletion checkpoint: destructive forms and confirmations unchanged.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-02 Anti-Crawling Policy Hardening
+
+### Scope
+
+- Changed `/robots.txt` from selective route exclusions to deny-all policy.
+- Added global `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex` defense-in-depth header.
+
+### Checklist
+
+- Target behavior: no OpenScribe route intended for crawler discovery or indexing.
+- Affected modules/endpoints: shared response-header middleware and `/robots.txt`; no schema change.
+- Affected tests: security-header and public-metadata regressions.
+- Architecture risks: public splash becomes intentionally non-indexable; crawler controls remain non-security controls.
+- Reuse decision: reused existing metadata route and shared middleware; no bot-name list or dependency.
+- Code/tests/docs complete: yes.
+- Open issue: production edge cache for `/robots.txt` must be purged after deployment.
+
+### Files changed
+
+- `app/routes/web_pages.py`: deny all compliant crawlers.
+- `app/main.py`: emit global indexing-control header.
+- `tests/test_cookie_csrf_security.py`: pin exact robots body and header value.
+- `docs/security.md`, `docs/testing.md`, daily note, and this progress log: document policy and coverage.
+
+### Tests
+
+- Focused regression recorded red before implementation, then passed after implementation.
+- `.venv/bin/pytest -q tests/test_cookie_csrf_security.py`: passed, 30 tests.
+
+### Risks / assumptions
+
+- Assumes OpenScribe splash must not appear in search results.
+- Existing indexed URLs may require separate search-engine removal workflow because blocked crawlers may not fetch new `noindex` headers.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: crawler discovery reduced; access controls unchanged and still authoritative.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no schema or migration change.
+- Auth/ownership checkpoint: no route access or content visibility change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: security/testing docs and regressions updated.
+
+## 2026-07-02 Transcript Empty State
+
+### Scope
+
+- Replaced Transcript tab's plain empty copy with frozen orbit/waveform visual.
+- Changed empty heading to `Start a recording to see your transcript`.
+- Starts empty-state animation on local recording/capture activity and keeps it active through pre-transcript processing states.
+- Hides orbit dot in frozen state; active orbit restores it at `1.45s` per cycle.
+- Consolidated repeated orbit markup into shared Jinja macro.
+- Added browser surface sync for empty, transcribing, and populated transcript states.
+
+### Checklist
+
+- Target behavior: empty transcript shows requested frozen visual/heading, then animates from recording start until text arrives.
+- Affected schema/modules/endpoints: transcribe template, CSS, browser renderer, tests, docs only.
+- Affected tests: shared-loader static regression and history empty-state expectation.
+- Architecture risks: visual/status-sync only; no content access or persistence changes.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: same orbit macro and waveform CSS serve generation-adjacent transcription and empty states.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser visual check remains optional.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: shared orbit macro and frozen empty-state surface.
+- `app/static/css/transcribe.css`: idle animation override.
+- `app/static/js/transcribe/app.js`: three-way transcript surface sync.
+- Asset include templates: cache-bust versions.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: updated regressions.
+- `docs/testing.md`, `docs/progress.md`: behavior and checkpoint record.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "generation_loading_replaces_plain_text_placeholders or splash_and_transcribe_styles_are_cacheable_static_assets"`: passed, 2 tests.
+- `git diff --check`: passed.
+
+### Documentation
+
+- Added testing coverage note and this progress entry.
+
+### Risks / assumptions
+
+- Empty means transcript draft contains no non-whitespace text and status is not `transcribing`.
+- Frozen visual retains ring and waveform but hides orbit dot; recording/listening/upload/finalize/queue states restore dot and run orbit at `1.45s` per cycle while draft remains empty.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript content added to new surface.
+- Ownership rules: unchanged; existing owner-only workspace state drives visibility.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint changes.
+- Auth/ownership checkpoint: no auth, query, or route changes.
+- Lifecycle/deletion checkpoint: no record lifecycle changes.
+- Docs/tests checkpoint: docs updated; JS syntax, static regressions, and diff validation pass.
+
+## 2026-07-02 Transcription Loading State
+
+### Scope
+
+- Added orbit/waveform loading state to open Transcript tab while consultation status is `transcribing`.
+- Reused note-generation loader structure, colors, sizing, orbit keyframe, and typography.
+- Set transcription orbit duration to `1.45s`; note-generation orbit remains `2.2s`.
+- Added client status sync so loader exits when backend status changes.
+
+### Checklist
+
+- Target behavior: show supplied transcription loader while open consultation is transcribing.
+- Affected schema/modules/endpoints: transcribe template, CSS, browser status renderer, tests, docs; no schema or endpoint changes.
+- Affected tests: static shared-loader regression and transcribing-session page render.
+- Architecture risks: visual/status-sync only; no content, ownership, persistence, or provider path changes.
+- Docs referenced/updated: `docs/testing.md`, `docs/progress.md`.
+- Reuse decision: extend existing `.note-generation-loading` component with waveform center and duration modifier; no second loader component.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: browser visual check remains optional; existing transcribe page render test currently redirects its synthetic login back to `/login` before workspace assertions.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: transcription loader markup and initial server visibility.
+- `app/static/css/transcribe.css`: shared orbit duration variable plus waveform modifier.
+- `app/static/js/transcribe/app.js`: status-driven loader/transcript visibility.
+- `app/templates/transcribe/_head_assets.html`, `_shell_extras.html`: static asset cache busts.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: loader, speed, asset, and server-render regressions.
+- `docs/testing.md`, `docs/progress.md`: coverage and change record.
+
+### Tests
+
+- `node --check app/static/js/transcribe/app.js`: passed.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "generation_loading_replaces_plain_text_placeholders or splash_and_transcribe_styles_are_cacheable_static_assets"`: passed, 2 tests.
+- Transcribing-session render regression attempted but blocked before workspace render: synthetic login redirects back to `/login`; same pre-existing failure also affects `test_user_transcribe_page_shows_workspace_shell`.
+
+### Documentation
+
+- Added testing coverage note and this daily progress entry.
+
+### Risks / assumptions
+
+- `1.45` interpreted as orbit duration in seconds (`1.45s`); waveform remains `1s`.
+- Loader replaces Transcript tab body only for exact `transcribing` status. Live partial text in other statuses remains visible.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no new content rendered or exposed.
+- Ownership rules: unchanged; existing owner-only workspace render remains source.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth or query change.
+- Lifecycle/deletion checkpoint: no record lifecycle change.
+- Docs/tests checkpoint: docs updated; static regressions and JS syntax pass. Existing login-fixture blocker noted for browser render test.
+
+## 2026-07-02 Template Editor CSS Extraction
+
+### Scope
+
+- Extracted `template_editor.html` inline style block into `app/static/css/template-editor.css`.
+- Kept editor shell, sidebar list, section rows, and translucent sticky action bar page-specific.
+- Replaced editor button classes with shared `btn-primary` and `btn-secondary` component classes.
+- Kept form actions, CSRF, hidden fields, data hooks, and template mode script unchanged.
+
+### Checklist
+
+- Target behavior: template editor has no inline CSS and uses shared rounded controls while preserving editor layout and sticky action bar behavior.
+- Affected schema/modules/endpoints: template/static CSS/tests/docs only; no schema, route, or endpoint behavior changed.
+- Affected tests: static refactor assertions for template editor CSS link, no inline style, shared button classes, and page CSS ownership.
+- Architecture risks: visual drift only; form and structured-template semantics unchanged.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: reuse `components.css` for buttons/forms/flashes; keep editor-only layout in `template-editor.css`.
+- Code complete: yes for template editor extraction.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: `admin2.html` remains excluded/special; `/transcribe-glm-2` route cleanup remains separate.
+
+### Files changed
+
+- `app/static/css/template-editor.css`: page-specific editor shell/sidebar/list/section/action-bar CSS.
+- `app/templates/template_editor.html`: links static editor CSS, removes inline style block, uses shared button classes.
+- `tests/test_web_refactor.py`: updates static assertions for extracted editor CSS and shared components.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "template_editor_page_uses_dedicated_full_page_layout or new_freeform_template_editor_hides_emis_sections_until_structured_mode or team_template_editor_page_keeps_team_scope_for_new_template or transcribe_template_editor_save_returns_to_transcribe or default_template_admin_routes_require_system_admin"`: passed, 4 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table and template-editor decision note.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes moderate rounded harmonisation is acceptable per user choice.
+- Assumes translucent sticky action bar should remain close to existing behavior per user choice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session/route access change; template forms unchanged except CSS classes.
+- Lifecycle/deletion checkpoint: no data lifecycle paths touched.
+- Docs/tests checkpoint: docs and focused tests updated/passed.
+
+## 2026-07-01 Auth CSS Extraction
+
+### Scope
+
+- Added `app/static/css/auth.css` for login, request access, onboarding, MFA challenge, and password reset pages.
+- Replaced duplicated inline auth/recovery style blocks with linked `tokens.css`, `components.css`, and `auth.css`.
+- Kept auth page scripts/CSRF/forms/actions unchanged.
+- Removed unused `app/templates/glm-3.html`; `/transcribe-glm-2` route remains because it currently renders normal `transcribe.html` and has existing route coverage.
+
+### Checklist
+
+- Target behavior: auth/recovery pages share one shell and existing shared controls while preserving form behavior and no-JS submissions.
+- Affected schema/modules/endpoints: templates/static CSS/tests/docs only; no schema, route, or endpoint behavior changed.
+- Affected tests: auth shell static assertions and toast/static CSS assertions.
+- Architecture risks: visual drift only; auth flow semantics and CSRF remain unchanged.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: use `components.css` controls and `auth.css` layout/page-specific auth pieces.
+- Code complete: yes for auth extraction.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: admin/template-editor inline page CSS remains; `/transcribe-glm-2` duplicate route cleanup remains separate from removed unused template.
+
+### Files changed
+
+- `app/static/css/auth.css`: shared auth/recovery layout and page-specific auth pieces.
+- `app/static/css/components.css`: adds `.btn` and `.link-button` aliases for auth pages.
+- `app/templates/login.html`, `request_access.html`, `onboarding.html`, `mfa_challenge.html`, `password_reset_request.html`, `password_reset_confirm.html`: link shared CSS and remove inline style blocks.
+- `app/templates/glm-3.html`: removed unused prototype template.
+- `tests/test_admin_ui.py`: updates auth CSS/static assertions.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record extraction status and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "login_page_exposes_bootstrap_when_database_is_empty or request_access_page_submits_public_account_request or bootstrap_redirects_to_onboarding_and_requires_totp_setup or active_templates_route_flash_messages_through_top_right_toasts or auth_recovery_pages_use_current_shell_styling or invalid_browser_route_redirects_to_login_without_auth"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+
+### Documentation
+
+- Updated styling condensation plan current-state table.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes small auth visual shifts are acceptable because auth pages now share one shell and component buttons/forms/toasts.
+- Assumes deleting unused `glm-3.html` is safe because route grep shows no renderer uses that template.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: auth forms/routes unchanged; only CSS links/body classes changed.
+- Lifecycle/deletion checkpoint: no data lifecycle paths touched.
+- Docs/tests checkpoint: docs and tests updated.
+
+## 2026-07-01 Home CSS Extraction And Shared Components
+
+### Scope
+
+- Extracted the large `home.html` inline style block into static CSS.
+- Added `components.css` for shared buttons, panels, forms, pills, tabs, modals, flashes, and toasts.
+- Moved Home2 conditional styling into static `home2.css` and removed the old template partial.
+- Linked shared components into splash, transcribe, home, and template editor.
+- De-duplicated splash button CSS and transcribe toast CSS so those pages consume shared primitives.
+
+### Checklist
+
+- Target behavior: home uses existing/shared app styling where possible, with `home.css` reserved for home-only layout and state surfaces.
+- Affected schema/modules/endpoints: templates/static CSS/tests/docs only; no backend endpoints or schemas.
+- Affected tests: static asset/refactor tests, root splash render test, home/home2 render tests, toast/static CSS tests.
+- Architecture risks: CSS cascade changes can cause visual drift; forms/actions/data hooks remain untouched.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: put reused primitives in `components.css` rather than copying them into `home.css`.
+- Code complete: yes for home extraction/shared primitives slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: template editor/admin/auth still have inline page CSS; admin rounded shared-component pass remains pending.
+
+### Files changed
+
+- `app/static/css/components.css`: shared UI primitives.
+- `app/static/css/home.css`: home-only layout and domain-specific UI.
+- `app/static/css/home2.css`: extracted Home2 alternate layout.
+- `app/templates/home.html`: links static CSS assets and removes inline style block.
+- `app/templates/splashpage.html`: links `components.css`.
+- `app/templates/transcribe/_head_assets.html`: links `components.css`.
+- `app/templates/template_editor.html`: links `components.css`.
+- `app/static/css/splash.css`: drops local `.button` primitive.
+- `app/static/css/transcribe.css`: drops local toast primitive/status variants.
+- `app/templates/_home2_admin2_style.html`: removed stale template style partial.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: updated static/render assertions.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: updated plan and checkpoint.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "root_route_shows_public_splash_without_auth or home2_route_renders_admin2_styled_home_for_users_and_leaders or home_tab_navigation_updates_url_and_rejects_missing_panels or active_templates_route_flash_messages_through_top_right_toasts or home_overview_and_asset_cards_keep_white_fill_like_team_cards or non_admin_login_redirects_to_home_and_leader_sees_review_tools or home_restyled_preview_route_renders_for_signed_in_non_admin"`: passed, 7 tests.
+
+### Documentation
+
+- Updated styling condensation plan implementation status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes shared button and toast visual language is acceptable across splash/home/transcribe per user decision.
+- Assumes extracting Home2 static CSS is acceptable despite earlier default exclusion, because user explicitly chose this option.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; no route authorization or response-scope change.
+- Deletion semantics: unchanged; no destructive forms or deletion paths altered.
+- Provider rules: unchanged; provider display/selection behavior untouched.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session changes.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and tests updated.
+
+## 2026-07-01 Home Template Editor Shared Tokens
+
+### Scope
+
+- Linked `tokens.css` into `home.html` and `template_editor.html`.
+- Removed page-local token roots from both templates.
+- Switched home/template editor font declarations to shared `--font-body` and `--font-display` variables.
+- Extended shared tokens with app-page values already used by home/editor.
+
+### Checklist
+
+- Target behavior: home and template editor reuse shared visual tokens/fonts while route behavior, forms, CSRF fields, and page-specific layout stay unchanged.
+- Affected schema/modules/endpoints: static CSS and templates only; no schema, module, route, or endpoint change.
+- Affected tests: static/template refactor tests for shared token links and local-token removal.
+- Architecture risks: visual drift only, accepted for this slice to move toward shared product palette.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: extended `tokens.css` instead of creating another app-page token root.
+- Code complete: yes for first home/editor token slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: component extraction still pending; admin rounded shared-component pass remains next.
+
+### Files changed
+
+- `app/static/css/tokens.css`: adds app-page accent/shadow/radius/transition tokens.
+- `app/templates/home.html`: links tokens and consumes shared font variables.
+- `app/templates/template_editor.html`: links tokens and consumes shared font variables.
+- `tests/test_web_refactor.py`: adds static assertions for shared app-page tokens.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record audit and decisions.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 12 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "non_admin_login_redirects_to_home_and_leader_sees_review_tools or home_restyled_preview_route_renders_for_signed_in_non_admin or user_home_shows_team_stt_selection_when_configured"`: passed, 3 tests.
+- First parallel admin-focused attempt collided with the shared OpenScribe test database while `tests/test_web_refactor.py` was running; rerun sequential passed.
+
+### Documentation
+
+- Updated styling condensation plan with home/admin/template-editor classification and borderline decisions.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes small visual shift on home/editor is acceptable because user chose shared tokens over exact local colour preservation.
+- Assumes admin should be rounded/shared later, but not in this slice.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; no route authorization or response-scope change.
+- Deletion semantics: unchanged; no destructive forms or deletion paths altered.
+- Provider rules: unchanged; provider display/selection behavior untouched.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no auth/session changes.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and static tests updated.
+
+## 2026-07-01 Splash Transcribe Token Harmonisation
+
+### Scope
+
+- Added `app/static/css/tokens.css` with shared splash/transcribe colour, font, radius, shadow, and compatibility alias tokens.
+- Linked shared tokens before `splash.css` and `transcribe.css`.
+- Removed duplicated `:root` token blocks from splash/transcribe CSS and routed body/display fonts through shared variables.
+- Removed stale clinical-note empty-state CSS left behind after the empty guidance markup was removed.
+
+### Checklist
+
+- Target behavior: splash and transcribe share foundational visual tokens while keeping page-specific layout/control CSS intact.
+- Affected schema/modules/endpoints: static CSS, splash/transcribe head includes, frontend/static tests; no schema or endpoint change.
+- Affected tests: splash root render assertion, transcribe asset render assertion, static frontend CSS assertions.
+- Architecture risks: token changes can create small visual drift; transcribe-specific layout and workflow selectors were not changed.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: used current splash/transcribe palette and aliases instead of inventing new styling values.
+- Code complete: yes for token harmonisation.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: component-level harmonisation still pending; auth/home/admin still have inline duplicated tokens.
+
+### Files changed
+
+- `app/static/css/tokens.css`: shared visual tokens.
+- `app/templates/splashpage.html`: links shared tokens before splash CSS.
+- `app/templates/transcribe/_head_assets.html`: links shared tokens before transcribe CSS.
+- `app/static/css/splash.css`: consumes shared font/token variables and drops local `:root` block.
+- `app/static/css/transcribe.css`: consumes shared font/token variables, drops local `:root` block, and removes stale clinical-note empty-state CSS.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: update static/link assertions for shared tokens.
+- `docs/styling_condensation_plan.md`, `docs/progress.md`: record harmonisation status.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "splash or transcribe_page_includes_mobile_layout_assets or root_route_shows_public_splash_without_auth"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 11 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "root_route_shows_public_splash_without_auth or transcribe_page_includes_mobile_layout_assets or active_templates_route_flash_messages"`: passed, 3 tests.
+
+### Documentation
+
+- Updated styling condensation plan status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes shared status tokens should use transcribe runtime values (`--success #38A169`, `--warning #D69E2E`) so product-state colors remain stable.
+- Assumes splash can absorb those status token values because status colours are not central to its visible marketing layout.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; `/transcribe` authorization and owner-only context unchanged.
+- Deletion semantics: unchanged; no lifecycle or cascade path touched.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and focused static/render tests updated.
+
+## 2026-07-01 Splash And Transcribe CSS Extraction
+
+### Scope
+
+- Extracted `splashpage.html` inline CSS into `app/static/css/splash.css`.
+- Extracted `transcribe/_head_assets.html` inline CSS into `app/static/css/transcribe.css`.
+- Kept selectors and CSS bodies unchanged for visual parity; no shared token/component de-duplication yet.
+
+### Checklist
+
+- Target behavior: splash and transcribe pages load cacheable static styles instead of large inline style blocks while keeping visual output unchanged.
+- Affected schema/modules/endpoints: `splashpage.html`, `transcribe/_head_assets.html`, static CSS assets, render/static tests; no schema or endpoint change.
+- Affected tests: splash root render assertion, transcribe asset render assertion, static frontend CSS assertions.
+- Architecture risks: `/transcribe` is transcript-content UI; extraction preserved selectors and markup to avoid changing owner-only workspace behavior.
+- Docs referenced/updated: `docs/styling_condensation_plan.md`, `docs/progress.md`.
+- Reuse decision: moved existing CSS verbatim to static files instead of redesigning or merging controls prematurely.
+- Code complete: yes for first extraction slice.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: shared token/component split remains pending; auth/home/admin inline styles still remain.
+
+### Files changed
+
+- `app/templates/splashpage.html`: replaced inline style block with static CSS link.
+- `app/static/css/splash.css`: new extracted public landing page styles.
+- `app/templates/transcribe/_head_assets.html`: replaced inline style block with static CSS link.
+- `app/static/css/transcribe.css`: new extracted transcribe workspace styles.
+- `tests/test_web_refactor.py`: points static CSS assertions at extracted files and adds extraction regression coverage.
+- `tests/test_admin_ui.py`: checks new CSS links and reads transcribe style assertions from `transcribe.css`.
+- `docs/styling_condensation_plan.md`: records implemented extraction status.
+- `docs/progress.md`: records change and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "splash or transcribe_page_includes_mobile_layout_assets or root_route_shows_public_splash_without_auth or reorder_blocks_blank_note_lines or global_template_selector or active_templates_route_flash_messages"`: passed, 6 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 11 tests.
+
+### Documentation
+
+- Updated styling condensation plan implementation status.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes visual parity is best protected by verbatim extraction before any token/component merge.
+- Assumes linked static CSS is acceptable under current CSP because existing pages already load static stylesheets.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content access path changed.
+- Ownership rules: unchanged; `/transcribe` authorization and owner-only context unchanged.
+- Deletion semantics: unchanged; no data lifecycle or cascade path touched.
+- Provider rules: unchanged; provider display/runtime selection unchanged.
+- Structured-note contract: unchanged; EMIS keys, JSON shape, and note editing behavior unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs and focused static/render tests updated.
+
+## 2026-07-01 Styling Condensation Plan
+
+### Scope
+
+- Added a planning document for condensing fragmented inline template styling.
+- Prioritised `splashpage.html` as the public visual source of truth and `/transcribe` as a must-preserve workspace.
+- Excluded `*2` templates and generated OWASP report HTML from application-style consolidation scope.
+
+### Checklist
+
+- Target behavior: document where inline styles live, what is page-unique, and what can move into shared CSS without changing route behavior.
+- Affected schema/modules/endpoints: docs only; no schema, module, route, or endpoint change.
+- Affected tests: none added because this is a planning-only documentation change.
+- Architecture risks: future CSS refactor could accidentally alter `/transcribe` owner-only workspace layout; plan explicitly separates shared tokens/components from transcribe-specific workflow styling.
+- Docs referenced/updated: `docs/UI_Translation.md`, `docs/frontend-roadmap.md`, `docs/transcribe_brief.md`, this progress note, and new `docs/styling_condensation_plan.md`.
+- Reuse decision: plan reuses current splash and transcribe visual systems as extraction sources instead of inventing a new design system.
+- Code complete: yes, documentation only.
+- Tests added/updated: no, not applicable for planning document.
+- Docs added/updated: yes.
+- Open issues: implementation still needed; no CSS moved yet.
+
+### Files changed
+
+- `docs/styling_condensation_plan.md`: inventories inline styling and proposes phased central CSS extraction.
+- `docs/progress.md`: records documentation-only planning work and architecture checkpoints.
+
+### Tests
+
+- Not run. Documentation-only change.
+
+### Documentation
+
+- Added `docs/styling_condensation_plan.md`.
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes `splashpage.html` should drive public/shared styling and `/transcribe` should be extracted with visual parity before any component de-duplication.
+- Assumes `admin2.html`, `_home2_admin2_style.html`, and generated ZAP report HTML are out of scope for this pass.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; plan only documents CSS extraction and warns against changing transcript-content handling.
+- Ownership rules: unchanged; `/transcribe` remains owner-only and must not move auth decisions into frontend code.
+- Deletion semantics: unchanged; plan requires destructive form targets/confirmation behavior to remain intact.
+- Provider rules: unchanged; provider labels remain display-only.
+- Structured-note contract: unchanged; EMIS keys, JSON shape, and structured-note editing behavior remain untouched.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: docs updated; no tests needed for planning-only change.
+
+## 2026-07-01 Transcribe Note Empty Guidance Removal
+
+### Scope
+
+- Removed the structured/freeform editable-note empty guidance row from `/transcribe`.
+- Removed now-unused placeholder CSS, server template flags, and frontend empty-state sync hooks.
+
+### Checklist
+
+- Target behavior: the output note editor no longer shows "No note lines yet" or the start-recording guidance row.
+- Affected schema/modules/endpoints: transcribe workspace template, transcribe workspace render context, and transcribe frontend JS/CSS only; no schema or endpoint change.
+- Affected tests: transcribe page render assertions and static refactor coverage.
+- Architecture risks: UI-only change; no content access, provider selection, ownership, or deletion path changed.
+- Docs referenced/updated: this progress note.
+- Reuse decision: removed obsolete empty-state code instead of adding hide-only conditionals.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: removed structured/freeform empty note guidance rows.
+- `app/templates/transcribe/_head_assets.html`: removed unused note-editor empty-state CSS.
+- `app/web/transcribe_workspace.py`: removed now-unused empty-state content flags.
+- `app/static/js/transcribe/app.js`, `app/static/js/transcribe/structured.js`: removed empty-state DOM hooks and sync calls.
+- `tests/test_admin_ui.py`, `tests/test_web_refactor.py`: updated regression assertions for removed guidance.
+- `docs/progress.md`: records change and checkpoints.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_admin_ui.py::test_user_transcribe_page_marks_structured_template_options_for_blank_note_editor tests/test_admin_ui.py::test_user_transcribe_page_hides_emis_context_for_freeform_template tests/test_admin_ui.py::test_user_transcribe_page_shows_transcript_and_followup_empty_states tests/test_web_refactor.py::test_note_editor_empty_state_guidance_removed tests/test_web_refactor.py::test_clinical_note_empty_state_uses_compact_spacing`: passed, 5 tests.
+
+### Documentation
+
+- Added this progress entry.
+
+### Risks / assumptions
+
+- Assumes the separate clinical-note flat placeholder "Add note lines here as the consultation unfolds." should remain; only the requested row containing "No note lines yet" and its body was removed.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content visibility path changed.
+- Ownership rules: unchanged; only owner page rendering changed.
+- Deletion semantics: unchanged; no data lifecycle or cascade path touched.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged; EMIS/template JSON unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no records created, updated, or deleted.
+- Docs/tests checkpoint: progress note and focused render/static tests updated.
+
+## 2026-07-01 Follow-up Loading Animation Reuse
+
+### Scope
+
+- Reused the note generation loading animation for queued/processing follow-up generation.
+- Refactored repeated loading markup into a Jinja macro and a shared frontend helper so note/follow-up loading states use one HTML shape.
+- Bumped transcribe module cache tokens for the shared helper change.
+
+### Checklist
+
+- Target behavior: queued/processing follow-ups show the same orbit/star animation with follow-up-specific copy.
+- Affected schema/modules/endpoints: transcribe workspace template and frontend render helpers only; no schema or endpoint change.
+- Affected tests: static frontend and browser-render regression coverage.
+- Architecture risks: render-only change; no content access, provider selection, or lifecycle semantics changed.
+- Docs referenced/updated: `docs/transcribe_brief.md` and this note.
+- Reuse decision: reused existing animation CSS, introduced one Jinja macro and one shared JS helper instead of duplicating follow-up markup.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: CSS class remains `note-generation-loading` for minimal churn even when rendering follow-ups.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: adds shared `generation_loading` macro and uses it for note and follow-up queued/processing states.
+- `app/static/js/transcribe/documents.js`: adds shared `generationLoadingHtml` helper.
+- `app/static/js/transcribe/structured.js`, `app/static/js/transcribe/app.js`: use shared helper for note/follow-up dynamic renders.
+- `app/templates/transcribe/_shell_extras.html`: bumps module cache token.
+- `tests/test_web_refactor.py`, `tests/test_admin_ui.py`: update loading and asset-token regressions.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document follow-up loading state.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "generation_loading or workspace_refresh_burst"`: passed, 2 tests.
+- `.venv/bin/pytest -q tests/test_admin_ui.py -k "generate_followup or static_asset_version_bumped or transcribe_documents_show_hallucination_check_panel or user_transcribe_page_shows_workspace_shell"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 10 tests.
+
+### Documentation
+
+- Transcribe brief now records in-panel loading animation for follow-up generation too.
+
+### Risks / assumptions
+
+- Quick action queued state keeps its transcription-waiting copy, but uses the same animation shell.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content is logged or newly exposed.
+- Ownership rules: unchanged.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: docs and focused frontend/browser-render tests updated.
+
+## 2026-07-01 Note Generation Loading Animation
+
+### Scope
+
+- Replaced plain queued/processing generated-note placeholder text with the loading animation from `loading_animation.html` inside the clinical note output area.
+- Bumped transcribe module cache-bust tokens so refreshed pages cannot reuse stale generated-note renderers.
+- Kept failed note messages and empty editable-note guidance unchanged.
+
+### Checklist
+
+- Target behavior: once a generated-note document is queued or processing, the clinical note pane shows the orbit/star loading state in the note text space.
+- Affected schema/modules/endpoints: transcribe workspace template, transcribe styles, and generated-note client render path; no schema or endpoint change.
+- Affected tests: static frontend regression coverage in `tests/test_web_refactor.py`.
+- Architecture risks: render-only change; no content access, provider selection, or lifecycle semantics changed.
+- Docs referenced/updated: `docs/transcribe_brief.md` and this note.
+- Reuse decision: reused supplied animation structure/CSS, scoped class names to avoid broad page style changes.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: none known.
+
+### Files changed
+
+- `app/templates/transcribe/_workspace.html`: renders loading animation for generated-note queued/processing states.
+- `app/templates/transcribe/_head_assets.html`: adds scoped loading animation styles and keyframes.
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: bump module version tokens so browser fetches the updated renderer.
+- `app/static/js/transcribe/structured.js`: uses same animation during dynamic workspace refreshes.
+- `tests/test_web_refactor.py`: asserts animation replaces old plain text placeholders.
+- `docs/transcribe_brief.md`, `docs/progress.md`: document behavior and change record.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "note_generation_loading or clinical_note_empty_state or note_editor_empty_state"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py tests/test_admin_ui.py -k "note_generation_loading or static_asset_version_bumped or transcribe_glm_2_page_exposes_workspace_hooks or user_transcribe_glm_2_page_exposes_workspace_hooks or blank_line_reorder"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 9 tests.
+
+### Documentation
+
+- Transcribe brief now records in-panel loading animation for queued/processing note generation.
+
+### Risks / assumptions
+
+- Animation is shown for generated-note queued and processing states, including queued notes still waiting on transcription, with status-specific helper text.
+- Cache-bust tokens must change with render-path updates; otherwise fresh HTML can briefly show new UI before cached JS overwrites it.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; no transcript-derived content is logged or newly exposed.
+- Ownership rules: unchanged; transcribe page remains owner-only through existing route protections.
+- Deletion semantics: unchanged; no stored content, cascade, or retention behavior changed.
+- Provider rules: unchanged; provider selection/fallback untouched.
+- Structured-note contract: unchanged; EMIS section keys and generated-note content shape untouched.
+- Schema checkpoint: no model, constraint, index, or migration change.
+- Auth/ownership checkpoint: no authorization or response scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: docs and focused frontend regression updated.
+
+## 2026-07-01 Workspace Refresh Burst Gating
+
+### Scope
+
+- Stopped repeated browser workspace refresh bursts while the owner workspace SSE connection is healthy.
+- Bumped the transcribe `app.js` cache token for the refresh-gating change so browsers do not reuse the prior ungated module.
+- Kept refresh bursts as fallback when `EventSource` is unavailable or the stream errors.
+- Skipped the immediate post-load workspace fetch when the SSE stream is present and expected to emit the initial workspace event.
+
+### Checklist
+
+- Target behavior: pending notes/transcripts update via SSE without browser-side repeated GET bursts that rebuild loading UI.
+- Affected schema/modules/endpoints: transcribe frontend refresh scheduling only; no schema or endpoint change.
+- Affected tests: static transcribe frontend regression coverage.
+- Architecture risks: if a proxy silently stalls SSE without triggering `onerror`, UI can wait longer for updates; heartbeat/error fallback remains the mitigation.
+- Docs referenced/updated: `docs/api.md`, `docs/transcript-capture.md`, and this note.
+- Reuse decision: reused existing SSE connection state and fallback polling path; no new event bus yet.
+- Code complete: yes.
+- Tests added/updated: yes.
+- Docs added/updated: yes.
+- Open issues: server SSE implementation still polls the read model once per second internally; true cross-process push needs an event bus or database notification path.
+
+### Files changed
+
+- `app/static/js/transcribe/app.js`, `app/templates/transcribe/_shell_extras.html`: gate refresh burst scheduling/execution behind SSE fallback state, clear queued burst timers on stream open, skip initial fetch when stream owns hydration, and bump the module cache token.
+- `tests/test_web_refactor.py`: asserts refresh bursts are fallback-only and cleared when SSE opens.
+- `docs/api.md`, `docs/transcript-capture.md`, `docs/progress.md`: align realtime docs with fallback-only browser polling.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "workspace_refresh_burst or note_generation_loading or transcribe_transcript_render_guard"`: passed, 3 tests.
+- `.venv/bin/pytest -q tests/test_web_refactor.py -k "workspace_refresh_burst or note_generation_loading or transcribe_transcript_render_guard" && .venv/bin/pytest -q tests/test_admin_ui.py -k "static_asset_version_bumped or transcribe_glm_2_page_exposes_workspace_hooks or user_transcribe_page_shows_workspace_shell"`: passed, 6 tests across two focused runs.
+- `.venv/bin/pytest -q tests/test_web_refactor.py`: passed, 10 tests.
+
+### Documentation
+
+- API/capture docs now say browser refresh bursts are suppressed while SSE is healthy and fallback only when disconnected/unavailable.
+
+### Risks / assumptions
+
+- Existing SSE stream emits an initial workspace payload, so skipping immediate fetch does not leave the page unhydrated when EventSource works.
+- This reduces browser/network churn now; it does not yet remove server-side 1s polling inside the SSE stream.
+
+### Architecture checkpoint summary
+
+- Privacy boundaries: unchanged; same owner-only workspace/SSE payload, no new transcript-derived exposure or logging.
+- Ownership rules: unchanged; existing auth/session checks continue to gate workspace reads.
+- Deletion semantics: unchanged.
+- Provider rules: unchanged.
+- Structured-note contract: unchanged.
+- Schema checkpoint: no model, migration, or constraint change.
+- Auth/ownership checkpoint: no route authorization or response-scope change.
+- Lifecycle/deletion checkpoint: no lifecycle path changed.
+- Docs/tests checkpoint: realtime docs and static regression updated.
+
 ## 2026-07-01 Audit Input and Filter Bounds
 
 ### Scope
@@ -8951,3 +10294,222 @@
 - Auth/ownership checkpoint: no access scope or endpoint changed.
 - Lifecycle/deletion checkpoint: no deletion path changed; full-window destructive detection improves visibility.
 - Docs/tests checkpoint: regression, migration assertion, security docs, OWASP plan, and daily note updated.
+## 2026-07-12 Admin Sidebar Area Selector Polish
+
+### Scope
+- Removed shared horizontal-tab container chrome from the vertical `/admin` sidebar selector.
+- Strengthened the selected admin area with the existing accent token and label weight.
+
+### Checklist
+- Code complete: admin-only CSS override; no route, schema, or navigation-label change.
+- Tests updated: flat-sidebar regression now checks the selector override and active marker.
+- Docs updated: `docs/admin_brief.md` records the flat selector direction.
+- Open issues: browser visual verification pending; focused pytest is blocked by unavailable test PostgreSQL connection.
+
+### Files changed
+- `app/static/css/admin.css`: flattens the sidebar selector and adds its active marker.
+- `app/templates/admin.html`: bumps the admin stylesheet cache key.
+- `tests/test_admin_ui.py`: protects the admin-specific selector styling.
+- `docs/admin_brief.md`, `docs/progress.md`: document the UI decision and daily progress.
+
+### Architecture checkpoints
+- Schema: unchanged.
+- Auth/ownership: unchanged; existing system-admin rendering and tab behavior remain intact.
+- Lifecycle/deletion: unchanged.
+
+## 2026-07-12 STT/LLM Provider Revisions
+
+### Scope
+- Added inspected pending revisions for existing STT and LLM provider configs, with atomic promotion into stable active IDs.
+- Kept pending rows out of normal lists, selection candidates, and runtime paths.
+
+### Checklist
+- Code complete: revision schema, service lifecycle, API schema, web draft forms, cancellation, promotion, and secret cleanup implemented.
+- Tests updated: migration head verifies revision columns and partial unique indexes; focused provider draft regressions run.
+- Docs updated: admin workspace lifecycle map and this daily note.
+- Open issues: full migration suite requires configured test PostgreSQL; focused migration result recorded below.
+
+### Files changed
+- `alembic/versions/w4x5y6z7a8b9_add_provider_config_revisions.py`, `app/models.py`: self-links and partial uniqueness.
+- `app/services/stt.py`, `app/services/llm.py`, `app/services/vault.py`, `app/services/templates.py`: staged lifecycle, runtime isolation, reference-aware Vault access.
+- `app/schemas/stt.py`, `app/schemas/llm.py`, `app/routes/web_admin.py`, `app/main.py`: revision draft inputs and service-backed cancellation.
+- `tests/test_migrations.py`: migration shape assertions.
+
+### Architecture checkpoint summary
+- Privacy boundaries: provider metadata and Vault references only; no transcript-derived content exposed.
+- Ownership rules: revision target resolution requires same team and ready root.
+- Deletion semantics: DB commit precedes staged/retired secret cleanup; active deletion includes pending revision secrets.
+- Provider rules: active ID and selection FKs survive promotion; in-flight restrictions remain enforced against active root.
+- Structured-note contract: unchanged.
+- Schema checkpoint: nullable self-FKs plus root-label and one-pending-revision partial unique indexes.
+- Auth/ownership checkpoint: existing system-admin draft authorization retained; service enforces team scope.
+- Lifecycle/deletion checkpoint: revision promotion atomic; promoted secret reference is not cleaned with deleted revision row.
+- Docs/tests checkpoint: function map, daily note, migration assertions, focused provider tests updated/run.
+- Privacy/provider/structured-note contracts: unchanged; styling exposes no new data and changes no provider behavior.
+
+## 2026-07-12 Usage Overview Panel Spacing
+
+- Restored standard `18px` admin panel inset on `.usage-hero`; its previous late cascade override placed the Usage overview heading against the rounded border.
+- Bumped the admin stylesheet cache key and extended the static admin UI regression.
+- Updated `docs/usage_tab.md`; no schema, auth, ownership, deletion, provider, privacy, encryption, or structured-note behavior changed.
+- Focused pytest remains blocked by the unavailable test PostgreSQL connection; `git diff --check` passes.
+
+## 2026-07-12 Provider Setup Entry State
+
+- Promoted the team selector to the first and primary Provider setup card when no team is selected.
+- Moved entry-state context into that card; the full provider introduction remains after team selection.
+- Reused existing panel, section header, form, and visual tokens. Provider selection inputs, routes, credentials, and policy behavior are unchanged.
+- Added focused render coverage and updated `docs/admin_brief.md`.
+- Follow-up: removed the stretched entry card after browser review. Unselected state is now a compact, unframed, top-aligned selector with a `520px` maximum width.
+- Follow-up: fixed parent admin grid track stretching with `.admin-pane { align-content: start; }`, keeping sparse entry content directly below the header instead of halfway down the viewport.
+- Final design decision: Team scope now uses identical panel markup and copy before and after team selection; only selector value and downstream provider configuration change.
+# 2026-07-12 — Admin workspace redesign discovery
+
+- Scope: inspected current `admin.html`, redesign input `admin_mockup.html`, admin routes/services, and existing admin docs; added `docs/admin_workspace_function_map.md` as preservation checklist before UI changes.
+- Tests: not run; documentation-only change with no runtime behavior.
+- Architecture: no schema or provider-resolution change; system-admin metadata-only privacy boundary, ownership rules, immediate deletion semantics, Vault secret handling, and EMIS structured-note contract recorded as redesign gates.
+- Risk/open work: mockup remains mostly static and does not yet cover all current admin functions. Migration sequence and navigation model remain to be resolved through design grilling.
+- Decision: new evolving workspace will own `/admin`; current functional workspace will move to temporary `/legacy-admin`. Existing mutation routes stay under `/admin/...`, with redirects required to preserve initiating workspace.
+- Decision: internal-only development allows unfinished mock panels on `/admin`; production exposure waits for full redesign verification. Inert controls must not accidentally mutate state.
+- Decision: retain mockup's team-first information architecture. First pass plugs mockup controls into extant routes/services one-by-one; workflow/backend redesign is out of scope until parity exists.
+- Decision: keep full team list in sidebar as mocked; expected environment scale does not justify search/filter/pagination.
+- Decision: retain `/admin2` unchanged as secondary developer reference. `/legacy-admin` is official migration fallback.
+- Decision: selected team and team tab use canonical `team_id`/`team_tab` URL query state. Links work without JavaScript; refresh/history/bookmarks and POST redirects preserve valid state.
+- Decision: `/admin` without `team_id` shows explicit team-selection empty state; no automatic or remembered team. Zero-team state offers team creation. Global areas remain available without team scope.
+- Decision: team selection defaults to Overview and canonical `team_tab=overview`.
+- Decision: team Overview is read-only summary/navigation; mutations remain in dedicated tabs.
+- Decision: Provider policy owns all active runtime selections. STT, LLM, and new De-identification tab own provider provisioning/inspection/lifecycle. Configured and active states stay distinct.
+- Decision: preserve current global De-identification provider model for now. Team tab lists assigned providers first, available global providers for attachment, and create-global-then-assign flow. “Remove from team” means detach; global edit/delete must disclose cross-team impact. Team-scoped provider model redesign deferred.
+- Refinement: sidebar gets separate global De-ID providers management area for create/inspect/edit/delete. Team De-identification tab only views and attaches/detaches providers; team rows never globally delete. Provider policy selects active assigned provider.
+- Decision: global De-ID registry also manages Clinical NLP providers, labelled by De-ID, Clinical NLP, or both capabilities. Team assignment and the two active runtime selections remain separate.
+- Decision: team Security tab is read-only posture/navigation. User MFA/recovery/break-glass actions stay under Members; event inspection stays in global Audit.
+- Decision: Danger zone contains existing team hard-delete only, with cleanup scope, blockers, and explicit confirmation. No new suspend/archive semantics.
+- Proposed during grill: team Defaults should allow system-admin editing of default retention time. This needs a new backend mutation and targeted retention tests; effect on existing transcripts must respect fixed-expiry rule and remains to be confirmed.
+- Resolution: keep fixed-expiry architecture. Team default retention may be edited, but only future transcript roots use the new value; existing expiry timestamps remain unchanged. New mutation needs authorization and retention regression tests when implemented.
+- Decision: team Defaults includes retention edit plus read-only team asset summary. Team leaders manage team-owned assets; sidebar Global defaults manages platform defaults without overwriting existing team assets.
+- Decision: Team Members creates normal users with selected team fixed and role chosen. Separate sidebar System admins area manages admin-only accounts; member form cannot promote to system admin.
+- Decision: member rows use state-aware Actions menu. Destructive/break-glass actions get consequence-specific confirmation; email actions provide direct outcome feedback; server remains final guard.
+- Decision: account requests remain global. Approval selects target team/role and links to resulting team member; rejection requires reason.
+- Decision: Usage defaults to all-team aggregates; team and user drill-down use URL scope and remain metadata-only.
+- Decision: Audit lookback/team/actor/action/outcome/resource filters are validated URL state. Sensitive values remain forbidden.
+- Decision: production redesign uses Jinja/partials plus dedicated progressive-enhancement JS and minimal workspace CSS. Existing site tokens/components and CSRF behavior take priority; no parallel admin design system.
+- Decision: implementation order is route swap; shell/navigation; Overview; Members; Provider policy; provider areas; Defaults/Security/Danger; global Requests/Usage/Audit; parity/release gate. Mockup expresses layout intent, but shared site components win on duplicated styling.
+- Refinement: shared components do not automatically override mockup. Reuse clear matches; ask user at implementation time where reuse materially changes mockup appearance/interaction.
+- Decision: forms use inline field errors plus form summary; outcomes use site toasts and refreshed panel state. Preserve non-secret input on failure, never credentials.
+- Decision: provider wizards use server-side draft/finalize state with URL-addressable step/draft. Refresh restores non-secret state; secrets remain Vault-backed and absent from URL/HTML.
+- Decision/new backend need: Cancel wizard explicitly deletes pending draft and safely cleans Vault reference after DB reference removal. Browser-abandoned drafts require later scheduled stale cleanup with metadata-only audit/logging.
+- Release decision: `master` is user-facing. Incomplete redesign stays off `master`; full parity, affected tests, manual/accessibility/responsive comparison, and security review gate merge. `/legacy-admin` is development fallback only.
+- Workflow decision: use one long-lived redesign branch, small slice commits, and regular synchronization with `master` to control drift before final merge.
+- Test decision: add semantic browser E2E coverage for critical admin workflows; avoid pixel-perfect screenshots. Keep server/API tests authoritative for auth, deletion, provider, and secret invariants.
+- IA decision: accepted sidebar is Home, Teams, Manage teams, Account requests, System admins, Global defaults, De-ID providers, Usage, Audit, Log out; accepted team tabs are Overview, Members, Provider policy, STT, LLM, De-identification, Defaults, Security, Danger zone. Open: admin-only `/home` currently redirects to `/admin`, so sidebar Home meaning needs resolution.
+- Resolution: rename Home to Admin home; brand and link target neutral `/admin`. Show safe global summary counts plus team-selection prompt, with no automatic team.
+- Decision: Manage teams provides metadata directory, create, and open-team actions. Hard-delete remains only in team Danger zone.
+- Decision: team status remains read-only after creation; suspend/archive semantics are deferred pending explicit lifecycle design.
+- Implementation checkpoint: `/admin` now renders `admin_mockup.html` with real system-admin identity, full team list, neutral Admin home, safe global counts, validated `team_id`/`team_tab`, dynamic team summary, agreed sidebar inventory, and POST logout. `/legacy-admin` renders unchanged functional `admin.html`; `/admin2` remains unchanged. Validated return views distinguish new workspace, legacy, admin2, and restyled routes.
+- Tests: focused admin workspace/legacy/admin2 route tests passed (3 tests). Existing flat-layout regression now targets `/legacy-admin`; new regression covers neutral home and URL-scoped team navigation.
+- Architecture checkpoints: no schema change; both pages remain system-admin-only and metadata-only; mutation services/deletion semantics/provider resolution/EMIS contract unchanged; invalid team IDs cannot select scope.
+- Remaining: mock team panels still require control-by-control parity wiring; retention-default update, draft cancellation, CSS/JS extraction, global areas, broader test migration, and release gate are not complete.
+- CSP styling fix: diagnosed mockup's un-nonced inline stylesheet/script plus six forbidden `style` attributes under `style-src-attr 'none'`. Added per-response CSP nonces and replaced style attributes with classes; retained strict CSP. scite.ai font violations are browser-extension injections, not app assets.
+- Regression coverage now asserts new admin render contains nonced style/script, contains no `style` attributes, and retains strict `style-src-attr 'none'`. Template static probe and `git diff --check` pass. Focused DB-backed rerun reached assertion once after fix, then subsequent retry was blocked during test setup by intermittent PostgreSQL connection failure; rerun required when DB is stable.
+- Functionality checkpoint: Members now renders real selected-team users and wires add, suspend/reactivate, activation, password/account recovery, MFA reset, and immediate delete through existing routes with CSRF, state-aware controls, confirmations, and `team_tab=members` returns. No member form can create/promote a system admin.
+- Functionality checkpoint: team De-identification tab lists assigned and available global providers and wires attach/detach only; global deletion remains absent. Danger zone wires existing team hard-delete with full cleanup warning.
+- Functionality checkpoint: added system-admin-only `POST /admin/teams/{team_id}/retention` and `update_team_default_retention`; bounded default changes apply to future transcript creation only and record safe audit metadata. Existing transcript expiry rows are not queried or updated.
+- Tests: 4 focused redesign tests pass, covering CSP/shell navigation, member route wiring plus creation redirect, De-ID/Danger actions, and retention update.
+- Functionality checkpoint: Provider policy now posts conversation/dictation STT, writing-assistant LLM/model visibility/default, hallucination checker, De-ID, and Clinical NLP selections through existing services. STT/LLM tabs render real config metadata and wire saved inspect/test/delete; add/edit currently enters fully functional legacy forms pending wizard design decision.
+- Functionality checkpoint: global sidebar areas now render distinct functional views for team directory/create, account request approve/reject, system-admin creation/list, global defaults entry, global De-ID registry/delete, aggregate Usage, and filtered Audit. Security posture now derives member/provider metadata rather than mock counts.
+- Open design decision: mock STT/LLM wizards are intentionally simple, while existing provider forms expose advanced generic REST/OpenAPI request/response mappings, credential actions, duplicate confirmation, model visibility, and adapter-specific controls. Need decide progressive Advanced step versus full expert form inside wizard.
+- Resolution: keep simple preset wizard; custom providers reveal progressive Advanced fields preserving full expert contract. Provider cards must come only from backend-supported preset registries, never unsupported mock brands.
+- Provider wizard checkpoint: STT/LLM add buttons now submit real server-side draft routes with backend preset keys, return to matching team tab, show pending finalization forms using discovered models, and expose explicit draft cancellation routes. Cancellation accepts pending drafts only and reuses existing delete/Vault cleanup services.
+- Routing checkpoint: global Usage/Audit and other global sidebar views render globally even when `team_id` filters context; legacy `tab=providers&team_id=...` maps to Provider policy for migration compatibility.
+- Verification: redesign-focused suite passes 7 tests. Full `tests/test_admin_ui.py` run: 172 passed, 29 failed. Most admin failures assert old `/admin` markup and need deliberate `/legacy-admin` or redesign expectation migration; unrelated Home/Transcribe failures also appeared and require baseline review rather than green-chasing.
+- Provider edit decision: cosmetic label/availability edits may save directly. Endpoint, credential, adapter, region, model-discovery, and contract changes require a separately inspected pending revision; active provider remains unchanged and usable until atomic promotion. Cancelling removes only revision and staged Vault credential.
+- Provider edit schema checkpoint: existing setup drafts have no lineage to an active config, so safe revision editing needs a dedicated migration and service/API slice. Redesign must retain legacy material-edit links until lineage, atomic promotion, auth/team scoping, post-commit secret cleanup, and tests exist. No schema shortcut added in presentation work.
+## 2026-07-12 - Provider revision finalize safety
+
+- LLM revision promotion now rejects when target config has queued or processing generated documents.
+- STT and LLM API coverage verifies revisions remain hidden/pending until promotion, preserve active config IDs and selection foreign keys, apply provider/model fields, reject cross-team targets, and remove promoted revision rows.
+- Provider credential writes/deletes remain Vault-reference operations; tests replace provider inspection and Vault calls with deterministic fakes.
+- Migration head test name now explicitly includes provider config revisions for reliable focused selection.
+- Verification rerun: provider revision API tests `3 passed`; revision migration test `1 passed`; redesign-focused admin suite `7 passed`; `git diff --check` passed. Shared test DB requires serial pytest runs, so one attempted parallel admin run exited by design and passed when rerun serially.
+- Provider edit UI checkpoint: redesign now uses one populated add/edit wizard backed by inspected connection revisions. Review fixed add-provider listeners accidentally passing click events into edit-mode initializers; focused redesign/provider suite passes.
+- LLM wizard field checkpoint: Region appears only for Bedrock; Base URL appears only for Ollama and Custom OpenAI-compatible. Edit mode no longer forces Base URL visible for managed providers.
+- LLM wizard live visibility fix: author `.field { display: grid; }` overrode native `[hidden]`, so OpenAI still displayed Base URL and Region despite correct JS state. Added explicit `.wizard .field[hidden] { display: none; }` and regression coverage.
+- Real inspection wizard review fixed optional JSON fields being sent as empty strings; credentials, revision IDs, OpenAPI paths, and regions now use `null`, matching API schemas and preventing add-mode `422` validation failures.
+- LLM wizard finalize 422 fix: API path already identifies the draft, but route body incorrectly required a duplicate `config_id`. Added `LlmConfigFinalizeBody`, constructs service payload from path ID, and regression-tests finalize without body ID.
+- LLM provider table layout: replaced obsolete 46px action-menu column with a 260px minimum action area, tightened metadata columns/gaps, and added wrapping flex layout for action buttons.
+- STT provider table now mirrors LLM spacing: narrower provider-instance/usage columns, 260px minimum Actions area, 10px column gaps, and consistently spaced wrapping buttons.
+- LLM wizard model filter fix: `.llm-model-option { display: flex; }` overrode native `hidden`, so filtered cards stayed visible. Added explicit `.llm-model-option[hidden] { display: none; }` regression rule.
+- Restored operation feedback omitted by the redesign: STT tests render pass/fail, health, duration, model, and safe errors; saved LLM inspections render discovery status, provider, model count, warnings, and notes. Top-level operation messages now have visible status styling.
+- Architecture checkpoints: no transcript-derived content visibility change; team ownership filtering remains enforced; no deletion/cascade or structured-note contract change; provider runtime targets remain stable until successful promotion.
+# 2026-07-12: explicit provider edit actions
+
+## Scope
+Added narrow STT/LLM detail updates and revision-based connection-change actions in admin workspace.
+
+## Checklist
+- Code complete: root-ready, team-scoped detail services/routes; explicit UI actions; selected revision presentation.
+- Tests added: cosmetic field isolation, secret/ref HTML absence, revision staging/redirect.
+- Docs updated: function map, admin brief, testing guide, progress note.
+- Open issues: pending-revision discovery remains intentionally selected-ID only; no broad runtime listing added.
+
+## Files changed
+`app/services/stt.py`, `app/services/llm.py`, `app/routes/web_admin.py`, `app/web/presentation.py`, provider schemas/template, focused tests, admin docs.
+
+## Architecture checkpoints
+- Privacy: no secret or Vault reference rendered; credential input blank on connection changes.
+- Ownership: system-admin route plus service-level team scoping; root-ready target required.
+- Deletion/lifecycle: revisions remain hidden from normal lists; discard deletes pending revision while active root stays unchanged.
+- Provider rules: cosmetic edits do not mutate endpoint, model, or credentials; connection changes use existing inspect/finalize flow.
+- Structured notes: unchanged.
+# 2026-07-12: Unified provider edit wizard
+
+- Scope: replaced split provider edit actions with one STT/LLM wizard edit action; populated supported non-secret settings and added blank-credential reuse.
+- Checklist: code and focused regressions updated; docs updated; no schema change. Open issue: wizard remains server-backed two-stage flow, so inspected defaults finish in existing finalize card.
+- Files: `app/templates/admin_mockup.html`, STT/LLM services, admin/API tests, admin UX docs.
+- Tests: provider-row/modal regression plus STT/LLM shared-secret revision cancellation coverage; focused results recorded in change summary.
+- Architecture checkpoints: system-admin and same-team root-ready checks unchanged; no transcript content path added; revision cancellation now checks remaining Vault references after commit; promotion retains identical refs; provider fallback and EMIS structured-note contract unchanged.
+# 2026-07-12: Server-backed provider wizards
+
+- Replaced admin workspace STT/LLM fabricated inspection data with existing authenticated draft/finalize APIs.
+- Added response-driven safe provider, endpoint, status, warning/note, and model rendering; credentials are cleared after staging and never rendered.
+- Added awaited draft deletion on cancel/backdrop/Escape, with modal retained on cleanup failure. Back locks after successful draft creation. Browser unload stale-draft cleanup remains open.
+- Architecture: system-admin and team checks remain in API services; Vault references/raw provider responses stay outside DOM; no transcript content, ownership, deletion cascade, provider fallback, or structured-note contract changed.
+- 2026-07-14 STT auth-mode guard: centralized service validation now rejects `auth_mode=none` for `openai_cloud` and `elevenlabs_speech_to_text` before any config or Vault-reference mutation, including `credential_action=keep` updates. Custom no-auth adapters remain allowed. Focused API and service regressions cover both adapters and unchanged saved references.
+- 2026-07-12 provider-policy redesign: replaced summary cards with functional six-row policy table using existing visual language and always-visible accessible selects. Added provider-driven STT/LLM/checker model synchronization, compact writing-assistant visible-model checkboxes, state-dependent clear actions, explicit Presidio fallback, and empty-provider links.
+- Checklist: code complete; focused UI/POST coverage updated; admin brief, testing guide, and function map updated. No schema/API/service changes. Architecture checkpoints: metadata-only UI preserves transcript privacy; existing system-admin/team ownership guards remain authoritative; clear routes remove selections only and do not alter provider/deletion lifecycle; provider fallback/resolution and structured-note contracts remain unchanged.
+## 2026-07-14 - Admin workspace promotion and retention race fix
+
+- Promoted `admin_mockup.html` to canonical `/admin`; retained deprecated `admin.html` only at `/legacy-admin` without regression coverage.
+- Added a post-provider transcript row lock and expiry check so STT results cannot recreate or persist transcript-derived content after retention expiry.
+- Mid-flight expiry now hard-deletes the transcript root and uses the durable retry-audio cleanup path.
+- Added targeted ingestion-race and canonical admin workspace coverage.
+
+## 2026-07-15 Provider revision inherited-credential isolation
+
+### Scope
+
+- Required-auth STT and LLM revisions now read a blank-submission target token only for inspection, then stage it at a unique versioned Vault reference owned by the draft config.
+- Drafts no longer persist a root credential reference, so concurrent root credential replacement and retired-ref cleanup cannot invalidate a pending draft.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused existing Vault write helpers, UUID versioning, and durable rollback compensation.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged system-admin and team-scoped root lookup.
+- Lifecycle/deletion checkpoint: cleanup live-ref guard unchanged; old root refs can retire while draft refs remain independently live.
+- Docs/tests checkpoint: provider/security docs updated; focused STT/LLM isolation and inherited-write rollback coverage added.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy: tokens and Vault refs remain server-only and unlogged.
+- Ownership: draft creation remains system-admin scoped to target team.
+- Deletion: existing durable cleanup and live-ref protection retained.
+- Provider: inspection, fingerprints/status, no-auth paths, and finalize rebinding retain existing behavior.
+- Structured-note contract: unchanged.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "explicit_credential_draft_commit_failure or inherited_credential_draft_commit_failure or provider_revisions_copy_saved_credentials_before_retired_root_cleanup or llm_no_auth_revision_drops_saved_credential"`: 5 passed.
+- `.venv/bin/pytest -q tests/test_provider_secret_cleanup.py -k "legacy_manually_shared_root_ref"`: 1 passed.
+- `git diff --check`: passed.

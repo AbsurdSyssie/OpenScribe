@@ -11,6 +11,7 @@ Repeatable XSS checks and the current probe plan are documented in [security-xss
 - deletion remains immediate where the architecture says deletion is final
 - transcript retention snapshots are server-owned from team policy; users cannot extend retention through transcript create/start/update payloads
 - provider secrets must not be stored raw in the database
+- required-auth provider revisions that reuse a saved token must copy it into a draft-owned versioned Vault reference before the draft database commit; rollback compensation durably queues any newly written draft reference, and retired-reference cleanup must retain its live-reference guard
 - session identifiers, recovery codes, and password material must not be stored in plaintext form where hashing is sufficient
 
 ## Authentication and onboarding model
@@ -115,11 +116,12 @@ Current implementation:
 - production startup requires `COOKIE_SECURE_MODE=always`
 - production startup requires either `CSRF_SECRET`/`SECRET_KEY` or successful Vault-backed CSRF secret bootstrap
 - HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` when `HSTS_SOURCE=app` (default); deployments where the edge/proxy owns HSTS for every response should set `HSTS_SOURCE=proxy`; deployments where the edge/proxy covers dynamic pages but misses `/static/` assets should set `HSTS_SOURCE=proxy_static_fallback`
-- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`, and `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)`
+- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`, `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)`, and `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`
 - all HTML responses include nonce-based `Content-Security-Policy`
 - public splash and auth/account forms (`/`, `/login`, `/forgot-password`, `/request-access`, `/reset-password`, `/activate-account`) use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0` because they create CSRF cookies or support account flows
 - `/api/` responses use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0`; sensitive transcript/generated-document API prefixes keep the same no-store contract
-- public metadata routes are explicit, short-cacheable (`Cache-Control: public, max-age=3600`), and do not issue CSRF cookies: `/robots.txt`, `/.well-known/security.txt`, and `/sitemap.xml` returning intentional `404` because no sitemap is published
+- public metadata routes are explicit, short-cacheable (`Cache-Control: public, max-age=3600`), and do not issue CSRF cookies: `/robots.txt` denies all compliant crawlers with `User-agent: *` and `Disallow: /`; `/.well-known/security.txt` publishes security contact metadata; `/sitemap.xml` returns intentional `404` because no sitemap is published
+- crawler directives are discovery controls, not authorization controls; authentication and owner-scoped authorization remain mandatory for private content
 - static assets under `/static/` use short public caching (`Cache-Control: public, max-age=3600`) and do not issue CSRF cookies
 - `/docs`, `/redoc`, and `/openapi.json` remain public in local/test by default, but production defaults to full system-admin authentication unless `PUBLIC_API_DOCS=true` is explicitly set
 - the signed CSRF cookie is `HttpOnly`; browser flows receive the same signed value through server-rendered hidden fields and the nonce-protected CSRF bootstrap script
@@ -338,7 +340,7 @@ Implemented now in the STT configuration slice:
 - the active team STT policy is stored separately in `team_stt_selections`
 - leaders may manage only their own team's active selection
 - system admins may manage any team's provisioned config rows and active selection, but must choose the team explicitly
-- the first auth mode is bearer token only
+- STT auth mode is explicit: `bearer` permits Vault credential reads and `none` prevents them for optional/no-auth providers
 - the first request shape is constrained REST metadata for multipart upload, not arbitrary request scripting
 - the official OpenAI adapter is a known-contract path and is intended to use the official Python SDK at runtime rather than OpenAPI discovery
 - OpenAPI inspection remains only for `generic_rest`
@@ -348,9 +350,10 @@ Implemented now in the STT configuration slice:
 - onboarding-only and pending-MFA sessions are blocked from STT management routes
 - STT save-and-inspect stores submitted credentials once in Vault, records only a Vault reference plus a server-side HMAC fingerprint for duplicate warnings, and never returns raw credentials
 - unconfirmed duplicate STT credentials warn before Vault write and before provider inspection
-- invalid first-add STT credentials remove the DB row before Vault cleanup; saved-provider delete clears active selection rows and removes the DB row before best-effort Vault cleanup
-- explicit STT credential removal clears DB references before Vault cleanup after commit; explicit LLM credential removal deletes the Vault secret before clearing the DB reference, tolerates stale/missing Vault content, fails closed if Vault delete fails, and attempts Vault restoration if the DB commit fails after a readable old token snapshot; blank secret fields do not silently remove saved secrets
+- invalid first-add STT credentials roll back the DB row and durably queue or directly delete the newly written Vault secret; saved-provider deletion clears selections and commits cleanup intent with the removed DB reference
+- explicit STT/LLM credential removal and replacement commit the retired exact Vault reference to the provider cleanup outbox in the same transaction that changes the DB reference; blank secret fields do not silently remove saved secrets
 - STT re-inspection uses saved Vault references, marks rejected credentials `invalid`, and clears active STT selections that referenced the invalid provider
+- STT/LLM runtime paths require `auth_mode=bearer` before reading or forwarding a stored Vault credential, so stale references on no-auth rows cannot be sent to provider endpoints
 
 Implemented now in the first transcript chunk-ingestion slice:
 
@@ -421,6 +424,24 @@ Current limitations:
 - rotating-IP attacks are still a future hardening area
 - rate-limit events are persisted in `security_audit_events`, not a separate security-events table
 - `Retry-After` is not yet emitted on 429 responses
+
+## Transcript retry-audio deletion
+
+- transcript, user, team, and retention deletion queue each retry-audio Vault reference in `transcript_audio_cleanup_jobs` in the same database transaction that removes the transcript root
+- cleanup rows contain a Vault reference and retry metadata only; they contain no audio, transcript text, owner/team foreign keys, or other transcript-derived content
+- Vault deletion starts only after the root-deletion transaction commits; successful deletion removes the cleanup row
+- Vault failures retain the cleanup row with bounded exponential backoff, and Celery Beat retries bounded batches every 10 seconds
+- deleting an already-missing Vault path is idempotent success
+- retry logs contain cleanup/job IDs and error codes, never Vault references or confidential content
+
+## Provider credential deletion
+
+- STT, LLM, and de-identification credential retirement writes an exact Vault reference to the FK-free `provider_secret_cleanup_jobs` outbox in the same transaction that removes or replaces the database reference
+- provider configuration deletion, draft cancellation, revision promotion, replacement, and team deletion never depend on a best-effort post-commit delete
+- replacement credentials use versioned Vault paths so a failed database commit cannot overwrite the still-live credential
+- the cleanup worker rechecks all provider tables before deleting; a reference that became live again is preserved and its stale cleanup intent is removed
+- Vault failures retain the cleanup row and retry with bounded exponential backoff; an already-missing Vault path is idempotent success
+- cleanup logs contain cleanup IDs, provider kind, attempt counts, and error codes only; they never contain Vault references or credentials
 
 ## Planned next hardening: lockouts and unlock workflow
 

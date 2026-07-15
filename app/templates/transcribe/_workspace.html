@@ -1,4 +1,22 @@
 {% set dictation_unavailable_message = dictation_stt_status_message or 'Not available. Ask your team lead to enable post-consultation dictation.' %}
+{% macro loading_orbit(center='star') -%}
+<div class="note-generation-loading__orbit" aria-hidden="true">
+<div class="note-generation-loading__ring"></div>
+<div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
+{% if center == 'waveform' %}
+<div class="note-generation-loading__waveform"><span></span><span></span><span></span><span></span><span></span></div>
+{% else %}
+<div class="note-generation-loading__star">&#10022;</div>
+{% endif %}
+</div>
+{%- endmacro %}
+{% macro generation_loading(label, message, detail=none) -%}
+<div class="note-generation-loading" role="status" aria-live="polite">
+{{ loading_orbit() }}
+<h2>Generating your {{ label }}</h2>
+<p>{{ message }}{% if detail %}<br>{{ detail }}{% endif %}</p>
+</div>
+{%- endmacro %}
 
 <main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
 <header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
@@ -251,7 +269,6 @@ aria-expanded="false">
 <span class="template-picker-button__mode" data-template-picker-mode>{% if latest_template_version %}{{ 'Sectioned' if latest_template_version.mode.value == 'structured' else 'Free text' }}{% endif %}</span>
 </button>
 {% if not latest_generated_document or latest_generated_document.status.value != "ready" %}
-<span class="note-header-hint">Start recording, then add lines as consultation unfolds.</span>
 {% endif %}
 </div>
 <div class="note-header-right">
@@ -415,25 +432,15 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) %}hidden{% endif %}>
 {% if latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.edited_output_text %}
 {{ latest_generated_document.edited_output_text }}
-{% elif latest_generated_document and latest_generated_document.status.value == "queued" %}
-{% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
-<span class="text-slate">Waiting for transcription to finish before writing your note.</span>
-{% else %}
-<span class="text-slate">Your note is waiting to be written.</span>
-{% endif %}
-{% elif latest_generated_document and latest_generated_document.status.value == "processing" %}
-<span class="text-slate">Your note is being written.</span>
+{% elif latest_generated_document and latest_generated_document.status.value in ["queued", "processing"] %}
+{% set note_generation_loading_message = 'Waiting for transcription to finish before writing your note.' if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else 'This usually takes a few seconds.' %}
+{% set note_generation_loading_detail = none if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else "We're preparing your clinical note..." %}
+{{ generation_loading('note', note_generation_loading_message, note_generation_loading_detail) }}
 {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
 <span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
 {% elif latest_generated_document %}
 <span class="text-slate">No note content yet.</span>
 {% else %}
-<div class="empty-state empty-state--clinical-note">
-<div class="empty-state__icon">
-<i class="w-10 h-10 text-slate/30" data-lucide="file-text"></i>
-</div>
-<div class="empty-state__text">Add note lines here as the consultation unfolds.</div>
-</div>
 {% endif %}
 </div>
 
@@ -477,10 +484,6 @@ data-settings-url="/home/templates/editor?scope={% if template.scope.value == 't
 class="structured-sections-panel"
 data-generated-structured-panel
 {% if not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-structured-note-empty-state {% if structured_editor_has_text %}hidden{% endif %}>
-<div class="note-editor-empty-state__title">No note lines yet</div>
-<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
-</div>
 <div class="structured-sections-list" data-generated-structured-sections>
 {% for section in structured_editor_sections %}
 <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
@@ -511,10 +514,6 @@ data-generated-structured-panel
 class="freeform-note-panel"
 data-generated-freeform-panel
 {% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
-<div class="note-editor-empty-state" data-freeform-note-empty-state {% if freeform_editor_has_text %}hidden{% endif %}>
-<div class="note-editor-empty-state__title">No note lines yet</div>
-<div class="note-editor-empty-state__body">Select a template and start recording. Add note lines here as the consultation unfolds.</div>
-</div>
 <div class="freeform-note-list" data-generated-freeform-rows>
 {% for row in freeform_editor_rows %}
 <div class="statement-row freeform-note-row" data-freeform-note-row>
@@ -568,18 +567,19 @@ data-latest-followup-id="{{ latest_followup_document.id if latest_followup_docum
 data-latest-followup-updated-at="{{ latest_followup_document.updated_at if latest_followup_document else '' }}">
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
-{% elif latest_followup_document and latest_followup_document.status.value == "queued" %}
+{% elif latest_followup_document and latest_followup_document.status.value in ["queued", "processing"] %}
+{% set followup_generation_loading_detail = none %}
 {% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
 {% if latest_followup_document.generator_type and latest_followup_document.generator_type.value == "quick_action" %}
-<span class="text-slate">Waiting for transcription to finish before running this quick action.</span>
+{% set followup_generation_loading_message = 'Waiting for transcription to finish before running this quick action.' %}
 {% else %}
-<span class="text-slate">Waiting for transcription to finish before writing your follow-up.</span>
+{% set followup_generation_loading_message = 'Waiting for transcription to finish before writing your follow-up.' %}
 {% endif %}
 {% else %}
-<span class="text-slate">Waiting to be written...</span>
+{% set followup_generation_loading_message = 'This usually takes a few seconds.' %}
+{% set followup_generation_loading_detail = "We're preparing your follow-up..." %}
 {% endif %}
-{% elif latest_followup_document and latest_followup_document.status.value == "processing" %}
-<span class="text-slate">Your follow-up is being written.</span>
+{{ generation_loading('follow-up', followup_generation_loading_message, followup_generation_loading_detail) }}
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
 <span class="text-slate">The latest follow-up could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
 {% else %}
@@ -762,11 +762,26 @@ hidden
 <div class="structured-workspace__body">
 <div class="transcript-review-grid" data-transcript-review-grid>
 <section class="transcript-review-grid__transcript">
-<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft>
+<div
+class="note-generation-loading note-generation-loading--transcribing"
+data-transcription-loading
+role="status"
+aria-live="polite"
+{% if not active_transcript or active_transcript.status.value != "transcribing" %}hidden{% endif %}>
+{{ loading_orbit('waveform') }}
+<h2>Transcribing your conversation</h2>
+<p>This usually takes a few seconds.<br>We're listening and turning your conversation into a clinical note.</p>
+</div>
+<div
+class="note-generation-loading note-generation-loading--transcribing note-generation-loading--idle"
+data-transcript-empty
+{% if (active_transcript and active_transcript.status.value == "transcribing") or (active_transcript and active_transcript.current_draft_text) %}hidden{% endif %}>
+{{ loading_orbit('waveform') }}
+<h2>Start a recording to see your transcript</h2>
+</div>
+<div class="transcript-content flex-1 min-h-0 overflow-y-auto" data-active-draft{% if not active_transcript or active_transcript.status.value == "transcribing" or not active_transcript.current_draft_text %} hidden{% endif %}>
 {% if active_transcript and active_transcript.current_draft_text %}
 {{ active_transcript.current_draft_text }}
-{% else %}
-<span class="text-slate">No conversation text yet. Upload recording or use microphone to begin. Transcript will appear here as consultation unfolds.</span>
 {% endif %}
 </div>
 <section class="dictation-compact" data-dictation-compact>

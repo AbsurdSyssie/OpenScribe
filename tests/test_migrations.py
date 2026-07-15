@@ -48,7 +48,7 @@ def test_alembic_upgrade_keeps_application_loggers_enabled():
 
 
 @pytest.mark.migration
-def test_alembic_upgrade_head_creates_expected_schema():
+def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisions():
     reset_public_schema()
 
     command.upgrade(alembic_config(), "head")
@@ -68,6 +68,7 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "generated_documents",
         "post_consultation_dictation_segments",
         "post_consultation_dictations",
+            "provider_secret_cleanup_jobs",
             "provider_usage_events",
             "quick_actions",
             "quick_action_versions",
@@ -96,11 +97,224 @@ def test_alembic_upgrade_head_creates_expected_schema():
         "user_mfa_methods",
         "user_recovery_codes",
         "transcripts",
+        "transcript_audio_cleanup_jobs",
         "transcript_ingestion_jobs",
         "transcript_versions",
     }
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
     assert "ix_security_audit_events_created_at" in audit_indexes
+    inspector = inspect(engine)
+    for table in ("team_stt_configs", "team_llm_configs"):
+        assert "revision_of_config_id" in {column["name"] for column in inspector.get_columns(table)}
+        indexes = {index["name"]: index for index in inspector.get_indexes(table)}
+        assert indexes[f"uq_{table}_team_label_lower"]["unique"] is True
+        assert "revision_of_config_id IS NULL" in indexes[f"uq_{table}_team_label_lower"]["dialect_options"]["postgresql_where"]
+        assert indexes[f"uq_{table}_pending_revision"]["unique"] is True
+        assert "revision_of_config_id IS NOT NULL" in indexes[f"uq_{table}_pending_revision"]["dialect_options"]["postgresql_where"]
+    provider_cleanup_columns = {column["name"] for column in inspector.get_columns("provider_secret_cleanup_jobs")}
+    provider_cleanup_fks = inspector.get_foreign_keys("provider_secret_cleanup_jobs")
+    provider_cleanup_indexes = inspector.get_indexes("provider_secret_cleanup_jobs")
+    assert {
+        "id",
+        "secret_ref",
+        "kind",
+        "attempt_count",
+        "last_error_code",
+        "next_attempt_at",
+        "created_at",
+        "updated_at",
+    } == provider_cleanup_columns
+    assert provider_cleanup_fks == []
+    assert any(item["name"] == "ix_provider_secret_cleanup_jobs_next_attempt_at" for item in provider_cleanup_indexes)
+    with engine.connect() as connection:
+        stt_auth_modes = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'sttauthmode'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+    assert stt_auth_modes == ["bearer", "none"]
+
+
+@pytest.mark.migration
+def test_provider_revision_downgrade_blocks_while_pending_rows_hold_vault_refs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "w4x5y6z7a8b9")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000701', 'Revision Rollback', 'revision rollback', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000702', 'Rollback Admin', 'rollback-admin@example.com', 'hash',
+                    NULL, NULL, true, 'active', false, 'complete', true, true, NOW(), NOW(), NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_stt_configs (
+                    id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                    transcribe_path, auth_mode, available_models_json, file_field_name, response_text_path,
+                    extra_form_fields_json, vault_secret_ref, setup_status, is_active,
+                    created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000711', '00000000-0000-0000-0000-000000000701', NULL,
+                    'Clinic STT', 'custom_rest_openapi', 'openai_compatible_rest', 'http://127.0.0.1:7000',
+                    '/v1/audio/transcriptions', 'bearer', '[]'::json, 'file', 'text', '{}'::json,
+                    'secret:stt-root', 'ready', true, '00000000-0000-0000-0000-000000000702',
+                    '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000712', '00000000-0000-0000-0000-000000000701',
+                    '00000000-0000-0000-0000-000000000711', 'Clinic STT', 'custom_rest_openapi',
+                    'openai_compatible_rest', 'http://127.0.0.1:7001', '/v1/audio/transcriptions', 'bearer',
+                    '[]'::json, 'file', 'text', '{}'::json, 'secret:stt-draft', 'pending', true,
+                    '00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO team_llm_configs (
+                    id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                    auth_mode, available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+                )
+                VALUES
+                (
+                    '00000000-0000-0000-0000-000000000721', '00000000-0000-0000-0000-000000000701', NULL,
+                    'Clinic LLM', 'openai', 'openai_chat', 'https://api.openai.com/v1', 'bearer', '[]'::json,
+                    '{}'::json, 'ready', 'secret:llm-root', true, '00000000-0000-0000-0000-000000000702',
+                    '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                ),
+                (
+                    '00000000-0000-0000-0000-000000000722', '00000000-0000-0000-0000-000000000701',
+                    '00000000-0000-0000-0000-000000000721', 'Clinic LLM', 'openai', 'openai_chat',
+                    'https://api.openai.com/v1', 'bearer', '[]'::json, '{}'::json, 'pending', 'secret:llm-draft',
+                    true, '00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000702', NOW(), NOW()
+                )
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="contains pending revisions"):
+        command.downgrade(alembic_config(), "v3w4x5y6z7a8")
+
+    with isolated_engine.begin() as connection:
+        inspector = inspect(connection)
+        for table in ("team_stt_configs", "team_llm_configs"):
+            assert "revision_of_config_id" in {column["name"] for column in inspector.get_columns(table)}
+            assert connection.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 2
+
+
+@pytest.mark.migration
+def test_stt_no_auth_downgrade_blocks_while_configs_use_none():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "x5y6z7a8b9c0")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+            VALUES ('00000000-0000-0000-0000-000000000731', 'No Auth Rollback', 'no auth rollback', 'active', 30, NOW(), NOW())
+        """))
+        connection.execute(text("""
+            INSERT INTO users (
+                id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000732', 'Rollback Admin', 'no-auth-rollback@example.com', 'hash',
+                NULL, NULL, true, 'active', false, 'complete', true, true, NOW(), NOW(), NULL
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO team_stt_configs (
+                id, team_id, revision_of_config_id, label, provider_preset, adapter_kind, base_url,
+                transcribe_path, auth_mode, available_models_json, file_field_name, response_text_path,
+                extra_form_fields_json, vault_secret_ref, setup_status, is_active,
+                created_by_user_id, updated_by_user_id, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000733', '00000000-0000-0000-0000-000000000731', NULL,
+                'Local no auth', 'custom_rest_openapi', 'openai_compatible_rest', 'http://127.0.0.1:7000',
+                '/v1/audio/transcriptions', 'none', '[]'::json, 'file', 'text', '{}'::json, '', 'ready', true,
+                '00000000-0000-0000-0000-000000000732', '00000000-0000-0000-0000-000000000732', NOW(), NOW()
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="auth_mode='none'"):
+        command.downgrade(alembic_config(), "w4x5y6z7a8b9")
+
+
+@pytest.mark.migration
+def test_provider_cleanup_downgrade_blocks_while_jobs_retain_vault_refs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO provider_secret_cleanup_jobs (id, secret_ref, kind)
+            VALUES (
+                '00000000-0000-0000-0000-000000000741',
+                'secret:openscribe/llm/team/00000000-0000-0000-0000-000000000742/config/00000000-0000-0000-0000-000000000743',
+                'llm'
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="pending jobs retain Vault references"):
+        command.downgrade(alembic_config(), "y6z7a8b9c0d1")
+
+    with isolated_engine.connect() as connection:
+        assert inspect(connection).has_table("provider_secret_cleanup_jobs")
+        assert connection.execute(text("SELECT count(*) FROM provider_secret_cleanup_jobs")).scalar_one() == 1
+
+
+@pytest.mark.migration
+def test_audio_cleanup_downgrade_blocks_while_jobs_retain_vault_refs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "y6z7a8b9c0d1")
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO transcript_audio_cleanup_jobs (id, secret_ref)
+            VALUES (
+                '00000000-0000-0000-0000-000000000751',
+                'secret:openscribe/transcript-ingestion/00000000-0000-0000-0000-000000000752/source-audio'
+            )
+        """))
+
+    with pytest.raises(RuntimeError, match="pending jobs retain Vault references"):
+        command.downgrade(alembic_config(), "x5y6z7a8b9c0")
+
+    with isolated_engine.connect() as connection:
+        assert inspect(connection).has_table("transcript_audio_cleanup_jobs")
+        assert connection.execute(text("SELECT count(*) FROM transcript_audio_cleanup_jobs")).scalar_one() == 1
 
 
 @pytest.mark.migration
@@ -299,6 +513,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     clinical_entity_run_fks = inspector.get_foreign_keys("clinical_entity_runs")
     manual_pii_columns = {column["name"] for column in inspector.get_columns("transcript_manual_pii_entities")}
     transcript_columns = {column["name"] for column in inspector.get_columns("transcripts")}
+    transcript_audio_cleanup_columns = {column["name"] for column in inspector.get_columns("transcript_audio_cleanup_jobs")}
+    transcript_audio_cleanup_fks = inspector.get_foreign_keys("transcript_audio_cleanup_jobs")
+    transcript_audio_cleanup_indexes = inspector.get_indexes("transcript_audio_cleanup_jobs")
     transcript_ingestion_job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
     user_encryption_key_columns = {column["name"] for column in inspector.get_columns("user_encryption_keys")}
     auth_email_token_columns = {column["name"] for column in inspector.get_columns("auth_email_tokens")}
@@ -308,6 +525,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     smart_phrase_fks = inspector.get_foreign_keys("smart_phrases")
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
+    assert {"id", "secret_ref", "attempt_count", "last_error_code", "next_attempt_at", "created_at", "updated_at"} == transcript_audio_cleanup_columns
+    assert transcript_audio_cleanup_fks == []
+    assert any(item["name"] == "ix_transcript_audio_cleanup_jobs_next_attempt_at" for item in transcript_audio_cleanup_indexes)
     assert {"session_token_hash", "auth_level", "status", "revoke_reason"} <= session_columns
     assert {"device_token_hash", "last_mfa_verified_at", "expires_at", "revoke_reason"} <= trusted_device_columns
     assert {"requested_name", "requested_email", "requested_team_name", "status"} <= request_columns

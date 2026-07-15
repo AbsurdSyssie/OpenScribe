@@ -15,7 +15,7 @@ if str(ROOT_DIR) not in sys.path:
 from app.errors import AppError
 from app.models import Transcript, User, UserEncryptionKey
 from app.services.content_crypto import ensure_user_dek, get_active_user_key
-from app.services.transcripts import delete_retry_sources_for_transcripts
+from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
 from app.services.vault import unwrap_user_content_data_key
 
 
@@ -38,12 +38,13 @@ def user_content_key_is_unreadable(db: Session, *, user: User) -> bool:
 
 def reset_owner_content_for_user(db: Session, *, user: User) -> None:
     transcript_rows = list(db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id)))
-    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
     for transcript in transcript_rows:
         db.delete(transcript)
     for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
         db.delete(key_record)
     db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     ensure_user_dek(db, user=user)
     db.commit()
 

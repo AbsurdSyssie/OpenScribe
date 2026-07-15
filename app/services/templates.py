@@ -22,6 +22,7 @@ from app.models import (
     GeneratedDocumentStatus,
     HallucinationCheckStatus,
     LlmAdapterKind,
+    LlmAuthMode,
     PromptTemplate,
     PromptTemplateVersion,
     QuickAction,
@@ -67,11 +68,13 @@ from app.services.redaction import (
 )
 from app.services.security_audit import record_security_event
 from app.services.transcripts import (
+    get_active_owner_transcript,
     manual_pii_entity_value,
     freeform_working_note_text,
     normalize_structured_working_note,
     reconcile_transcript_status,
     transcript_structured_context,
+    transcript_is_expired,
     transcript_version_text,
 )
 from app.services.vault import read_team_llm_bearer_token
@@ -988,11 +991,7 @@ def duplicate_personal_quick_action(db: Session, actor: User, *, quick_action_id
 
 def list_generated_documents_for_transcript(db: Session, actor: User, *, transcript_id: UUID) -> list[GeneratedDocument]:
     _require_team_member(actor)
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != actor.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
     return list(
         db.scalars(
             select(GeneratedDocument)
@@ -1009,6 +1008,7 @@ def delete_generated_document(db: Session, actor: User, *, generated_document_id
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    get_active_owner_transcript(db, actor, transcript_id=document.transcript_id)
     transcript_id = document.transcript_id
     for event in document.provider_usage_events:
         event.generated_document_id = None
@@ -1056,6 +1056,7 @@ def update_generated_document_content(
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(generated_document_id)})
     if document.owner_user_id != actor.id:
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
+    get_active_owner_transcript(db, actor, transcript_id=document.transcript_id)
     if document.status is not GeneratedDocumentStatus.ready:
         raise AppError(409, "conflict", "Generated document is not ready for editing")
 
@@ -1242,6 +1243,8 @@ def _ensure_generation_can_be_queued(db: Session, *, transcript: Transcript) -> 
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
     if locked_transcript.owner_user_id != transcript.owner_user_id:
         raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    if transcript_is_expired(locked_transcript):
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
     transcript = locked_transcript
     if transcript.status is TranscriptStatus.recording:
         raise AppError(409, "conflict", "Stop recording before generating from this transcript")
@@ -2401,7 +2404,11 @@ def _run_hallucination_check(
     edit_cap = _hallucination_check_edit_cap(note_generation_options)
     output_token_cap = _note_generation_output_token_cap(note_generation_options)
     try:
-        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+        bearer_token = (
+            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
+            else None
+        )
     except AppError as exc:
         if debug_payload is not None:
             debug_payload["failure_code"] = exc.code
@@ -2753,11 +2760,7 @@ def queue_document_generation_from_template(
     request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != actor.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
     transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     template = _resolve_available_template_for_user(db, actor, template_id=template_id)
@@ -2860,11 +2863,7 @@ def queue_followup_generation(
     request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != actor.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
     transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     clean_prompt_text = prompt_text.strip()
@@ -2964,11 +2963,7 @@ def queue_quick_action_generation(
     request: Request | None = None,
 ) -> GeneratedDocument:
     _require_team_member(actor)
-    transcript = db.get(Transcript, transcript_id)
-    if transcript is None:
-        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if transcript.owner_user_id != actor.id:
-        raise AppError(403, "forbidden", "Transcript access is restricted to the owning user")
+    transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
     transcript, waiting_for_transcript = _ensure_generation_can_be_queued(db, transcript=transcript)
 
     quick_action = _resolve_available_quick_action_for_user(db, actor, quick_action_id=quick_action_id)
@@ -3157,6 +3152,9 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     document = db.get(GeneratedDocument, document_id)
     if document is None:
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(document_id)})
+    live_transcript = db.get(Transcript, document.transcript_id)
+    if live_transcript is None or transcript_is_expired(live_transcript):
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(document.transcript_id)})
     if document.status in {GeneratedDocumentStatus.ready, GeneratedDocumentStatus.failed}:
         return document
     failed_document = _refresh_document_transcript_snapshot_when_ready(db, document=document)
@@ -3171,8 +3169,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         raise AppError(422, "business_rule_violation", "No resolved LLM model is stored for this generated document")
     redaction_run = ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
     document.redaction_run_id = redaction_run.id
-    live_transcript = db.get(Transcript, document.transcript_id)
-    dictation_text = _effective_dictation_text(db, transcript=live_transcript) if live_transcript is not None else ""
+    dictation_text = _effective_dictation_text(db, transcript=live_transcript)
     transcript_text, dictation_text, extra_phi_index = _redacted_generation_source_texts(
         db,
         transcript_version=transcript_version,
@@ -3369,7 +3366,11 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
 
     try:
-        bearer_token = read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id) if config.vault_secret_ref else None
+        bearer_token = (
+            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
+            else None
+        )
         request_body = llm_request_payload
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(

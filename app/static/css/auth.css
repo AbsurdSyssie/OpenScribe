@@ -1,0 +1,457 @@
+/* Authentication and recovery page layout. Shared controls come from components.css. */
+
+.auth-page {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  line-height: 1.5;
+  position: relative;
+}
+
+.auth-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  opacity: 0.018;
+  z-index: 0;
+}
+
+.auth-shell,
+.auth-page main {
+  position: relative;
+  z-index: 1;
+  width: min(760px, 100%);
+  display: grid;
+  gap: 20px;
+}
+
+.auth-page--login .auth-shell,
+.auth-page--login main {
+  width: min(1080px, 100%);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: stretch;
+}
+
+.auth-page--onboarding .auth-shell,
+.auth-page--onboarding main {
+  width: min(980px, 100%);
+  grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.18fr);
+  align-items: start;
+}
+
+.auth-page--mfa .auth-shell,
+.auth-page--mfa main {
+  width: min(720px, 100%);
+}
+
+.auth-hero,
+.auth-page .hero {
+  background: linear-gradient(180deg, rgba(245, 241, 235, 0.95) 0%, rgba(255, 255, 255, 0.98) 100%);
+}
+
+.auth-page--onboarding .auth-hero,
+.auth-page--onboarding .hero {
+  position: sticky;
+  top: 28px;
+}
+
+.auth-eyebrow,
+.auth-page .eyebrow,
+.section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(226, 222, 214, 0.92);
+}
+
+.auth-eyebrow::before,
+.auth-page .eyebrow::before,
+.section-label::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.auth-page h1,
+.auth-page h2 {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.auth-page h1 {
+  font-size: clamp(2rem, 4vw, 2.9rem);
+  line-height: 1.04;
+}
+
+.auth-page--login h1 {
+  max-width: 11ch;
+  margin-bottom: 14px;
+}
+
+.auth-page h2 {
+  font-size: 1.5rem;
+  line-height: 1.12;
+}
+
+.auth-page p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.auth-intro {
+  max-width: 60ch;
+  font-size: 1rem;
+}
+
+.auth-hero-copy,
+.auth-content,
+.card-top {
+  display: grid;
+  gap: 16px;
+}
+
+.card-top {
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(226, 222, 214, 0.9);
+}
+
+.feature-list,
+.steps {
+  display: grid;
+  gap: 12px;
+}
+
+.feature-list {
+  margin-top: 6px;
+}
+
+.feature {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 0;
+  border-top: 1px solid rgba(226, 222, 214, 0.9);
+}
+
+.feature:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.feature-dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 0.25rem;
+  border-radius: 999px;
+  background: var(--accent-pale);
+  border: 1px solid rgba(61, 122, 140, 0.28);
+  box-shadow: inset 0 0 0 3px rgba(29, 79, 94, 0.12);
+}
+
+.feature strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+  font-size: 0.97rem;
+}
+
+.feature span,
+.helper,
+.footer-note,
+.meta {
+  color: var(--muted);
+}
+
+.auth-actions,
+.auth-page .actions,
+.submit-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.auth-actions--spaced,
+.auth-page .actions--spaced {
+  margin-top: 18px;
+}
+
+.auth-page form {
+  margin-top: 18px;
+}
+
+.auth-page input,
+.auth-page textarea {
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.auth-page textarea {
+  min-height: 120px;
+}
+
+.auth-page .panel {
+  border-radius: 18px;
+  padding: 28px;
+  box-shadow: var(--shadow-soft);
+}
+
+.auth-page button:not(.button):not(.btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 44px;
+  padding: 11px 17px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--transition), background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.auth-page button:not(.button):not(.btn):hover {
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.auth-page .secondary {
+  background: rgba(255, 255, 255, 0.74) !important;
+  color: var(--ink) !important;
+  border-color: var(--border-strong) !important;
+  box-shadow: none !important;
+}
+
+.auth-page .secondary:hover {
+  background: white !important;
+  border-color: rgba(61, 122, 140, 0.36) !important;
+  color: var(--accent) !important;
+}
+
+.flash {
+  margin-bottom: 16px;
+}
+
+.message {
+  padding: 14px 16px;
+  border: 1px solid rgba(56, 161, 105, 0.25);
+  border-radius: var(--radius-sm);
+  color: var(--success);
+  background: rgba(56, 161, 105, 0.06);
+}
+
+.message.error,
+.message--error {
+  border-color: rgba(197, 48, 48, 0.2);
+  color: var(--error);
+  background: rgba(197, 48, 48, 0.06);
+}
+
+.card-top {
+  gap: 8px;
+}
+
+.helper {
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
+.footer-note,
+.meta {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(226, 222, 214, 0.9);
+  font-size: 0.9rem;
+}
+
+.steps {
+  margin-top: 4px;
+  gap: 10px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid rgba(226, 222, 214, 0.75);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.step-number {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--accent-pale);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.step strong {
+  display: block;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.step span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.step.is-active {
+  border-color: rgba(61, 122, 140, 0.32);
+  background: white;
+}
+
+.step.is-active .step-number {
+  background: var(--accent);
+  color: white;
+}
+
+.step.is-complete .step-number {
+  background: rgba(56, 161, 105, 0.12);
+  color: var(--success);
+}
+
+.inline-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.qr {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  margin-top: 16px;
+}
+
+.qr img {
+  width: 220px;
+  height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: white;
+  padding: 12px;
+  box-shadow: var(--shadow-soft);
+}
+
+.secret,
+.code-list div {
+  border: 1px solid rgba(226, 222, 214, 0.9);
+  border-radius: 12px;
+  background: var(--parchment);
+  color: var(--ink);
+}
+
+.secret {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+.secret strong,
+.secret small,
+.code-list {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.code-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.code-list div {
+  padding: 10px 12px;
+}
+
+.signout-form {
+  margin-top: 0 !important;
+  padding-top: 16px;
+  border-top: 1px solid rgba(226, 222, 214, 0.9);
+}
+
+@media (max-width: 820px) {
+  .auth-page {
+    padding: 18px;
+  }
+
+  .auth-page--onboarding .auth-shell,
+  .auth-page--onboarding main,
+  .auth-page--login .auth-shell,
+  .auth-page--login main {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-page--onboarding .auth-hero,
+  .auth-page--onboarding .hero {
+    position: static;
+  }
+
+  .auth-page .panel {
+    padding: 22px;
+  }
+
+  .auth-actions,
+  .auth-page .actions,
+  .submit-row {
+    display: grid;
+  }
+
+  .auth-actions,
+  .auth-page .actions,
+  .auth-actions .button,
+  .auth-actions .btn,
+  .auth-page button,
+  .auth-page .button {
+    width: 100%;
+  }
+
+  .auth-page button,
+  .auth-page .button {
+    justify-content: center;
+  }
+
+  .auth-page .toast-container {
+    left: 18px;
+    right: 18px;
+  }
+
+  .auth-page .toast {
+    max-width: none;
+  }
+}

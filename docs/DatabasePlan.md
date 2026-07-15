@@ -1000,6 +1000,24 @@ This applies to:
 * retention-based delete
 * system-level user deletion cascade
 
+Expired transcript roots are rejected by the central owner-content gate as soon
+as `retention_expires_at` is reached, including workspace hydration and mutation
+paths. Celery Beat queues hard-delete cleanup every 10 seconds. Each task
+invocation deletes at most one locked bounded batch, then returns; later Beat
+runs drain any backlog. Beat tasks expire after one interval, preventing stale
+queued work from accumulating. Concurrent workers can process distinct batches;
+`FOR UPDATE SKIP LOCKED` prevents them from deleting the same root. Database
+cascades remove transcript-derived children. Production therefore runs both
+Celery worker and Beat processes.
+Team retention changes apply to transcripts created afterward and do not extend
+or recalculate existing fixed expiry timestamps.
+
+Vault-backed retry audio uses a transactionally written,
+`transcript_audio_cleanup_jobs` outbox with no transcript, user, or team foreign
+keys. Root deletion and the cleanup reference commit together before any Vault
+delete call. Successful or already-absent Vault deletes remove the outbox row;
+failures retain metadata-only retry state for bounded scheduled processing.
+
 ## 15.2 Generated document deletion
 
 When a generated document is deleted manually:

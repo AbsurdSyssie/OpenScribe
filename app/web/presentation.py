@@ -78,6 +78,7 @@ from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
+    get_llm_config as get_llm_config_service,
     get_user_llm_preference as get_user_llm_preference_service,
     list_selectable_llm_configs as list_selectable_llm_configs_service,
     list_llm_configs as list_llm_configs_service,
@@ -98,6 +99,7 @@ from ..services.redaction import (
 from ..services.stt import (
     active_team_stt_selection as active_team_stt_selection_service,
     get_team_stt_selection as get_team_stt_selection_service,
+    get_stt_config as get_stt_config_service,
     list_selectable_stt_configs as list_selectable_stt_configs_service,
     list_stt_configs as list_stt_configs_service,
 )
@@ -842,10 +844,20 @@ def render_admin(
     admin_return_view: str = "",
     template_name: str | None = None,
     extra_admin_tabs: set[str] | None = None,
+    workspace_team_tab: str | None = None,
+    default_template_return_tab: str = "global-defaults",
 ):
+    workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
+    if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
+        workspace_team_tab = active_admin_tab
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
+    if edit_stt_config is None and selected_uuid and selected_stt_config_id and selected_stt_config_id != "new":
+        try:
+            edit_stt_config = get_stt_config_service(db, current_user, config_id=UUID(selected_stt_config_id), team_id=selected_uuid)
+        except (ValueError, AppError):
+            edit_stt_config = None
     stt_selection = get_team_stt_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     stt_dictation_selection = (
         get_team_stt_selection_service(
@@ -859,6 +871,11 @@ def render_admin(
     )
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
+    if edit_llm_config is None and selected_uuid and selected_llm_config_id and selected_llm_config_id != "new":
+        try:
+            edit_llm_config = get_llm_config_service(db, current_user, config_id=UUID(selected_llm_config_id), team_id=selected_uuid)
+        except (ValueError, AppError):
+            edit_llm_config = None
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     hallucination_check_selection = get_team_hallucination_check_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     deidentification_providers = list_deidentification_providers_service(db, current_user)
@@ -877,7 +894,17 @@ def render_admin(
     selected_default_quick_action = next((quick_action for quick_action in default_quick_actions if str(quick_action.id) == selected_default_quick_action_id), None)
     default_template_latest_version = _latest_template_version(selected_default_template) if selected_default_template is not None else None
     default_quick_action_latest_version = _latest_quick_action_version(selected_default_quick_action) if selected_default_quick_action is not None else None
-    available_admin_tabs = {"providers", "directory", "requests", "usage", "defaults", "audit"}
+    available_admin_tabs = {
+        "providers",
+        "directory",
+        "requests",
+        "system-admins",
+        "global-defaults",
+        "deid-providers",
+        "usage",
+        "defaults",
+        "audit",
+    }
     if extra_admin_tabs:
         available_admin_tabs = available_admin_tabs | extra_admin_tabs
     resolved_admin_tab = active_admin_tab if active_admin_tab in available_admin_tabs else "providers"
@@ -895,6 +922,12 @@ def render_admin(
         "usage_kpi_cards": [],
         "usage_window_summaries": [],
         "usage_trend_points": [],
+        "usage_comparison_trend_points": [],
+        "usage_range_key": "30d",
+        "usage_range_label": "Last 30 days",
+        "usage_range_bucket": "day",
+        "usage_has_comparison": True,
+        "usage_has_activity": False,
         "usage_team_rows": [],
         "usage_user_rows": [],
         "usage_provider_rows": [],
@@ -902,8 +935,12 @@ def render_admin(
         "usage_ingestion_rows": [],
         "usage_failure_rows": [],
     }
-    if resolved_admin_tab in {"usage", "failures"}:
-        usage_context = admin_usage_overview_service(db, team_id=selected_uuid)
+    if resolved_admin_tab in {"usage", "failures"} or workspace_team_tab == "usage":
+        usage_context = admin_usage_overview_service(
+            db,
+            team_id=selected_uuid,
+            range_key=request.query_params.get("range", "30d"),
+        )
     audit_context = {
         "audit_since": request.query_params.get("audit_since", "24h"),
         "audit_action_filter": request.query_params.get("audit_action", ""),
@@ -969,11 +1006,21 @@ def render_admin(
             }
         )
     email_recovery_enabled = email_password_reset_enabled_service()
+    teams = list_teams_service(db)
+    users = list_users_service(db)
+    selected_team = next((team for team in teams if str(team.id) == selected_team_id), None)
+    selected_team_users = [
+        user
+        for user in users
+        if selected_team is not None and user.team_id == selected_team.id and not user.is_system_admin
+    ]
     context = {
         "request": request,
         "current_user": current_user,
-        "teams": list_teams_service(db),
-        "users": list_users_service(db),
+        "teams": teams,
+        "users": users,
+        "selected_team": selected_team,
+        "selected_team_users": selected_team_users,
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
         "selected_llm_config_id": selected_llm_config_id,
@@ -1000,6 +1047,7 @@ def render_admin(
         "deidentification_inspection": deidentification_inspection,
         "deidentification_form": deidentification_form_override or deidentification_form_defaults(edit_deidentification_provider),
         "deidentification_assignments": deidentification_assignments,
+        "assigned_deidentification_provider_ids": {assignment.provider_id for assignment in deidentification_assignments},
         "deidentification_selection": deidentification_selection,
         "clinical_nlp_selection": clinical_nlp_selection,
         "selectable_deidentification_providers": (
@@ -1025,6 +1073,8 @@ def render_admin(
         "active_provider_tab": resolved_provider_tab,
         "admin_page_route": admin_page_route,
         "admin_return_view": admin_return_view,
+        "workspace_team_tab": workspace_team_tab,
+        "default_template_return_tab": default_template_return_tab,
         "message": message,
         "message_kind": message_kind,
         "recovery_temporary_password": recovery_temporary_password,
@@ -1033,20 +1083,31 @@ def render_admin(
         **usage_context,
         **audit_context,
     }
-    resolved_template_name = template_name or "admin.html"
+    resolved_template_name = template_name or ("admin.html" if admin_return_view == "legacy" else "admin_mockup.html")
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
 
 
 def admin_page_route_from_return_view(return_view: str | None) -> str:
+    if return_view == "legacy":
+        return "/legacy-admin"
     if return_view == "admin2":
         return "/admin2"
-    return "/admin-restyled" if return_view == "restyled" else "/admin"
+    return "/admin"
 
 
 def admin_return_view_value(return_view: str | None) -> str:
+    if return_view == "legacy":
+        return "legacy"
     if return_view == "admin2":
         return "admin2"
-    return "restyled" if return_view == "restyled" else ""
+    return "workspace"
+
+
+def default_template_return_tab(return_view: str | None, return_tab: str | None) -> str:
+    """Resolve supported return tabs for default-template editing."""
+    if admin_return_view_value(return_view) == "legacy":
+        return "defaults"
+    return "global-defaults"
 
 
 def admin_redirect_url(
@@ -1058,7 +1119,8 @@ def admin_redirect_url(
     llm_config_id: str | None = None,
     deidentification_provider_id: str | None = None,
 ) -> str:
-    base = admin_page_route_from_return_view(return_view)
+    resolved_return_view = admin_return_view_value(return_view)
+    base = admin_page_route_from_return_view(resolved_return_view)
     params: dict[str, str] = {}
     if team_id:
         params["team_id"] = team_id
@@ -1069,7 +1131,10 @@ def admin_redirect_url(
     if deidentification_provider_id:
         params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
-        params["tab"] = return_tab
+        if resolved_return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}:
+            params["team_tab"] = return_tab
+        else:
+            params["tab"] = return_tab
     return f"{base}?{urlencode(params)}" if params else base
 
 

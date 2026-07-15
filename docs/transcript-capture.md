@@ -256,7 +256,10 @@ The backend:
 
 The worker path then:
 
-- normalizes the uploaded audio to a canonical backend format before provider submission
+- reads and normalizes the queued audio to a canonical backend format before provider submission
+- validates whole-file duration from normalized audio before any processing claim
+- atomically claims `queued -> processing` only after reversible local preparation; a successful claim immediately precedes the irreversible external STT dispatch boundary
+- if transcript deletion or expiry commits before that claim, the provider is not called; if it commits after claim, root cascade and durable Vault-source cleanup remain authoritative and late provider output is discarded
 - resolves the active team transcription selection and Vault-backed credential reference
 - fetches the secret from Vault
 - forwards the chunk to the external STT endpoint
@@ -296,12 +299,12 @@ Implemented now for manual browser testing:
 - the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
 - the upload flow is post/redirect/get, so page refresh does not re-upload the file
 - the workspace now has a dedicated owner-only read model at `GET /api/v1/transcribe/workspace`
-- the transcribe page now keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates can arrive without constant request polling when the stream is healthy
-- if SSE is unavailable or disconnected, fallback polling is now limited to active live-recording/restart windows instead of continuing for the broader workspace
+- the transcribe page keeps an owner-only SSE subscription to `GET /api/v1/transcribe/workspace/stream` so draft/workspace updates arrive without browser refresh bursts while the stream is healthy
+- if SSE is unavailable or disconnected, fallback polling uses the same owner-only workspace read model until the browser reconnects to the stream
 - the browser shell hydrates active transcript state, generated documents, available template/action lists, and EMIS working context from that workspace API
 - the transcript history pane now shows owner-visible detected PII from the latest successful redaction run in a bounded right-side table beside the transcript text
 - the browser highlights matching PII values in the transcript and lets the owner add/remove missed PII values that persist as owner-only encrypted transcript children
-- the workspace polls the same owner-only workspace read model while the active transcript or generated documents remain pending
+- pending transcript or generated-document states rely on the SSE stream while connected; the browser schedules repeated workspace refreshes only in fallback polling mode
 - failed whole-file STT attempts now expose a retry control in the workspace when stored retry audio is still available and the team still has a usable STT selection
 - failed live chunks no longer permanently block later successful chunks; the owner workspace reconciles completed live chunks past failed sequence gaps as soon as later results exist
 - `/transcribe-glm-2` now reuses that same workspace API while preserving the restored GLM 2 shell as the visual source of truth
@@ -564,7 +567,7 @@ Implemented now for `whole_file`:
 - newly queued whole-file jobs no longer persist raw source audio blobs in Postgres while the owner-content encryption layer is still pending
 - newly uploaded whole-file retry audio is stored behind a Vault ref on the ingestion job rather than as a raw DB blob
 - whole-file retry remains available when the failed job still has stored retry audio, either through the legacy blob column or the Vault-backed source-audio ref
-- transcript-root deletion and user deletion attempt best-effort cleanup of any Vault-backed retry audio before the owning transcript rows are deleted, without blocking the delete path on a transient Vault outage
+- transcript-root deletion and user deletion queue each retry-audio Vault ref in a durable FK-free cleanup outbox in the same transaction that deletes the owning rows; after commit/cascade, cleanup deletes unreferenced Vault audio and retries transient failures, while a live ingestion-job reference prevents deletion
 - applied whole-file jobs keep byte and duration telemetry so rolling hourly budgets continue to count recently completed uploads
 - the browser microphone-batch UX now uses browser `MicVAD` locally to keep voiced segments plus short buffer, then posts one captured WAV blob into the same file-ingestion route rather than introducing a separate STT processing path
 
@@ -599,6 +602,8 @@ Implemented now:
 
 - live chunk uploads normalize audio through `ffmpeg` before STT submission
 - whole-file uploads normalize audio through `ffmpeg` before STT submission
+- worker ordering is `read -> normalize -> whole-file duration validation -> atomic queued-to-processing claim -> STT dispatch`; preparation is reversible, while a successful claim is the documented irreversible dispatch boundary
+- deletion or retention expiry that wins before the claim prevents the STT call; deletion after claim still immediately cascades local transcript/job rows and queues durable Vault-source cleanup, and the worker drops any late provider result
 - whole-file uploads are bounded by:
   - raw upload size cap: `200 MB`
   - normalized duration cap: `4 hours`

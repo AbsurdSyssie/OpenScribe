@@ -36,6 +36,7 @@ from app.models import (
     TeamLlmSelection,
     TeamRole,
     TeamSttConfig,
+    ProviderSecretCleanupKind,
     TeamSttSelection,
     TemplateScope,
     Transcript,
@@ -61,15 +62,13 @@ from app.schemas import (
 from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
-from app.services.llm import delete_team_llm_bearer_token
 from app.services.passwords import hash_password, validate_password_strength
 from app.services.security_audit import record_security_event
 from app.services.smart_phrases import ensure_default_smart_phrase_for_user
-from app.services.stt import delete_team_stt_bearer_token
-from app.services.transcripts import delete_retry_sources_for_transcripts
+from app.services.provider_secret_cleanup import queue_provider_secret_cleanup
+from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
 
 audit_logger = logging.getLogger("openscribe.audit")
-cleanup_logger = logging.getLogger("openscribe.cleanup")
 MIN_RETENTION_DAYS = 1
 MAX_RETENTION_DAYS = int(os.getenv("MAX_RETENTION_DAYS", "90"))
 
@@ -290,6 +289,7 @@ class AdminUsageTrendPoint:
     input_token_height_pct: float = 0.0
     output_token_height_pct: float = 0.0
     ingestion_height_pct: float = 0.0
+    audio_height_pct: float = 0.0
     failure_height_pct: float = 0.0
 
     @property
@@ -666,7 +666,7 @@ def _user_usage_rows(db: Session, *, since, team_id: UUID) -> list[AdminUsageUse
     )
 
 
-def _usage_kpi_cards(*, current: AdminUsageWindowSummary, previous: AdminUsageWindowSummary) -> list[AdminUsageKpiCard]:
+def _usage_kpi_cards(*, current: AdminUsageWindowSummary, previous: AdminUsageWindowSummary, period_label: str = "30 days") -> list[AdminUsageKpiCard]:
     generation_delta_text, generation_delta_tone = _delta_text(
         _format_delta_pct(current.provider_completed_count, previous.provider_completed_count)
     )
@@ -685,21 +685,21 @@ def _usage_kpi_cards(*, current: AdminUsageWindowSummary, previous: AdminUsageWi
     )
     return [
         AdminUsageKpiCard(
-            label="Generated in 7 days",
+            label=f"Generated · {period_label}",
             value=str(current.provider_completed_count),
             detail=f"{current.provider_success_rate:.1f}% provider success rate",
             delta_text=generation_delta_text,
             delta_tone=generation_delta_tone,
         ),
         AdminUsageKpiCard(
-            label="Input tokens in 7 days",
+            label=f"Input tokens · {period_label}",
             value=_format_token_count(current.provider_input_tokens),
             detail=f"Across {current.provider_completed_count} completed generations",
             delta_text=input_tokens_delta_text,
             delta_tone=input_tokens_delta_tone,
         ),
         AdminUsageKpiCard(
-            label="Output tokens in 7 days",
+            label=f"Output tokens · {period_label}",
             value=_format_token_count(current.provider_output_tokens),
             detail=f"{_format_token_count(current.provider_total_tokens)} total tokens overall",
             delta_text=output_tokens_delta_text,
@@ -713,7 +713,7 @@ def _usage_kpi_cards(*, current: AdminUsageWindowSummary, previous: AdminUsageWi
             delta_tone=audio_delta_tone,
         ),
         AdminUsageKpiCard(
-            label="Failures in 7 days",
+            label=f"Failures · {period_label}",
             value=str(current.provider_failed_count + current.ingestion_failed_count),
             detail=f"{current.ingestion_failure_rate:.1f}% ingestion failure rate",
             delta_text=failure_delta_text,
@@ -722,18 +722,34 @@ def _usage_kpi_cards(*, current: AdminUsageWindowSummary, previous: AdminUsageWi
     ]
 
 
-def _usage_trend_points(db: Session, *, since, team_id: UUID | None) -> list[AdminUsageTrendPoint]:
-    start_day = since.date()
-    end_day = utcnow().date()
+def _usage_bucket_start(value, bucket: str):
+    value = value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if bucket == "week":
+        return value - timedelta(days=value.weekday())
+    if bucket == "month":
+        return value.replace(day=1)
+    return value
+
+
+def _next_usage_bucket(value, bucket: str):
+    if bucket == "month":
+        return value.replace(year=value.year + 1, month=1) if value.month == 12 else value.replace(month=value.month + 1)
+    return value + timedelta(days=7 if bucket == "week" else 1)
+
+
+def _usage_trend_points(db: Session, *, since, team_id: UUID | None, until=None, bucket: str = "day") -> list[AdminUsageTrendPoint]:
+    start_bucket = _usage_bucket_start(since, bucket)
+    end_bucket = _usage_bucket_start((until - timedelta(microseconds=1)) if until is not None else utcnow(), bucket)
     points: dict[object, AdminUsageTrendPoint] = {}
-    day = start_day
-    while day <= end_day:
-        label = day.strftime("%d %b")
-        points[day] = AdminUsageTrendPoint(label=label, short_label=day.strftime("%d"))
-        day += timedelta(days=1)
+    cursor = start_bucket
+    while cursor <= end_bucket:
+        key = cursor.date()
+        label = cursor.strftime("%b %Y" if bucket == "month" else "%d %b %Y")
+        points[key] = AdminUsageTrendPoint(label=label, short_label=cursor.strftime("%b %y" if bucket == "month" else "%d %b"))
+        cursor = _next_usage_bucket(cursor, bucket)
 
     provider_stmt = select(
-        func.date_trunc("day", ProviderUsageEvent.created_at).label("bucket_day"),
+        func.date_trunc(bucket, ProviderUsageEvent.created_at).label("bucket_day"),
         func.count(ProviderUsageEvent.id)
         .filter(ProviderUsageEvent.event_type == ProviderUsageEventType.completed)
         .label("provider_completed_count"),
@@ -744,6 +760,8 @@ def _usage_trend_points(db: Session, *, since, team_id: UUID | None) -> list[Adm
         func.coalesce(func.sum(ProviderUsageEvent.completion_tokens), 0).label("provider_output_tokens"),
         func.coalesce(func.sum(ProviderUsageEvent.total_tokens), 0).label("provider_total_tokens"),
     ).where(ProviderUsageEvent.created_at >= since).group_by("bucket_day").order_by("bucket_day")
+    if until is not None:
+        provider_stmt = provider_stmt.where(ProviderUsageEvent.created_at < until)
     if team_id is not None:
         provider_stmt = provider_stmt.where(ProviderUsageEvent.team_id == team_id)
     for row in db.execute(provider_stmt):
@@ -758,13 +776,15 @@ def _usage_trend_points(db: Session, *, since, team_id: UUID | None) -> list[Adm
         point.provider_total_tokens = int(row.provider_total_tokens or 0)
 
     ingestion_stmt = select(
-        func.date_trunc("day", TranscriptIngestionJob.created_at).label("bucket_day"),
+        func.date_trunc(bucket, TranscriptIngestionJob.created_at).label("bucket_day"),
         func.count(TranscriptIngestionJob.id).label("ingestion_job_count"),
         func.count(TranscriptIngestionJob.id)
         .filter(TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed)
         .label("ingestion_failed_count"),
         func.coalesce(func.sum(_ingestion_duration_expression()), 0.0).label("ingested_duration_seconds"),
     ).where(TranscriptIngestionJob.created_at >= since).group_by("bucket_day").order_by("bucket_day")
+    if until is not None:
+        ingestion_stmt = ingestion_stmt.where(TranscriptIngestionJob.created_at < until)
     if team_id is not None:
         ingestion_stmt = ingestion_stmt.where(TranscriptIngestionJob.team_id == team_id)
     for row in db.execute(ingestion_stmt):
@@ -781,14 +801,52 @@ def _usage_trend_points(db: Session, *, since, team_id: UUID | None) -> list[Adm
     max_input_tokens = max((point.provider_input_tokens for point in trend_points), default=0)
     max_output_tokens = max((point.provider_output_tokens for point in trend_points), default=0)
     max_ingestion = max((point.ingestion_job_count for point in trend_points), default=0)
+    max_audio = max((point.ingested_duration_seconds for point in trend_points), default=0.0)
     max_failures = max((point.provider_failed_count + point.ingestion_failed_count for point in trend_points), default=0)
     for point in trend_points:
         point.generation_height_pct = _trend_height(point.provider_completed_count, max_value=max_generation)
         point.input_token_height_pct = _trend_height(point.provider_input_tokens, max_value=max_input_tokens)
         point.output_token_height_pct = _trend_height(point.provider_output_tokens, max_value=max_output_tokens)
         point.ingestion_height_pct = _trend_height(point.ingestion_job_count, max_value=max_ingestion)
+        point.audio_height_pct = _trend_height(point.ingested_duration_seconds, max_value=max_audio)
         point.failure_height_pct = _trend_height(point.provider_failed_count + point.ingestion_failed_count, max_value=max_failures)
     return trend_points
+
+
+def _usage_comparison_trend_points(
+    current: list[AdminUsageTrendPoint], previous: list[AdminUsageTrendPoint]
+) -> list[dict[str, object]]:
+    metric_getters = {
+        "input": lambda point: point.provider_input_tokens,
+        "output": lambda point: point.provider_output_tokens,
+        "audio": lambda point: point.ingested_hours,
+        "failure": lambda point: point.provider_failed_count + point.ingestion_failed_count,
+    }
+    maxima = {
+        metric: max((getter(point) for point in [*current, *previous]), default=0)
+        for metric, getter in metric_getters.items()
+    }
+    rows = []
+    for index, current_point in enumerate(current):
+        previous_point = (
+            previous[index]
+            if index < len(previous)
+            else AdminUsageTrendPoint(label="No matching prior bucket", short_label=current_point.short_label)
+        )
+        row: dict[str, object] = {
+            "label": current_point.label,
+            "short_label": current_point.short_label,
+            "previous_label": previous_point.label,
+        }
+        for metric, getter in metric_getters.items():
+            current_value = getter(current_point)
+            previous_value = getter(previous_point)
+            row[f"current_{metric}"] = current_value
+            row[f"previous_{metric}"] = previous_value
+            row[f"current_{metric}_height_pct"] = _trend_height(current_value, max_value=maxima[metric])
+            row[f"previous_{metric}_height_pct"] = _trend_height(previous_value, max_value=maxima[metric])
+        rows.append(row)
+    return rows
 
 
 def _provider_usage_rows(db: Session, *, since, team_id: UUID | None) -> list[AdminUsageProviderRow]:
@@ -934,8 +992,26 @@ def _failure_rows(db: Session, *, since, team_id: UUID | None) -> list[AdminUsag
     return failure_rows[:8]
 
 
-def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[str, object]:
+def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key: str = "30d") -> dict[str, object]:
     now = utcnow()
+    range_definitions = {
+        "30d": ("Last 30 days", timedelta(days=30), "day"),
+        "90d": ("Last 90 days", timedelta(days=90), "day"),
+        "1y": ("Last year", timedelta(days=365), "week"),
+    }
+    resolved_range_key = range_key if range_key in {*range_definitions, "all"} else "30d"
+    if resolved_range_key == "all":
+        provider_since = db.scalar(select(func.min(ProviderUsageEvent.created_at)))
+        ingestion_since = db.scalar(select(func.min(TranscriptIngestionJob.created_at)))
+        available_starts = [value for value in (provider_since, ingestion_since) if value is not None]
+        range_since = min(available_starts) if available_starts else now - timedelta(days=29)
+        range_label = "All available data"
+        range_bucket = "month"
+        comparison_since = None
+    else:
+        range_label, range_delta, range_bucket = range_definitions[resolved_range_key]
+        range_since = now - range_delta
+        comparison_since = range_since - range_delta
     windows = []
     window_definitions = (
         ("Last 24 hours", timedelta(hours=24)),
@@ -976,34 +1052,54 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None) -> dict[st
                 **current_ingestion,
             )
         )
-    seven_day_since = utcnow() - timedelta(days=7)
-    fourteen_day_since = utcnow() - timedelta(days=13)
     selected_team = db.get(Team, team_id) if team_id is not None else None
-    previous_seven_day = AdminUsageWindowSummary(
-        label="Previous 7 days",
-        **_provider_usage_window_summary(
-            db,
-            since=seven_day_since - timedelta(days=7),
-            until=seven_day_since,
-            team_id=team_id,
-        ),
-        **_ingestion_window_summary(
-            db,
-            since=seven_day_since - timedelta(days=7),
-            until=seven_day_since,
-            team_id=team_id,
-        ),
+    current_summary = AdminUsageWindowSummary(
+        label=range_label,
+        **_provider_usage_window_summary(db, since=range_since, until=now, team_id=team_id),
+        **_ingestion_window_summary(db, since=range_since, until=now, team_id=team_id),
+    )
+    previous_summary = AdminUsageWindowSummary(
+        label="Previous equal period",
+        **_provider_usage_window_summary(db, since=now, until=now, team_id=team_id),
+        **_ingestion_window_summary(db, since=now, until=now, team_id=team_id),
+    )
+    trend_points = _usage_trend_points(db, since=range_since, team_id=team_id, until=now, bucket=range_bucket)
+    if comparison_since is not None:
+        previous_summary = AdminUsageWindowSummary(
+            label="Previous equal period",
+            **_provider_usage_window_summary(db, since=comparison_since, until=range_since, team_id=team_id),
+            **_ingestion_window_summary(db, since=comparison_since, until=range_since, team_id=team_id),
+        )
+        previous_trend_points = _usage_trend_points(
+            db, since=comparison_since, until=range_since, team_id=team_id, bucket=range_bucket
+        )
+    else:
+        previous_trend_points = [AdminUsageTrendPoint(label="No prior period", short_label=point.short_label) for point in trend_points]
+    usage_has_activity = any(
+        point.provider_completed_count
+        or point.provider_failed_count
+        or point.provider_input_tokens
+        or point.provider_output_tokens
+        or point.ingestion_job_count
+        or point.ingestion_failed_count
+        for point in trend_points
     )
     return {
         "usage_window_summaries": windows,
-        "usage_kpi_cards": _usage_kpi_cards(current=windows[1], previous=previous_seven_day),
-        "usage_trend_points": _usage_trend_points(db, since=fourteen_day_since, team_id=team_id),
-        "usage_team_rows": _team_usage_rows(db, since=seven_day_since, team_id=team_id),
-        "usage_user_rows": _user_usage_rows(db, since=seven_day_since, team_id=team_id) if team_id is not None else [],
-        "usage_provider_rows": _provider_usage_rows(db, since=seven_day_since, team_id=team_id),
-        "usage_generator_rows": _generator_usage_rows(db, since=seven_day_since, team_id=team_id),
-        "usage_ingestion_rows": _ingestion_usage_rows(db, since=seven_day_since, team_id=team_id),
-        "usage_failure_rows": _failure_rows(db, since=seven_day_since, team_id=team_id),
+        "usage_kpi_cards": _usage_kpi_cards(current=current_summary, previous=previous_summary, period_label=range_label),
+        "usage_range_key": resolved_range_key,
+        "usage_range_label": range_label,
+        "usage_range_bucket": range_bucket,
+        "usage_has_comparison": comparison_since is not None,
+        "usage_trend_points": trend_points,
+        "usage_comparison_trend_points": _usage_comparison_trend_points(trend_points, previous_trend_points),
+        "usage_has_activity": usage_has_activity,
+        "usage_team_rows": _team_usage_rows(db, since=range_since, team_id=team_id),
+        "usage_user_rows": _user_usage_rows(db, since=range_since, team_id=team_id) if team_id is not None else [],
+        "usage_provider_rows": _provider_usage_rows(db, since=range_since, team_id=team_id),
+        "usage_generator_rows": _generator_usage_rows(db, since=range_since, team_id=team_id),
+        "usage_ingestion_rows": _ingestion_usage_rows(db, since=range_since, team_id=team_id),
+        "usage_failure_rows": _failure_rows(db, since=range_since, team_id=team_id),
         "usage_scope_team": selected_team,
     }
 
@@ -1106,6 +1202,27 @@ def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
 
 def list_teams(db: Session) -> list[Team]:
     return list(db.scalars(select(Team).order_by(Team.created_at.desc())))
+
+
+def update_team_default_retention(db: Session, actor: User, *, team_id: UUID, default_retention_days: int) -> Team:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin team retention access required")
+    team = db.get(Team, team_id)
+    if team is None:
+        raise AppError(404, "not_found", "Team not found")
+    old_days = team.default_retention_days
+    team.default_retention_days = validate_retention_days(default_retention_days)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    record_security_event(
+        db,
+        action="team_default_retention_updated",
+        actor=actor,
+        team_id=team.id,
+        details={"category": "account", "outcome": "success", "old_days": old_days, "new_days": team.default_retention_days},
+    )
+    return team
 
 
 def _resolve_team_for_admin_delete(db: Session, actor: User, *, team_id: UUID) -> Team:
@@ -1325,7 +1442,7 @@ def reactivate_user(db: Session, actor: User, user_id) -> User:
     return user
 
 
-def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
+def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
     linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
     for request in linked_requests:
         request.linked_user_id = None
@@ -1451,12 +1568,13 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> None:
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
     transcript_rows = list(transcripts)
-    delete_retry_sources_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
     for transcript in transcript_rows:
         db.delete(transcript)
 
     db.flush()
     db.delete(user)
+    return cleanup_job_ids
 
 
 def delete_user(db: Session, actor: User, user_id) -> None:
@@ -1470,8 +1588,9 @@ def delete_user(db: Session, actor: User, user_id) -> None:
     target_team_id = user.team_id
     target_team_role = user.team_role.value if user.team_role else None
     target_is_system_admin = user.is_system_admin
-    _delete_user_rows(db, actor, user=user)
+    cleanup_job_ids = _delete_user_rows(db, actor, user=user)
     db.commit()
+    process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
     audit_logger.info(
         "account_lifecycle",
         extra={
@@ -1527,8 +1646,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
             )
             raise AppError(409, "conflict", "Cannot delete a team that still contains a system-admin account", {"team_id": str(team.id), "user_id": str(user.id)})
 
-    stt_secret_deletions: list[tuple[UUID, UUID, str]] = []
-    llm_secret_deletions: list[tuple[UUID, UUID]] = []
+    transcript_audio_cleanup_job_ids: list[UUID] = []
     try:
         provider_events = db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.team_id == team.id))
         for event in provider_events:
@@ -1558,11 +1676,11 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
 
         for config in db.scalars(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)):
             if config.vault_secret_ref:
-                stt_secret_deletions.append((team.id, config.id, config.vault_secret_ref))
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[config.vault_secret_ref])
             db.delete(config)
         for config in db.scalars(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)):
             if config.vault_secret_ref:
-                llm_secret_deletions.append((team.id, config.id))
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[config.vault_secret_ref])
             db.delete(config)
 
         for template in db.scalars(select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == team.id)):
@@ -1572,7 +1690,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         db.flush()
 
         for user in team_users:
-            _delete_user_rows(db, actor, user=user)
+            transcript_audio_cleanup_job_ids.extend(_delete_user_rows(db, actor, user=user))
 
         if team_user_ids:
             for event in db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_(team_user_ids))):
@@ -1585,22 +1703,7 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         db.rollback()
         raise
 
-    for secret_team_id, config_id, secret_ref in stt_secret_deletions:
-        try:
-            delete_team_stt_bearer_token(team_id=secret_team_id, config_id=config_id, secret_ref=secret_ref)
-        except AppError as exc:
-            cleanup_logger.warning(
-                "team_stt_secret_delete_failed",
-                extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
-            )
-    for secret_team_id, config_id in llm_secret_deletions:
-        try:
-            delete_team_llm_bearer_token(team_id=secret_team_id, config_id=config_id)
-        except AppError as exc:
-            cleanup_logger.warning(
-                "team_llm_secret_delete_failed",
-                extra={"team_id": str(secret_team_id), "config_id": str(config_id), "error_code": exc.code},
-            )
+    process_transcript_audio_cleanup_jobs(db, job_ids=transcript_audio_cleanup_job_ids)
     record_security_event(
         db,
         action="team_deleted",

@@ -1,9 +1,9 @@
 import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator } from './documents.js?v=20260530-hallucination-check-panel';
+import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260701-generation-loading-shared';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260521-working-note-inflight-generation';
+import { createStructuredEditor } from './structured.js?v=20260701-generation-loading-shared';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -13,7 +13,7 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
-      const routeBase = shell?.dataset.routeBase || '/transcribe-glm-2';
+      const routeBase = shell?.dataset.routeBase || '/transcribe';
       const triggers = [...document.querySelectorAll('[data-tab-trigger]')];
       const panels = [...document.querySelectorAll('[data-tab-panel]')];
       const paneToggles = [...document.querySelectorAll('[data-pane-toggle]')];
@@ -101,6 +101,8 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       currentTranscriptStatus = activeStatus?.textContent?.trim() || null;
       const sessionTitleDisplay = document.querySelector('[data-session-title-display]');
       const activeDraft = document.querySelector('[data-active-draft]');
+      const transcriptionLoading = document.querySelector('[data-transcription-loading]');
+      const transcriptEmpty = document.querySelector('[data-transcript-empty]');
       const transcriptStats = document.querySelector('[data-transcript-stats]');
       const piiCount = document.querySelector('[data-pii-count]');
       const piiStatus = document.querySelector('[data-pii-status]');
@@ -144,8 +146,6 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const noteEditorToolbar = document.querySelector('[data-note-editor-toolbar]');
       const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');
       const generatedFreeformRows = document.querySelector('[data-generated-freeform-rows]');
-      const structuredNoteEmptyState = document.querySelector('[data-structured-note-empty-state]');
-      const freeformNoteEmptyState = document.querySelector('[data-freeform-note-empty-state]');
       const generatedStructuredPanel = document.querySelector('[data-generated-structured-panel]');
       const generatedStructuredSections = document.querySelector('[data-generated-structured-sections]');
       const latestFollowupOutput = document.querySelector('[data-latest-followup-output]');
@@ -1137,6 +1137,7 @@ let statusDetailsHideTimer = null;
       const setVisibleStatus = (label) => {
         const nextLabel = label || 'idle';
         localStatusLabel = nextLabel;
+        syncTranscriptSurface(nextLabel);
         renderStatusPill();
       };
 
@@ -1790,9 +1791,27 @@ let statusDetailsHideTimer = null;
         return statusLabel || 'idle';
       };
 
+      const syncTranscriptSurface = (statusLabel = localStatusLabel || currentTranscriptStatus) => {
+        const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
+        const isTranscribing = String(visibleStatus || '').toLowerCase() === 'transcribing';
+        const hasDraft = Boolean(currentDraftText && currentDraftText.trim());
+        const normalizedStatus = String(statusLabel || '').toLowerCase();
+        const animateEmpty = Boolean(
+          captureController?.isCaptureUiActive?.()
+          || ['recording', 'listening', 'speech detected', 'sending chunk', 'uploading', 'finalizing', 'stopping', 'queued', 'processing'].includes(normalizedStatus)
+        );
+        if (transcriptionLoading) transcriptionLoading.hidden = !isTranscribing;
+        if (transcriptEmpty) {
+          transcriptEmpty.hidden = isTranscribing || hasDraft;
+          transcriptEmpty.classList.toggle('note-generation-loading--idle', !animateEmpty);
+        }
+        if (activeDraft) activeDraft.hidden = isTranscribing || !hasDraft;
+      };
+
       const reflectBackendStatus = (statusLabel, errorMessage = null) => {
         currentTranscriptStatus = statusLabel || null;
         const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
+        syncTranscriptSurface(visibleStatus);
         if (!captureController?.isCaptureUiActive?.() && !['queued', 'transcribing', 'processing', 'uploading'].includes(visibleStatus || '')) {
           localStatusLabel = null;
         }
@@ -1820,11 +1839,26 @@ let statusDetailsHideTimer = null;
         workspaceRefreshBurstTimeoutIds = [];
       };
 
+      const isWorkspaceRealtimeConnected = () => {
+        return Boolean(
+          window.EventSource
+          && workspaceEventSource
+          && workspaceEventSource.readyState === window.EventSource.OPEN
+          && !workspaceStreamFallbackPolling
+        );
+      };
+
+      const shouldUseWorkspacePollingFallback = () => {
+        return !isWorkspaceRealtimeConnected();
+      };
+
       const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {
         clearWorkspaceRefreshBurst();
+        if (!shouldUseWorkspacePollingFallback()) return;
         for (let index = 1; index <= attempts; index += 1) {
           const timeoutId = window.setTimeout(() => {
             workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);
+            if (!shouldUseWorkspacePollingFallback()) return;
             void fetchWorkspace();
           }, intervalMs * index);
           workspaceRefreshBurstTimeoutIds.push(timeoutId);
@@ -1918,7 +1952,7 @@ let statusDetailsHideTimer = null;
         if (!activeDraft) return;
         const maskPii = Boolean(options.maskPii);
         if (!text.trim()) {
-          activeDraft.innerHTML = '<span class="text-slate">No conversation text yet. Upload a recording or use the microphone to begin. The transcript will appear here as the consultation unfolds.</span>';
+          activeDraft.textContent = '';
           return;
         }
         const highlightEntities = uniquePiiEntities(entities)
@@ -1948,6 +1982,7 @@ let statusDetailsHideTimer = null;
         const nextText = text || '';
         const force = Boolean(options.force);
         currentDraftText = nextText;
+        syncTranscriptSurface();
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
           if (!force && activeDraft.value === nextText) {
             renderTranscriptStats(nextText);
@@ -2693,9 +2728,7 @@ let statusDetailsHideTimer = null;
           generateOutputTemplateSelect,
           generatedFreeformPanel,
           generatedFreeformRows,
-          structuredNoteEmptyState,
           generatedStructuredPanel,
-          freeformNoteEmptyState,
           generatedStructuredSections,
           copyStructuredLinesButton,
           latestGeneratedOutput,
@@ -2816,11 +2849,17 @@ let statusDetailsHideTimer = null;
           const waitingMessage = document.generator_type === 'quick_action'
             ? 'Waiting for transcription to finish before running this quick action.'
             : 'Waiting for transcription to finish before writing your follow-up.';
-          latestFollowupOutput.innerHTML = `<span class="text-slate">${isTranscriptWaitingForText() ? waitingMessage : 'Your follow-up is waiting to be written.'}</span>`;
+          const message = isTranscriptWaitingForText()
+            ? waitingMessage
+            : "This usually takes a few seconds.<br>We're preparing your follow-up...";
+          latestFollowupOutput.innerHTML = generationLoadingHtml({ label: 'follow-up', message });
           return;
         }
         if (document.status === 'processing') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">Your follow-up is being written.</span>';
+          latestFollowupOutput.innerHTML = generationLoadingHtml({
+            label: 'follow-up',
+            message: "This usually takes a few seconds.<br>We're preparing your follow-up...",
+          });
           return;
         }
         if (document.status === 'failed') {
@@ -3192,10 +3231,6 @@ let statusDetailsHideTimer = null;
         workspaceEventSourceEndpoint = null;
       };
 
-      const shouldUseWorkspacePollingFallback = () => {
-        return !window.EventSource || workspaceStreamFallbackPolling || !workspaceEventSource;
-      };
-
       const syncWorkspaceRealtimeConnection = () => {
         if (!window.EventSource) return;
         const endpoint = workspaceStreamEndpointForTranscript(transcriptId);
@@ -3212,6 +3247,7 @@ let statusDetailsHideTimer = null;
         workspaceEventSource = new window.EventSource(endpoint);
         workspaceEventSource.addEventListener('open', () => {
           workspaceStreamFallbackPolling = false;
+          clearWorkspaceRefreshBurst();
         });
         workspaceEventSource.addEventListener('workspace', (event) => {
           try {
@@ -3543,9 +3579,11 @@ let statusDetailsHideTimer = null;
         setDictationMicStatus(dictationMicStatusState.message, dictationMicStatusState.kind);
       }
       syncWorkspaceRealtimeConnection();
-      if (transcriptId) {
+      if (transcriptId && shouldUseWorkspacePollingFallback()) {
         window.setTimeout(() => {
-          fetchWorkspace();
+          if (shouldUseWorkspacePollingFallback()) {
+            fetchWorkspace();
+          }
         }, 0);
       }
 

@@ -90,6 +90,7 @@ class MfaMethodType(str, enum.Enum):
 
 class SttAuthMode(str, enum.Enum):
     bearer = "bearer"
+    none = "none"
 
 
 class SttAdapterKind(str, enum.Enum):
@@ -119,6 +120,12 @@ class ProviderCredentialStatus(str, enum.Enum):
     partial = "partial"
     degraded = "degraded"
     invalid = "invalid"
+
+
+class ProviderSecretCleanupKind(str, enum.Enum):
+    stt = "stt"
+    llm = "llm"
+    deidentification = "deidentification"
 
 
 class SttSelectionPurpose(str, enum.Enum):
@@ -556,10 +563,14 @@ class UserRecoveryCode(Base):
 
 class TeamSttConfig(Base):
     __tablename__ = "team_stt_configs"
-    __table_args__ = (Index("uq_team_stt_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
+    __table_args__ = (
+        Index("uq_team_stt_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True, postgresql_where=text("revision_of_config_id IS NULL")),
+        Index("uq_team_stt_configs_pending_revision", "revision_of_config_id", unique=True, postgresql_where=text("revision_of_config_id IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    revision_of_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_stt_configs.id", ondelete="CASCADE"), nullable=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_preset: Mapped[str] = mapped_column(String(64), default=SttProviderPreset.custom_rest_openapi.value, server_default=SttProviderPreset.custom_rest_openapi.value, nullable=False)
     adapter_kind: Mapped[SttAdapterKind] = mapped_column(Enum(SttAdapterKind), default=SttAdapterKind.generic_rest, nullable=False)
@@ -626,10 +637,14 @@ class TeamSttSelection(Base):
 
 class TeamLlmConfig(Base):
     __tablename__ = "team_llm_configs"
-    __table_args__ = (Index("uq_team_llm_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True),)
+    __table_args__ = (
+        Index("uq_team_llm_configs_team_label_lower", "team_id", text("lower(btrim(label))"), unique=True, postgresql_where=text("revision_of_config_id IS NULL")),
+        Index("uq_team_llm_configs_pending_revision", "revision_of_config_id", unique=True, postgresql_where=text("revision_of_config_id IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    revision_of_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="CASCADE"), nullable=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_preset: Mapped[str] = mapped_column(String(64), default=LlmProviderPreset.openai.value, nullable=False)
     adapter_kind: Mapped[LlmAdapterKind] = mapped_column(Enum(LlmAdapterKind), default=LlmAdapterKind.openai_chat, nullable=False)
@@ -1303,6 +1318,43 @@ class TranscriptIngestionJob(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     transcript: Mapped[Transcript] = relationship(back_populates="ingestion_jobs")
+
+
+class TranscriptAudioCleanupJob(Base):
+    __tablename__ = "transcript_audio_cleanup_jobs"
+    __table_args__ = (
+        UniqueConstraint("secret_ref", name="uq_transcript_audio_cleanup_job_secret_ref"),
+        CheckConstraint("attempt_count >= 0", name="ck_transcript_audio_cleanup_attempt_count_nonnegative"),
+        Index("ix_transcript_audio_cleanup_jobs_next_attempt_at", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ProviderSecretCleanupJob(Base):
+    """Durable, FK-free cleanup intent for a retired Vault provider secret."""
+
+    __tablename__ = "provider_secret_cleanup_jobs"
+    __table_args__ = (
+        UniqueConstraint("secret_ref", name="uq_provider_secret_cleanup_job_secret_ref"),
+        CheckConstraint("attempt_count >= 0", name="ck_provider_secret_cleanup_attempt_count_nonnegative"),
+        Index("ix_provider_secret_cleanup_jobs_next_attempt_at", "next_attempt_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    kind: Mapped[ProviderSecretCleanupKind] = mapped_column(Enum(ProviderSecretCleanupKind), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class GeneratedDocument(Base):

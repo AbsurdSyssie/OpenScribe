@@ -11,6 +11,8 @@ LLM provider setup is stateful:
 
 Pending providers are visible only to system admins as `Setup incomplete`. Team leaders and users never receive pending providers from selection-option routes and cannot select a pending provider by ID. Selectable providers must be `ready`, `is_active=true`, and have a non-empty `model_name`.
 
+Credential replacement uses a versioned Vault path rather than overwriting the live path before database commit. Replacement, removal, draft cancellation, revision promotion, provider deletion, and team deletion commit a FK-free cleanup intent with the exact retired reference; a scheduled worker retries Vault deletion and first verifies the reference is no longer live.
+
 ## Preset Layer
 
 The admin UI exposes branded presets:
@@ -63,6 +65,10 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 Bearer tokens remain Vault-backed. API responses expose `has_secret` only and never return `vault_secret_ref` or raw secret material.
 
 Required-token presets must have an existing or replacement Vault-backed token. Ollama can be saved without a token for local deployments.
+
+Blank revision credentials are inherited only by required-token presets. The draft reads the target token for inspection, then immediately writes it to a unique versioned Vault path owned by the draft config; it never persists the target reference. This lets root credential replacement and retired-reference cleanup proceed without breaking a pending revision. Revising a credentialed provider to Ollama with no submitted token creates a no-auth draft and retires the old Vault reference only after promotion commits. Supplying an optional Ollama token keeps bearer authentication. Runtime and saved inspection read a Vault reference only when the config's `auth_mode` is `bearer`.
+
+When a ready provider's model catalog changes, OpenScribe reconciles dependent selections in the same database transaction. Existing leader-approved models are retained only when still advertised; a disjoint catalog narrows access to the new provider default. Removed team-default models move to that default, and a removed hallucination-check override clears so the checker uses the same provider config's default rather than another provider.
 
 Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.
 

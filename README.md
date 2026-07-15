@@ -47,7 +47,7 @@ Quick start:
 - production must choose HSTS ownership: keep `HSTS_SOURCE=app` when OpenScribe emits `Strict-Transport-Security`, set `HSTS_SOURCE=proxy` when Cloudflare/reverse proxy emits HSTS for all responses, or set `HSTS_SOURCE=proxy_static_fallback` when the proxy covers dynamic pages but misses `/static/` assets
 - `./start-dev.sh` now bootstraps a persistent local Vault, stores the local root token and unseal key under `.local/vault/`, and keeps Postgres/Vault state aligned across restarts
 - by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly
-- the default dev bind exposes FastAPI on `0.0.0.0` so a reverse proxy or another machine can reach the frontend
+- the default dev bind exposes FastAPI only on `127.0.0.1`; set `APP_HOST` explicitly when a reverse proxy or another machine must reach the frontend
 - Postgres, Redis, and Vault still stay localhost-only unless you explicitly change their Docker port bindings and opt into `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
 - `./start-dev.sh` now also checks live Docker port bindings for Postgres, Redis, and Vault and aborts with a terminal error if they are exposed beyond localhost unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
 

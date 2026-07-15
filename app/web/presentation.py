@@ -1092,8 +1092,6 @@ def admin_page_route_from_return_view(return_view: str | None) -> str:
         return "/legacy-admin"
     if return_view == "admin2":
         return "/admin2"
-    if return_view == "restyled":
-        return "/admin-restyled"
     return "/admin"
 
 
@@ -1102,8 +1100,6 @@ def admin_return_view_value(return_view: str | None) -> str:
         return "legacy"
     if return_view == "admin2":
         return "admin2"
-    if return_view == "restyled":
-        return "restyled"
     return "workspace"
 
 

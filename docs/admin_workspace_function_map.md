@@ -23,7 +23,7 @@
 | Account requests? | Global review; approval selects team/role; rejection requires reason. |
 | Usage? | Global service view plus dedicated team Usage tab with scoped charts and user aggregate table; metadata only. |
 | Audit? | Safe filters in URL; never sensitive values. |
-| CSS/JS structure? | Jinja partials, progressive-enhancement JS, minimal workspace CSS, reuse site primitives; ask when reuse materially changes mockup. |
+| CSS/JS structure? | Canonical workspace is currently monolithic `admin_mockup.html`, with progressive-enhancement JS and existing workspace CSS/site primitives; extract only when behavior-preserving maintenance work warrants it. |
 | Form feedback? | Inline field errors + summary; site toasts; preserve non-secret input only. |
 | Provider wizard refresh/cancel? | Server-backed drafts restore non-secret state; cancel explicitly deletes pending row and safely cleans Vault reference. |
 | Provider wizard complexity? | Simple preset path; custom providers reveal progressive Advanced configuration containing every existing expert field. Render only backend-registered provider presets, never mock-only brands. |
@@ -32,7 +32,7 @@
 | Manage teams? | Metadata directory, create, open; deletion stays in team Danger zone; team status read-only. |
 | Responsive target? | Laptop/tablet fully usable; mobile operable with collapsed/stacked/scrollable layout. |
 | Development/release? | Workspace promoted on `UI_Updates`; preserve focused security and route coverage before merge. |
-| Browser testing? | Semantic E2E for critical workflows; no pixel-perfect snapshots. |
+| Browser testing? | Source/template assertions plus focused route, authorization, and API regressions for critical workflows; no Playwright E2E contract currently exists. |
 
 ## Purpose
 
@@ -86,7 +86,7 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 - Sidebar **Admin home** links to neutral `/admin`, not `/home`. It shows safe global summary counts plus explicit team-selection prompt and never auto-selects team. Brand link uses same target.
 - Sidebar **Manage teams** shows directory metadata (name, status, retention default, member count, provider-health summary), creates teams, and opens team workspaces. It does not hard-delete; deletion remains in selected team's Danger zone.
 - Team status is read-only after creation in this redesign. No status mutation is added until session, recording, provider, retention, and lifecycle effects receive separate domain design.
-- Production UI structure: Jinja templates/partials for semantic markup and server data, `static/js/admin_workspace.js` for progressive enhancement, and workspace-specific CSS only where existing site tokens/components cannot express design. Reuse shared typography, spacing, color, button, form, card, dialog, table, feedback, and CSRF behavior; do not fork a parallel admin component system.
+- Production UI structure: canonical `admin_mockup.html` currently contains its server-rendered semantic markup and progressive-enhancement JavaScript; existing workspace CSS/site primitives supply styling. Reuse shared typography, spacing, color, button, form, card, dialog, table, feedback, and CSRF behavior; do not fork a parallel admin component system.
 - Shared-component reuse is not an automatic override of mockup styling. Reuse obvious matches; when reuse would materially change mockup appearance or interaction, pause for explicit user choice with a concrete comparison.
 - Form feedback contract: field errors render beside fields plus accessible form-level summary; success and completed destructive outcomes use existing site toast behavior and refresh affected state. Preserve entered non-secret values after failure; never repopulate submitted or saved credentials.
 - Provider add/edit wizards use existing server-side draft/finalize flows rather than browser-only state. URL identifies valid draft and step; refresh restores non-secret fields and inspection results. Credential material remains Vault-backed/write-only and is never placed in URL or HTML.
@@ -289,7 +289,7 @@ Across slices:
 - [ ] No mock-only mutation controls or misleading incomplete states remain.
 - [ ] Security review confirms metadata-only admin visibility, write-only secrets, CSRF, authorization, safe redirects, and destructive-action semantics.
 - [ ] Docs and final progress/change summary are complete.
-- [ ] Semantic browser E2E tests cover team/URL navigation, member lifecycle, provider inspect/finalize/cancel, provider policy, team-deletion confirmation/blockers, and initiating-workspace redirect preservation. Avoid pixel-perfect screenshot assertions.
+- [ ] Source/template assertions plus focused route, authorization, and API regressions cover team/URL navigation, member lifecycle, provider inspect/finalize/cancel, provider policy, team-deletion confirmation/blockers, and initiating-workspace redirect preservation. No Playwright E2E coverage is implemented or required by this map.
 
 The current redesign-specific regressions in `tests/test_admin_ui.py` are intentionally skipped while `admin_mockup.html` is not user-facing. Unskip and satisfy them as part of this gate; skipped coverage is not release evidence.
 

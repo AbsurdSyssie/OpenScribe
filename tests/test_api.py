@@ -20,6 +20,7 @@ from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_c
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
+from app.services import transcripts as transcript_service
 from app.main import CSRF_COOKIE_NAME, api, app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
@@ -97,7 +98,7 @@ from app.models import (
 )
 from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot, upsert_stt_config as upsert_stt_config_service
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
+from app.schemas import LlmConfigDraftCreate, LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
 from app.services.audio import (
     AUDIO_FFMPEG_TIMEOUT_SECONDS,
     WHOLE_FILE_MAX_DURATION_SECONDS,
@@ -118,8 +119,8 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
-from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
-from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
+from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, create_llm_config_draft, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
+from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs, queue_provider_secret_cleanup
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
@@ -1189,9 +1190,53 @@ def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_sessi
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
-def test_stt_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+def test_stt_inherited_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-draft-cleanup@example.com", password="password-1", is_system_admin=True)
+    target = make_stt_config(team=team, actor=admin, label="Saved STT")
+    written_secret_refs: list[str] = []
+
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "saved-token")
+
+    def write_secret(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-token"
+        assert secret_id is not None
+        secret_ref = f"secret:openscribe/stt/team/{team_id}/config/{config_id}/{secret_id}"
+        written_secret_refs.append(secret_ref)
+        return secret_ref
+
+    monkeypatch.setattr(
+        "app.services.stt.write_team_stt_bearer_token",
+        write_secret,
+    )
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
+
+    with pytest.raises(IntegrityError):
+        create_stt_config_draft(
+            db_session,
+            admin,
+            SttConfigDraftCreate(team_id=team.id, provider_preset=SttProviderPreset.openai.value, revision_of_config_id=target.id),
+        )
+
+    assert len(written_secret_refs) == 1
+    assert db_session.scalars(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)).all() == [target]
+    assert_provider_cleanup_job(db_session, secret_ref=written_secret_refs[0], kind=ProviderSecretCleanupKind.stt)
+
+
+def test_stt_explicit_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-stt-explicit-draft-cleanup@example.com", password="password-1", is_system_admin=True)
     written_config_ids: list[str] = []
 
     monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
@@ -1222,6 +1267,47 @@ def test_stt_draft_commit_failure_durably_queues_written_vault_secret(db_session
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
     secret_ref = f"secret:openscribe/stt/team/{team.id}/config/{written_config_ids[0]}"
     assert_provider_cleanup_job(db_session, secret_ref=secret_ref, kind=ProviderSecretCleanupKind.stt)
+
+
+def test_llm_inherited_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="LLM inherited draft cleanup")
+    admin = make_user(email="admin-llm-draft-cleanup@example.com", password="password-1", is_system_admin=True)
+    target = make_llm_config(team=team, actor=admin, label="Saved LLM", provider_preset="openai", available_models_json=["model-a"])
+    written_secret_refs: list[str] = []
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-token")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+
+    def write_secret(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-token"
+        assert secret_id is not None
+        secret_ref = f"secret:openscribe/llm/team/{team_id}/config/{config_id}/{secret_id}"
+        written_secret_refs.append(secret_ref)
+        return secret_ref
+
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", write_secret)
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
+
+    with pytest.raises(IntegrityError):
+        create_llm_config_draft(
+            db_session,
+            admin,
+            LlmConfigDraftCreate(team_id=team.id, provider_preset="openai", revision_of_config_id=target.id),
+        )
+
+    assert len(written_secret_refs) == 1
+    assert db_session.scalars(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)).all() == [target]
+    assert_provider_cleanup_job(db_session, secret_ref=written_secret_refs[0], kind=ProviderSecretCleanupKind.llm)
 
 
 def test_stt_draft_replace_commit_failure_preserves_old_secret_and_queues_new_orphan(db_session, make_team, make_user, monkeypatch):
@@ -3551,7 +3637,7 @@ def test_llm_revision_promotion_uses_narrow_default_when_model_catalog_is_disjoi
     assert persisted_selection.model_name_override == "new-default"
 
 
-def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_secret(
+def test_provider_revisions_copy_saved_credentials_before_retired_root_cleanup(
     client, db_session, make_team, make_user, make_stt_config, make_llm_config, monkeypatch
 ):
     team = make_team(name="Clinic Credential Reuse")
@@ -3559,13 +3645,31 @@ def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_
     stt = make_stt_config(team=team, actor=admin, label="Saved STT", base_url="https://api.openai.com/v1")
     llm = make_llm_config(team=team, actor=admin, label="Saved LLM", provider_preset="openai", base_url="https://api.openai.com/v1", available_models_json=["model-a"])
     stt_ref, llm_ref = stt.vault_secret_ref, llm.vault_secret_ref
-    deleted_stt, deleted_llm = [], []
+    deleted_refs = []
+    written_stt, written_llm = [], []
+
+    def write_stt(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-stt-key"
+        assert secret_id is not None
+        written_stt.append((config_id, secret_id))
+        return f"secret:openscribe/stt/team/{team_id}/config/{config_id}/{secret_id}"
+
+    def write_llm(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-llm-key"
+        assert secret_id is not None
+        written_llm.append((config_id, secret_id))
+        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}/{secret_id}"
+
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "saved-stt-key")
     monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: SttInspectResult(adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="https://api.openai.com/v1", openapi_path=None, transcribe_path="/audio/transcriptions", model_name=None, available_models=["whisper-1"], file_field_name="file", model_field_name="model", language=None, language_field_name="language", response_text_path="text", extra_form_fields_json={}, candidate_paths=[], operation_summary=None, field_tips=[], notes=[]))
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda **kwargs: deleted_stt.append(kwargs))
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", write_stt)
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-llm-key")
     monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda **kwargs: deleted_llm.append(kwargs))
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", write_llm)
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_refs.append(kwargs["secret_ref"]),
+    )
     login(client, email=admin.email, password="password-1")
 
     stt_created = client.post("/api/v1/stt-configs/drafts", json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(stt.id)})
@@ -3573,15 +3677,30 @@ def test_provider_revisions_reuse_saved_credentials_and_cancel_preserves_shared_
     assert stt_created.status_code == 200 and llm_created.status_code == 200
     stt_revision = db_session.get(TeamSttConfig, UUID(stt_created.json()["config"]["id"]))
     llm_revision = db_session.get(TeamLlmConfig, UUID(llm_created.json()["config"]["id"]))
-    assert stt_revision.vault_secret_ref == stt_ref
-    assert llm_revision.vault_secret_ref == llm_ref
+    assert stt_revision.vault_secret_ref != stt_ref
+    assert llm_revision.vault_secret_ref != llm_ref
+    assert written_stt == [(stt_revision.id, UUID(stt_revision.vault_secret_ref.rsplit("/", 1)[1]))]
+    assert written_llm == [(llm_revision.id, UUID(llm_revision.vault_secret_ref.rsplit("/", 1)[1]))]
+
+    # Simulate a concurrently committed root credential replacement. Its
+    # retired ref must be deletable while the independent draft remains live.
+    stt.vault_secret_ref = f"secret:openscribe/stt/team/{team.id}/config/{stt.id}/replacement"
+    llm.vault_secret_ref = f"secret:openscribe/llm/team/{team.id}/config/{llm.id}/replacement"
+    db_session.add_all([stt, llm])
+    queue_provider_secret_cleanup(db_session, kind=ProviderSecretCleanupKind.stt, secret_refs=[stt_ref])
+    queue_provider_secret_cleanup(db_session, kind=ProviderSecretCleanupKind.llm, secret_refs=[llm_ref])
+    db_session.commit()
+
+    assert process_provider_secret_cleanup_jobs(db_session, batch_size=10) == 2
+    assert set(deleted_refs) == {stt_ref, llm_ref}
+    assert db_session.get(TeamSttConfig, stt_revision.id).vault_secret_ref == stt_revision.vault_secret_ref
+    assert db_session.get(TeamLlmConfig, llm_revision.id).vault_secret_ref == llm_revision.vault_secret_ref
 
     assert client.post(f"/admin/stt-configs/{stt_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
     assert client.post(f"/admin/llm-configs/{llm_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
     db_session.refresh(stt)
     db_session.refresh(llm)
-    assert stt.vault_secret_ref == stt_ref and llm.vault_secret_ref == llm_ref
-    assert deleted_stt == [] and deleted_llm == []
+    assert stt.vault_secret_ref != stt_ref and llm.vault_secret_ref != llm_ref
 
 
 def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token_is_kept(
@@ -15061,6 +15180,65 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
     assert provider_calls == 1
     assert processed is not None
     assert processed.status is TranscriptIngestionJobStatus.applied
+
+
+def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Preparation deletion team")
+    owner = make_user(email="owner-preparation-delete@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+    events: list[str] = []
+
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def fake_normalize(**kwargs):
+        events.append("prepared")
+        return NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized")
+
+    original_claim = transcript_service._claim_queued_ingestion_job
+
+    def delete_root_before_claim(db, *, job_id):
+        assert events == ["prepared"]
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            root = concurrent_db.get(Transcript, transcript_id)
+            assert root is not None
+            concurrent_db.delete(root)
+            concurrent_db.commit()
+        return original_claim(db, job_id=job_id)
+
+    def fail_if_provider_called(*args, **kwargs):
+        raise AssertionError("root deleted before claim must not reach STT provider")
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize)
+    monkeypatch.setattr("app.services.transcripts._claim_queued_ingestion_job", delete_root_before_claim)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fail_if_provider_called)
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+    assert events == ["prepared"]
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
 
 
 def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_job(

@@ -294,7 +294,7 @@ def test_llm_config_delete_queues_root_and_revision_refs_before_rows_are_removed
     } == set(queued_refs)
 
 
-def test_cleanup_worker_keeps_shared_root_ref_when_only_revision_is_deleted(
+def test_cleanup_worker_keeps_legacy_manually_shared_root_ref_when_only_revision_is_deleted(
     db_session,
     make_team,
     make_user,
@@ -306,6 +306,8 @@ def test_cleanup_worker_keeps_shared_root_ref_when_only_revision_is_deleted(
     root = make_llm_config(team=team, actor=admin, label="Shared root")
     revision = make_llm_config(team=team, actor=admin, label="Shared revision")
     revision.revision_of_config_id = root.id
+    # New revision drafts own their refs. Preserve guard coverage for legacy or
+    # manually-created rows that still share a root credential reference.
     revision.vault_secret_ref = root.vault_secret_ref
     db_session.add(revision)
     db_session.commit()

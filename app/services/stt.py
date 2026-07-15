@@ -1847,7 +1847,8 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
     provider_preset = _resolve_stt_provider_preset_for_admin_write(provider_preset, adapter_kind, base_url)
     preset = get_stt_provider_preset(provider_preset)
     bearer_token = payload.bearer_token
-    if not bearer_token and preset.requires_api_key and target is not None and target.vault_secret_ref:
+    inherits_bearer_token = not bearer_token and preset.requires_api_key and target is not None and bool(target.vault_secret_ref)
+    if inherits_bearer_token:
         bearer_token = read_team_stt_bearer_token(
             team_id=team.id,
             config_id=target.id,
@@ -1905,7 +1906,7 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         segment_end_field=inspection.segment_end_field,
         segment_speaker_field=inspection.segment_speaker_field,
         extra_form_fields_json=inspection.extra_form_fields_json,
-        vault_secret_ref="pending" if payload.bearer_token else (target.vault_secret_ref if preset.requires_api_key and target is not None else ""),
+        vault_secret_ref="pending" if bearer_token else "",
         credential_status=status,
         credential_fingerprint=fingerprint,
         inspection_metadata_json=_status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=status),
@@ -1918,8 +1919,20 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
     written_secret_ref = ""
     try:
         db.flush()
-        if payload.bearer_token:
-            written_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token)
+        if bearer_token:
+            if inherits_bearer_token:
+                written_secret_ref = write_team_stt_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token,
+                    secret_id=uuid4(),
+                )
+            else:
+                written_secret_ref = write_team_stt_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=bearer_token,
+                )
             config.vault_secret_ref = written_secret_ref
         db.commit()
     except IntegrityError as exc:

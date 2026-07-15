@@ -1,5 +1,36 @@
 # Progress
 
+## 2026-07-15 Transcript ingestion preparation-before-dispatch boundary
+
+### Scope
+
+- Moved queued source-audio read, normalization, and whole-file duration validation before atomic `queued -> processing` claim.
+- Defined successful claim immediately before `transcribe_with_stt_snapshot` as irreversible external-dispatch boundary.
+- Added deterministic deletion-after-preparation/before-claim regression: no provider call; root/job cascade remains immediate.
+
+### Checklist
+
+- Target/modules/endpoints/tests/docs/reuse review: complete; reused existing conditional claim, root lock order, cascade deletion, and durable audio-cleanup outbox.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged; worker has no new content visibility or authorization path.
+- Lifecycle/deletion checkpoint: deletion/expiry before claim blocks provider dispatch; after claim existing root cascade, Vault cleanup queue, and late-result discard remain authoritative.
+- Docs/tests checkpoint: capture contract updated; focused worker regressions added/run.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy: normalized audio remains transient; no audio/text/ref logged.
+- Ownership: transcript root and owner scope unchanged.
+- Deletion: root deletion remains immediate; pre-claim delete prevents external STT, post-claim delete discards late result and retains durable cleanup.
+- Provider: queue-time STT snapshot unchanged; one successful conditional claim remains single dispatch gate across Postgres and SQLite.
+- Structured-note contract: unchanged.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "processing_transcript_ingestion_job_claims_queued_job_before_provider_call or processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim or processing_transcript_ingestion_job_does_not_revive_midflight_failed_job or processing_transcript_ingestion_job_deletes_root_that_expires_midflight or processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call or processing_audio_file_job_appends_transcript_draft_and_marks_ready or processing_audio_file_job_clears_vault_ref_and_queues_cleanup_when_delete_fails or processing_audio_file_job_fails_when_normalized_duration_exceeds_limit or processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missing"`: 9 passed.
+- `.venv/bin/pytest -q tests/test_retention.py -k "ingestion_worker_deletes_already_expired_root_and_queues_retry_audio_cleanup or ingestion_failure_deletes_root_expired_during_failure_path"`: 3 passed.
+- `git diff --check`: passed.
+
 ## 2026-07-15 Global default-template editor return flow
 
 ### Scope
@@ -10425,3 +10456,33 @@ Added narrow STT/LLM detail updates and revision-based connection-change actions
 - Added a post-provider transcript row lock and expiry check so STT results cannot recreate or persist transcript-derived content after retention expiry.
 - Mid-flight expiry now hard-deletes the transcript root and uses the durable retry-audio cleanup path.
 - Added targeted ingestion-race and canonical admin workspace coverage.
+
+## 2026-07-15 Provider revision inherited-credential isolation
+
+### Scope
+
+- Required-auth STT and LLM revisions now read a blank-submission target token only for inspection, then stage it at a unique versioned Vault reference owned by the draft config.
+- Drafts no longer persist a root credential reference, so concurrent root credential replacement and retired-ref cleanup cannot invalidate a pending draft.
+
+### Checklist
+
+- Target/modules/tests/docs/reuse review: complete; reused existing Vault write helpers, UUID versioning, and durable rollback compensation.
+- Schema checkpoint: no schema change.
+- Auth/ownership checkpoint: unchanged system-admin and team-scoped root lookup.
+- Lifecycle/deletion checkpoint: cleanup live-ref guard unchanged; old root refs can retire while draft refs remain independently live.
+- Docs/tests checkpoint: provider/security docs updated; focused STT/LLM isolation and inherited-write rollback coverage added.
+- Open issue / escalate to Sol: none.
+
+### Architecture checkpoint summary
+
+- Privacy: tokens and Vault refs remain server-only and unlogged.
+- Ownership: draft creation remains system-admin scoped to target team.
+- Deletion: existing durable cleanup and live-ref protection retained.
+- Provider: inspection, fingerprints/status, no-auth paths, and finalize rebinding retain existing behavior.
+- Structured-note contract: unchanged.
+
+### Tests
+
+- `.venv/bin/pytest -q tests/test_api.py -k "explicit_credential_draft_commit_failure or inherited_credential_draft_commit_failure or provider_revisions_copy_saved_credentials_before_retired_root_cleanup or llm_no_auth_revision_drops_saved_credential"`: 5 passed.
+- `.venv/bin/pytest -q tests/test_provider_secret_cleanup.py -k "legacy_manually_shared_root_ref"`: 1 passed.
+- `git diff --check`: passed.

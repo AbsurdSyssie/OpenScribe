@@ -1608,6 +1608,11 @@ def _release_ingestion_transaction(db: Session) -> None:
 def _return_released_ingestion_job(db: Session, job: TranscriptIngestionJob) -> TranscriptIngestionJob:
     """Return stable job metadata without retaining a transaction or row lock."""
     db.refresh(job)
+    # Vault-backed queued jobs never need a deferred legacy blob. Materialize
+    # its null state before detaching so callers can safely inspect the job
+    # outcome without a detached-instance lazy load.
+    if job.source_audio_vault_ref:
+        db.refresh(job, attribute_names=["source_audio_blob"])
     db.expunge(job)
     _release_ingestion_transaction(db)
     return job
@@ -1707,6 +1712,35 @@ def _claim_queued_ingestion_job(
     db.expunge(transcript)
     _release_ingestion_transaction(db)
     return job, transcript
+
+
+def _queued_ingestion_job_for_preparation(
+    db: Session,
+    *,
+    job_id: UUID,
+) -> TranscriptIngestionJob | None:
+    """Return a queued-job snapshot for reversible local preparation only.
+
+    This intentionally takes no row lock. Audio reads, normalization, and
+    whole-file duration validation must finish before the conditional
+    queued-to-processing claim. A successful claim is the point after which
+    an external STT request may be dispatched.
+    """
+    with Session(bind=db.get_bind(), future=True) as preparation_db:
+        job = preparation_db.get(TranscriptIngestionJob, job_id)
+        if job is None:
+            return None
+        if job.status is TranscriptIngestionJobStatus.queued:
+            preparation_db.expunge(job)
+            return job
+
+    # Preserve the existing stable return shape for terminal/in-flight jobs
+    # without detaching caller-owned ORM instances during preparation lookup.
+    job = db.get(TranscriptIngestionJob, job_id)
+    if job is None:
+        _release_ingestion_transaction(db)
+        return None
+    return _return_released_ingestion_job(db, job)
 
 
 def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
@@ -1883,18 +1917,34 @@ def process_transcript_ingestion_job(
     job_id: UUID,
     legacy_audio_bytes: bytes | None = None,
 ) -> TranscriptIngestionJob | None:
-    claimed = _claim_queued_ingestion_job(db, job_id=job_id)
-    if claimed is None:
+    preparation_job = _queued_ingestion_job_for_preparation(db, job_id=job_id)
+    if preparation_job is None:
         return None
-    if isinstance(claimed, TranscriptIngestionJob):
-        return claimed
-    job, transcript = claimed
+    if preparation_job.status is not TranscriptIngestionJobStatus.queued:
+        return preparation_job
 
     try:
-        audio_bytes = _read_queued_source_audio(db, job, legacy_audio_bytes=legacy_audio_bytes)
-        normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=job.source_filename)
-        if job.job_kind is TranscriptIngestionJobKind.audio_file:
+        audio_bytes = _read_queued_source_audio(db, preparation_job, legacy_audio_bytes=legacy_audio_bytes)
+        normalized_audio = normalize_audio_to_wav_16k_mono(
+            audio_bytes=audio_bytes,
+            source_filename=preparation_job.source_filename,
+        )
+        if preparation_job.job_kind is TranscriptIngestionJobKind.audio_file:
             enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
+
+        # Conditional claim is immediately before irreversible external STT
+        # dispatch. If deletion or expiry commits before this succeeds, no
+        # provider request is made.
+        _release_ingestion_transaction(db)
+        claimed = _claim_queued_ingestion_job(db, job_id=job_id)
+        if claimed is None:
+            return None
+        if isinstance(claimed, TranscriptIngestionJob):
+            return claimed
+        job, transcript = claimed
+
+        # Successful queued -> processing claim is irreversible dispatch
+        # boundary. Deletion after this point may discard only late results.
         transcript_text = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,

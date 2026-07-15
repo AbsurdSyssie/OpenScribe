@@ -141,8 +141,10 @@ Browser navigation behavior:
 - runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
 - STT draft finalization and draft credential replacement take `config_id` from the path; JSON bodies include team/label/model or replacement token fields only and do not require a duplicate body `config_id`
+- STT provider revisions inherit a blank credential only when the resolved target preset requires an API key. Moving to an optional/no-auth preset without supplying a token stores `auth_mode=none` and no Vault reference; supplying an optional token stores `auth_mode=bearer`.
 - STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
 - blank `bearer_token` on edit keeps the saved credential only when `credential_action` is `keep`; `remove` clears credential-derived state and deletes the saved Vault secret
+- `openai_cloud` and `elevenlabs_speech_to_text` require `auth_mode=bearer`; updates reject `auth_mode=none` before changing config metadata or its Vault reference, even when `credential_action=keep`
 - create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
 - create/update with a bearer token validates/inspects server-side before replacing a saved STT secret, records `verified` or `partial`, and rejects invalid credentials without deleting an existing config or selection
 - manual `generic_rest` and `openai_compatible_rest` save-time validation uses the saved transcribe path, field names, response path, and bundled synthetic audio sample instead of depending on default OpenAPI discovery or static metadata only
@@ -160,6 +162,8 @@ Browser navigation behavior:
 - `POST /api/v1/llm-configs/{config_id}/replace-credential`
 - `POST /api/v1/llm-configs`
 - `DELETE /api/v1/llm-configs/{config_id}`
+
+Material provider edits use pending revisions while active config ids remain stable. Blank revision credentials reuse the root config's exact stored Vault reference only for presets that require a token. Moving to Ollama without a submitted token stores `auth_mode=none` and no Vault reference; an explicitly submitted optional token stores `auth_mode=bearer`. Replacement credentials are rebound to a fresh root-owned Vault path before promotion; superseded root and revision paths are cleaned only after the database commit succeeds.
 - `GET /api/v1/llm-selection`
 - `GET /api/v1/llm-selection/options`
 - `POST /api/v1/llm-selection`
@@ -177,9 +181,9 @@ Browser navigation behavior:
 - LLM inspect accepts branded `provider_preset` values and returns `provider_preset`, `provider_display_name`, `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, manual-required, and failed discovery states
 - LLM inspect remains scoped to known protocol adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
 - LLM draft creation is system-admin-only; it saves the submitted credential to Vault, stores discovered model metadata, returns `has_secret=true`, and never returns raw keys or Vault refs
-- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's active LLM selection
+- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's selected config id. If the promoted model catalog changed, the leader-approved allowlist is intersected with the new catalog; an empty intersection narrows to the new provider default, invalid team defaults move to that model, and invalid hallucination-check overrides clear to the same config's default.
 - LLM credential replacement reruns discovery, clears availability, and returns the config to `pending_model_selection`
-- saved LLM provider inspect uses the existing Vault-backed credential when present, refreshes sanitized available-model metadata, and never returns the raw key
+- saved LLM provider inspect uses an existing Vault-backed credential only when `auth_mode=bearer`, refreshes sanitized available-model metadata, reconciles model selections, and never returns the raw key
 - LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
 - LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
 - persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
@@ -660,8 +664,11 @@ Current whole-file ingestion behavior:
 - whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
+- after successful ingestion, the source reference is cleared from the job in the same commit that records a durable audio-cleanup outbox intent; a failed immediate Vault delete retries from that intent rather than restoring the job reference
+- before deleting queued retry audio, cleanup rechecks that no ingestion job still references its Vault ref; a live reference removes stale cleanup intent and preserves retry data
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
-- transcript deletion and user deletion now attempt best-effort cleanup of any Vault-backed retry audio before the owning rows are removed, without blocking the hard-delete path on a transient Vault outage
+- transcript, user, team, and retention deletion commit retry-audio Vault references to a durable cleanup outbox before owning rows are removed; transient Vault outages retain retry metadata without delaying database hard deletion
+- if committing a newly written source-audio reference fails, rollback compensation commits a cleanup intent in a fresh transaction; only if that cannot persist does validated direct Vault deletion run, and failure of both paths is explicit
 - applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads
 - file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
 - file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`
@@ -715,8 +722,9 @@ Current whole-file ingestion behavior:
   - exposes `active_transcript_redaction_status` and `active_transcript_clinical_nlp_status` so empty review rows can distinguish not-run, failed, and succeeded-with-zero-results states without exposing transcript text
   - includes note-level `generated_documents[].pii_entities` summary rows without original values so switching selected notes refreshes the PII panel without a page reload
   - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
-  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for pushed workspace updates
-  - falls back to polling the same owner-only workspace read model only while a live session is actively recording or restarting if SSE is unavailable or disconnected
+  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for workspace updates
+  - suppresses browser refresh bursts while that SSE connection is healthy
+  - falls back to polling the same owner-only workspace read model only when SSE is unavailable or disconnected
   - creates new sessions through `POST /api/v1/transcripts/start`
   - deletes selected sessions through owner-scoped `DELETE /api/v1/transcripts/{transcript_id}` calls
   - switches a blank session back to `whole_file` through `PATCH /api/v1/transcripts/{transcript_id}`
@@ -738,6 +746,13 @@ Current whole-file ingestion behavior:
   - or a generic team-leader message when no active leader email is available
 
 System-admin or leader authority does not grant transcript-content access.
+
+Transcript-root deletion commits the database root cascade before deleting any
+Vault-backed retry audio. `DELETE /api/v1/transcripts/{transcript_id}`, user
+deletion, team deletion, and retention cleanup persist a metadata-only cleanup
+job in that same transaction. A Vault outage does not restore or expose the
+deleted transcript: cleanup is retried durably until the Vault path is deleted
+or confirmed already absent.
 
 ### Provider model enforcement
 

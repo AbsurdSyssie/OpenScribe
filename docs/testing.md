@@ -1,5 +1,8 @@
 # Testing
 
+- Admin redesign migration tests verify `/admin` renders the mockup-based neutral/team-scoped shell with URL-backed team tabs, `/legacy-admin` retains the functional current workspace, and `/admin2` remains available.
+- Admin redesign slice tests verify team member forms/actions reuse existing account routes without system-admin promotion, De-ID assignment remains distinct from global deletion, Danger zone uses existing team hard-delete, and retention-default edits preserve future-only semantics.
+
 This document covers non-database testing. Database-specific behavior, safety rules, and persistence-level checks belong in [dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md).
 
 Documentation convention:
@@ -32,12 +35,13 @@ Current behavior:
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
+- admin UI static regressions verify no-team Admin home safely skips member-modal listeners when member controls are not rendered
 - admin UI regression tests verify hallucination checker provider selection uses discovered model dropdowns instead of free-text checker model entry
 - transcribe UI static regressions verify generated notes expose hallucination check status/debug panel and refresh the document navigator cache-bust token
 - mail-service tests verify disabled/stdout/resend configuration validation, stdout local delivery, skipped delivery when mail is disabled, hidden Resend API key repr behavior, Resend API payload/header construction, provider-error mapping, and Vault-ref API key resolution
 - auth-email tests verify generic password reset request responses when mail is enabled, password reset request audit without raw email, non-enumerable password reset behavior during mail misconfiguration/send failures, disabled-mail reset gating in API and browser pages, current browser shell styling for reset pages, hashed setup/reset tokens, invalid confirm tokens being rejected before password hashing, user-chosen password complexity validation, password reset session/trusted-device revocation, first-time-only activation into TOTP onboarding, manager recovery same-team authorization, one-time temporary password generation, password-only recovery preserving TOTP/recovery codes, MFA-only reset preserving pending password changes, persistent copy-modal browser display, and MFA/recovery-code clearing for full recovery
 - auth-service tests verify Argon2id password hashing, non-Argon2id hash rejection, and forced dev password rotation
-- cookie/CSRF security tests verify production startup guards, HTTPS-only HSTS emission, proxy delegation, `HSTS_SOURCE=proxy_static_fallback` static-asset HSTS fallback mode, browser security headers, public splash/auth-page `no-store`, API no-store behavior, short-cacheable cookie-free public metadata routes, short-cacheable static assets without CSRF cookies, anonymous pre-login CSRF, `HttpOnly` signed CSRF/session/trusted-device/anonymous-nonce cookies, CSRF-cookie-alone non-authentication, server-rendered hidden CSRF fields on public forms, same-origin unsafe request checks, signed session-bound CSRF acceptance, stale CSRF rejection after session rotation, and evidence for accepting scanner auth/session auto-detection warnings on login/CSRF cookies
+- cookie/CSRF security tests verify production startup guards, HTTPS-only HSTS emission, proxy delegation, `HSTS_SOURCE=proxy_static_fallback` static-asset HSTS fallback mode, browser security headers including global `X-Robots-Tag`, deny-all `robots.txt`, public splash/auth-page `no-store`, API no-store behavior, short-cacheable cookie-free public metadata routes, short-cacheable static assets without CSRF cookies, anonymous pre-login CSRF, `HttpOnly` signed CSRF/session/trusted-device/anonymous-nonce cookies, CSRF-cookie-alone non-authentication, server-rendered hidden CSRF fields on public forms, same-origin unsafe request checks, signed session-bound CSRF acceptance, stale CSRF rejection after session rotation, and evidence for accepting scanner auth/session auto-detection warnings on login/CSRF cookies
 - security audit tests verify durable audit redacts nested sensitive keys, sanitizes CR/LF, env-gates Cloudflare origin IP capture, records login success/failure without raw passwords or email, records invalid reset-token failures, records CSRF/authz/rate-limit abuse signals without cookies/tokens/bodies, records team-delete blockers and high-signal provider/de-ID validation rejections, records account lifecycle metadata, excludes prompt text from template/default-asset/generation audit, excludes smart-phrase content from smart-phrase audit, excludes filename/audio content from upload audit, and excludes transcript title/content from transcript deletion audit
 - audit detection tests verify the manual detection helper flags repeated auth failures, repeated access denials, rate-limit/validation bursts, high-risk admin/destructive actions, provider config changes, and time-window parsing
 - admin audit UI tests verify system admins can view security-audit metadata/signals, use windowed and capped DB-populated filter dropdowns, filter event rows, and non-admin users cannot open the Audit tab; tests also verify overflowing lookback input cannot cause a 500 and sensitive stored detail keys are not rendered
@@ -86,6 +90,8 @@ OPENSCRIBE_PASSWORD='password-1' \
 
 What it does:
 
+- auth-shell and browser-JS harness regressions track the current shared stylesheet assets and all exported document-navigation helpers without coupling to retired cache keys or inline font names
+
 - logs in through the real auth flow
 - prompts for TOTP only if the login comes back as `pending_mfa`
 - starts a `whole_file` transcript
@@ -109,6 +115,8 @@ What it does:
 - workspace refreshes re-render the right-side PII table and transcript highlights from `active_transcript_pii_entities`, including newly detected clinical NLP entities, without requiring a full page reload
 - workspace PII minimisation tests verify default PII rows omit original values, owner-only reveal returns values through POST+CSRF, non-owners receive `404`, sensitive APIs are `no-store`, and plaintext response fields no longer use `_encrypted` names
 - manual PII API coverage verifies owner-only add/delete, encrypted-at-rest storage, duplicate collapse, workspace hydration, and transcript-root cascade cleanup
+- retention regressions verify expired roots cannot hydrate the owner workspace or reach transcript, working-note, dictation, generated-document, PII, generation, edit, delete, debug, or async-processing content paths before physical cleanup
+- retention runtime regressions verify Celery Beat queues bounded hard-delete cleanup every 10 seconds, each task returns after one batch while backlog remains for later runs, and the documented dev runtime starts and stops both worker and Beat processes
 - manual PII dedupe coverage verifies normalized value hashes are keyed owner-scoped digests rather than plain SHA-256 of low-entropy PII
 - manual PII generation coverage verifies owner-entered missed PII is redacted before the LLM provider call, including transcript whitespace variants, and reidentified after output validation
 
@@ -171,6 +179,11 @@ What it does:
 - LLM inspection exposing machine-readable discovery status, default model source, warning, and manual-required states
 - LLM provider presets covering branded provider catalog/inference, live-discovery-only manual fallback, manual model selectability after failed discovery, service-owned inspection metadata, stale model clearing/rediscovery on provider endpoint changes, OpenAI-only prefix filtering, base URL override reclassification to custom OpenAI-compatible, saved inspection metadata, and migration backfill
 - saved LLM provider re-inspection using the Vault-backed API key to refresh provider model metadata without key exposure
+- provider revision regressions verify required-token blank STT/LLM revisions follow exact stored Vault references, no-auth revisions do not inspect or persist old credentials, explicit optional tokens remain bearer-authenticated, replacement credentials are rebound to stable target-owned paths before promotion, and superseded target/draft secrets are cleaned after commit
+- LLM promotion/reinspection regressions verify selected model allowlists cannot retain removed provider models, disjoint catalogs narrow to the promoted default, invalid team defaults reconcile, and invalid hallucination-check overrides clear without changing selected provider ids
+- no-auth STT/LLM runtime regressions verify stale Vault references are neither read nor forwarded unless the saved config explicitly uses bearer auth
+- migration rollback coverage verifies pending provider revisions sharing root labels are removed before unconditional pre-revision label uniqueness is restored
+- CSP regressions include the admin workspace and forbid inline submit/change handlers, keeping clear-selection confirmations on delegated `data-confirm-submit` handlers
 - hallucination-check selection API coverage for system-admin-only set/read/clear using ready active team LLM configs
 - structured hallucination-check generation coverage for redacted-only checker prompt shape, exact-substring patch application, checked bucket, applied edit count, encrypted dev debug payload, and provider usage metadata
 - structured hallucination-check provider/Vault-failure coverage verifies notes still save ready/unchecked and owner-only debug includes safe failure metadata
@@ -268,6 +281,7 @@ What it does:
 - bootstrap redirect to onboarding
 - onboarding QR code rendering for TOTP setup
 - leader home page with request-review and direct-user-create tools
+- managed-account password-generator regression coverage verifies all active leader/admin temporary-password fields use the shared 12-character Web Crypto helper, existing button classes, required character groups, overwrite confirmation, generated-value copy control, accessible show/hide state, and success/failure toasts
 - leader home page suspend/reactivate controls for manageable users
 - leader home page delete control for manageable users
 - leader home page STT selection form
@@ -278,6 +292,8 @@ What it does:
 - owner transcription workspace file-upload form
 - owner transcription workspace missing-STT error that names the team leader email when available
 - owner transcription workspace showing a `Retry transcription` control only when a failed whole-file job still has stored retry audio available
+- owner transcription workspace showing the shared orbit/waveform loading state while the open consultation is transcribing, with the transcript body restored by client status updates when transcription finishes
+- owner transcription workspace reusing the ring/waveform visual as a frozen dot-free empty state with `Start a recording to see your transcript`, restoring the orbit dot and animating it at `1.45s` per cycle when recording starts while no transcript text exists, then switching to the transcribing or transcript-content surface from live status/draft updates
 - owner transcription workspace hiding the retry control when a failed whole-file job has no stored retry audio available
 - owner transcription workspace sidebar session list and redesigned tabbed transcript shell
 - owner transcription workspace exposing and hydrating from `GET /api/v1/transcribe/workspace`
@@ -348,6 +364,14 @@ What it does:
 - admin team hard delete removing team users, team-owned configs, team assets, transcript-derived rows, account requests, and team usage metadata
 - admin team hard delete preflighting system-admin membership before deleting Vault-backed provider secrets
 - admin team hard delete deferring Vault-backed provider secret deletion until after DB cleanup commits
+- STT, LLM, de-identification, revision, draft, replacement, and team deletion committing provider-secret cleanup intents before database references disappear
+- provider-secret cleanup retrying Vault failures, treating missing paths as success, and rechecking live references before deletion
+- cleanup-outbox downgrades blocking while pending audio or provider jobs retain the only durable Vault references
+- Celery Beat registering and scheduling retention, retry-audio, and provider-secret cleanup tasks every 10 seconds
+- provider revision and STT no-auth downgrades blocking when rollback would discard a Vault reference or leave incompatible rows
+- transcript, user, team, and retention deletion committing a FK-free retry-audio cleanup job before Vault deletion, retaining failed deletions for scheduled retry, and treating an already-missing Vault path as success
+- successful ingestion clearing its job source reference only after committing durable audio cleanup intent; failed enqueue-transaction compensation retries durable queueing, then validated direct deletion, and reports dual failure
+- transcript-audio cleanup rechecking live ingestion refs before Vault deletion, removing stale cleanup intent without deleting active retry audio
 - system-admin user hard delete reassigning admin-managed metadata FK references before removing the user
 - de-identification provider validation rejecting secret-bearing extra headers/body fields, including nested body JSON keys, and bearer-auth providers without a Vault-backed token
 - shared NLP endpoint inspection ping using synthetic sample text, bearer auth, response path parsing, entity mapping, clinical-NLP `label`/`confidence` response adjustment, and no token echo
@@ -365,6 +389,8 @@ What it does:
 - leader home AI-services UI exposing team de-identification selection and clear-to-built-in-fallback behavior
 - leader home AI-services UI exposing clinical NLP enable/disable separately from PII redaction selection
 - home tabs initializing after the navigation moved above the tab shell
+- workspace SSE fallback polling remaining active while `EventSource` is still connecting
+- transcribe loading indicators honoring `prefers-reduced-motion`
 - transcribe structured and freeform statement editors autosizing correctly on first render, even when their panels were hidden during mount
 - transcribe editable-note empty guidance hiding on initial render and generated-output refresh once structured/freeform note rows contain content
 - transcribe structured/freeform line reordering blocking blank placeholder rows by mouse drag and consuming blocked keyboard shortcuts so browser history navigation does not fire
@@ -392,6 +418,7 @@ What it does:
 ### Migrations
 
 - `alembic upgrade head` builds the expected schema from scratch
+- head schema includes the FK-free `transcript_audio_cleanup_jobs` outbox, its due-time index, retry metadata, and unique Vault reference
 - head schema includes account-request, session, trusted-device, MFA, and recovery-code tables
 - migration behavior and database safety rules are documented in [dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
 
@@ -399,3 +426,18 @@ What it does:
 
 - Postgres-backed tests need real socket access to the local test database. In this environment that means running them outside the restricted sandbox.
 - The STT and LLM browser forms use `provider_model` for HTML form posts, while the JSON API and persisted field remain `model_name` / `model_name_override`. That keeps the API stable while avoiding FastAPI/Pydantic protected-namespace warnings from generated form models.
+# Admin provider redesign checks
+
+Run `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or change_llm_connection"` for narrow provider detail and connection-revision coverage.
+
+`tests/test_admin_ui.py::test_admin_provider_setup_keeps_team_scope_panel_before_team_selection` verifies the compatibility `/admin?tab=providers` entry renders a metadata-only team picker, rejects invalid team scope safely, and maps a selected team to Provider policy.
+
+`tests/test_admin_ui.py::test_admin_workspace_global_sidebar_areas_render_real_controls` verifies URL-scoped Usage labels the selected team rather than claiming all-team coverage. Global Usage coverage retains the all-team label.
+# Admin provider wizard
+
+`tests/test_admin_ui.py::test_admin_workspace_provider_redesign_has_explicit_safe_actions` checks API draft/finalize wiring, response-driven rendering, named controls, removal of fabricated model data, and absence of credential references.
+
+`tests/test_admin_ui.py::test_admin_provider_wizards_render_safe_contextual_errors` checks both provider wizards use assertive, focusable alerts; retain only safe structured API status/code/field metadata; map failures to concise guidance; highlight explicitly named controls; and never serialize arbitrary error details.
+# Provider-policy table
+
+`tests/test_admin_ui.py -k provider_policy` verifies six styled policy rows, real provider/model values, discovered-model data, inline save and state-dependent clear routes, representative STT/LLM POSTs, and JavaScript model-sync markers. Tests use provider metadata only; no transcript-derived content or credentials are rendered.

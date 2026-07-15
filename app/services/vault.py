@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 import httpx
+import re
 import hvac
 from hvac import exceptions as hvac_exceptions
 
@@ -295,16 +296,30 @@ def delete_team_stt_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: 
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
-def team_llm_secret_path(team_id: UUID, config_id: UUID) -> str:
-    return f"openscribe/llm/team/{team_id}/config/{config_id}"
+def team_llm_secret_path(team_id: UUID, config_id: UUID, *, secret_id: UUID | None = None) -> str:
+    path = f"openscribe/llm/team/{team_id}/config/{config_id}"
+    return f"{path}/{secret_id}" if secret_id is not None else path
 
 
-def team_llm_secret_ref(team_id: UUID, config_id: UUID) -> str:
-    return f"{VAULT_KV_MOUNT}:{team_llm_secret_path(team_id, config_id)}"
+def team_llm_secret_ref(team_id: UUID, config_id: UUID, *, secret_id: UUID | None = None) -> str:
+    return f"{VAULT_KV_MOUNT}:{team_llm_secret_path(team_id, config_id, secret_id=secret_id)}"
 
 
-def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token: str) -> str:
-    path = team_llm_secret_path(team_id, config_id)
+def write_team_llm_bearer_token(
+    *,
+    team_id: UUID,
+    config_id: UUID,
+    bearer_token: str,
+    secret_id: UUID | None = None,
+    secret_ref: str | None = None,
+) -> str:
+    if secret_ref is not None and secret_id is not None:
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = (
+        _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
+        if secret_ref is not None
+        else team_llm_secret_path(team_id, config_id, secret_id=secret_id)
+    )
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
     try:
         response = httpx.post(
@@ -317,11 +332,24 @@ def write_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, bearer_token:
         raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
     if response.status_code >= 400:
         raise AppError(502, "vault_write_failed", "Vault secret write failed")
-    return team_llm_secret_ref(team_id, config_id)
+    return f"{VAULT_KV_MOUNT}:{path}"
 
 
-def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
-    path = team_llm_secret_path(team_id, config_id)
+def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+    if not secret_ref:
+        return team_llm_secret_path(team_id, config_id)
+    mount_prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(mount_prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(mount_prefix):].strip()
+    expected_prefix = f"openscribe/llm/team/{team_id}/config/"
+    if not path or not path.startswith(expected_prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    return path
+
+
+def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+    path = _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
     try:
         response = httpx.get(
@@ -343,8 +371,8 @@ def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> str:
     return str(bearer_token)
 
 
-def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
-    path = team_llm_secret_path(team_id, config_id)
+def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> None:
+    path = _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/metadata/{path}"
     try:
         response = httpx.delete(
@@ -357,6 +385,36 @@ def delete_team_llm_bearer_token(*, team_id: UUID, config_id: UUID) -> None:
     if response.status_code in {200, 204, 404}:
         return
     raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
+
+
+def delete_provider_secret_by_ref(*, kind, secret_ref: str) -> None:
+    """Delete one validated provider ref without rebuilding a path from deleted DB rows."""
+    from app.models import ProviderSecretCleanupKind
+
+    if not isinstance(kind, ProviderSecretCleanupKind):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    prefix = f"{VAULT_KV_MOUNT}:"
+    if not secret_ref.startswith(prefix):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    path = secret_ref[len(prefix):].strip()
+    uuid_pattern = r"[0-9a-fA-F-]{36}"
+    patterns = {
+        ProviderSecretCleanupKind.stt: rf"openscribe/stt/team/{uuid_pattern}/config/{uuid_pattern}(?:/{uuid_pattern})?",
+        ProviderSecretCleanupKind.llm: rf"openscribe/llm/team/{uuid_pattern}/config/{uuid_pattern}(?:/{uuid_pattern})?",
+        ProviderSecretCleanupKind.deidentification: rf"openscribe/deidentification/provider/{uuid_pattern}(?:/{uuid_pattern})?",
+    }
+    if not re.fullmatch(patterns[kind], path):
+        raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
+    try:
+        response = httpx.delete(
+            f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/metadata/{path}",
+            headers=_vault_headers(),
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(502, "vault_unavailable", "Vault is unavailable") from exc
+    if response.status_code not in {200, 204, 404}:
+        raise AppError(502, "vault_delete_failed", "Vault secret delete failed")
 
 
 def deidentification_secret_path(provider_id: UUID, *, secret_id: UUID | None = None) -> str:
@@ -573,6 +631,15 @@ def read_transcript_ingestion_source_audio(*, secret_ref: str) -> bytes:
 
 def delete_transcript_ingestion_source_audio(*, secret_ref: str) -> None:
     mount, path = _split_secret_ref(secret_ref)
+    path_parts = path.split("/")
+    if mount != VAULT_KV_MOUNT or len(path_parts) != 4 or path_parts[:2] != ["openscribe", "transcript-ingestion"] or path_parts[3] != "source-audio":
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
+    try:
+        job_id = UUID(path_parts[2])
+    except ValueError as exc:
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid") from exc
+    if path != transcript_ingestion_source_audio_path(job_id):
+        raise AppError(502, "vault_secret_ref_invalid", "Vault secret reference is invalid")
     url = _kv_url_for_path(mount=mount, path=path, endpoint="metadata")
     try:
         response = httpx.delete(

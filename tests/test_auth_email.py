@@ -180,10 +180,11 @@ def test_password_reset_browser_pages_use_current_auth_shell(client, make_user, 
     confirm_page = client.get(f"/reset-password?token={_extract_token_from_message(captured[0])}")
 
     assert request_page.status_code == 200
-    assert "DM Sans" in request_page.text
+    assert "/static/css/auth.css?v=20260701-auth-extract" in request_page.text
     assert "panel hero" in request_page.text
     assert "Send reset link" in request_page.text
     assert confirm_page.status_code == 200
+    assert "/static/css/auth.css?v=20260701-auth-extract" in confirm_page.text
     assert "Secure account link" in confirm_page.text
     assert "panel hero" in confirm_page.text
     assert "Return to login" in confirm_page.text

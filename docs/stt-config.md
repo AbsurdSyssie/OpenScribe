@@ -22,6 +22,8 @@ Add the first STT-management surface with:
 
 This configuration model now feeds the transcript-ingestion runtime. Users consume only the resolved active team STT selection during chunk or file upload.
 
+Credential replacement writes a versioned Vault secret, commits the new database reference and an outbox intent for the retired reference atomically, then lets the scheduled cleanup worker delete Vault data. Deletion, draft cancellation, revision promotion, and team deletion use the same FK-free durable cleanup path. The worker never deletes a reference still present in any provider configuration.
+
 ## Why this shape
 
 The broader architecture already defines a future provider layer with:
@@ -214,9 +216,10 @@ Supported metadata fields:
 
 Secret fields:
 
-- bearer token only in the first implementation
+- optional bearer token; `auth_mode=none` is explicit for providers configured without one
 - stored in Vault
 - represented in Postgres only by `vault_secret_ref`
+- runtime reads the Vault reference only when `auth_mode=bearer`
 
 ## URL and transport rules
 
@@ -269,6 +272,9 @@ This keeps the first implementation practical for local STT services while still
 - manual `generic_rest` save-and-inspect validates the saved runtime contract with the bundled synthetic audio sample; it does not rely on default `/openapi.json` discovery
 - duplicate detection uses same team, adapter, base URL, and a server-side non-reversible credential fingerprint; unconfirmed duplicates warn before Vault write or provider inspection
 - saved-provider re-inspection reads the Vault reference and never asks the admin to re-enter the token
+- provider edit revisions with a blank required credential read the active config's exact stored Vault reference, including generated secret suffixes, for inspection only; they immediately write that token to a unique versioned Vault path under the revision id and never persist the active reference
+- replacement and inherited credentials are first staged under the revision id; finalization copies the credential to a fresh target-config Vault path before atomically promoting metadata into the stable config id
+- failed promotion removes only the fresh target copy; successful promotion removes replaced target and revision secrets only after the database no longer references them
 
 First implementation rules:
 
@@ -276,6 +282,7 @@ First implementation rules:
 - blank secret field on edit keeps the current secret only with `credential_action=keep`
 - `credential_action=remove` clears the DB secret reference and deletes the Vault secret after the DB commit
 - system admins may save self-hosted `generic_rest` or `openai_compatible_rest` endpoints without any bearer token when the provider does not require auth; browser forms default those optional-token adapters to `credential_action=keep` so a blank token is saved as no credential instead of a failed replacement
+- `openai_cloud` and `elevenlabs_speech_to_text` require `auth_mode=bearer`; an update cannot set `auth_mode=none`, including `credential_action=keep` with an existing Vault reference
 - `openai_cloud` still requires a saved API key
 - if a selected STT config expects a saved credential and Vault no longer has it, selection and file/chunk queueing now fail immediately with `stt_config_secret_missing` instead of letting the worker fail later
 - saved-config diagnostics surface safe provider failure metadata to system admins, including HTTP status and provider error code such as `quota_exceeded`, without exposing raw secrets or provider error messages

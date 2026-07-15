@@ -15,10 +15,12 @@ import pyotp
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
 
 from app.errors import AppError
+from app.services import transcripts as transcript_service
 from app.main import CSRF_COOKIE_NAME, api, app as fastapi_app, get_db, require_full_context
 from app.models import (
     AccountRequest,
@@ -43,6 +45,8 @@ from app.models import (
     ProviderUsageEvent,
     ProviderUsageEventType,
     ProviderCredentialStatus,
+    ProviderSecretCleanupJob,
+    ProviderSecretCleanupKind,
     PromptTemplate,
     PromptTemplateVersion,
     PostConsultationDictation,
@@ -72,6 +76,7 @@ from app.models import (
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
+    TranscriptAudioCleanupJob,
     TranscriptStatus,
     Transcript,
     TranscriptIngestionMode,
@@ -91,9 +96,9 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot, upsert_stt_config as upsert_stt_config_service
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
-from app.schemas import LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttInspectResult
+from app.schemas import LlmConfigDraftCreate, LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
 from app.services.audio import (
     AUDIO_FFMPEG_TIMEOUT_SECONDS,
     WHOLE_FILE_MAX_DURATION_SECONDS,
@@ -114,7 +119,8 @@ from app.services.content_crypto import (
 from app.services.redaction import reidentify_text as redaction_reidentify_text
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_entity_run_for_transcript_version
-from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, upsert_llm_config as upsert_llm_config_service
+from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, create_llm_config_draft, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
+from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs, queue_provider_secret_cleanup
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
@@ -140,6 +146,8 @@ from app.services.transcripts import (
     create_manual_pii_entity,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     process_transcript_ingestion_job,
+    process_transcript_audio_cleanup_jobs,
+    queue_audio_chunk_ingestion,
     save_working_note,
     start_transcript as start_transcript_service,
 )
@@ -206,6 +214,15 @@ def assert_error(response, *, status_code: int, code: str, message: str):
     assert body["error"]["code"] == code
     assert body["error"]["message"] == message
     return body["error"].get("details")
+
+
+def assert_provider_cleanup_job(db_session, *, secret_ref: str, kind: ProviderSecretCleanupKind):
+    cleanup_job = db_session.scalar(
+        select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == secret_ref)
+    )
+    assert cleanup_job is not None
+    assert cleanup_job.kind is kind
+    return cleanup_job
 
 
 def login(client, *, email: str, password: str):
@@ -1173,19 +1190,71 @@ def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_sessi
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
 
 
-def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+def test_stt_inherited_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-draft-cleanup@example.com", password="password-1", is_system_admin=True)
+    target = make_stt_config(team=team, actor=admin, label="Saved STT")
+    written_secret_refs: list[str] = []
+
+    monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "saved-token")
+
+    def write_secret(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-token"
+        assert secret_id is not None
+        secret_ref = f"secret:openscribe/stt/team/{team_id}/config/{config_id}/{secret_id}"
+        written_secret_refs.append(secret_ref)
+        return secret_ref
+
+    monkeypatch.setattr(
+        "app.services.stt.write_team_stt_bearer_token",
+        write_secret,
+    )
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
+
+    with pytest.raises(IntegrityError):
+        create_stt_config_draft(
+            db_session,
+            admin,
+            SttConfigDraftCreate(team_id=team.id, provider_preset=SttProviderPreset.openai.value, revision_of_config_id=target.id),
+        )
+
+    assert len(written_secret_refs) == 1
+    assert db_session.scalars(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)).all() == [target]
+    assert_provider_cleanup_job(db_session, secret_ref=written_secret_refs[0], kind=ProviderSecretCleanupKind.stt)
+
+
+def test_stt_explicit_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic North")
+    admin = make_user(email="admin-stt-explicit-draft-cleanup@example.com", password="password-1", is_system_admin=True)
     written_config_ids: list[str] = []
-    deleted_config_ids: list[str] = []
 
     monkeypatch.setattr("app.services.stt._list_openai_transcription_models", lambda **kwargs: ["whisper-1"])
     monkeypatch.setattr(
         "app.services.stt.write_team_stt_bearer_token",
         lambda *, team_id, config_id, bearer_token: written_config_ids.append(str(config_id)) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("insert", {}, Exception("duplicate"))))
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(IntegrityError):
         create_stt_config_draft(
@@ -1195,11 +1264,53 @@ def test_stt_draft_commit_failure_cleans_written_vault_secret(db_session, make_t
         )
 
     assert written_config_ids
-    assert deleted_config_ids == written_config_ids
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id)) is None
+    secret_ref = f"secret:openscribe/stt/team/{team.id}/config/{written_config_ids[0]}"
+    assert_provider_cleanup_job(db_session, secret_ref=secret_ref, kind=ProviderSecretCleanupKind.stt)
 
 
-def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session, make_team, make_user, monkeypatch):
+def test_llm_inherited_credential_draft_commit_failure_durably_queues_written_vault_secret(db_session, make_team, make_user, make_llm_config, monkeypatch):
+    team = make_team(name="LLM inherited draft cleanup")
+    admin = make_user(email="admin-llm-draft-cleanup@example.com", password="password-1", is_system_admin=True)
+    target = make_llm_config(team=team, actor=admin, label="Saved LLM", provider_preset="openai", available_models_json=["model-a"])
+    written_secret_refs: list[str] = []
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-token")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+
+    def write_secret(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-token"
+        assert secret_id is not None
+        secret_ref = f"secret:openscribe/llm/team/{team_id}/config/{config_id}/{secret_id}"
+        written_secret_refs.append(secret_ref)
+        return secret_ref
+
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", write_secret)
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
+
+    with pytest.raises(IntegrityError):
+        create_llm_config_draft(
+            db_session,
+            admin,
+            LlmConfigDraftCreate(team_id=team.id, provider_preset="openai", revision_of_config_id=target.id),
+        )
+
+    assert len(written_secret_refs) == 1
+    assert db_session.scalars(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)).all() == [target]
+    assert_provider_cleanup_job(db_session, secret_ref=written_secret_refs[0], kind=ProviderSecretCleanupKind.llm)
+
+
+def test_stt_draft_replace_commit_failure_preserves_old_secret_and_queues_new_orphan(db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-stt-draft-replace-cleanup@example.com", password="password-1", is_system_admin=True)
     secrets_by_ref: dict[str, str] = {}
@@ -1251,7 +1362,17 @@ def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session,
     )
     old_secret_ref = config.vault_secret_ref
 
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(IntegrityError("update", {}, Exception("duplicate"))))
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_first_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("update", {}, Exception("duplicate"))
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_first_commit)
 
     with pytest.raises(IntegrityError):
         replace_stt_config_draft_credential(
@@ -1260,8 +1381,12 @@ def test_stt_draft_replace_commit_failure_preserves_old_vault_secret(db_session,
             SttConfigDraftReplaceCredential(team_id=team.id, config_id=config.id, bearer_token="new-token"),
         )
 
-    assert secrets_by_ref == {old_secret_ref: "old-token"}
-    assert deleted_refs and old_secret_ref not in deleted_refs
+    new_secret_refs = set(secrets_by_ref) - {old_secret_ref}
+    assert secrets_by_ref[old_secret_ref] == "old-token"
+    assert len(new_secret_refs) == 1
+    assert deleted_refs == []
+    orphan_cleanup_ref = next(iter(new_secret_refs))
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == orphan_cleanup_ref)) is not None
     db_session.expire_all()
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is not None
@@ -1413,6 +1538,152 @@ def test_system_admin_can_provision_openai_compatible_stt_without_secret(client,
     assert persisted.vault_secret_ref == ""
 
 
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url", "model_name"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1", "whisper-1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io", "scribe_v2"),
+    ],
+)
+def test_system_admin_stt_update_rejects_no_auth_for_credential_required_adapter(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    adapter_kind,
+    base_url,
+    model_name,
+):
+    team = make_team(name=f"Clinic Required Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-required-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Saved credential config",
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model_name=model_name,
+        has_secret=True,
+    )
+    original_ref = config.vault_secret_ref
+
+    login(client, email=admin.email, password="password-1")
+    updated = client.post(
+        "/api/v1/stt-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Must not persist",
+            "adapter_kind": adapter_kind.value,
+            "base_url": base_url,
+            "auth_mode": "none",
+            "credential_action": "keep",
+            "model_name": model_name,
+            "is_active": False,
+        },
+    )
+
+    assert_error(
+        updated,
+        status_code=422,
+        code="business_rule_violation",
+        message="This STT adapter requires auth_mode=bearer",
+    )
+    db_session.refresh(config)
+    assert config.label == "Saved credential config"
+    assert config.auth_mode is SttAuthMode.bearer
+    assert config.vault_secret_ref == original_ref
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url", "model_name"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1", "whisper-1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io", "scribe_v2"),
+    ],
+)
+def test_upsert_stt_config_service_rejects_no_auth_for_credential_required_adapter(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    adapter_kind,
+    base_url,
+    model_name,
+):
+    team = make_team(name=f"Clinic Service Required Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-service-required-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Saved service credential config",
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model_name=model_name,
+        has_secret=True,
+    )
+    original_ref = config.vault_secret_ref
+
+    with pytest.raises(AppError, match="auth_mode=bearer") as exc_info:
+        upsert_stt_config_service(
+            db_session,
+            admin,
+            SttConfigUpsert(
+                config_id=config.id,
+                team_id=team.id,
+                label="Must not persist",
+                adapter_kind=adapter_kind,
+                base_url=base_url,
+                auth_mode=SttAuthMode.none,
+                credential_action="keep",
+                model_name=model_name,
+                is_active=False,
+            ),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "business_rule_violation"
+    db_session.refresh(config)
+    assert config.label == "Saved service credential config"
+    assert config.auth_mode is SttAuthMode.bearer
+    assert config.vault_secret_ref == original_ref
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url"),
+    [
+        (SttAdapterKind.openai_cloud, "https://api.openai.com/v1"),
+        (SttAdapterKind.elevenlabs_speech_to_text, "https://api.elevenlabs.io"),
+    ],
+)
+def test_required_stt_adapter_runtime_rejects_legacy_no_auth_config(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+    adapter_kind,
+    base_url,
+):
+    team = make_team(name=f"Clinic Legacy Auth {adapter_kind.value}")
+    admin = make_user(email=f"admin-legacy-auth-{adapter_kind.value}@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, adapter_kind=adapter_kind, base_url=base_url, has_secret=True)
+    config.provider_preset = SttProviderPreset.custom_rest_openapi.value
+    config.auth_mode = SttAuthMode.none
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.stt.read_team_stt_bearer_token",
+        lambda **kwargs: pytest.fail("legacy invalid config must fail before Vault read"),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        _read_saved_stt_bearer_token(team_id=team.id, config=config)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "stt_config_secret_missing"
+
+
 def test_system_admin_edit_preserves_saved_stt_secret_when_token_blank(client, db_session, make_team, make_user, make_stt_config, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-preserve-stt-secret@example.com", password="password-1", is_system_admin=True)
@@ -1456,10 +1727,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-remove-stt-secret@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="http://127.0.0.1:8000", model_name="parakeet")
-    deleted: list[str] = []
-
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted.append(str(config_id)))
-
+    old_secret_ref = config.vault_secret_ref
     login(client, email="admin-remove-stt-secret@example.com", password="password-1")
     updated = client.post(
         "/api/v1/stt-configs",
@@ -1487,7 +1755,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     assert persisted.credential_fingerprint is None
     assert persisted.credential_status is ProviderCredentialStatus.unknown
     assert persisted.inspection_metadata_json == {"status": "unknown", "reason": "credential_removed"}
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.stt)
 
 
 def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(client, db_session, make_team, make_user, monkeypatch):
@@ -1791,19 +2059,19 @@ def test_system_admin_can_delete_provisioned_stt_config_without_leaking_secret(c
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=admin)
     secret_ref = config.vault_secret_ref
-    deleted_refs: list[str | None] = []
-
-    def fake_delete_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
-        deleted_refs.append(secret_ref)
-
-    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete_team_stt_bearer_token)
-
     login(client, email="admin@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/stt-configs/{config.id}?team_id={team.id}")
     assert deleted.status_code == 204
 
     persisted = db_session.get(TeamSttConfig, config.id)
     assert persisted is None
+    cleanup_job = assert_provider_cleanup_job(db_session, secret_ref=secret_ref, kind=ProviderSecretCleanupKind.stt)
+    deleted_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_refs.append(kwargs["secret_ref"]),
+    )
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
     assert deleted_refs == [secret_ref]
 
     selection = client.get(f"/api/v1/stt-selection?team_id={team.id}")
@@ -3115,7 +3383,6 @@ def test_system_admin_can_create_and_finalize_llm_draft_without_secret_reveal(
         f"/api/v1/llm-configs/{config_id}/finalize",
         json={
             "team_id": str(team.id),
-            "config_id": str(config_id),
             "label": "OpenRouter North",
             "model_name": "model-b",
             "is_active": True,
@@ -3202,6 +3469,649 @@ def test_llm_draft_preserves_supplied_label_and_falls_back_when_omitted(client, 
     assert fallback.status_code == 200
     assert fallback.json()["config"]["label"] == "OpenAI · Clinic Draft Labels"
 
+
+def test_stt_revision_stays_pending_then_promotes_into_active_config(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinic STT Revision")
+    other_team = make_team(name="Other STT Revision")
+    admin = make_user(email="admin-stt-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(team=team, actor=admin, label="Current STT", base_url="https://old-stt.example", model_name="old-model")
+    selection = make_stt_selection(config=active, actor=admin)
+    monkeypatch.setattr(
+        "app.services.stt.inspect_stt_contract",
+        lambda *args, **kwargs: SttInspectResult(
+            adapter_kind=SttAdapterKind.openai_compatible_rest,
+            base_url="https://new-stt.example",
+            openapi_path=None,
+            transcribe_path="/v1/audio/transcriptions",
+            model_name=None,
+            available_models=["new-model"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        ),
+    )
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", lambda **kwargs: f"secret:test/stt/{kwargs['config_id']}")
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda **kwargs: None)
+
+    login(client, email=admin.email, password="password-1")
+    cross_team = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(other_team.id), "provider_preset": "custom_openai_compatible", "base_url": "https://new-stt.example", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    assert_error(cross_team, status_code=404, code="not_found", message="Ready STT config not found")
+
+    created = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "custom_openai_compatible", "base_url": "https://new-stt.example", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.is_active) == ("https://old-stt.example", "old-model", True)
+    listed = client.get(f"/api/v1/stt-configs?team_id={team.id}")
+    assert [item["id"] for item in listed.json()] == [str(active.id)]
+    assert resolve_selected_team_stt(db_session, team_id=team.id)[1].id == active.id
+
+    finalized = client.post(
+        f"/api/v1/stt-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current STT", "model_name": "new-model", "language": "en-GB", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    assert finalized.json()["id"] == str(active.id)
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.language) == ("https://new-stt.example", "new-model", "en-GB")
+    assert db_session.get(TeamSttConfig, revision_id) is None
+    assert db_session.get(TeamSttSelection, selection.id).stt_config_id == active.id
+
+
+def test_llm_revision_stays_pending_then_promotes_into_active_config(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision")
+    other_team = make_team(name="Other LLM Revision")
+    admin = make_user(email="admin-llm-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        base_url="https://old-llm.example/v1",
+        model_name="old-model",
+        available_models_json=["old-model", "shared-model"],
+    )
+    selection = make_llm_selection(
+        config=active,
+        actor=admin,
+        allowed_models_json=["old-model", "shared-model"],
+        model_name_override="shared-model",
+    )
+    checker_selection = TeamHallucinationCheckSelection(
+        team_id=team.id,
+        llm_config_id=active.id,
+        model_name_override="old-model",
+        selected_by_user_id=admin.id,
+    )
+    db_session.add(checker_selection)
+    db_session.commit()
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["shared-model", "new-model"])
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: f"secret:test/llm/{kwargs['config_id']}")
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda **kwargs: None)
+
+    login(client, email=admin.email, password="password-1")
+    payload = {"provider_preset": "custom_openai_compatible", "base_url": "https://new-llm.example/v1", "bearer_token": "key", "revision_of_config_id": str(active.id)}
+    cross_team = client.post("/api/v1/llm-configs/drafts", json={**payload, "team_id": str(other_team.id)})
+    assert_error(cross_team, status_code=404, code="not_found", message="Ready LLM config not found")
+
+    created = client.post("/api/v1/llm-configs/drafts", json={**payload, "team_id": str(team.id)})
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name, active.is_active) == ("https://old-llm.example/v1", "old-model", True)
+    listed = client.get(f"/api/v1/llm-configs?team_id={team.id}")
+    assert [item["id"] for item in listed.json()] == [str(active.id)]
+    assert db_session.get(TeamLlmSelection, selection.id).llm_config_id == active.id
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": "Current LLM", "model_name": "shared-model", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    assert finalized.json()["id"] == str(active.id)
+    db_session.refresh(active)
+    assert (active.base_url, active.model_name) == ("https://new-llm.example/v1", "shared-model")
+    assert db_session.get(TeamLlmConfig, revision_id) is None
+    persisted_selection = db_session.get(TeamLlmSelection, selection.id)
+    assert persisted_selection.llm_config_id == active.id
+    assert persisted_selection.allowed_models_json == ["shared-model"]
+    assert persisted_selection.model_name_override == "shared-model"
+    assert db_session.get(TeamHallucinationCheckSelection, checker_selection.id).model_name_override is None
+
+
+def test_llm_revision_promotion_uses_narrow_default_when_model_catalog_is_disjoint(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision Fallback")
+    admin = make_user(email="admin-llm-revision-fallback@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        provider_preset="openai",
+        model_name="old-model",
+        available_models_json=["old-model"],
+    )
+    selection = make_llm_selection(
+        config=active,
+        actor=admin,
+        allowed_models_json=["old-model"],
+        model_name_override="old-model",
+    )
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-key")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-default", "new-alternate"])
+
+    login(client, email=admin.email, password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert created.status_code == 200
+    revision_id = UUID(created.json()["config"]["id"])
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision_id), "label": active.label, "model_name": "new-default", "is_active": True},
+    )
+
+    assert finalized.status_code == 200
+    persisted_selection = db_session.get(TeamLlmSelection, selection.id)
+    assert persisted_selection.llm_config_id == active.id
+    assert persisted_selection.allowed_models_json == ["new-default"]
+    assert persisted_selection.model_name_override == "new-default"
+
+
+def test_provider_revisions_copy_saved_credentials_before_retired_root_cleanup(
+    client, db_session, make_team, make_user, make_stt_config, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic Credential Reuse")
+    admin = make_user(email="admin-credential-reuse@example.com", password="password-1", is_system_admin=True)
+    stt = make_stt_config(team=team, actor=admin, label="Saved STT", base_url="https://api.openai.com/v1")
+    llm = make_llm_config(team=team, actor=admin, label="Saved LLM", provider_preset="openai", base_url="https://api.openai.com/v1", available_models_json=["model-a"])
+    stt_ref, llm_ref = stt.vault_secret_ref, llm.vault_secret_ref
+    deleted_refs = []
+    written_stt, written_llm = [], []
+
+    def write_stt(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-stt-key"
+        assert secret_id is not None
+        written_stt.append((config_id, secret_id))
+        return f"secret:openscribe/stt/team/{team_id}/config/{config_id}/{secret_id}"
+
+    def write_llm(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "saved-llm-key"
+        assert secret_id is not None
+        written_llm.append((config_id, secret_id))
+        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}/{secret_id}"
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "saved-stt-key")
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", lambda *args, **kwargs: SttInspectResult(adapter_kind=SttAdapterKind.openai_compatible_rest, base_url="https://api.openai.com/v1", openapi_path=None, transcribe_path="/audio/transcriptions", model_name=None, available_models=["whisper-1"], file_field_name="file", model_field_name="model", language=None, language_field_name="language", response_text_path="text", extra_form_fields_json={}, candidate_paths=[], operation_summary=None, field_tips=[], notes=[]))
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", write_stt)
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda **kwargs: "saved-llm-key")
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", write_llm)
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_refs.append(kwargs["secret_ref"]),
+    )
+    login(client, email=admin.email, password="password-1")
+
+    stt_created = client.post("/api/v1/stt-configs/drafts", json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(stt.id)})
+    llm_created = client.post("/api/v1/llm-configs/drafts", json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(llm.id)})
+    assert stt_created.status_code == 200 and llm_created.status_code == 200
+    stt_revision = db_session.get(TeamSttConfig, UUID(stt_created.json()["config"]["id"]))
+    llm_revision = db_session.get(TeamLlmConfig, UUID(llm_created.json()["config"]["id"]))
+    assert stt_revision.vault_secret_ref != stt_ref
+    assert llm_revision.vault_secret_ref != llm_ref
+    assert written_stt == [(stt_revision.id, UUID(stt_revision.vault_secret_ref.rsplit("/", 1)[1]))]
+    assert written_llm == [(llm_revision.id, UUID(llm_revision.vault_secret_ref.rsplit("/", 1)[1]))]
+
+    # Simulate a concurrently committed root credential replacement. Its
+    # retired ref must be deletable while the independent draft remains live.
+    stt.vault_secret_ref = f"secret:openscribe/stt/team/{team.id}/config/{stt.id}/replacement"
+    llm.vault_secret_ref = f"secret:openscribe/llm/team/{team.id}/config/{llm.id}/replacement"
+    db_session.add_all([stt, llm])
+    queue_provider_secret_cleanup(db_session, kind=ProviderSecretCleanupKind.stt, secret_refs=[stt_ref])
+    queue_provider_secret_cleanup(db_session, kind=ProviderSecretCleanupKind.llm, secret_refs=[llm_ref])
+    db_session.commit()
+
+    assert process_provider_secret_cleanup_jobs(db_session, batch_size=10) == 2
+    assert set(deleted_refs) == {stt_ref, llm_ref}
+    assert db_session.get(TeamSttConfig, stt_revision.id).vault_secret_ref == stt_revision.vault_secret_ref
+    assert db_session.get(TeamLlmConfig, llm_revision.id).vault_secret_ref == llm_revision.vault_secret_ref
+
+    assert client.post(f"/admin/stt-configs/{stt_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
+    assert client.post(f"/admin/llm-configs/{llm_revision.id}/draft-cancel", data={"team_id": str(team.id)}).status_code == 200
+    db_session.refresh(stt)
+    db_session.refresh(llm)
+    assert stt.vault_secret_ref != stt_ref and llm.vault_secret_ref != llm_ref
+
+
+def test_llm_no_auth_revision_drops_saved_credential_and_optional_explicit_token_is_kept(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic LLM No Auth Revision")
+    admin = make_user(email="admin-llm-no-auth-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        provider_preset="openai",
+        base_url="https://api.openai.com/v1",
+        model_name="old-model",
+        available_models_json=["old-model"],
+    )
+    old_secret_ref = active.vault_secret_ref
+    read_refs: list[str] = []
+    inspection_tokens: list[str | None] = []
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        read_refs.append(secret_ref)
+        return "saved-openai-key"
+
+    def fake_list_ollama(*, base_url, bearer_token):
+        inspection_tokens.append(bearer_token)
+        return ["llama3.2"]
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "optional-ollama-token"
+        return f"secret:test/llm/{config_id}"
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.llm._list_ollama_chat_models", fake_list_ollama)
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
+    login(client, email=admin.email, password="password-1")
+
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "ollama",
+            "base_url": "http://localhost:11434",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert created.status_code == 200
+    revision = db_session.get(TeamLlmConfig, UUID(created.json()["config"]["id"]))
+    assert read_refs == []
+    assert inspection_tokens == [None]
+    assert revision.auth_mode is LlmAuthMode.none
+    assert revision.vault_secret_ref == ""
+    db_session.refresh(active)
+    assert active.vault_secret_ref == old_secret_ref
+
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision.id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision.id), "label": active.label, "model_name": "llama3.2", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert active.auth_mode is LlmAuthMode.none
+    assert active.vault_secret_ref == ""
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
+
+    optional = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "ollama",
+            "base_url": "http://localhost:11434",
+            "bearer_token": "optional-ollama-token",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert optional.status_code == 200
+    optional_revision = db_session.get(TeamLlmConfig, UUID(optional.json()["config"]["id"]))
+    assert inspection_tokens[-1] == "optional-ollama-token"
+    assert optional_revision.auth_mode is LlmAuthMode.bearer
+    assert optional_revision.vault_secret_ref == f"secret:test/llm/{optional_revision.id}"
+
+
+def test_stt_no_auth_revision_drops_saved_credential_and_optional_explicit_token_is_kept(
+    client, db_session, make_team, make_user, make_stt_config, monkeypatch
+):
+    team = make_team(name="Clinic STT No Auth Revision")
+    admin = make_user(email="admin-stt-no-auth-revision@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Current STT",
+        adapter_kind=SttAdapterKind.openai_cloud,
+        base_url="https://api.openai.com/v1",
+        model_name="whisper-1",
+        available_models_json=["whisper-1"],
+    )
+    old_secret_ref = active.vault_secret_ref
+    read_refs: list[str] = []
+    inspection_tokens: list[str | None] = []
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        read_refs.append(secret_ref)
+        return "saved-openai-key"
+
+    def fake_inspect(db, actor, payload):
+        inspection_tokens.append(payload.bearer_token)
+        return SttInspectResult(
+            adapter_kind=SttAdapterKind.generic_rest,
+            base_url=payload.base_url,
+            openapi_path=None,
+            transcribe_path="/v1/audio/transcriptions",
+            model_name=None,
+            available_models=["parakeet"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        )
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        assert bearer_token == "optional-stt-token"
+        return f"secret:test/stt/{config_id}"
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.stt.inspect_stt_contract", fake_inspect)
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
+    login(client, email=admin.email, password="password-1")
+
+    created = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "custom_rest_openapi",
+            "base_url": "http://127.0.0.1:9001",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert created.status_code == 200
+    revision = db_session.get(TeamSttConfig, UUID(created.json()["config"]["id"]))
+    assert read_refs == []
+    assert inspection_tokens == [None]
+    assert revision.auth_mode is SttAuthMode.none
+    assert revision.vault_secret_ref == ""
+    db_session.refresh(active)
+    assert active.vault_secret_ref == old_secret_ref
+
+    finalized = client.post(
+        f"/api/v1/stt-configs/{revision.id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(revision.id), "label": active.label, "model_name": "parakeet", "language": None, "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert active.auth_mode is SttAuthMode.none
+    assert active.vault_secret_ref == ""
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.stt)
+
+    optional = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "custom_rest_openapi",
+            "base_url": "http://127.0.0.1:9001",
+            "bearer_token": "optional-stt-token",
+            "revision_of_config_id": str(active.id),
+        },
+    )
+    assert optional.status_code == 200
+    optional_revision = db_session.get(TeamSttConfig, UUID(optional.json()["config"]["id"]))
+    assert inspection_tokens[-1] == "optional-stt-token"
+    assert optional_revision.auth_mode is SttAuthMode.bearer
+    assert optional_revision.vault_secret_ref == f"secret:test/stt/{optional_revision.id}"
+
+
+def test_stt_replacement_revision_rebinds_secret_and_supports_blank_followup_revision(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Clinic STT Secret Rebind")
+    admin = make_user(email="admin-stt-secret-rebind@example.com", password="password-1", is_system_admin=True)
+    active = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Rebound STT",
+        base_url="https://api.openai.com/v1",
+        model_name="whisper-1",
+        available_models_json=["whisper-1"],
+    )
+    make_stt_selection(config=active, actor=admin)
+    secret_store: dict[str, str] = {}
+
+    def secret_ref(config_id, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/stt/team/{team.id}/config/{config_id}{suffix}"
+
+    active.vault_secret_ref = secret_ref(active.id, uuid4())
+    secret_store[active.vault_secret_ref] = "old-stt-key"
+    db_session.commit()
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        ref = secret_ref(config_id, secret_id)
+        secret_store[ref] = bearer_token
+        return ref
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        return secret_store[secret_ref]
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        secret_store.pop(secret_ref, None)
+
+    monkeypatch.setattr("app.services.stt.write_team_stt_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
+    monkeypatch.setattr(
+        "app.services.stt.inspect_stt_contract",
+        lambda *args, **kwargs: SttInspectResult(
+            adapter_kind=SttAdapterKind.openai_compatible_rest,
+            base_url="https://api.openai.com/v1",
+            openapi_path=None,
+            transcribe_path="/audio/transcriptions",
+            model_name=None,
+            available_models=["whisper-1"],
+            file_field_name="file",
+            model_field_name="model",
+            language=None,
+            language_field_name="language",
+            response_text_path="text",
+            extra_form_fields_json={},
+            candidate_paths=[],
+            operation_summary=None,
+            field_tips=[],
+            notes=[],
+        ),
+    )
+    login(client, email=admin.email, password="password-1")
+
+    first = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "new-stt-key", "revision_of_config_id": str(active.id)},
+    )
+    assert first.status_code == 200
+    first_revision_id = UUID(first.json()["config"]["id"])
+    promoted = client.post(
+        f"/api/v1/stt-configs/{first_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(first_revision_id), "label": active.label, "model_name": "whisper-1", "language": None, "is_active": True},
+    )
+    assert promoted.status_code == 200
+    db_session.refresh(active)
+    assert f"/config/{active.id}/" in active.vault_secret_ref
+    assert _read_saved_stt_bearer_token(team_id=team.id, config=active) == "new-stt-key"
+    retired_secret_ref = next(ref for ref in secret_store if f"/config/{first_revision_id}" in ref)
+    assert_provider_cleanup_job(db_session, secret_ref=retired_secret_ref, kind=ProviderSecretCleanupKind.stt)
+
+    second = client.post(
+        "/api/v1/stt-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert second.status_code == 200
+    second_revision_id = UUID(second.json()["config"]["id"])
+    finalized = client.post(
+        f"/api/v1/stt-configs/{second_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(second_revision_id), "label": active.label, "model_name": "whisper-1", "language": None, "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert _read_saved_stt_bearer_token(team_id=team.id, config=active) == "new-stt-key"
+
+
+def test_llm_replacement_revision_rebinds_secret_and_supports_blank_followup_revision(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Clinic LLM Secret Rebind")
+    admin = make_user(email="admin-llm-secret-rebind@example.com", password="password-1", is_system_admin=True)
+    active = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Rebound LLM",
+        provider_preset="openai",
+        base_url="https://api.openai.com/v1",
+        model_name="model-a",
+        available_models_json=["model-a"],
+    )
+    make_llm_selection(config=active, actor=admin)
+    secret_store: dict[str, str] = {}
+
+    def secret_ref(config_id, secret_id=None):
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/llm/team/{team.id}/config/{config_id}{suffix}"
+
+    active.vault_secret_ref = secret_ref(active.id, uuid4())
+    secret_store[active.vault_secret_ref] = "old-llm-key"
+    db_session.commit()
+
+    def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
+        ref = secret_ref(config_id, secret_id)
+        secret_store[ref] = bearer_token
+        return ref
+
+    def fake_read(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        return secret_store[secret_ref]
+
+    def fake_delete(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        secret_store.pop(secret_ref, None)
+
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete)
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
+    login(client, email=admin.email, password="password-1")
+
+    first = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "new-llm-key", "revision_of_config_id": str(active.id)},
+    )
+    assert first.status_code == 200
+    first_revision_id = UUID(first.json()["config"]["id"])
+    promoted = client.post(
+        f"/api/v1/llm-configs/{first_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(first_revision_id), "label": active.label, "model_name": "model-a", "is_active": True},
+    )
+    assert promoted.status_code == 200
+    db_session.refresh(active)
+    assert f"/config/{active.id}/" in active.vault_secret_ref
+    assert read_active_team_llm_bearer_token(db_session, team_id=team.id) == "new-llm-key"
+    retired_secret_ref = next(ref for ref in secret_store if f"/config/{first_revision_id}" in ref)
+    assert_provider_cleanup_job(db_session, secret_ref=retired_secret_ref, kind=ProviderSecretCleanupKind.llm)
+
+    second = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "revision_of_config_id": str(active.id)},
+    )
+    assert second.status_code == 200
+    second_revision_id = UUID(second.json()["config"]["id"])
+    finalized = client.post(
+        f"/api/v1/llm-configs/{second_revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": str(second_revision_id), "label": active.label, "model_name": "model-a", "is_active": True},
+    )
+    assert finalized.status_code == 200
+    db_session.refresh(active)
+    assert read_active_team_llm_bearer_token(db_session, team_id=team.id) == "new-llm-key"
+
+def test_llm_revision_finalize_rejects_active_target_with_queued_document(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic LLM Revision Guard")
+    admin = make_user(email="admin-llm-revision-guard@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-llm-revision-guard@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    active = make_llm_config(team=team, actor=admin, label="Guarded LLM", model_name="old-model")
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Guarded generation",
+        current_draft_text_encrypted="Encrypted test draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Encrypted test version",
+    )
+    db_session.add(version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=owner.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=version.id,
+            llm_config_id=active.id,
+            generator_type=GeneratedDocumentGeneratorType.followup,
+            source_template_name="Follow-up",
+            status=GeneratedDocumentStatus.queued,
+            title="Queued output",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="",
+            edited_output_text_encrypted="",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["new-model"])
+    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda **kwargs: f"secret:test/llm/{kwargs['config_id']}")
+
+    login(client, email=admin.email, password="password-1")
+    created = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={"team_id": str(team.id), "provider_preset": "openai", "bearer_token": "key", "revision_of_config_id": str(active.id)},
+    )
+    revision_id = created.json()["config"]["id"]
+    finalized = client.post(
+        f"/api/v1/llm-configs/{revision_id}/finalize",
+        json={"team_id": str(team.id), "config_id": revision_id, "label": "Guarded LLM", "model_name": "new-model", "is_active": True},
+    )
+
+    assert_error(finalized, status_code=409, code="conflict", message="Cannot edit this LLM config while generated documents are queued or processing")
+    db_session.refresh(active)
+    assert active.model_name == "old-model"
+    assert db_session.get(TeamLlmConfig, UUID(revision_id)) is not None
 
 def test_llm_config_labels_are_unique_per_team_case_and_trim_normalized(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Unique LLM")
@@ -3297,7 +4207,7 @@ def test_llm_draft_replace_credential_reruns_discovery_and_resets_pending(
     )
     monkeypatch.setattr(
         "app.services.llm.write_team_llm_bearer_token",
-        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        lambda *, team_id, config_id, bearer_token, secret_id=None: writes.append(bearer_token)
         or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/new",
     )
 
@@ -3660,11 +4570,10 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     team = make_team(name="Clinic Ollama Remove")
     admin = make_user(email="admin-remove-llm-secret@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    deleted: list[str] = []
+    old_secret_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
 
     login(client, email="admin-remove-llm-secret@example.com", password="password-1")
     updated = client.post(
@@ -3686,21 +4595,29 @@ def test_system_admin_can_explicitly_remove_saved_ollama_secret(client, db_sessi
     assert persisted is not None
     assert persisted.auth_mode.value == "none"
     assert persisted.vault_secret_ref == ""
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
 
 
-def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_queues_vault_secret_with_db_reference_change(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Remove Ordering")
     admin = make_user(email="admin-remove-llm-secret-order@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    events: list[str] = []
-    original_commit = db_session.commit
+    old_secret_ref = config.vault_secret_ref
+    queued_refs: list[str] = []
+    from app.services import llm as llm_service
+
+    original_queue = llm_service.queue_provider_secret_cleanup
+
+    def observe_queue(db, *, kind, secret_refs):
+        assert db.get(TeamLlmConfig, config.id).vault_secret_ref == ""
+        assert kind is ProviderSecretCleanupKind.llm
+        queued_refs.extend(secret_refs)
+        return original_queue(db, kind=kind, secret_refs=secret_refs)
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
     login(client, email="admin-remove-llm-secret-order@example.com", password="password-1")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
-    monkeypatch.setattr(db_session, "commit", lambda: (events.append("commit"), original_commit())[1])
+    monkeypatch.setattr(llm_service, "queue_provider_secret_cleanup", observe_queue)
     updated = client.post(
         "/api/v1/llm-configs",
         json={
@@ -3716,24 +4633,32 @@ def test_llm_secret_remove_deletes_vault_secret_before_db_commit(client, db_sess
     )
 
     assert updated.status_code == 200
-    assert events[-2:] == ["delete", "commit"]
+    assert queued_refs == [old_secret_ref]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
 
 
-def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_commit_failure_leaves_existing_credential_live(db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Commit Failure")
     admin = make_user(email="admin-remove-llm-secret-commit-fails@example.com", password="password-1", is_system_admin=True)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     original_ref = config.vault_secret_ref
-    events: list[str] = []
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: events.append("delete"))
-    monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", lambda *, team_id, config_id, bearer_token: events.append(f"restore:{bearer_token}") or original_ref)
-    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("commit failed")))
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise RuntimeError("commit failed")
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(RuntimeError, match="commit failed"):
         upsert_llm_config_service(
@@ -3751,26 +4676,25 @@ def test_llm_secret_remove_keeps_vault_secret_when_db_commit_fails(db_session, m
             ),
         )
 
-    assert events == ["delete", "restore:saved-ollama-secret"]
-    db_session.rollback()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == original_ref
+    assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == original_ref)) is None
 
 
-def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
+def test_llm_secret_remove_retries_vault_cleanup_after_db_commit(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Cleanup Failure")
     admin = make_user(email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
     original_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-ollama-secret")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-ollama-secret")
 
-    def fail_delete(*, team_id, config_id):
+    def fail_delete(**kwargs):
         raise AppError(502, "vault_unavailable", "Vault unavailable")
 
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fail_delete)
+    monkeypatch.setattr("app.services.provider_secret_cleanup.delete_provider_secret_by_ref", fail_delete)
 
     login(client, email="admin-remove-llm-secret-cleanup-fails@example.com", password="password-1")
     removed = client.post(
@@ -3787,32 +4711,35 @@ def test_llm_secret_remove_fails_closed_when_vault_delete_fails(client, db_sessi
         },
     )
 
-    assert_error(
-        removed,
-        status_code=502,
-        code="vault_unavailable",
-        message="Vault unavailable",
-    )
+    assert removed.status_code == 200
     db_session.expire_all()
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
-    assert persisted.vault_secret_ref == original_ref
-    assert persisted.auth_mode.value == "bearer"
+    assert persisted.vault_secret_ref == ""
+    assert persisted.auth_mode.value == "none"
+    cleanup_job = assert_provider_cleanup_job(db_session, secret_ref=original_ref, kind=ProviderSecretCleanupKind.llm)
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 0
+    db_session.refresh(cleanup_job)
+    assert cleanup_job.attempt_count == 1
+    monkeypatch.setattr("app.services.provider_secret_cleanup.delete_provider_secret_by_ref", lambda **kwargs: None)
+    cleanup_job.next_attempt_at = utcnow()
+    db_session.commit()
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
+    assert db_session.get(ProviderSecretCleanupJob, cleanup_job.id) is None
 
 
 def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_session, make_team, make_user, make_llm_config, monkeypatch):
     team = make_team(name="Clinic Ollama Stale Secret Ref")
     admin = make_user(email="admin-remove-llm-secret-stale-ref@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
     config = make_llm_config(team=team, actor=admin, adapter_kind=LlmAdapterKind.ollama_chat, base_url="http://localhost:11434", model_name="llama3.2", has_secret=True)
-    deleted: list[str] = []
+    old_secret_ref = config.vault_secret_ref
 
     monkeypatch.setattr("app.services.llm._list_ollama_chat_models", lambda **kwargs: ["llama3.2"])
 
-    def fail_read(*, team_id, config_id):
+    def fail_read(*, team_id, config_id, secret_ref=None):
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fail_read)
-    monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", lambda *, team_id, config_id: deleted.append(str(config_id)))
 
     login(client, email="admin-remove-llm-secret-stale-ref@example.com", password="password-1")
     removed = client.post(
@@ -3830,7 +4757,7 @@ def test_llm_secret_remove_clears_stale_vault_ref_when_read_fails(client, db_ses
     )
 
     assert removed.status_code == 200
-    assert deleted == [str(config.id)]
+    assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.llm)
     persisted = db_session.get(TeamLlmConfig, config.id)
     assert persisted is not None
     assert persisted.vault_secret_ref == ""
@@ -3940,7 +4867,7 @@ def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(cli
     config = make_llm_config(team=team, actor=admin, available_models_json=["old-model"], model_name="old-model", has_secret=True)
     reads: list[str] = []
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         reads.append(str(config_id))
         return "saved-llm-key"
 
@@ -4019,7 +4946,7 @@ def test_llm_endpoint_change_with_kept_secret_rediscover_models(client, db_sessi
     config = make_llm_config(team=team, actor=admin, available_models_json=["gpt-4.1"], model_name="gpt-4.1", has_secret=True)
     reads: list[str] = []
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         reads.append(str(config_id))
         return "saved-router-key"
 
@@ -4061,7 +4988,7 @@ def test_llm_endpoint_change_with_failed_rediscovery_clears_stale_models(client,
     def fail_discovery(**kwargs):
         raise AppError(502, "llm_inspection_failed", "Could not load available models")
 
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-router-key")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-router-key")
     monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
     login(client, email="admin-llm-clear-stale@example.com", password="password-1")
     updated = client.post(
@@ -4092,7 +5019,7 @@ def test_saved_llm_inspection_failure_persists_metadata_without_overwriting_mode
     def fail_discovery(**kwargs):
         raise AppError(502, "llm_inspection_failed", "Could not load available models")
 
-    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id: "saved-llm-key")
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", lambda *, team_id, config_id, secret_ref=None: "saved-llm-key")
     monkeypatch.setattr("app.services.llm._list_openai_chat_models", fail_discovery)
     login(client, email="admin-saved-llm-inspect-fail@example.com", password="password-1")
     inspected = client.post(f"/api/v1/llm-configs/{config.id}/inspect?team_id={team.id}")
@@ -4894,7 +5821,7 @@ def test_deidentification_provider_rejects_secret_headers_and_missing_bearer_tok
     )
 
 
-def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commit_failure(
+def test_deidentification_provider_upsert_commit_failure_durably_queues_pending_secret(
     db_session,
     make_user,
     make_deidentification_provider,
@@ -4914,22 +5841,23 @@ def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commi
         has_secret=True,
     )
     old_secret_ref = provider.vault_secret_ref
-    new_secret_ref = f"secret:openscribe/deidentification/provider/{provider.id}/replacement"
-    deleted_secret_refs: list[str] = []
+    new_secret_ref = f"secret:openscribe/deidentification/provider/{provider.id}/{uuid4()}"
 
     monkeypatch.setattr(
         "app.services.deidentification.write_deidentification_bearer_token",
         lambda *, provider_id, bearer_token, secret_id=None: new_secret_ref,
     )
-    monkeypatch.setattr(
-        "app.services.deidentification.delete_deidentification_bearer_token",
-        lambda *, provider_id, secret_ref=None: deleted_secret_refs.append(secret_ref or ""),
-    )
+    original_commit = db_session.commit
+    commit_attempts = 0
 
-    def fail_commit():
-        raise RuntimeError("synthetic commit failure")
+    def fail_initial_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise RuntimeError("synthetic commit failure")
+        return original_commit()
 
-    monkeypatch.setattr(db_session, "commit", fail_commit)
+    monkeypatch.setattr(db_session, "commit", fail_initial_commit)
 
     with pytest.raises(RuntimeError, match="synthetic commit failure"):
         upsert_deidentification_provider(
@@ -4946,8 +5874,11 @@ def test_deidentification_provider_upsert_cleans_pending_secret_only_after_commi
             ),
         )
 
-    assert deleted_secret_refs == [new_secret_ref]
-    db_session.rollback()
+    assert_provider_cleanup_job(
+        db_session,
+        secret_ref=new_secret_ref,
+        kind=ProviderSecretCleanupKind.deidentification,
+    )
     assert db_session.get(DeidentificationProvider, provider.id).vault_secret_ref == old_secret_ref
 
 
@@ -4969,18 +5900,21 @@ def test_deidentification_provider_delete_defers_vault_cleanup_until_after_db_co
         has_secret=True,
     )
     old_secret_ref = provider.vault_secret_ref
-    deleted_secret_refs: list[str] = []
-
-    def fake_delete_secret(*, provider_id, secret_ref=None):
-        assert db_session.get(DeidentificationProvider, provider.id) is None
-        deleted_secret_refs.append(secret_ref or "")
-
-    monkeypatch.setattr("app.services.deidentification.delete_deidentification_bearer_token", fake_delete_secret)
-
     login(client, email="deid-delete-vault-admin@example.com", password="password-1")
     deleted = client.delete(f"/api/v1/deidentification-providers/{provider.id}")
 
     assert deleted.status_code == 204
+    cleanup_job = assert_provider_cleanup_job(
+        db_session,
+        secret_ref=old_secret_ref,
+        kind=ProviderSecretCleanupKind.deidentification,
+    )
+    deleted_secret_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.provider_secret_cleanup.delete_provider_secret_by_ref",
+        lambda **kwargs: deleted_secret_refs.append(kwargs["secret_ref"]),
+    )
+    assert process_provider_secret_cleanup_jobs(db_session, job_ids=[cleanup_job.id]) == 1
     assert deleted_secret_refs == [old_secret_ref]
 
 
@@ -5014,7 +5948,7 @@ def test_deidentification_provider_delete_clears_clinical_nlp_refs(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5155,7 +6089,7 @@ def test_redaction_run_uses_selected_team_deidentification_provider_and_builtin_
             ingestion_mode=TranscriptIngestionMode.whole_file,
             status=TranscriptStatus.ready,
             retention_days_applied=30,
-            retention_expires_at=owner.created_at,
+            retention_expires_at=utcnow() + timedelta(days=30),
         )
         db_session.add(transcript)
         db_session.flush()
@@ -5270,7 +6204,7 @@ def test_redaction_reuse_creates_missing_clinical_run(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5405,7 +6339,7 @@ def test_clinical_detection_uses_redacted_text_for_remote_provider(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5480,7 +6414,7 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5569,7 +6503,7 @@ def test_clinical_detection_chunks_long_local_analyze_requests(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -5667,7 +6601,7 @@ def test_clinical_detection_reruns_after_provider_config_update(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -7323,6 +8257,8 @@ def test_template_generation_supports_ollama_adapter(
         available_models_json=["llama3.2"],
         has_secret=False,
     )
+    config.vault_secret_ref = f"secret:openscribe/llm/team/{team.id}/config/stale"
+    db_session.commit()
     make_llm_selection(config=config, actor=admin, allowed_models_json=["llama3.2"], model_name_override="llama3.2")
     template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name="My note", prompt_text="Write a concise note.")
 
@@ -7330,10 +8266,13 @@ def test_template_generation_supports_ollama_adapter(
         id = "generated-task-2"
 
     monkeypatch.setattr("app.main.enqueue_generated_document_job", lambda **kwargs: FakeTaskResult())
-    monkeypatch.setattr(
-        "app.services.templates._generate_freeform_output_ollama",
-        lambda **kwargs: ('{"title":"Ollama summary","content":"Ollama note body"}', {"input_tokens": 20, "output_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9}),
-    )
+    monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", lambda **kwargs: pytest.fail("No-auth LLM must not read stale Vault refs"))
+
+    def fake_generate_ollama(**kwargs):
+        assert kwargs["bearer_token"] is None
+        return ('{"title":"Ollama summary","content":"Ollama note body"}', {"input_tokens": 20, "output_tokens": 30, "total_tokens": 50, "duration_ms": 15, "provider_duration_ms": 9})
+
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_ollama", fake_generate_ollama)
 
     login(client, email="owner-ollama@example.com", password="password-2")
     saved_preferences = client.post("/api/v1/app-preferences", json={"note_generation_length": "long", "llm_detail_level": "balanced"})
@@ -7766,8 +8705,9 @@ def test_structured_hallucination_check_vault_failure_does_not_fail_document(
         calls.append(kwargs["request_body"])
         return ('{"title":"Cough review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25})
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         assert config_id == checker_config.id
+        assert secret_ref == checker_config.vault_secret_ref
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
@@ -7980,7 +8920,7 @@ def test_structured_emis_generation_snapshots_working_note_without_structured_co
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8045,7 +8985,7 @@ def test_generate_output_rejects_transient_structured_context_payload(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8355,7 +9295,7 @@ def test_process_generated_document_redacts_transcript_and_reidentifies_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8427,7 +9367,7 @@ def test_process_generated_document_applies_manual_pii_before_provider_call(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8517,7 +9457,7 @@ def test_process_generated_document_redacts_dictation_before_provider_call(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8602,7 +9542,7 @@ def test_process_generated_document_redacts_dictation_only_session_before_provid
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8709,7 +9649,7 @@ def test_process_generated_document_redaction_boundary_for_static_and_structured
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8831,7 +9771,7 @@ def test_ensure_redaction_run_encrypts_redacted_text_and_entity_values(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8918,7 +9858,7 @@ def test_process_generated_document_uses_first_note_title_to_fill_default_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -8961,7 +9901,7 @@ def test_process_generated_document_does_not_overwrite_custom_session_title(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9005,7 +9945,7 @@ def test_process_generated_document_fails_on_invalid_placeholder_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9060,7 +10000,7 @@ def test_process_generated_document_fails_on_invalid_note_json(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9095,7 +10035,7 @@ def test_local_dev_account_can_read_generated_document_redaction_debug(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9168,7 +10108,7 @@ def test_non_dev_account_cannot_read_generated_document_redaction_debug(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9232,7 +10172,7 @@ def test_local_dev_account_redaction_debug_includes_failed_provider_output(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9289,7 +10229,7 @@ def test_owner_can_delete_generated_document_and_sections_cascade(client, db_ses
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -9357,7 +10297,7 @@ def test_generated_document_update_saves_note_content_and_detects_revision_confl
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -9523,7 +10463,7 @@ def test_generated_document_update_saves_followup_title_and_body_for_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -9629,7 +10569,7 @@ def test_generated_document_update_rejects_duplicate_structured_section_keys(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -9754,7 +10694,7 @@ def test_generated_document_update_rejects_sections_removed_by_template(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -10035,7 +10975,7 @@ def test_generated_document_keeps_prompt_snapshot_after_template_delete(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10099,7 +11039,7 @@ def test_structured_generated_document_keeps_allowed_sections_after_template_del
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10164,7 +11104,7 @@ def test_generated_document_keeps_prompt_snapshot_after_quick_action_delete(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10313,7 +11253,7 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10379,7 +11319,7 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10422,7 +11362,7 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
     )
     monkeypatch.setattr(
         "app.services.llm.write_team_llm_bearer_token",
-        lambda *, team_id, config_id, bearer_token: writes.append(bearer_token)
+        lambda *, team_id, config_id, bearer_token, secret_id=None: writes.append(bearer_token)
         or f"secret:openscribe/llm/team/{team_id}/config/{config_id}/replacement",
     )
     corrected = client.post(
@@ -10496,9 +11436,12 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
             "is_active": True,
         },
     )
-    assert finalized.status_code == 200
-    assert finalized.json()["setup_status"] == "ready"
-    assert finalized.json()["is_active"] is True
+    assert_error(
+        finalized,
+        status_code=409,
+        code="conflict",
+        message="Cannot edit this LLM config while generated documents are queued or processing",
+    )
 
     config.is_active = False
     db_session.add(config)
@@ -10587,7 +11530,7 @@ def test_process_generated_document_logs_usage_metadata(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10666,7 +11609,7 @@ def test_process_generated_document_persists_provider_failure_details(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -10892,7 +11835,7 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
         current_draft_text_encrypted="draft",
         status="ready",
         retention_days_applied=14,
-        retention_expires_at=team.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11058,7 +12001,7 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
         current_draft_text_encrypted="draft",
         status="failed",
         retention_days_applied=14,
-        retention_expires_at=team.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11087,6 +12030,10 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
     assert deleted.status_code == 204
     assert db_session.get(User, member.id) is None
     assert db_session.get(Transcript, transcript.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.secret_ref == "secret:openscribe/transcript-ingestion/user-best-effort/source-audio"
+    assert cleanup_job.attempt_count == 1
 
 
 def test_leader_cannot_delete_cross_team_user_or_system_admin(client, make_team, make_user):
@@ -11764,7 +12711,7 @@ def test_dev_seed_repair_resets_transcript_content_when_active_key_cannot_be_unw
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11859,7 +12806,7 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=broken_user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     healthy_transcript = Transcript(
         owner_user_id=healthy_user.id,
@@ -11876,7 +12823,7 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=healthy_user.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([broken_transcript, healthy_transcript])
     db_session.commit()
@@ -11937,7 +12884,7 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -11976,7 +12923,7 @@ def test_transcript_detail_includes_latest_successful_ingestion_completed_at(cli
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12015,7 +12962,7 @@ def test_transcript_detail_hides_retry_when_failed_upload_blob_is_missing(client
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12050,7 +12997,7 @@ def test_transcript_detail_includes_next_live_chunk_sequence_number(client, db_s
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12103,7 +13050,7 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12300,7 +13247,7 @@ def test_transcribe_workspace_endpoint_ignores_blank_transcript_versions_for_con
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12362,7 +13309,7 @@ def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -12480,7 +13427,7 @@ def test_owner_can_add_and_delete_manual_pii_entities(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12573,7 +13520,7 @@ def test_manual_pii_duplicate_lookup_accepts_legacy_sha256_hash(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -12632,7 +13579,7 @@ def test_transcript_delete_cascades_manual_pii_entities(db_session, make_team, m
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12684,7 +13631,7 @@ def test_transcribe_workspace_endpoint_reuses_unwrapped_owner_dek_for_multiple_f
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -12885,7 +13832,7 @@ def test_transcribe_workspace_endpoint_does_not_health_check_stt_service(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -12922,7 +13869,7 @@ def test_transcribe_workspace_stream_returns_owner_workspace_event(client, db_se
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.recording,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13249,9 +14196,16 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
 
     client.post("/api/v1/auth/logout")
     login(client, email="owner@example.com", password="password-1")
+
+    def delete_source_after_root_commit(*, secret_ref):
+        assert db_session.get(Transcript, transcript_id) is None
+        cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+        assert cleanup_job is not None
+        deleted_secret_refs.append(secret_ref)
+
     monkeypatch.setattr(
         "app.services.transcripts.delete_transcript_ingestion_source_audio",
-        lambda *, secret_ref: deleted_secret_refs.append(secret_ref),
+        delete_source_after_root_commit,
     )
     deleted = client.delete(f"/api/v1/transcripts/{transcript_id}")
     assert deleted.status_code == 204
@@ -13275,7 +14229,7 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=owner.created_at + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13303,6 +14257,23 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
 
     assert deleted.status_code == 204
     assert db_session.get(Transcript, transcript.id) is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.secret_ref == "secret:openscribe/transcript-ingestion/delete-best-effort/source-audio"
+    assert cleanup_job.attempt_count == 1
+
+    deleted_refs: list[str] = []
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: deleted_refs.append(secret_ref),
+    )
+    cleanup_job.next_attempt_at = utcnow()
+    db_session.add(cleanup_job)
+    db_session.commit()
+
+    assert process_transcript_audio_cleanup_jobs(db_session, batch_size=10) == 1
+    assert deleted_refs == ["secret:openscribe/transcript-ingestion/delete-best-effort/source-audio"]
+    assert db_session.scalar(select(TranscriptAudioCleanupJob)) is None
 
 
 def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -13352,6 +14323,48 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job.stt_segment_start_field == "start_time"
     assert job.stt_segment_end_field == "end_time"
     assert job.stt_segment_speaker_field == "speaker_id"
+
+
+def test_live_audio_chunk_commit_failure_queues_written_vault_audio_for_cleanup(db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+    team = make_team(name="Audio rollback cleanup")
+    owner = make_user(email="audio-rollback-owner@example.com", password="password-1", team=team)
+    admin = make_user(email="audio-rollback-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    transcript = start_transcript_service(
+        db_session,
+        owner,
+        TranscriptStart(title="Rollback audio", ingestion_mode=TranscriptIngestionMode.live_chunked),
+    )
+    secret_ref = "secret:openscribe/transcript-ingestion/55555555-5555-5555-5555-555555555555/source-audio"
+    original_commit = db_session.commit
+    attempts = 0
+
+    def fail_first_commit():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise IntegrityError("insert", {}, Exception("synthetic commit failure"))
+        return original_commit()
+
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 12.0)
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", lambda **kwargs: secret_ref)
+    monkeypatch.setattr(db_session, "commit", fail_first_commit)
+
+    with pytest.raises(IntegrityError, match="synthetic commit failure"):
+        queue_audio_chunk_ingestion(
+            db_session,
+            owner,
+            transcript_id=transcript.id,
+            filename="chunk.webm",
+            source_audio_bytes=b"audio",
+            chunk_sequence_no=1,
+            declared_duration_seconds=12,
+        )
+
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
+    assert cleanup_job is not None
+    assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript.id)) is None
 
 
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
@@ -13444,7 +14457,7 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -13453,7 +14466,7 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -13507,7 +14520,7 @@ def test_live_audio_chunk_upload_enforces_hourly_duration_budget(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13571,7 +14584,7 @@ def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -13580,7 +14593,7 @@ def test_live_audio_chunk_hourly_duration_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -13647,7 +14660,7 @@ def test_live_audio_chunk_upload_measures_duration_when_declared_value_is_missin
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13800,7 +14813,7 @@ def test_finalize_live_capture_applies_completed_chunks_and_creates_preview_reda
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -13887,7 +14900,7 @@ def test_finalize_live_capture_with_pending_chunk_defers_preview_redaction(clien
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -13923,7 +14936,7 @@ def test_finalize_live_capture_without_pending_chunks_marks_ready(client, db_ses
         status=TranscriptStatus.recording,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13949,7 +14962,7 @@ def test_finalize_live_capture_rejects_non_live_transcripts(client, db_session, 
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -13978,7 +14991,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14041,7 +15054,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processi
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=1,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14092,7 +15105,7 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14119,6 +15132,115 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
     assert processed.error_code == "ingestion_processing_stale"
 
 
+def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_call(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Ingestion claim team")
+    owner = make_user(email="owner-ingestion-claim@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    provider_calls = 0
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"audio")
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+
+    def fake_transcribe(db, **kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        with Session(bind=db_session.get_bind(), future=True) as duplicate_worker_db:
+            duplicate = process_transcript_ingestion_job(duplicate_worker_db, job_id=job.id)
+            assert duplicate is not None
+            assert duplicate.status is TranscriptIngestionJobStatus.processing
+        return "first result"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe)
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
+
+    assert provider_calls == 1
+    assert processed is not None
+    assert processed.status is TranscriptIngestionJobStatus.applied
+
+
+def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Preparation deletion team")
+    owner = make_user(email="owner-preparation-delete@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+    events: list[str] = []
+
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def fake_normalize(**kwargs):
+        events.append("prepared")
+        return NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized")
+
+    original_claim = transcript_service._claim_queued_ingestion_job
+
+    def delete_root_before_claim(db, *, job_id):
+        assert events == ["prepared"]
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            root = concurrent_db.get(Transcript, transcript_id)
+            assert root is not None
+            concurrent_db.delete(root)
+            concurrent_db.commit()
+        return original_claim(db, job_id=job_id)
+
+    def fail_if_provider_called(*args, **kwargs):
+        raise AssertionError("root deleted before claim must not reach STT provider")
+
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize)
+    monkeypatch.setattr("app.services.transcripts._claim_queued_ingestion_job", delete_root_before_claim)
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fail_if_provider_called)
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+    assert events == ["prepared"]
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+
+
 def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_job(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -14131,7 +15253,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
         ingestion_mode=TranscriptIngestionMode.live_chunked,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14180,6 +15302,122 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
     assert refreshed_transcript.status is TranscriptStatus.failed
 
 
+def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Midflight expiry team")
+    owner = make_user(email="owner-midflight-expiry@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Expiring visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/midflight-expiry/source-audio",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def expire_during_provider_call(db, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            expiring = concurrent_db.get(Transcript, transcript_id)
+            assert expiring is not None
+            expiring.retention_expires_at = utcnow() - timedelta(seconds=1)
+            concurrent_db.commit()
+        return "late confidential text"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", expire_during_provider_call)
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
+    )
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+    assert db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript_id)) is None
+    cleanup_job = db_session.scalar(
+        select(TranscriptAudioCleanupJob).where(
+            TranscriptAudioCleanupJob.secret_ref == "secret:openscribe/transcript-ingestion/midflight-expiry/source-audio"
+        )
+    )
+    assert cleanup_job is not None
+    assert cleanup_job.attempt_count == 1
+
+
+def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Midflight deletion team")
+    owner = make_user(email="owner-midflight-deletion@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Deleted visit",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-1.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    transcript_id = transcript.id
+    job_id = job.id
+
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
+    )
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+
+    def delete_during_provider_call(db, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
+            deleted_transcript = concurrent_db.get(Transcript, transcript_id)
+            assert deleted_transcript is not None
+            concurrent_db.delete(deleted_transcript)
+            concurrent_db.commit()
+        return "late confidential text"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", delete_during_provider_call)
+
+    assert process_transcript_ingestion_job(db_session, job_id=job_id) is None
+
+    db_session.expire_all()
+    assert db_session.get(Transcript, transcript_id) is None
+    assert db_session.get(TranscriptIngestionJob, job_id) is None
+    assert db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript_id)) is None
+
+
 def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-live-ready@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -14193,7 +15431,7 @@ def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(clien
         status=TranscriptStatus.transcribing,
         next_live_chunk_sequence_no_applied=2,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.flush()
@@ -14353,7 +15591,7 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14422,7 +15660,7 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14474,7 +15712,7 @@ def test_retry_audio_file_route_rejects_when_failed_blob_is_missing(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14517,7 +15755,7 @@ def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14606,7 +15844,7 @@ def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14826,7 +16064,7 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner.id,
@@ -14835,7 +16073,7 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -14887,7 +16125,7 @@ def test_audio_file_upload_rejects_oversized_payload(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -14931,7 +16169,7 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -14940,7 +16178,7 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -14986,7 +16224,7 @@ def test_audio_file_upload_enforces_hourly_upload_size_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15048,7 +16286,7 @@ def test_audio_file_upload_enforces_hourly_duration_budget(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15111,7 +16349,7 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_one.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     transcript_two = Transcript(
         owner_user_id=owner_two.id,
@@ -15120,7 +16358,7 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.ready,
         retention_days_applied=30,
-        retention_expires_at=owner_two.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([transcript_one, transcript_two])
     db_session.commit()
@@ -15293,7 +16531,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
     assert detected_texts == ["earlier transcript\nfull file transcript"]
 
 
-def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
+def test_processing_audio_file_job_clears_vault_ref_and_queues_cleanup_when_delete_fails(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-cleanup-fail@example.com", password="password-1", team=team, team_role=TeamRole.leader)
     admin = make_user(email="admin-cleanup-fail@example.com", password="password-2", is_system_admin=True)
@@ -15336,7 +16574,10 @@ def test_processing_audio_file_job_keeps_vault_ref_when_cleanup_delete_fails(cli
     assert processed.status is TranscriptIngestionJobStatus.applied
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert refreshed_job is not None
-    assert refreshed_job.source_audio_vault_ref is not None
+    assert refreshed_job.source_audio_vault_ref is None
+    cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob))
+    assert cleanup_job is not None
+    assert cleanup_job.attempt_count == 1
 
 
 def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_changes(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -15448,7 +16689,7 @@ def test_stt_config_cannot_be_changed_while_jobs_are_in_flight(client, db_sessio
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.transcribing,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15656,7 +16897,7 @@ def test_retry_audio_file_route_enforces_owner_scope(client, db_session, make_te
         ingestion_mode=TranscriptIngestionMode.whole_file,
         status=TranscriptStatus.failed,
         retention_days_applied=30,
-        retention_expires_at=owner.created_at,
+        retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add(transcript)
     db_session.commit()
@@ -15961,13 +17202,13 @@ def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
         adapter_kind=SttAdapterKind.openai_compatible_rest,
         base_url="http://127.0.0.1:9000",
         transcribe_path="/v1/audio/transcriptions",
-        auth_mode=SttAuthMode.bearer,
+        auth_mode=SttAuthMode.none,
         model_name="parakeet",
         file_field_name="file",
         language="en",
         response_text_path="text",
         extra_form_fields_json=None,
-        vault_secret_ref="",
+        vault_secret_ref="secret:openscribe/stt/team/test/config/stale",
         is_active=True,
         created_by_user_id=owner.id,
         updated_by_user_id=owner.id,
@@ -15977,6 +17218,8 @@ def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
     make_stt_selection(config=config, actor=owner)
 
     captured = {}
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: pytest.fail("No-auth STT must not read stale Vault refs"))
 
     def fake_httpx_post(url, *, headers, data, files, timeout):
         captured["headers"] = headers

@@ -33,7 +33,7 @@ Use these checked-in sources to seed the evidence pack before crawling the runni
 | `docs/usage_tab.md` | Metadata-only admin usage telemetry scope. |
 | `.env.example` | Local configuration variables and rate-limit/upload defaults. |
 | `docker-compose.yml` | Local Postgres, Redis, and Vault services and binding assumptions. |
-| `security_remediation_plan.md` | CSP, local browser assets, and security-header remediation context. |
+| `docs/Compliance/OWASP/security-evidence/owasp/2026-06-14/11-remediation-plan.md` | Current CSP, local browser assets, and security-header remediation evidence. |
 
 ## 3. WSTG information-gathering checklist
 

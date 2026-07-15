@@ -90,35 +90,6 @@ def transcribe_claude_page(
     )
 
 
-@app.get("/transcribe-glm-2", response_class=HTMLResponse)
-def transcribe_glm_2_page(
-    request: Request,
-    message: str | None = None,
-    message_kind: str = "success",
-    transcript_id: str | None = None,
-    queued_transcript_id: str | None = None,
-    tab: str = "transcript",
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    if context.user.is_system_admin:
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-    return render_transcribe(
-        request,
-        db,
-        current_user=context.user,
-        template_name="transcribe.html",
-        transcript_id=transcript_id,
-        queued_transcript_id=queued_transcript_id,
-        active_tab=tab,
-        message=message,
-        message_kind=safe_message_kind,
-    )
-
-
 @app.post("/home/transcripts/upload", response_class=HTMLResponse)
 @WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
 @WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT

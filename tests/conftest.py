@@ -872,13 +872,16 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_read_team_stt_bearer_token(*, team_id, config_id, secret_ref=None):
         return "test-stt-token"
 
-    def fake_write_team_llm_bearer_token(*, team_id, config_id, bearer_token):
-        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}"
+    def fake_write_team_llm_bearer_token(*, team_id, config_id, bearer_token, secret_id=None, secret_ref=None):
+        if secret_ref is not None:
+            return secret_ref
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}{suffix}"
 
-    def fake_delete_team_llm_bearer_token(*, team_id, config_id):
+    def fake_delete_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         return None
 
-    def fake_read_team_llm_bearer_token(*, team_id, config_id):
+    def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         return "test-llm-token"
 
     def fake_write_deidentification_bearer_token(*, provider_id, bearer_token, secret_id=None):

@@ -26,6 +26,24 @@ celery_app.conf.update(
     task_track_started=True,
     task_always_eager=_env_flag("CELERY_TASK_ALWAYS_EAGER", default=False),
     task_eager_propagates=True,
+    timezone="UTC",
+    beat_schedule={
+        "delete-expired-transcripts-every-10-seconds": {
+            "task": "openscribe.delete_expired_transcripts",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "retry-transcript-audio-cleanup-every-10-seconds": {
+            "task": "openscribe.process_transcript_audio_cleanup_jobs",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "retry-provider-secret-cleanup-every-10-seconds": {
+            "task": "openscribe.process_provider_secret_cleanup_jobs",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+    },
 )
 
 celery_app.autodiscover_tasks(["app"])

@@ -1,5 +1,20 @@
 import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 
+export const generationLoadingHtml = ({
+  label = 'note',
+  message = "This usually takes a few seconds.<br>We're preparing your clinical note...",
+} = {}) => `
+  <div class="note-generation-loading" role="status" aria-live="polite">
+    <div class="note-generation-loading__orbit" aria-hidden="true">
+      <div class="note-generation-loading__ring"></div>
+      <div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
+      <div class="note-generation-loading__star">&#10022;</div>
+    </div>
+    <h2>Generating your ${label}</h2>
+    <p>${message}</p>
+  </div>
+`;
+
 const structuredDefinitionsSnapshot = (definitions = []) => {
   const sections = (Array.isArray(definitions) ? definitions : [])
     .map((section, index) => {

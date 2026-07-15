@@ -117,6 +117,18 @@ def test_browser_security_headers_added(raw_client):
     assert response.headers["Permissions-Policy"] == (
         "camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)"
     )
+    assert response.headers["X-Robots-Tag"] == (
+        "noindex, nofollow, noarchive, nosnippet, noimageindex"
+    )
+
+
+def test_x_robots_tag_added_to_all_response_types(raw_client):
+    for path in ["/login", "/api/", "/robots.txt"]:
+        response = raw_client.get(path)
+
+        assert response.headers["X-Robots-Tag"] == (
+            "noindex, nofollow, noarchive, nosnippet, noimageindex"
+        )
 
 
 def test_public_auth_pages_are_no_store(raw_client):
@@ -229,9 +241,7 @@ def test_public_metadata_routes_are_explicit_and_cookie_free(raw_client):
 
     assert robots.status_code == 200
     assert robots.headers["content-type"].startswith("text/plain")
-    assert "Disallow: /api/" in robots.text
-    assert "Allow: /" in robots.text
-    assert "Allow: /$" not in robots.text
+    assert robots.text == "User-agent: *\nDisallow: /\n"
     assert "set-cookie" not in robots.headers
     assert robots.headers["Cache-Control"] == "public, max-age=3600"
 
@@ -429,7 +439,10 @@ def test_transcribe_tailwind_build_includes_runtime_js_classes():
 
 
 def test_home_and_admin_templates_do_not_use_inline_script_handlers():
-    for path in [Path("app/templates/home.html"), Path("app/templates/admin.html")]:
+    for path in [
+        Path("app/templates/home.html"),
+        Path("app/templates/admin_mockup.html"),
+    ]:
         content = path.read_text()
         assert "onsubmit=" not in content, f"inline submit handler left in {path}"
         assert "onchange=" not in content, f"inline change handler left in {path}"

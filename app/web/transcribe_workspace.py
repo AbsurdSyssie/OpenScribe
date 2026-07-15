@@ -70,6 +70,7 @@ from ..services.transcripts import (
     next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     reconcile_transcript_status as reconcile_transcript_status_service,
     manual_pii_entity_value as manual_pii_entity_value_service,
+    transcript_is_expired as transcript_is_expired_service,
     transcript_draft_text as transcript_draft_text_service,
     transcript_has_working_note as transcript_has_working_note_service,
     transcript_working_note_mode as transcript_working_note_mode_service,
@@ -371,7 +372,9 @@ def list_transcript_history_page(
 ) -> dict[str, object]:
     page_limit = _normalize_transcript_history_limit(limit)
     decoded_cursor = _decode_transcript_history_cursor(cursor)
-    conditions = [Transcript.owner_user_id == current_user.id]
+    from app.services.transcripts import active_transcript_condition, transcript_is_expired
+
+    conditions = [Transcript.owner_user_id == current_user.id, active_transcript_condition()]
     if decoded_cursor is not None:
         cursor_created_at, cursor_id = decoded_cursor
         conditions.append(
@@ -391,7 +394,11 @@ def list_transcript_history_page(
     page_rows = rows[:page_limit]
     has_more = len(rows) > page_limit
     next_cursor = _encode_transcript_history_cursor(page_rows[-1]) if has_more and page_rows else None
-    if include_transcript is not None and include_transcript.owner_user_id == current_user.id:
+    if (
+        include_transcript is not None
+        and include_transcript.owner_user_id == current_user.id
+        and not transcript_is_expired(include_transcript)
+    ):
         page_ids = {transcript.id for transcript in page_rows}
         if include_transcript.id not in page_ids:
             page_rows.append(include_transcript)
@@ -582,7 +589,11 @@ def resolve_transcribe_workspace(
             selected_id = None
         if selected_id is not None:
             candidate = db.get(Transcript, selected_id)
-            if candidate is not None and candidate.owner_user_id == current_user.id:
+            if (
+                candidate is not None
+                and candidate.owner_user_id == current_user.id
+                and not transcript_is_expired_service(candidate)
+            ):
                 active_transcript = candidate
     recent_transcript_page = list_transcript_history_page(
         db,
@@ -777,15 +788,6 @@ def resolve_transcribe_workspace(
         db,
         generated_document=latest_generated_document,
     )
-    structured_editor_has_text = any(
-        isinstance(row.get("text"), str) and row["text"].strip()
-        for section in structured_editor_sections
-        for row in section.get("rows", [])
-    )
-    freeform_editor_has_text = any(
-        isinstance(row.get("text"), str) and row["text"].strip()
-        for row in freeform_editor_rows
-    )
     return {
         "recent_transcripts": recent_transcripts,
         "recent_transcripts_next_cursor": recent_transcript_page["next_cursor"],
@@ -825,9 +827,7 @@ def resolve_transcribe_workspace(
         "latest_generated_document": latest_generated_document,
         "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
         "structured_editor_sections": structured_editor_sections,
-        "structured_editor_has_text": structured_editor_has_text,
         "freeform_editor_rows": freeform_editor_rows,
-        "freeform_editor_has_text": freeform_editor_has_text,
         "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
         "active_working_note": active_working_note,

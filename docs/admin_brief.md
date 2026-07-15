@@ -1,5 +1,16 @@
 # Admin Brief
 
+## Admin release routing
+
+- `/admin` renders `admin_mockup.html`; this is the user-facing canonical admin route.
+- `/legacy-admin` retains deprecated `admin.html` as an untested compatibility route.
+- `/admin2` remains unchanged as a secondary developer reference.
+- `admin_mockup.html` has passed its release decision and replaced the deprecated admin page.
+- Existing mutation endpoints remain under `/admin/...`; validated `return_view` values preserve the initiating workspace.
+- Absent or invalid `return_view` values resolve to canonical `/admin`; only explicit `legacy` resolves to `/legacy-admin` and deprecated `admin.html`.
+- Default-template create, edit, duplicate, save, delete, cancel, and sidebar navigation initiated from `/admin?tab=global-defaults` carry validated `return_tab=global-defaults` and return to that canonical page. Legacy `defaults` return behavior remains only for an explicit `return_view=legacy` request.
+- Current wired redesign slices include team member creation/lifecycle/recovery actions, team De-ID provider attach/detach, team hard-delete, and future-only team retention-default updates.
+
 ## Purpose
 
 This document inventories what `/admin` contains today, without tying future design work to the current arrangement of tabs, panels, forms, or tables.
@@ -408,6 +419,7 @@ Any redesign must preserve:
 - some tasks are high-trust and destructive
 - some tasks are exploratory or diagnostic
 - provider configuration and provider policy are related but not identical
+- Provider policy uses one scrollable six-row table. Inline provider/model/language controls remain visible; writing-assistant model visibility stays compact in its model cell. Empty rows link to provisioning, and clearing De-identification states that native Presidio becomes active.
 - usage is observability, not content review
 
 Useful future design split:
@@ -420,6 +432,10 @@ Useful future design split:
 Current visual direction:
 - keep `/admin` as a server-rendered Jinja surface
 - use a persistent sidebar for area selection instead of top card tabs
+- top-align admin pane grid content so sparse work areas remain directly below the page header
+- keep the sidebar area selector flat against the sidebar surface; do not inherit the shared horizontal tab container card chrome
+- mark the active admin area with the shared accent color and stronger label weight
+- render Team scope with the same panel, heading, description, and selector spacing before and after team selection
 - use flat full-width editing panes with row dividers instead of stacked cards
 - keep provider setup, defaults, directory, requests, and usage as separate admin work areas
 - keep any future provider-policy split explicit so provisioning and team selection authority remain understandable
@@ -432,3 +448,9 @@ Use this document as an admin capability map:
 - but “what `/admin` must expose and protect”
 
 That should make it easier to redesign admin UX while preserving the privacy and authority boundaries that matter.
+# Provider editing
+
+Provider rows expose one `Edit` action that reuses add wizard with supported non-secret settings populated. Credential remains blank and saved credential is retained unless replacement is entered. Edit stages revision; active root remains unchanged until finalization.
+# Provider wizard inspection
+
+Admin workspace STT and LLM wizards inspect connections through authenticated JSON draft APIs. Inspection and model choices come only from server responses. Finalize uses draft ID; cancel deletes server draft before closing. Back is locked after draft creation to prevent connection changes against staged credentials. Browser unload may leave stale drafts for future cleanup.

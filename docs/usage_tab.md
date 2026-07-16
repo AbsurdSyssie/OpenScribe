@@ -22,6 +22,13 @@ filter, and KPI row remain clear of the rounded panel border.
 
 ## Existing telemetry
 
+### Reporting is not quota policy
+
+- This tab reports retained operational telemetry. It is not an expenditure-control source and does not reconstruct quota usage after policy changes.
+- Quota enforcement uses metadata-only `provider_attempts`: accepted reservations plus settled units in UTC daily/monthly windows. Pending accepted work remains committed until settled or lifecycle cleanup terminalizes it.
+- A quota reset changes the authoritative quota usage start for its selected window; it never deletes, rewrites, or hides provider/ingestion reporting telemetry. Therefore Usage totals and a user's post-reset quota status can intentionally differ.
+- Quota administration remains in canonical selected-team Members detail, not this tab: `/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`.
+
 ### Provider usage events
 
 Source: `provider_usage_events`

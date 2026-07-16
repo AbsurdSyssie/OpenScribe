@@ -62,6 +62,34 @@ Browser navigation behavior:
 - `POST /api/v1/users/{user_id}/recover-password` and `POST /api/v1/users/{user_id}/recover-account` are deprecated and return `410`
 - `DELETE /api/v1/users/{user_id}`
 
+### User quota administration
+
+Quota administration is browser-only in this first slice; no JSON quota
+management routes exist under `/api/v1`. Full authenticated system administrators
+use CSRF-protected form posts from canonical `/admin` member detail panels:
+
+- `POST /admin/users/{user_id}/quotas/limits`
+- `POST /admin/users/{user_id}/quota-grants`
+- `POST /admin/users/{user_id}/quota-resets`
+- `POST /admin/users/{user_id}/quota-grants/{grant_id}/revoke`
+
+Only normal team members are eligible quota targets. Administrators cannot view
+or change their own quota. Forms require a client operation UUID for idempotent
+retry, a controlled reason code, and a nonblank administrative reason. HTML
+responses redirect back to the selected member panel on success; they do not
+expose a JSON management surface.
+
+Provider authorization errors use the normal JSON error envelope when a
+billable application route is denied:
+
+- `403 quota_disabled`: effective allowance for a required window is zero
+- `429 quota_exceeded`: reservation would exceed a finite daily or monthly
+  window
+
+Error details contain quota metadata only (resource, period, limits, consumed,
+reserved, request, remaining, and UTC reset time). They contain no provider,
+transcript, prompt, or generated content.
+
 ### Transcripts
 
 - `POST /api/v1/transcripts`
@@ -140,6 +168,9 @@ Browser navigation behavior:
 - inspect validates/dereferences OpenAPI documents, then proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
 - runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
 - STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
+- STT base URLs reject embedded credentials, query strings, and fragments;
+  logged/legacy inspection response URLs are rebuilt without credentials, query,
+  or fragment components
 - STT draft finalization and draft credential replacement take `config_id` from the path; JSON bodies include team/label/model or replacement token fields only and do not require a duplicate body `config_id`
 - STT provider revisions inherit a blank credential only when the resolved target preset requires an API key. Moving to an optional/no-auth preset without supplying a token stores `auth_mode=none` and no Vault reference; supplying an optional token stores `auth_mode=bearer`.
 - STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
@@ -548,6 +579,17 @@ Current generation behavior:
 - browser and JSON generation routes share the same authenticated limiter bucket
 - generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
 - generation metadata now carries team/user IDs, provider/model names, statuses, durations, input/output/total token counts, and safe provider error metadata when available
+- persisted provider error codes are controlled allowlisted values or
+  status-derived safe categories; raw provider error strings are not persisted
+- every potentially billable generation and hallucination-check provider call
+  creates an authoritative metadata-only `provider_attempt` reservation before
+  dispatch; this includes explicit retries
+- queued source row, any reservation, and deterministic Celery dispatch intent
+  commit together; publisher retry and worker claim prevent duplicate task
+  delivery from invoking a provider twice
+- reported provider token totals settle actual token use; post-dispatch unknown
+  token outcomes settle the conservative reservation; a definite pre-dispatch
+  failure cancels it
 - generated-document rows now retain per-run input/output/total token counts, durations, provider HTTP status, and safe provider error codes for later debugging
 - failed generations now keep a more specific safe reason where available, such as provider timeout, unreachable provider, rejected credentials, missing model, or provider-side rate limiting
 - transcript deletion cascades to generated documents through the transcript-root delete path
@@ -653,6 +695,9 @@ Current live chunk-ingestion behavior:
 - live chunk jobs left queued or processing beyond `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` are marked `failed` with `ingestion_processing_stale` during transcript reconciliation, so later completed chunks can advance through the existing failed-gap path
 - the transcript status remains `transcribing` while more live chunks may still arrive
 - leaders/admins may configure team transcription metadata without gaining transcript readability
+- each conversation STT provider call is quota-authorized by a metadata-only
+  audio `provider_attempt` using server-measured duration; duration settlement
+  uses that measurement rather than caller-declared duration
 
 Current whole-file ingestion behavior:
 
@@ -667,6 +712,9 @@ Current whole-file ingestion behavior:
 - after successful ingestion, the source reference is cleared from the job in the same commit that records a durable audio-cleanup outbox intent; a failed immediate Vault delete retries from that intent rather than restoring the job reference
 - before deleting queued retry audio, cleanup rechecks that no ingestion job still references its Vault ref; a live reference removes stale cleanup intent and preserves retry data
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
+- retry transfers an existing Vault-backed audio reference to the new job and
+  clears the failed job reference in the same database transaction; it does not
+  create a duplicate Vault secret
 - transcript, user, team, and retention deletion commit retry-audio Vault references to a durable cleanup outbox before owning rows are removed; transient Vault outages retain retry metadata without delaying database hard deletion
 - if committing a newly written source-audio reference fails, rollback compensation commits a cleanup intent in a fresh transaction; only if that cannot persist does validated direct Vault deletion run, and failure of both paths is explicit
 - applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads

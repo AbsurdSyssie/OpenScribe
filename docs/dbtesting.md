@@ -506,6 +506,61 @@ Expected:
 - deleting a template or quick action no longer removes the prompt context needed by already-queued/generated output
 - deleting the transcript removes the generated document immediately
 
+### Provider quota accounting and dispatch
+
+Behavior in plain language:
+
+- four nullable user base limits cover daily/monthly tokens and audio seconds;
+  `NULL` is unlimited, `0` has no base allowance, and a positive grant can
+  enable a zero-base window
+- daily/monthly windows use UTC calendar bounds; unlimited-to-finite activation
+  starts current-window accounting prospectively, while finite edits do not
+  backfill or restart usage
+- daily and monthly reset events are independent; pending accepted reservations
+  remain counted through resets, grant expiry/revocation, and later reductions
+- quota-policy events enforce grant/reset/limit-change shapes, operation
+  idempotency, revocation idempotency, actor/revoker snapshots, and safe
+  deletion foreign keys
+- provider attempts are metadata-only authoritative quota records, separate
+  from `provider_usage_events` reporting telemetry; all LLM/STT call kinds and
+  retries use them, while synthetic provider tests have no user quota owner
+- owner-row locking permits only one competing reservation; duplicate
+  correlation/attempt reservations return the original row only when immutable
+  payload matches
+- token settlement accepts reported actual totals or conservatively settles an
+  unknown post-dispatch outcome; audio uses server-measured duration; expired
+  unused reservations cancel
+- source, reservation, and deterministic dispatch outbox intent are atomic;
+  publisher retry uses safe error codes and backoff, while workers use an atomic
+  source claim before external provider dispatch
+- source/user/team deletion terminalizes active attempts and removes/cancels
+  matching dispatch metadata without retaining content
+
+Brief test shape:
+
+```python
+attempt = reserve_provider_attempt(..., correlation_id=correlation_id)
+duplicate = reserve_provider_attempt(..., correlation_id=correlation_id)
+dispatch = add_pending_task_dispatch(..., source_id=source.id)
+```
+
+Expected:
+
+- duplicate identical reservation is idempotent; a changed payload returns
+  `409 provider_attempt_idempotency_conflict`
+- a zero effective window returns `403 quota_disabled`; finite exhaustion
+  returns `429 quota_exceeded`
+- concurrent reservations cannot both exceed same user allowance
+- expired reserved attempts cancel; expired submitted token attempts settle as
+  `unknown` against their conservative reservation; audio settles measured units
+- outbox rows use deterministic task ids, one source intent, locked due-row
+  publication, bounded retry, and queued-source reconciliation after permanent
+  publication failure
+- quota/outbox schema, error metadata, audit metadata, and tests never
+  persist/log transcript, note, prompt, provider response, secret, or Vault
+  reference; free-text reasons exist only in the quota-policy ledger and never
+  enter audit metadata or logs
+
 ## Migration coverage
 
 Current migration tests verify:
@@ -528,6 +583,12 @@ Current migration tests verify:
   - `onboarding_state`
 - head supports `users.status = suspended`
 - normalized uniqueness rules for teams and emails still hold at head
+- head includes nullable non-negative user quota-limit columns plus
+  `user_quota_policy_events`, `provider_attempts`, and `task_dispatch_outbox`
+  with their shape constraints, indexes, uniqueness rules, and deletion FKs
+- quota-accounting downgrade fails closed while any quota limit is populated or
+  any quota-policy, provider-attempt, or dispatch-outbox row exists; it removes
+  the empty schema only after those blockers are cleared
 
 ## Rate-limit test isolation
 

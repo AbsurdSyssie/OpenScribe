@@ -1,0 +1,208 @@
+"""Durable, metadata-only Celery dispatch outbox.
+
+Creation and cancellation helpers flush only; their caller owns commit or
+rollback. The publisher worker owns its session and commits its state changes.
+This module never handles transcript-derived payloads.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Protocol
+from uuid import UUID, uuid5
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models import (
+    TaskDispatchKind,
+    TaskDispatchOutbox,
+    TaskDispatchSourceKind,
+    TaskDispatchState,
+    utcnow,
+)
+
+
+DEFAULT_BATCH_SIZE = 100
+DEFAULT_MAX_ATTEMPTS = 10
+RETRY_BASE_SECONDS = 10
+RETRY_MAX_SECONDS = 3600
+PUBLISH_ERROR_CODE = "task_publish_failed"
+_TASK_ID_NAMESPACE = UUID("7dd776d3-4e6b-4c50-bb51-df76be4a5c52")
+
+
+class TaskDispatchPayloadMismatchError(ValueError):
+    """A duplicate intent has different immutable dispatch metadata."""
+
+
+class TaskDispatchPublisher(Protocol):
+    def publish(self, dispatch: TaskDispatchOutbox) -> None:
+        """Publish one dispatch using its stored deterministic task id."""
+
+
+@dataclass(frozen=True, slots=True)
+class CeleryTaskDispatchPublisher:
+    """Celery adapter kept separate so publisher behavior is easy to mock."""
+
+    def publish(self, dispatch: TaskDispatchOutbox) -> None:
+        # Import lazily: app.tasks registers this worker and imports this module.
+        from app.tasks import process_generated_document_task, process_transcript_ingestion_job_task
+
+        task_id = str(dispatch.task_id)
+        source_id = str(dispatch.source_id)
+        if dispatch.dispatch_kind is TaskDispatchKind.generation:
+            process_generated_document_task.apply_async(
+                kwargs={"document_id": source_id},
+                task_id=task_id,
+            )
+            return
+        if dispatch.dispatch_kind is TaskDispatchKind.ingestion:
+            process_transcript_ingestion_job_task.apply_async(
+                kwargs={"job_id": source_id},
+                task_id=task_id,
+            )
+            return
+        raise ValueError("unsupported task dispatch kind")
+
+
+def _expected_source_kind(dispatch_kind: TaskDispatchKind) -> TaskDispatchSourceKind:
+    if dispatch_kind is TaskDispatchKind.generation:
+        return TaskDispatchSourceKind.generated_document
+    if dispatch_kind is TaskDispatchKind.ingestion:
+        return TaskDispatchSourceKind.transcript_ingestion_job
+    raise ValueError("unsupported task dispatch kind")
+
+
+def _deterministic_task_id(dispatch_kind: TaskDispatchKind, source_kind: TaskDispatchSourceKind, source_id: UUID) -> UUID:
+    return uuid5(_TASK_ID_NAMESPACE, f"{dispatch_kind.value}:{source_kind.value}:{source_id}")
+
+
+def add_pending_task_dispatch(
+    db: Session,
+    *,
+    dispatch_kind: TaskDispatchKind,
+    source_id: UUID,
+    source_kind: TaskDispatchSourceKind | None = None,
+    task_id: UUID | None = None,
+) -> TaskDispatchOutbox:
+    """Add a pending intent and flush only; caller owns commit/rollback.
+
+    The source mapping is the whole payload contract.  It is validated before
+    persistence, and repeat calls return the original intent without changing
+    its deterministic task id.
+    """
+    expected_source_kind = _expected_source_kind(dispatch_kind)
+    if source_kind is not None and source_kind is not expected_source_kind:
+        raise TaskDispatchPayloadMismatchError("dispatch kind and source kind do not match")
+    source_kind = expected_source_kind
+    expected_task_id = _deterministic_task_id(dispatch_kind, source_kind, source_id)
+    if task_id is not None and task_id != expected_task_id:
+        raise TaskDispatchPayloadMismatchError("task id does not match dispatch payload")
+
+    existing = db.scalar(
+        select(TaskDispatchOutbox).where(
+            TaskDispatchOutbox.dispatch_kind == dispatch_kind,
+            TaskDispatchOutbox.source_kind == source_kind,
+            TaskDispatchOutbox.source_id == source_id,
+        )
+    )
+    if existing is not None:
+        if existing.task_id != expected_task_id:
+            raise TaskDispatchPayloadMismatchError("existing dispatch has different task id")
+        return existing
+
+    dispatch = TaskDispatchOutbox(
+        task_id=expected_task_id,
+        dispatch_kind=dispatch_kind,
+        source_kind=source_kind,
+        source_id=source_id,
+        state=TaskDispatchState.pending,
+        attempt_count=0,
+        next_attempt_at=utcnow(),
+    )
+    db.add(dispatch)
+    db.flush()
+    return dispatch
+
+
+def cancel_pending_task_dispatch(db: Session, *, task_id: UUID) -> bool:
+    """Cancel only a pending row.  No commit; caller owns transaction."""
+    dispatch = db.scalar(
+        select(TaskDispatchOutbox)
+        .where(TaskDispatchOutbox.task_id == task_id)
+        .with_for_update()
+    )
+    if dispatch is None or dispatch.state is not TaskDispatchState.pending:
+        return False
+    dispatch.state = TaskDispatchState.cancelled
+    dispatch.cancelled_at = utcnow()
+    db.flush()
+    return True
+
+
+def _configured_max_attempts() -> int:
+    try:
+        return max(1, int(os.getenv("TASK_OUTBOX_MAX_ATTEMPTS", str(DEFAULT_MAX_ATTEMPTS))))
+    except ValueError:
+        return DEFAULT_MAX_ATTEMPTS
+
+
+def _retry_at(now: datetime, attempt_count: int) -> datetime:
+    seconds = min(RETRY_BASE_SECONDS * (2 ** max(0, attempt_count - 1)), RETRY_MAX_SECONDS)
+    return now + timedelta(seconds=seconds)
+
+
+def publish_pending_task_dispatches(
+    db: Session,
+    *,
+    publisher: TaskDispatchPublisher | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    max_attempts: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Publish at most one due, locked batch.  Returns successful publishes."""
+    if batch_size < 1:
+        return 0
+    now = now or utcnow()
+    publisher = publisher or CeleryTaskDispatchPublisher()
+    max_attempts = max_attempts if max_attempts is not None else _configured_max_attempts()
+    max_attempts = max(1, max_attempts)
+    published = 0
+    for _ in range(batch_size):
+        # Claim one row per transaction. Committing a whole locked batch one
+        # row at a time would release locks for unprocessed rows and allow a
+        # concurrent publisher to send the same task.
+        dispatch = db.scalar(
+            select(TaskDispatchOutbox)
+            .where(
+                TaskDispatchOutbox.state == TaskDispatchState.pending,
+                TaskDispatchOutbox.next_attempt_at <= now,
+            )
+            .order_by(TaskDispatchOutbox.next_attempt_at, TaskDispatchOutbox.created_at)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        if dispatch is None:
+            break
+        try:
+            publisher.publish(dispatch)
+        except Exception:
+            # Exception details can contain provider/task content. Persist code only.
+            dispatch.attempt_count += 1
+            dispatch.last_error_code = PUBLISH_ERROR_CODE
+            if dispatch.attempt_count >= max_attempts:
+                dispatch.state = TaskDispatchState.failed
+                dispatch.failed_at = now
+            else:
+                dispatch.next_attempt_at = _retry_at(now, dispatch.attempt_count)
+            db.commit()
+            continue
+
+        dispatch.state = TaskDispatchState.published
+        dispatch.published_at = now
+        dispatch.last_error_code = None
+        db.commit()
+        published += 1
+    return published

@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import logging
 import os
+from datetime import timedelta
+from math import ceil
 from pathlib import Path
 from time import monotonic, time
 from typing import Any
@@ -16,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import ProviderCredentialStatus, ProviderSecretCleanupKind, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User, utcnow
+from app.models import AttemptKind, AttemptOutcome, ProviderCredentialStatus, ProviderSecretCleanupKind, QuotaResource, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose, Team, TeamRole, TeamSttConfig, TeamSttSelection, TranscriptIngestionJob, TranscriptIngestionJobStatus, User, utcnow
 from app.schemas import (
     SttConfigDraftCreate,
     SttConfigDraftReplaceCredential,
@@ -39,6 +41,9 @@ from app.services.stt_presets import (
 from app.services.security_audit import record_security_event
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
+from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt, settle_provider_attempt_audio
+from app.services.provider_errors import safe_provider_error_code
+from app.services.audio import normalized_wav_duration_seconds
 from app.services.provider_inspection import (
     dereference_openapi_document,
     display_default_from_schema_property,
@@ -76,6 +81,7 @@ logger = logging.getLogger("openscribe.stt")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
 STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
+SYNC_STT_RESERVATION_GRACE_SECONDS = 60
 
 
 def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -941,6 +947,14 @@ def _sanitize_logged_url(raw_url: str | None) -> str | None:
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
+def _sanitized_endpoint_url(base_url: str, path: str) -> str | None:
+    safe_base = _sanitize_logged_url(base_url)
+    if safe_base is None:
+        return None
+    safe_path = urlsplit(path).path
+    return _sanitize_logged_url(f"{safe_base.rstrip('/')}/{safe_path.lstrip('/')}")
+
+
 def ensure_stt_service_healthy(
     *,
     adapter_kind: SttAdapterKind,
@@ -1199,18 +1213,18 @@ def _provider_error_code_from_response(response: httpx.Response | None) -> str |
     if isinstance(detail, dict):
         status_value = detail.get("status")
         if isinstance(status_value, str) and status_value:
-            return status_value[:255]
+            return safe_provider_error_code(status_value, status_code=response.status_code)
         code_value = detail.get("code")
         if isinstance(code_value, str) and code_value:
-            return code_value[:255]
+            return safe_provider_error_code(code_value, status_code=response.status_code)
     error = payload.get("error")
     if isinstance(error, dict):
         code_value = error.get("code")
         if isinstance(code_value, str) and code_value:
-            return code_value[:255]
+            return safe_provider_error_code(code_value, status_code=response.status_code)
     code_value = payload.get("code")
     if isinstance(code_value, str) and code_value:
-        return code_value[:255]
+        return safe_provider_error_code(code_value, status_code=response.status_code)
     return None
 
 
@@ -1527,7 +1541,9 @@ def _transcribe_via_openai_cloud(
     audio_bytes: bytes,
     filename: str,
 ) -> str:
-    client = OpenAI(api_key=bearer_token, base_url=base_url, timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS)
+    # Provider-attempt accounting is one row per outbound request. Disable SDK
+    # retries so an implicit retry cannot consume provider capacity unrecorded.
+    client = OpenAI(api_key=bearer_token, base_url=base_url, timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS, max_retries=0)
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     kwargs: dict[str, Any] = {
@@ -1555,16 +1571,16 @@ def _transcribe_via_openai_cloud(
     raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
 
 
-def transcribe_with_team_stt(
-    db: Session,
+def _transcribe_with_resolved_team_stt(
     *,
     team_id: UUID,
-    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+    config: TeamSttConfig,
+    resolved_model_name: str | None,
+    resolved_language: str | None,
     audio_bytes: bytes,
     filename: str,
     content_type: str,
 ) -> str:
-    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
     bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
     provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
     if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value:
@@ -1600,6 +1616,126 @@ def transcribe_with_team_stt(
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
+    )
+
+
+def _transcribe_metered_audio(
+    db: Session,
+    *,
+    team_id: UUID,
+    owner_user_id: UUID | None,
+    transcript_id: UUID | None,
+    attempt_kind: AttemptKind,
+    measured_duration_seconds: float,
+    provider_adapter: str,
+    provider_model: str | None,
+    provider_call: Any,
+) -> str:
+    """Reserve, durably submit, then settle one synchronous STT request.
+
+    Accounting uses isolated sessions so its required pre-network commit never
+    commits an enclosing provider-configuration or content transaction.
+    """
+    now = utcnow()
+    with Session(bind=db.get_bind(), future=True) as accounting_db:
+        attempt = reserve_provider_attempt(
+            accounting_db,
+            team_id=team_id,
+            owner_user_id=owner_user_id,
+            resource=QuotaResource.audio_seconds,
+            attempt_kind=attempt_kind,
+            correlation_id=uuid4(),
+            attempt_number=1,
+            reserved_units=ceil(measured_duration_seconds),
+            reservation_valid_until=now + timedelta(seconds=STT_TRANSCRIPTION_TIMEOUT_SECONDS + SYNC_STT_RESERVATION_GRACE_SECONDS),
+            authorized_at=now,
+            transcript_id=transcript_id,
+            provider_adapter=provider_adapter,
+            provider_model=provider_model,
+            measured_audio_seconds=measured_duration_seconds,
+        )
+        mark_provider_attempt_submitted(
+            accounting_db,
+            attempt_id=attempt.id,
+            deadline_at=now + timedelta(seconds=STT_TRANSCRIPTION_TIMEOUT_SECONDS + SYNC_STT_RESERVATION_GRACE_SECONDS),
+        )
+        # Network boundary: attempt state must survive process loss now.
+        accounting_db.commit()
+        attempt_id = attempt.id
+    try:
+        result = provider_call()
+    except AppError:
+        with Session(bind=db.get_bind(), future=True) as accounting_db:
+            settle_provider_attempt_audio(
+                accounting_db, attempt_id=attempt_id,
+                measured_audio_seconds=measured_duration_seconds,
+                outcome=AttemptOutcome.failed,
+            )
+            accounting_db.commit()
+        raise
+    except Exception as exc:
+        with Session(bind=db.get_bind(), future=True) as accounting_db:
+            settle_provider_attempt_audio(
+                accounting_db, attempt_id=attempt_id,
+                measured_audio_seconds=measured_duration_seconds,
+                outcome=AttemptOutcome.unknown,
+            )
+            accounting_db.commit()
+        raise AppError(502, "stt_request_failed", "STT provider request failed") from exc
+    with Session(bind=db.get_bind(), future=True) as accounting_db:
+        settle_provider_attempt_audio(
+            accounting_db, attempt_id=attempt_id,
+            measured_audio_seconds=measured_duration_seconds,
+        )
+        accounting_db.commit()
+    return result
+
+
+def transcribe_metered_team_stt(
+    db: Session,
+    *,
+    team_id: UUID,
+    owner_user_id: UUID,
+    transcript_id: UUID,
+    attempt_kind: AttemptKind,
+    measured_duration_seconds: float,
+    purpose: SttSelectionPurpose,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
+    # Resolve credentials before reservation: missing credentials never dispatch.
+    _read_saved_stt_bearer_token(team_id=team_id, config=config)
+    return _transcribe_metered_audio(
+        db,
+        team_id=team_id,
+        owner_user_id=owner_user_id,
+        transcript_id=transcript_id,
+        attempt_kind=attempt_kind,
+        measured_duration_seconds=measured_duration_seconds,
+        provider_adapter=config.adapter_kind.value,
+        provider_model=resolved_model_name,
+        provider_call=lambda: _transcribe_with_resolved_team_stt(
+            team_id=team_id, config=config, resolved_model_name=resolved_model_name,
+            resolved_language=resolved_language, audio_bytes=audio_bytes, filename=filename, content_type=content_type,
+        ),
+    )
+
+
+def transcribe_with_team_stt(
+    db: Session,
+    *,
+    team_id: UUID,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
+    _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
+    return _transcribe_with_resolved_team_stt(
+        team_id=team_id, config=config, resolved_model_name=resolved_model_name,
+        resolved_language=resolved_language, audio_bytes=audio_bytes, filename=filename, content_type=content_type,
     )
 
 
@@ -1696,45 +1832,59 @@ def run_saved_stt_config_test(
     except OSError as exc:  # pragma: no cover
         raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
 
+    measured_duration_seconds = normalized_wav_duration_seconds(audio_bytes=audio_bytes)
     started_at = monotonic()
     health_status = "skipped"
     health_url = None
     try:
         bearer_token = _read_saved_stt_bearer_token(team_id=config.team_id, config=config)
         provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
-        transcript_text = (
-            _transcribe_via_openai_cloud(
-                base_url=config.base_url,
-                extra_form_fields_json=config.extra_form_fields_json,
-                bearer_token=bearer_token,
-                model_name=config.model_name,
-                language=config.language,
-                audio_bytes=audio_bytes,
-                filename=sample_path.name,
+
+        def provider_call() -> str:
+            return (
+                _transcribe_via_openai_cloud(
+                    base_url=config.base_url,
+                    extra_form_fields_json=config.extra_form_fields_json,
+                    bearer_token=bearer_token,
+                    model_name=config.model_name,
+                    language=config.language,
+                    audio_bytes=audio_bytes,
+                    filename=sample_path.name,
+                )
+                if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value
+                else _transcribe_via_http(
+                    base_url=config.base_url,
+                    transcribe_path=config.transcribe_path,
+                    file_field_name=config.file_field_name,
+                    response_text_path=config.response_text_path,
+                    extra_form_fields_json=config.extra_form_fields_json,
+                    bearer_token=bearer_token,
+                    provider_preset=provider_preset,
+                    adapter_kind=config.adapter_kind,
+                    model_name=config.model_name,
+                    model_field_name=config.model_field_name or "model",
+                    language=config.language,
+                    language_field_name=config.language_field_name or "language",
+                    segments_path=config.segments_path,
+                    segment_text_field=config.segment_text_field,
+                    segment_start_field=config.segment_start_field,
+                    segment_end_field=config.segment_end_field,
+                    segment_speaker_field=config.segment_speaker_field,
+                    audio_bytes=audio_bytes,
+                    filename=sample_path.name,
+                    content_type="audio/wav",
+                )
             )
-            if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value
-            else _transcribe_via_http(
-                base_url=config.base_url,
-                transcribe_path=config.transcribe_path,
-                file_field_name=config.file_field_name,
-                response_text_path=config.response_text_path,
-                extra_form_fields_json=config.extra_form_fields_json,
-                bearer_token=bearer_token,
-                provider_preset=provider_preset,
-                adapter_kind=config.adapter_kind,
-                model_name=config.model_name,
-                model_field_name=config.model_field_name or "model",
-                language=config.language,
-                language_field_name=config.language_field_name or "language",
-                segments_path=config.segments_path,
-                segment_text_field=config.segment_text_field,
-                segment_start_field=config.segment_start_field,
-                segment_end_field=config.segment_end_field,
-                segment_speaker_field=config.segment_speaker_field,
-                audio_bytes=audio_bytes,
-                filename=sample_path.name,
-                content_type="audio/wav",
-            )
+        transcript_text = _transcribe_metered_audio(
+            db,
+            team_id=config.team_id,
+            owner_user_id=None,
+            transcript_id=None,
+            attempt_kind=AttemptKind.stt_provider_test,
+            measured_duration_seconds=measured_duration_seconds,
+            provider_adapter=config.adapter_kind.value,
+            provider_model=config.model_name,
+            provider_call=provider_call,
         )
         result = {
             "success": True,
@@ -1742,7 +1892,7 @@ def run_saved_stt_config_test(
             "sample_filename": sample_path.name,
             "sample_size_bytes": len(audio_bytes),
             "health_url": health_url,
-            "transcribe_url": f"{config.base_url.rstrip('/')}{config.transcribe_path}",
+            "transcribe_url": _sanitized_endpoint_url(config.base_url, config.transcribe_path),
             "model_name": config.model_name,
             "language": config.language,
             "duration_ms": int((monotonic() - started_at) * 1000),
@@ -1772,7 +1922,7 @@ def run_saved_stt_config_test(
             "sample_filename": sample_path.name,
             "sample_size_bytes": len(audio_bytes),
             "health_url": health_url,
-            "transcribe_url": f"{config.base_url.rstrip('/')}{config.transcribe_path}",
+            "transcribe_url": _sanitized_endpoint_url(config.base_url, config.transcribe_path),
             "model_name": config.model_name,
             "language": config.language,
             "duration_ms": int((monotonic() - started_at) * 1000),
@@ -1799,6 +1949,7 @@ def run_saved_stt_config_test(
 
 
 def _verify_generic_stt_config_with_sample(
+    db: Session,
     config: TeamSttConfig,
     *,
     bearer_token: str | None,
@@ -1809,7 +1960,17 @@ def _verify_generic_stt_config_with_sample(
     except OSError as exc:  # pragma: no cover
         raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
 
-    _transcribe_via_http(
+    measured_duration_seconds = normalized_wav_duration_seconds(audio_bytes=audio_bytes)
+    _transcribe_metered_audio(
+        db,
+        team_id=config.team_id,
+        owner_user_id=None,
+        transcript_id=None,
+        attempt_kind=AttemptKind.stt_provider_test,
+        measured_duration_seconds=measured_duration_seconds,
+        provider_adapter=config.adapter_kind.value,
+        provider_model=config.model_name,
+        provider_call=lambda: _transcribe_via_http(
         base_url=config.base_url,
         transcribe_path=config.transcribe_path,
         file_field_name=config.file_field_name,
@@ -1830,6 +1991,7 @@ def _verify_generic_stt_config_with_sample(
         audio_bytes=audio_bytes,
         filename=sample_path.name,
         content_type="audio/wav",
+        ),
     )
 
 
@@ -2267,7 +2429,7 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
     if replacing_secret and payload.bearer_token:
         try:
             if payload.adapter_kind in {SttAdapterKind.generic_rest, SttAdapterKind.openai_compatible_rest}:
-                _verify_generic_stt_config_with_sample(config, bearer_token=payload.bearer_token)
+                _verify_generic_stt_config_with_sample(db, config, bearer_token=payload.bearer_token)
                 inspection = None
             elif payload.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
                 inspection = inspect_stt_contract(

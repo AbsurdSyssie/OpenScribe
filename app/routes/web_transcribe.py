@@ -133,7 +133,6 @@ def home_upload_transcript_file(
             )
         return _transcribe_redirect_response(message=exc.message, message_kind="error")
     audio_bytes = audio.file.read()
-    job = None
     try:
         enforce_whole_file_upload_size(audio_bytes=audio_bytes)
         transcript = start_transcript_service(
@@ -151,13 +150,9 @@ def home_upload_transcript_file(
             filename=audio.filename or "audio.bin",
             source_audio_blob=audio_bytes,
         )
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
-        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return _transcribe_redirect_response(message=exc.message, message_kind="error")
     except Exception:
-        if job is not None:
-            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
         return _transcribe_redirect_response(
             message="Could not enqueue file ingestion",
             message_kind="error",
@@ -215,7 +210,6 @@ def transcribe_upload_transcript_file(
             )
         return _transcribe_redirect_response(message=exc.message, message_kind="error")
     audio_bytes = audio.file.read()
-    job = None
     try:
         enforce_whole_file_upload_size(audio_bytes=audio_bytes)
         if not transcript_id:
@@ -237,8 +231,6 @@ def transcribe_upload_transcript_file(
             filename=audio.filename or "audio.bin",
             source_audio_blob=audio_bytes,
         )
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
-        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return _transcribe_redirect_response(
             message=exc.message,
@@ -246,8 +238,6 @@ def transcribe_upload_transcript_file(
             queued_transcript_id=UUID(transcript_id) if transcript_id else None,
         )
     except Exception:
-        if job is not None:
-            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
         return _transcribe_redirect_response(
             message="Could not enqueue file ingestion",
             message_kind="error",
@@ -278,7 +268,6 @@ def transcribe_retry_file_ingestion(
             context.user,
             transcript_id=transcript_id,
         )
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
         clear_ingestion_retry_source(
             db,
             job_id=previous_job.id,
@@ -286,7 +275,6 @@ def transcribe_retry_file_ingestion(
             clear_accounting=False,
             delete_backing_secret=True,
         )
-        attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return _transcribe_redirect_response(
             message=exc.message,
@@ -294,8 +282,6 @@ def transcribe_retry_file_ingestion(
             queued_transcript_id=transcript_id,
         )
     except Exception:
-        if "job" in locals():
-            mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion retry")
         return _transcribe_redirect_response(
             message="Could not enqueue file ingestion retry",
             message_kind="error",
@@ -385,7 +371,6 @@ def transcribe_generate_output(
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
-    document = None
     try:
         document = queue_document_generation_from_template_service(
             db,
@@ -394,19 +379,9 @@ def transcribe_generate_output(
             template_id=template_id,
             request=request,
         )
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return _transcribe_redirect_response(
             message=exc.message,
-            message_kind="error",
-            queued_transcript_id=transcript_id,
-        )
-    except Exception:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
-        return _transcribe_redirect_response(
-            message="Could not enqueue note generation",
             message_kind="error",
             queued_transcript_id=transcript_id,
         )
@@ -429,21 +404,11 @@ def transcribe_generate_followup(
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
-    document = None
     try:
         document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=prompt_text, request=request)
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return RedirectResponse(
             url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-    except Exception:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
-        return RedirectResponse(
-            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Could not enqueue follow-up generation.', 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
@@ -472,7 +437,6 @@ def transcribe_run_quick_action(
             url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Additional context must be 4000 characters or fewer', 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    document = None
     try:
         document = queue_quick_action_generation_service(
             db,
@@ -482,18 +446,9 @@ def transcribe_run_quick_action(
             context_text=clean_context_text,
             request=request,
         )
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
     except AppError as exc:
         return RedirectResponse(
             url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-    except Exception:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
-        return RedirectResponse(
-            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Could not enqueue quick action generation.', 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(

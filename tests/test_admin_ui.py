@@ -2,6 +2,7 @@ import re
 from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 import pytest
@@ -35,6 +36,8 @@ from app.models import (
     PromptTemplateVersion,
     QuickAction,
     QuickActionVersion,
+    QuotaPeriod,
+    QuotaResource,
     RedactionRunStatus,
     SecurityAuditEvent,
     Team,
@@ -51,6 +54,8 @@ from app.models import (
     SttAdapterKind,
     SttConfigSetupStatus,
     TeamSttSelection,
+    TaskDispatchOutbox,
+    TaskDispatchState,
     TemplateMode,
     TemplateScope,
     Transcript,
@@ -65,6 +70,9 @@ from app.models import (
     UserAppPreference,
     UserLlmPreference,
     UserStatus,
+    UserQuotaPolicyEvent,
+    UserQuotaPolicyEventType,
+    UserQuotaReasonCode,
     utcnow,
 )
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
@@ -303,6 +311,248 @@ def test_admin_home_without_team_guards_missing_member_modal_controls(client, ma
     guarded_listener = admin_html.index('addMemberButton.addEventListener("click", openAddMemberModal);')
     guard = admin_html.index("if (addMemberButton && addMemberModal && cancelAddMember) {")
     assert guard < guarded_listener
+
+
+def _admin_csrf(page_text: str) -> str:
+    match = re.search(r'name="_csrf_token" value="([^"]+)"', page_text)
+    assert match is not None
+    return match.group(1)
+
+
+def _quota_panel_url(team: Team, member: User) -> str:
+    return f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}"
+
+
+def _login_quota_admin(client, admin: User) -> None:
+    response = client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    assert response.status_code == 303
+
+
+def _quota_form(client, team: Team, member: User) -> tuple[str, str]:
+    page = client.get(_quota_panel_url(team, member))
+    assert page.status_code == 200
+    return page.text, _admin_csrf(page.text)
+
+
+def test_admin_member_quota_panel_is_scoped_and_addressable(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Quota Team")
+    other_team = make_team(name="Other Quota Team")
+    admin = make_user(email="quota-ui-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-ui-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="quota-ui-other@example.com", password="password-1", team=other_team, team_role=TeamRole.user)
+    system_admin = make_user(email="quota-ui-system@example.com", password="password-1", is_system_admin=True)
+    _login_quota_admin(client, admin)
+
+    page = client.get(_quota_panel_url(team, member))
+    assert page.status_code == 200
+    assert f"/admin?team_id={team.id}&amp;team_tab=members&amp;member_id={member.id}" in page.text
+    assert "Manage quotas" in page.text
+    assert "UTC windows" in page.text
+    assert "Unlimited" in page.text
+    assert "No temporary allowance" in page.text
+
+    calls = []
+    monkeypatch.setattr("app.web.presentation.get_admin_user_quota_detail", lambda *args, **kwargs: calls.append(kwargs))
+    for invalid_member in ("not-a-uuid", str(other.id), str(system_admin.id)):
+        hidden = client.get(f"/admin?team_id={team.id}&team_tab=members&member_id={invalid_member}")
+        assert "id=\"quota-panel\"" not in hidden.text
+    assert calls == []
+
+    for team_tab in ("overview", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"):
+        client.get(f"/admin?team_id={team.id}&team_tab={team_tab}&member_id={member.id}")
+    assert calls == []
+
+
+def test_admin_quota_panel_renders_unlimited_disabled_and_no_temporary_allowance(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Window Team")
+    admin = make_user(email="quota-window-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-window-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = 0
+    member.monthly_token_limit = 12
+    member.daily_audio_seconds_limit = None
+    member.monthly_audio_seconds_limit = 0
+    db_session.commit()
+    _login_quota_admin(client, admin)
+
+    page, _ = _quota_form(client, team, member)
+
+    assert page.count("Unlimited") >= 2
+    assert page.count("Disabled") >= 2
+    assert page.count("No temporary allowance") == 4
+
+
+def test_admin_quota_limits_post_updates_all_windows_and_uses_safe_prg(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Mutation Team")
+    admin = make_user(email="quota-mutation-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-mutation-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other_team = make_team(name="Quota Mutation Other")
+    other = make_user(email="quota-mutation-other@example.com", password="password-1", team=other_team, team_role=TeamRole.user)
+    member.monthly_audio_seconds_limit = 3600
+    db_session.commit()
+    _login_quota_admin(client, admin)
+    _, csrf = _quota_form(client, team, member)
+    limits = client.post(f"/admin/users/{member.id}/quotas/limits", data={
+        "_csrf_token": csrf, "operation_id": "11111111-1111-4111-8111-111111111111", "daily_token_limit": "0", "monthly_token_limit": "100", "daily_audio_hours": "1.5", "monthly_audio_hours": "999", "monthly_audio_unlimited": "true", "reason_code": "policy_change", "reason": "free reason must not enter URL",
+        "return_team_id": str(other.id),
+        "return_member_id": str(other.id),
+    }, params={"team_id": str(other_team.id), "member_id": str(other.id)}, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert limits.status_code == 303
+    location = limits.headers["location"]
+    assert location == f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}&quota_notice=limits_updated"
+    assert "free+reason" not in location
+    assert parse_qs(urlparse(location).query) == {
+        "team_id": [str(team.id)], "team_tab": ["members"], "member_id": [str(member.id)], "quota_notice": ["limits_updated"],
+    }
+    assert db_session.scalar(select(func.count(UserQuotaPolicyEvent.id)).where(UserQuotaPolicyEvent.target_user_id == member.id)) == 4
+    db_session.refresh(member)
+    assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, 100, 5400, None)
+    assert "Quota limits updated." in client.get(location).text
+
+
+def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safely(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Grant Team")
+    admin = make_user(email="quota-grant-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-grant-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = member.monthly_token_limit = 0
+    db_session.commit()
+    _login_quota_admin(client, admin)
+    _, csrf = _quota_form(client, team, member)
+    grant = client.post(f"/admin/users/{member.id}/quota-grants", data={
+        "_csrf_token": csrf, "operation_id": "22222222-2222-4222-8222-222222222222", "resource": "tokens", "periods": ["daily", "monthly"], "amount": "5", "audio_hours": "", "expiry_preset": "24h", "reason_code": "temporary_allowance", "reason": "allowance",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert grant.status_code == 303
+    grants = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("22222222-2222-4222-8222-222222222222"))).all()
+    assert len(grants) == 2
+    assert {(event.resource, event.period, event.amount) for event in grants} == {
+        (QuotaResource.tokens, QuotaPeriod.daily, 5), (QuotaResource.tokens, QuotaPeriod.monthly, 5),
+    }
+    assert len({event.effective_at for event in grants}) == 1
+
+    page, csrf = _quota_form(client, team, member)
+    unsafe_reason = '<script>alert("quota")</script>'
+    unlimited = client.post(f"/admin/users/{member.id}/quota-grants", data={
+        "_csrf_token": csrf, "operation_id": "33333333-3333-4333-8333-333333333333", "resource": "audio_seconds", "periods": "daily", "amount": "1", "audio_hours": "1", "expiry_preset": "none", "reason_code": "temporary_allowance", "reason": unsafe_reason,
+    }, headers={"Origin": "http://testserver"})
+    assert unlimited.status_code == 409
+    assert "Cannot grant quota to unlimited window" in unlimited.text
+    assert '&lt;script&gt;alert(&#34;quota&#34;)&lt;/script&gt;' in unlimited.text
+    assert unsafe_reason not in unlimited.text
+    assert 'value="1"' in unlimited.text
+
+    zero_amount = client.post(f"/admin/users/{member.id}/quota-grants", data={
+        "_csrf_token": _admin_csrf(page), "operation_id": "44444444-4444-4444-8444-444444444444", "resource": "tokens", "periods": "daily", "amount": "0", "expiry_preset": "none", "reason_code": "temporary_allowance", "reason": "zero amount",
+    }, headers={"Origin": "http://testserver"})
+    assert zero_amount.status_code == 422
+    assert "Quota grant is invalid" in zero_amount.text
+
+
+def test_admin_quota_resets_selected_and_all_windows_share_operation_and_timestamp(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Reset Team")
+    admin = make_user(email="quota-reset-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-reset-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    _login_quota_admin(client, admin)
+    page, csrf = _quota_form(client, team, member)
+    reset = client.post(f"/admin/users/{member.id}/quota-resets", data={
+        "_csrf_token": csrf, "operation_id": "55555555-5555-4555-8555-555555555555", "windows": ["tokens:daily", "audio_seconds:monthly"], "reason_code": "administrative_correction", "reason": "reset selected",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert reset.status_code == 303
+    resets = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("55555555-5555-4555-8555-555555555555"))).all()
+    assert {(event.resource, event.period) for event in resets} == {(QuotaResource.tokens, QuotaPeriod.daily), (QuotaResource.audio_seconds, QuotaPeriod.monthly)}
+    assert len({event.effective_at for event in resets}) == 1
+
+    all_reset = client.post(f"/admin/users/{member.id}/quota-resets", data={
+        "_csrf_token": _admin_csrf(client.get(reset.headers["location"]).text), "operation_id": "66666666-6666-4666-8666-666666666666", "reset_all": "true", "reason_code": "administrative_correction", "reason": "reset all",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert all_reset.status_code == 303
+    resets = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("66666666-6666-4666-8666-666666666666"))).all()
+    assert len(resets) == 4
+    assert {(event.resource, event.period) for event in resets} == {
+        (resource, period) for resource in QuotaResource for period in QuotaPeriod
+    }
+    assert len({event.effective_at for event in resets}) == 1
+
+
+def test_admin_quota_revoke_uses_prg_and_rejects_revoked_or_expired_grants(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Revoke Team")
+    admin = make_user(email="quota-revoke-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-revoke-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = 1
+    db_session.commit()
+    _login_quota_admin(client, admin)
+    _, csrf = _quota_form(client, team, member)
+    created = client.post(f"/admin/users/{member.id}/quota-grants", data={
+        "_csrf_token": csrf, "operation_id": "77777777-7777-4777-8777-777777777777", "resource": "tokens", "periods": "daily", "amount": "5", "expiry_preset": "none", "reason_code": "temporary_allowance", "reason": "active grant",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert created.status_code == 303
+    active_grant = db_session.scalar(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("77777777-7777-4777-8777-777777777777")))
+    assert active_grant is not None
+    revoke = client.post(f"/admin/users/{member.id}/quota-grants/{active_grant.id}/revoke", data={
+        "_csrf_token": _admin_csrf(client.get(created.headers["location"]).text), "revocation_operation_id": "88888888-8888-4888-8888-888888888888", "reason_code": "administrative_correction", "reason": "revoke active",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert revoke.status_code == 303
+    assert revoke.headers["location"].endswith("quota_notice=grant_revoked")
+    db_session.refresh(active_grant)
+    assert active_grant.revoked_at is not None
+
+    repeated = client.post(f"/admin/users/{member.id}/quota-grants/{active_grant.id}/revoke", data={
+        "_csrf_token": _admin_csrf(client.get(revoke.headers["location"]).text), "revocation_operation_id": "99999999-9999-4999-8999-999999999999", "reason_code": "administrative_correction", "reason": "revoke again",
+    }, headers={"Origin": "http://testserver"})
+    assert repeated.status_code == 409
+    assert "Quota revocation conflicts with existing request" in repeated.text
+
+    expired = UserQuotaPolicyEvent(
+        operation_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), target_user_id=member.id, actor_user_id=admin.id,
+        actor_user_id_snapshot=admin.id, event_type=UserQuotaPolicyEventType.grant, resource=QuotaResource.tokens,
+        period=QuotaPeriod.monthly, reason_code=UserQuotaReasonCode.temporary_allowance, reason="expired grant",
+        amount=1, effective_at=utcnow() - timedelta(days=2), expires_at=utcnow() - timedelta(days=1),
+    )
+    db_session.add(expired)
+    db_session.commit()
+    expired_response = client.post(f"/admin/users/{member.id}/quota-grants/{expired.id}/revoke", data={
+        "_csrf_token": _admin_csrf(client.get(_quota_panel_url(team, member)).text), "revocation_operation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "reason_code": "administrative_correction", "reason": "expired revoke",
+    }, headers={"Origin": "http://testserver"})
+    assert expired_response.status_code == 409
+    assert "Quota grant is not active" in expired_response.text
+
+
+def test_admin_quota_posts_require_system_admin_and_history_escapes_reason_after_actor_deletion(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Auth Team")
+    other_team = make_team(name="Quota Auth Other Team")
+    admin = make_user(email="quota-auth-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-auth-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other_member = make_user(email="quota-auth-other@example.com", password="password-1", team=other_team, team_role=TeamRole.user)
+    leader = make_user(email="quota-auth-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    _login_quota_admin(client, admin)
+    _, csrf = _quota_form(client, team, member)
+    reason = '<img src=x onerror="alert(1)">'
+    saved = client.post(f"/admin/users/{member.id}/quotas/limits", data={
+        "_csrf_token": csrf, "operation_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "daily_token_limit": "1", "monthly_token_limit": "2", "daily_audio_hours": "1", "monthly_audio_hours": "2", "reason_code": "policy_change", "reason": reason,
+        "return_team_id": str(other_team.id), "return_member_id": str(other_member.id),
+    }, params={"team_id": str(other_team.id), "member_id": str(other_member.id)}, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert saved.status_code == 303
+    assert f"team_id={team.id}" in saved.headers["location"]
+    assert str(other_team.id) not in saved.headers["location"]
+
+    for user in (member, leader):
+        client.post("/logout", follow_redirects=False)
+        assert client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False).status_code == 303
+        client.get("/home")
+        csrf = client.cookies.get("openscribe_csrf", "")
+        forbidden = client.post(f"/admin/users/{member.id}/quota-resets", data={
+            "_csrf_token": csrf, "operation_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "reset_all": "true", "reason_code": "administrative_correction", "reason": "forbidden",
+        }, headers={"Origin": "http://testserver"})
+        assert forbidden.status_code == 403
+
+    client.post("/logout", follow_redirects=False)
+    db_session.delete(admin)
+    db_session.commit()
+    replacement_admin = make_user(email="quota-auth-replacement@example.com", password="password-1", is_system_admin=True)
+    _login_quota_admin(client, replacement_admin)
+    history = client.get(_quota_panel_url(team, member))
+    assert history.status_code == 200
+    assert '&lt;img src=x onerror=&#34;alert(1)&#34;&gt;' in history.text
+    assert reason not in history.text
+    assert str(admin.id) in history.text
 
 
 def test_user_home_shows_team_stt_selection_when_configured(client, make_team, make_user, make_stt_config, make_stt_selection):
@@ -2826,10 +3076,8 @@ def test_user_home_can_queue_file_transcription_and_see_recent_transcript(client
     make_stt_selection(config=config, actor=leader)
     make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
-    class FakeTaskResult:
-        id = "celery-task-1"
-
-    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: (_ for _ in ()).throw(AssertionError("direct publish forbidden")))
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
     created = client.post(
@@ -2858,12 +3106,15 @@ def test_user_home_can_queue_file_transcription_and_see_recent_transcript(client
     assert transcript.ingestion_mode is TranscriptIngestionMode.whole_file
     job = db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript.id))
     assert job is not None
-    assert job.celery_task_id == "celery-task-1"
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id))
+    assert dispatch is not None and dispatch.state is TaskDispatchState.pending
+    assert job.celery_task_id == str(dispatch.task_id)
 
 
 def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
     client,
     db_session,
+    monkeypatch,
     make_team,
     make_user,
     make_stt_config,
@@ -2875,6 +3126,7 @@ def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
     leader = make_user(email="leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
     make_stt_selection(config=config, actor=leader)
     member = make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     transcript_one = Transcript(
         owner_user_id=member.id,
@@ -4380,11 +4632,9 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
     db_session.add(failed_job)
     db_session.commit()
     monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-file-audio")
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
-    class FakeTaskResult:
-        id = "retry-task-1"
-
-    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: (_ for _ in ()).throw(AssertionError("direct publish forbidden")))
 
     client.post("/login", data={"email": "member-retry@example.com", "password": "password-3"}, follow_redirects=False)
     page = client.get(f"/transcribe?transcript_id={failed.id}")
@@ -4416,7 +4666,9 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
     assert len(queued_jobs) >= 2
     latest_job = queued_jobs[0]
     assert latest_job.status is TranscriptIngestionJobStatus.queued
-    assert latest_job.celery_task_id == "retry-task-1"
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == latest_job.id))
+    assert dispatch is not None and dispatch.state is TaskDispatchState.pending
+    assert latest_job.celery_task_id == str(dispatch.task_id)
     assert latest_job.source_audio_blob is None
     assert latest_job.source_audio_vault_ref is not None
     assert latest_job.source_audio_size_bytes == len(b"raw-file-audio")
@@ -4606,10 +4858,8 @@ def test_user_transcribe_upload_targets_active_session_when_selected(client, db_
     make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
     make_stt_selection(config=config, actor=leader)
 
-    class FakeTaskResult:
-        id = "celery-task-2"
-
-    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: FakeTaskResult())
+    monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", lambda **kwargs: (_ for _ in ()).throw(AssertionError("direct publish forbidden")))
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
     created = client.post(
@@ -4633,7 +4883,9 @@ def test_user_transcribe_upload_targets_active_session_when_selected(client, db_
     assert str(transcripts[0].id) == transcript_id
     job = db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcripts[0].id))
     assert job is not None
-    assert job.celery_task_id == "celery-task-2"
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id))
+    assert dispatch is not None and dispatch.state is TaskDispatchState.pending
+    assert job.celery_task_id == str(dispatch.task_id)
 
 
 def test_user_transcribe_page_can_generate_note_output_from_template(

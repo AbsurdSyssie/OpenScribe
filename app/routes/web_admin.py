@@ -1,5 +1,7 @@
 """Admin browser routes extracted from app.main."""
 
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 from .. import main as main_module
@@ -21,6 +23,69 @@ from ..services.llm import (
 )
 from ..services.stt import update_stt_config_details as update_stt_config_details_service
 from ..web.presentation import default_template_return_tab as resolve_default_template_return_tab
+from ..models import QuotaPeriod, QuotaResource, User, UserQuotaReasonCode
+from ..services.admin_quotas import (
+    grant_user_quota_batch,
+    reset_user_quota_batch,
+    revoke_user_quota_grant,
+    update_user_base_quotas_batch,
+)
+
+
+def _quota_panel_target(db: Session, user_id: UUID) -> User | None:
+    """Navigation scope only; quota service remains mutation authority."""
+    target = db.get(User, user_id)
+    if target is None or target.is_system_admin or target.team_id is None or target.team_role is None:
+        return None
+    return target
+
+
+def _quota_panel_url(target: User, notice: str | None = None) -> str:
+    params = {"team_id": str(target.team_id), "team_tab": "members", "member_id": str(target.id)}
+    if notice:
+        params["quota_notice"] = notice
+    return f"/admin?{urlencode(params)}"
+
+
+def _quota_error_page(request: Request, db: Session, actor: User, user_id: UUID, exc: AppError, values: dict[str, object]):
+    target = _quota_panel_target(db, user_id)
+    if target is None:
+        return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+    return render_admin(
+        request, db, current_user=actor, selected_team_id=str(target.team_id), workspace_team_tab="members",
+        selected_quota_member_id=str(target.id), quota_form_values=values, message=exc.message,
+        message_kind="error", status_code=exc.status_code, active_admin_tab="home", admin_page_route="/admin",
+        admin_return_view="workspace",
+    )
+
+
+def _quota_audio_seconds(hours: str) -> int:
+    try:
+        return int((Decimal(hours) * Decimal(3600)).to_integral_value())
+    except (InvalidOperation, ValueError, OverflowError):
+        raise AppError(422, "quota_limit_invalid", "Audio hours must be a number")
+
+
+def _quota_expiry(preset: str, custom: str) -> datetime | None:
+    now = datetime.now(UTC)
+    if preset == "none":
+        return None
+    if preset == "24h":
+        return now + timedelta(hours=24)
+    if preset == "7d":
+        return now + timedelta(days=7)
+    if preset == "end_today":
+        return datetime(now.year, now.month, now.day, 23, 59, 59, 999999, tzinfo=UTC)
+    if preset == "end_month":
+        next_month = datetime(now.year + (now.month == 12), 1 if now.month == 12 else now.month + 1, 1, tzinfo=UTC)
+        return next_month - timedelta(microseconds=1)
+    if preset == "custom":
+        try:
+            parsed = datetime.fromisoformat(custom.replace("Z", "+00:00"))
+        except ValueError:
+            raise AppError(422, "quota_expiry_invalid", "Custom expiry must be a valid UTC date and time")
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    raise AppError(422, "quota_expiry_invalid", "Quota expiry preset is invalid")
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -34,6 +99,8 @@ def admin_page(
     default_quick_action_id: str | None = None,
     tab: str | None = None,
     team_tab: str | None = None,
+    member_id: str | None = None,
+    quota_notice: str | None = None,
     range: str | None = None,
     audit_since: str | None = None,
     audit_action: str | None = None,
@@ -58,6 +125,11 @@ def admin_page(
         resolved_team_tab = "provider-policy"
     else:
         resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
+    # Member URL state is only meaningful in an explicit selected Members scope.
+    # render_admin repeats membership eligibility before it reads quota data.
+    if not (team_id and resolved_team_tab == "members" and member_id):
+        member_id = None
+    safe_notice = quota_notice if quota_notice in {"limits_updated", "grant_created", "usage_reset", "grant_revoked"} else None
     functional_tabs = {
         "providers",
         "directory",
@@ -85,7 +157,115 @@ def admin_page(
         admin_return_view="workspace",
         template_name="admin_mockup.html",
         workspace_team_tab=resolved_team_tab,
+        selected_quota_member_id=member_id,
+        message={
+            "limits_updated": "Quota limits updated.", "grant_created": "Quota allowance added.",
+            "usage_reset": "Quota usage reset.", "grant_revoked": "Quota allowance revoked.",
+        }.get(safe_notice),
     )
+
+
+@app.post("/admin/users/{user_id}/quotas/limits", response_class=HTMLResponse)
+def admin_update_user_quota_limits(
+    request: Request, user_id: UUID, daily_token_limit: str = Form(""), monthly_token_limit: str = Form(""),
+    daily_audio_hours: str = Form(""), monthly_audio_hours: str = Form(""),
+    daily_token_unlimited: str | None = Form(None), monthly_token_unlimited: str | None = Form(None),
+    daily_audio_unlimited: str | None = Form(None), monthly_audio_unlimited: str | None = Form(None),
+    reason_code: str = Form(""), reason: str = Form(""), operation_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    values = dict(request.query_params)
+    values.update({"daily_token_limit": daily_token_limit, "monthly_token_limit": monthly_token_limit, "daily_audio_hours": daily_audio_hours, "monthly_audio_hours": monthly_audio_hours, "reason_code": reason_code, "reason": reason})
+    try:
+        result = update_user_base_quotas_batch(
+            db, actor=context.user, user_id=user_id,
+            daily_token_limit=None if daily_token_unlimited else int(daily_token_limit),
+            monthly_token_limit=None if monthly_token_unlimited else int(monthly_token_limit),
+            daily_audio_seconds_limit=None if daily_audio_unlimited else _quota_audio_seconds(daily_audio_hours),
+            monthly_audio_seconds_limit=None if monthly_audio_unlimited else _quota_audio_seconds(monthly_audio_hours),
+            operation_id=UUID(operation_id), reason_code=UserQuotaReasonCode(reason_code), reason=reason,
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "quota_limit_invalid", "Quota limits are invalid")
+        return _quota_error_page(request, db, context.user, user_id, error, values)
+    target = _quota_panel_target(db, result.user_id)
+    return RedirectResponse(_quota_panel_url(target, "limits_updated"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/quota-grants", response_class=HTMLResponse)
+def admin_grant_user_quota(
+    request: Request, user_id: UUID, resource: str = Form(""), periods: list[str] = Form([]), amount: str = Form(""),
+    audio_hours: str = Form(""), expiry_preset: str = Form("none"), expires_at: str = Form(""),
+    reason_code: str = Form(""), reason: str = Form(""), operation_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None: return response
+    if not context.user.is_system_admin: return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    values = {"resource": resource, "periods": periods, "amount": amount, "audio_hours": audio_hours, "expiry_preset": expiry_preset, "expires_at": expires_at, "reason_code": reason_code, "reason": reason}
+    try:
+        selected_resource = QuotaResource(resource)
+        grant_amount = int(amount) if selected_resource is QuotaResource.tokens else _quota_audio_seconds(audio_hours)
+        result = grant_user_quota_batch(
+            db, actor=context.user, user_id=user_id, resource=selected_resource,
+            periods=tuple(QuotaPeriod(period) for period in periods), amount=grant_amount,
+            expires_at=_quota_expiry(expiry_preset, expires_at), operation_id=UUID(operation_id),
+            reason_code=UserQuotaReasonCode(reason_code), reason=reason,
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "quota_grant_invalid", "Quota grant is invalid")
+        return _quota_error_page(request, db, context.user, user_id, error, values)
+    target = _quota_panel_target(db, result.user_id)
+    return RedirectResponse(_quota_panel_url(target, "grant_created"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/quota-resets", response_class=HTMLResponse)
+def admin_reset_user_quota(
+    request: Request, user_id: UUID, windows: list[str] = Form([]), reason_code: str = Form(""), reason: str = Form(""),
+    operation_id: str = Form(""), reset_all: str | None = Form(None),
+    csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None: return response
+    if not context.user.is_system_admin: return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    values = {"reason_code": reason_code, "reason": reason}
+    try:
+        selected = (
+            tuple((resource, period) for resource in QuotaResource for period in QuotaPeriod)
+            if reset_all
+            else tuple((QuotaResource(value.split(":", 1)[0]), QuotaPeriod(value.split(":", 1)[1])) for value in windows)
+        )
+        result = reset_user_quota_batch(db, actor=context.user, user_id=user_id, windows=selected,
+            operation_id=UUID(operation_id), reason_code=UserQuotaReasonCode(reason_code), reason=reason)
+    except (ValueError, IndexError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "quota_windows_invalid", "Choose one or more quota windows")
+        return _quota_error_page(request, db, context.user, user_id, error, values)
+    target = _quota_panel_target(db, result.user_id)
+    return RedirectResponse(_quota_panel_url(target, "usage_reset"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/users/{user_id}/quota-grants/{grant_id}/revoke", response_class=HTMLResponse)
+def admin_revoke_user_quota_grant(
+    request: Request, user_id: UUID, grant_id: UUID, reason_code: str = Form(""), reason: str = Form(""),
+    revocation_operation_id: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None: return response
+    if not context.user.is_system_admin: return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    values = {"reason_code": reason_code, "reason": reason}
+    try:
+        result = revoke_user_quota_grant(db, actor=context.user, user_id=user_id, grant_id=grant_id,
+            revocation_operation_id=UUID(revocation_operation_id), reason_code=UserQuotaReasonCode(reason_code), reason=reason)
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "quota_grant_invalid", "Quota grant revocation is invalid")
+        return _quota_error_page(request, db, context.user, user_id, error, values)
+    target = _quota_panel_target(db, result.user_id)
+    return RedirectResponse(_quota_panel_url(target, "grant_revoked"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/legacy-admin", response_class=HTMLResponse)

@@ -299,12 +299,15 @@ System admin can change:
 - suspend user
 - reactivate suspended/disabled user
 - delete user permanently
+- open quota management for an eligible normal team member
+- set four base quota limits, add/revoke allowance, and reset one or all quota windows
 
 How:
 - enter identity and temporary password
 - set role/team/status/admin/MFA fields
 - save creation
 - use account actions for suspend/reactivate/delete
+- select **Manage quotas** from a member's Actions menu; this opens the canonical Members detail panel at `/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`
 
 Access:
 - system admin only
@@ -312,6 +315,11 @@ Access:
 Notes:
 - deleting a user also deletes owned transcript-derived content
 - current user cannot delete self from this page
+- quota management is system-admin-only. It excludes system-admin accounts, the acting admin, and users without normal team membership.
+- quota panel shows four UTC windows: daily/monthly Tokens and daily/monthly Audio. Each shows Used, Reserved, Base, Temporary, Effective, Remaining, and reset time. `NULL` base/effective/remaining is labelled **Unlimited**; zero base/effective is **Disabled**.
+- base-limit, allowance, reset, and active-grant revocation forms require a controlled reason code and non-empty free reason. Free reasons must not contain patient or clinical data.
+- every mutation has a UUID operation id for idempotent browser retry, CSRF protection, and POST/303/GET return to same member panel. No JSON quota-management API exists.
+- quota ledger preserves actor/revoker UUID snapshots if an actor is deleted. Security audit records reason code and safe operation metadata only; it excludes free reason text.
 
 ### Account requests
 
@@ -371,6 +379,7 @@ Access:
 Notes:
 - this area is explicitly metadata-only observability
 - it should not be redesigned into content browsing
+- usage reporting and quota policy are separate: reporting telemetry remains historical/observational, while quota windows use authoritative provider-attempt reservations and settlements. Resetting quota does not delete or alter reporting telemetry; accepted pending work remains counted.
 
 ## Capability Summary
 

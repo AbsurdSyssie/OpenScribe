@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import Request
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,12 @@ from app.models import (
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
+    ProviderAttempt,
+    QuotaResource,
+    TaskDispatchKind,
     TeamLlmConfig,
     TeamHallucinationCheckSelection,
     TeamRole,
@@ -78,6 +84,21 @@ from app.services.transcripts import (
     transcript_version_text,
 )
 from app.services.vault import read_team_llm_bearer_token
+from app.services.quotas import (
+    cancel_provider_attempt,
+    estimate_token_reservation,
+    increase_provider_attempt_reservation,
+    mark_provider_attempt_submitted,
+    reserve_provider_attempt,
+    settle_provider_attempt_tokens,
+    settle_provider_attempt_unknown_tokens,
+)
+from app.services.task_outbox import add_pending_task_dispatch
+from app.services.provider_errors import safe_provider_error_code
+from app.services.quota_lifecycle import (
+    delete_dispatches_for_sources,
+    terminalize_attempts_for_generated_document,
+)
 
 
 usage_logger = logging.getLogger("openscribe.usage")
@@ -94,6 +115,10 @@ GENERATION_WAIT_FOR_TRANSCRIPT_RETRY_SECONDS = 2
 GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS = int(
     os.getenv("GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS", "120")
 )
+# Must cover transcript wait, normal outbox retry delay, and worker pickup.
+GENERATION_RESERVATION_VALIDITY_SECONDS = GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS + 600
+GENERATION_PROVIDER_DEADLINE_SECONDS = 900
+HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS = 900
 NOTE_GENERATION_LENGTH_TOKEN_CAPS = {
     "short": 800,
     "normal": 1600,
@@ -1010,6 +1035,8 @@ def delete_generated_document(db: Session, actor: User, *, generated_document_id
         raise AppError(403, "forbidden", "Generated document access is restricted to the owning user")
     get_active_owner_transcript(db, actor, transcript_id=document.transcript_id)
     transcript_id = document.transcript_id
+    terminalize_attempts_for_generated_document(db, document.id, utcnow())
+    delete_dispatches_for_sources(db, generated_document_ids=(document.id,))
     for event in document.provider_usage_events:
         event.generated_document_id = None
         db.add(event)
@@ -1268,17 +1295,15 @@ def _document_has_empty_allowed_source(db: Session, *, document: GeneratedDocume
 
 
 def _mark_generated_document_failed_before_llm(db: Session, *, document: GeneratedDocument, code: str, message: str) -> GeneratedDocument:
-    document.status = GeneratedDocumentStatus.failed
-    document.completed_at = utcnow()
-    document.error_code = code
-    document.error_message = message
-    document.provider_error_code = None
-    document.provider_http_status = None
-    db.add(document)
-    db.commit()
-    db.refresh(document)
-    _record_generation_usage_event(db, event="llm_generation_failed", document=document, status=document.status.value)
-    return document
+    terminal = _terminalize_generation_after_unhandled_error(
+        db,
+        document_id=document.id,
+        exc=AppError(422, code, message),
+    )
+    if terminal is None:  # pragma: no cover - caller already holds document
+        raise AppError(404, "not_found", "Generated document not found")
+    _record_generation_usage_event(db, event="llm_generation_failed", document=terminal, status=terminal.status.value)
+    return terminal
 
 
 def _refresh_document_transcript_snapshot_when_ready(db: Session, *, document: GeneratedDocument) -> GeneratedDocument | None:
@@ -1479,7 +1504,7 @@ def _openai_error_details(exc: APIStatusError) -> tuple[int | None, str | None]:
         if isinstance(error, dict):
             code = error.get("code")
             if isinstance(code, str) and code.strip():
-                provider_error_code = code.strip()
+                provider_error_code = safe_provider_error_code(code, status_code=status_code)
     return status_code, provider_error_code
 
 
@@ -1537,7 +1562,13 @@ def _translate_ollama_generation_error(exc: Exception) -> AppError:
         if isinstance(payload, dict):
             error_value = payload.get("error")
             if isinstance(error_value, str) and error_value.strip():
-                provider_error_code = error_value.strip()[:255]
+                normalized_error = error_value.strip().lower()
+                provider_error_code = safe_provider_error_code(
+                    "model_not_found"
+                    if status_code == 404 and "model" in normalized_error and "not found" in normalized_error
+                    else error_value,
+                    status_code=status_code,
+                )
         return AppError(
             502,
             "llm_generation_failed",
@@ -1827,7 +1858,8 @@ def _generate_freeform_output_openai(
 ) -> tuple[str, GenerationUsage]:
     started = time.perf_counter()
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        # One durable ProviderAttempt must map to exactly one outbound request.
+        client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
         completion = client.chat.completions.create(**request_body)
     except Exception as exc:  # pragma: no cover - exercised via service error behavior, not live provider calls
         raise _translate_openai_generation_error(exc) from exc
@@ -2365,6 +2397,53 @@ def _record_hallucination_check_usage_event(
     db.add(usage_event)
 
 
+def _set_checker_attempt_error(
+    attempt: ProviderAttempt,
+    *,
+    error_code: str | None = None,
+    provider_error_code: str | None = None,
+    provider_http_status: int | None = None,
+) -> None:
+    """Keep provider-attempt metadata safe: codes only, never checker content."""
+    attempt.error_code = error_code
+    attempt.provider_error_code = provider_error_code
+    attempt.provider_http_status = provider_http_status
+
+
+def _settle_hallucination_check_attempt(
+    db: Session,
+    *,
+    attempt: ProviderAttempt,
+    usage: GenerationUsage | None,
+    outcome: AttemptOutcome,
+    error_code: str | None = None,
+    provider_error_code: str | None = None,
+    provider_http_status: int | None = None,
+) -> ProviderAttempt:
+    reported_total = usage.get("total_tokens") if usage is not None else None
+    if isinstance(reported_total, int):
+        settled = settle_provider_attempt_tokens(
+            db,
+            attempt_id=attempt.id,
+            reported_total_tokens=reported_total,
+            outcome=outcome,
+            reported_input_tokens=usage.get("input_tokens"),
+            reported_output_tokens=usage.get("output_tokens"),
+        )
+        if settled.settled_units > settled.reserved_units:
+            error_code = "quota_estimate_underflow"
+    else:
+        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+    _set_checker_attempt_error(
+        settled,
+        error_code=error_code,
+        provider_error_code=provider_error_code,
+        provider_http_status=provider_http_status,
+    )
+    db.add(settled)
+    return settled
+
+
 def _run_hallucination_check(
     db: Session,
     *,
@@ -2430,8 +2509,10 @@ def _run_hallucination_check(
             error_code=exc.code,
         )
         return title, sections, HallucinationCheckStatus.failed_provider, None
+    document.hallucination_check_llm_config_id = config.id
+    document.hallucination_check_model_name = model_name
+    document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
     failure_code: str | None = None
-    usage_events: list[tuple[GenerationUsage | None, str, ProviderUsageEventType, str | None]] = []
     for attempt in range(2):
         system_message, user_message = _build_hallucination_check_messages(
             transcript_text=transcript_text,
@@ -2451,6 +2532,90 @@ def _run_hallucination_check(
             output_token_cap=output_token_cap,
         )
         _apply_hallucination_check_request_overrides(request_body, model_name=model_name)
+        max_completion_tokens = request_body.get("max_completion_tokens")
+        if not isinstance(max_completion_tokens, int) or max_completion_tokens <= 0:
+            # This is deterministic local configuration failure, before any
+            # provider dispatch or billable checker attempt.
+            if debug_payload is not None:
+                debug_payload["failure_code"] = "hallucination_check_invalid_config"
+                set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=None,
+                status="failed_provider", event_type=ProviderUsageEventType.failed,
+                error_code="hallucination_check_invalid_config",
+            )
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        if config.adapter_kind not in {
+            LlmAdapterKind.openai_chat,
+            LlmAdapterKind.bedrock_chat,
+            LlmAdapterKind.ollama_chat,
+        }:
+            # Adapter validation is local and deterministic. Do not reserve a
+            # checker call that cannot be submitted.
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=None,
+                status="failed_provider", event_type=ProviderUsageEventType.failed,
+                error_code="hallucination_check_invalid_config",
+            )
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        now = utcnow()
+        reserved_units = estimate_token_reservation(
+            (system_message, user_message), max_completion_tokens=max_completion_tokens
+        )
+        try:
+            checker_attempt = reserve_provider_attempt(
+                db,
+                team_id=document.team_id,
+                owner_user_id=document.owner_user_id,
+                resource=QuotaResource.tokens,
+                attempt_kind=AttemptKind.llm_hallucination_check,
+                correlation_id=document.id,
+                attempt_number=attempt + 2,
+                reserved_units=reserved_units,
+                authorized_at=now,
+                reservation_valid_until=now + timedelta(seconds=HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS),
+                transcript_id=document.transcript_id,
+                generated_document_id=document.id,
+                provider_adapter=config.adapter_kind.value,
+                provider_model=model_name,
+            )
+        except AppError as exc:
+            if exc.code not in {"quota_disabled", "quota_exceeded"}:
+                raise
+            # Reservation took a row lock before rejecting quota. Roll it back
+            # before final document persistence, without dispatching checker.
+            db.rollback()
+            document.hallucination_check_llm_config_id = config.id
+            document.hallucination_check_model_name = model_name
+            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+            if debug_payload is not None:
+                debug_payload["retry_count"] = attempt
+                debug_payload["failure_code"] = exc.code
+                debug_payload["failure_message"] = exc.message
+                set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            return title, sections, HallucinationCheckStatus.skipped_quota, None
+        try:
+            mark_provider_attempt_submitted(
+                db,
+                attempt_id=checker_attempt.id,
+                deadline_at=now + timedelta(seconds=HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS),
+                now=now,
+            )
+            # Provider can receive request only after durable submitted state.
+            db.commit()
+        except Exception:
+            db.rollback()
+            # Reservation exists only when mark/commit failed after it. Cancel
+            # definite local pre-submit work; a submitted row is conservatively
+            # closed as unknown because dispatch state is ambiguous.
+            persisted = db.get(ProviderAttempt, checker_attempt.id)
+            if persisted is not None:
+                if persisted.status is AttemptStatus.reserved:
+                    cancel_provider_attempt(db, attempt_id=persisted.id)
+                elif persisted.status is AttemptStatus.submitted:
+                    settle_provider_attempt_unknown_tokens(db, attempt_id=persisted.id)
+                db.commit()
+            raise
         try:
             if config.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
                 response_text, checker_usage = _generate_freeform_output_openai(api_key=bearer_token or "", base_url=config.base_url, request_body=request_body)
@@ -2459,7 +2624,19 @@ def _run_hallucination_check(
             else:  # pragma: no cover
                 raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": config.adapter_kind.value})
         except AppError as exc:
-            usage_events.append((None, "failed_provider", ProviderUsageEventType.failed, exc.code))
+            settled = _settle_hallucination_check_attempt(
+                db,
+                attempt=checker_attempt,
+                usage=None,
+                outcome=AttemptOutcome.unknown,
+                error_code=exc.code,
+                provider_error_code=(exc.details or {}).get("provider_error_code"),
+                provider_http_status=(exc.details or {}).get("provider_http_status"),
+            )
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=None,
+                status="failed_provider", event_type=ProviderUsageEventType.failed, error_code=exc.code,
+            )
             if debug_payload is not None:
                 debug_payload["retry_count"] = attempt
                 debug_payload["failure_code"] = exc.code
@@ -2467,52 +2644,67 @@ def _run_hallucination_check(
                 debug_payload["provider_error_code"] = (exc.details or {}).get("provider_error_code")
                 debug_payload["provider_http_status"] = (exc.details or {}).get("provider_http_status")
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
-            document.hallucination_check_llm_config_id = config.id
-            document.hallucination_check_model_name = model_name
-            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
-            for usage, status, event_type, error_code in usage_events:
-                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+            db.commit()
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        except Exception:
+            _settle_hallucination_check_attempt(
+                db, attempt=checker_attempt, usage=None, outcome=AttemptOutcome.unknown,
+                error_code="hallucination_check_failed",
+            )
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=None,
+                status="failed_provider", event_type=ProviderUsageEventType.failed,
+                error_code="hallucination_check_failed",
+            )
+            db.commit()
             return title, sections, HallucinationCheckStatus.failed_provider, None
         try:
             parsed = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
             edits = parsed["edits"]
             if parsed["status"] == "unchanged":
-                usage_events.append((checker_usage, "checked_unchanged", ProviderUsageEventType.completed, None))
+                _settle_hallucination_check_attempt(
+                    db, attempt=checker_attempt, usage=checker_usage, outcome=AttemptOutcome.succeeded,
+                )
+                _record_hallucination_check_usage_event(
+                    db, document=document, config=config, model_name=model_name, usage=checker_usage,
+                    status="checked_unchanged", event_type=ProviderUsageEventType.completed,
+                )
                 if debug_payload is not None:
                     debug_payload["retry_count"] = attempt
                     set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
-                document.hallucination_check_llm_config_id = config.id
-                document.hallucination_check_model_name = model_name
-                document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
-                for usage, status, event_type, error_code in usage_events:
-                    _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+                db.commit()
                 return title, sections, HallucinationCheckStatus.checked_unchanged, 0
             next_title, next_sections, applied_count = _apply_hallucination_check_edits(title=title, sections=sections, edits=edits)  # type: ignore[arg-type]
-            usage_events.append((checker_usage, "checked_corrected", ProviderUsageEventType.completed, None))
+            _settle_hallucination_check_attempt(
+                db, attempt=checker_attempt, usage=checker_usage, outcome=AttemptOutcome.succeeded,
+            )
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=checker_usage,
+                status="checked_corrected", event_type=ProviderUsageEventType.completed,
+            )
             if debug_payload is not None:
                 debug_payload["checker_edits"] = edits
                 debug_payload["retry_count"] = attempt
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
-            document.hallucination_check_llm_config_id = config.id
-            document.hallucination_check_model_name = model_name
-            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
-            for usage, status, event_type, error_code in usage_events:
-                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
+            db.commit()
             return next_title, next_sections, HallucinationCheckStatus.checked_corrected, applied_count
         except AppError as exc:
             failure_code = str((exc.details or {}).get("failure_code") or exc.code)
-            usage_events.append((checker_usage, "failed_invalid_response", ProviderUsageEventType.failed, failure_code))
+            _settle_hallucination_check_attempt(
+                db, attempt=checker_attempt, usage=checker_usage, outcome=AttemptOutcome.failed,
+                error_code=failure_code,
+            )
+            _record_hallucination_check_usage_event(
+                db, document=document, config=config, model_name=model_name, usage=checker_usage,
+                status="failed_invalid_response", event_type=ProviderUsageEventType.failed, error_code=failure_code,
+            )
+            db.commit()
             if attempt == 0:
                 continue
             if debug_payload is not None:
                 debug_payload["retry_count"] = attempt
                 debug_payload["failure_code"] = failure_code
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
-            document.hallucination_check_llm_config_id = config.id
-            document.hallucination_check_model_name = model_name
-            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
-            for usage, status, event_type, error_code in usage_events:
-                _record_hallucination_check_usage_event(db, document=document, config=config, model_name=model_name, usage=usage, status=status, event_type=event_type, error_code=error_code)
             return title, sections, HallucinationCheckStatus.failed_invalid_response, None
     return title, sections, HallucinationCheckStatus.failed_invalid_response, None
 
@@ -2751,6 +2943,91 @@ def _render_structured_sections_text(sections: list[dict[str, str | int]]) -> st
     return "\n\n".join(rendered_parts).strip()
 
 
+def _initial_generation_reservation_strings(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    transcript: Transcript,
+) -> list[str]:
+    """Return transient queue-time source/prompt strings for quota estimation.
+
+    These values are already part of the document/transcript snapshots.  They
+    are intentionally neither logged nor persisted by quota accounting.
+    """
+    transcript_version = db.get(TranscriptVersion, document.transcript_version_id)
+    source_text = transcript_version_text(db, transcript_version=transcript_version) if transcript_version is not None else ""
+    strings = [source_text, _prompt_snapshot_text_for_document(db, document=document)]
+    strings.append(generated_document_text(db, document=document, field="follow_up_prompt_text"))
+    strings.append(generated_document_text(db, document=document, field="freeform_working_note_snapshot_encrypted"))
+    structured_note = generated_document_structured_working_note_snapshot(db, document=document)
+    if structured_note:
+        strings.append(json.dumps(structured_note, ensure_ascii=True, sort_keys=True))
+    structured_context = generated_document_structured_context(db, document=document)
+    if structured_context:
+        strings.append(json.dumps(structured_context, ensure_ascii=True, sort_keys=True))
+    strings.append(_effective_dictation_text(db, transcript=transcript))
+    return strings
+
+
+def _queue_generated_document_with_quota(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    transcript: Transcript,
+    config: TeamLlmConfig,
+) -> GeneratedDocument:
+    """Commit document, reservation, and metadata-only dispatch intent together."""
+    output_cap = (
+        _note_generation_output_token_cap(_note_generation_options_from_document(db, document=document))
+        if document.generator_type is GeneratedDocumentGeneratorType.template
+        else 1600
+    )
+    reserved_units = estimate_token_reservation(
+        _initial_generation_reservation_strings(db, document=document, transcript=transcript),
+        max_completion_tokens=output_cap,
+    )
+    now = utcnow()
+    try:
+        db.add(document)
+        db.flush()
+        reserve_provider_attempt(
+            db,
+            team_id=document.team_id,
+            owner_user_id=document.owner_user_id,
+            resource=QuotaResource.tokens,
+            attempt_kind=AttemptKind.llm_generation,
+            correlation_id=document.id,
+            attempt_number=1,
+            reserved_units=reserved_units,
+            reservation_valid_until=now + timedelta(seconds=GENERATION_RESERVATION_VALIDITY_SECONDS),
+            authorized_at=now,
+            transcript_id=document.transcript_id,
+            generated_document_id=document.id,
+            provider_adapter=config.adapter_kind.value,
+            provider_model=document.model_used,
+        )
+        dispatch = add_pending_task_dispatch(db, dispatch_kind=TaskDispatchKind.generation, source_id=document.id)
+        document.celery_task_id = str(dispatch.task_id)
+        db.add(document)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(document)
+    return document
+
+
+def _main_generation_attempt(db: Session, *, document_id: UUID, lock: bool = False) -> ProviderAttempt | None:
+    statement = select(ProviderAttempt).where(
+        ProviderAttempt.correlation_id == document_id,
+        ProviderAttempt.attempt_number == 1,
+        ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
 def queue_document_generation_from_template(
     db: Session,
     actor: User,
@@ -2828,9 +3105,12 @@ def queue_document_generation_from_template(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    db.add(generated_document)
-    db.commit()
-    db.refresh(generated_document)
+    generated_document = _queue_generated_document_with_quota(
+        db,
+        document=generated_document,
+        transcript=transcript,
+        config=config,
+    )
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
     record_security_event(
         db,
@@ -2928,9 +3208,12 @@ def queue_followup_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    db.add(generated_document)
-    db.commit()
-    db.refresh(generated_document)
+    generated_document = _queue_generated_document_with_quota(
+        db,
+        document=generated_document,
+        transcript=transcript,
+        config=config,
+    )
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
     record_security_event(
         db,
@@ -3030,9 +3313,12 @@ def queue_quick_action_generation(
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
-    db.add(generated_document)
-    db.commit()
-    db.refresh(generated_document)
+    generated_document = _queue_generated_document_with_quota(
+        db,
+        document=generated_document,
+        transcript=transcript,
+        config=config,
+    )
     _record_generation_usage_event(db, event="llm_generation_queued", document=generated_document, config=config)
     record_security_event(
         db,
@@ -3148,7 +3434,186 @@ def _redacted_working_note_text_for_document(
     return ""
 
 
+def _claim_generated_document_for_dispatch(
+    db: Session,
+    *,
+    document_id: UUID,
+    llm_request_payload: dict[str, object],
+    system_message: str,
+    user_message: str,
+    output_token_cap: int | None,
+) -> GeneratedDocument | None:
+    """Atomically claim queued main generation after reversible preparation."""
+    # Match root-deletion lock order.  Read identity first only to discover
+    # parents; all state decisions happen after ordered locks are held.
+    identity = db.get(GeneratedDocument, document_id)
+    if identity is None:
+        db.rollback()
+        return None
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    if owner is None:
+        db.rollback()
+        return None
+    transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
+    if transcript is None:
+        db.rollback()
+        return None
+    document = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == document_id).with_for_update())
+    if document is None or document.status is not GeneratedDocumentStatus.queued:
+        db.rollback()
+        return None
+    if document.owner_user_id != owner.id or document.transcript_id != transcript.id:
+        db.rollback()
+        return None
+    cap = output_token_cap or NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH]
+    required_units = estimate_token_reservation((system_message, user_message), max_completion_tokens=cap)
+    try:
+        # This helper re-locks owner then locks attempt, preserving User ->
+        # Transcript -> Document -> ProviderAttempt order.
+        attempt_identity = _main_generation_attempt(db, document_id=document_id)
+        if attempt_identity is None or attempt_identity.status is not AttemptStatus.reserved:
+            db.rollback()
+            return None
+        attempt = increase_provider_attempt_reservation(db, attempt_id=attempt_identity.id, required_units=required_units)
+    except Exception:
+        db.rollback()
+        raise
+    now = utcnow()
+    set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
+    document.status = GeneratedDocumentStatus.processing
+    document.started_at = document.started_at or now
+    document.completed_at = None
+    document.error_code = None
+    document.provider_error_code = None
+    document.provider_http_status = None
+    document.error_message = None
+    document.input_token_count = None
+    document.output_token_count = None
+    document.total_token_count = None
+    document.estimated_cost_usd = None
+    document.duration_ms = None
+    document.provider_duration_ms = None
+    mark_provider_attempt_submitted(
+        db,
+        attempt_id=attempt.id,
+        deadline_at=now + timedelta(seconds=GENERATION_PROVIDER_DEADLINE_SECONDS),
+        now=now,
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return document
+
+
+def _settle_main_generation_terminal(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    usage: GenerationUsage | None,
+    success: bool,
+) -> None:
+    """Settle authoritative usage with terminal document state in one commit."""
+    attempt = _main_generation_attempt(db, document_id=document.id, lock=True)
+    if attempt is None:
+        raise AppError(500, "llm_generation_attempt_missing", "Generation accounting state is missing")
+    if attempt.status is not AttemptStatus.submitted:
+        raise AppError(500, "llm_generation_attempt_conflict", "Generation accounting state conflicts")
+    reported_total = usage.get("total_tokens") if usage is not None else None
+    if reported_total is None:
+        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        return
+    settled = settle_provider_attempt_tokens(
+        db,
+        attempt_id=attempt.id,
+        reported_total_tokens=reported_total,
+        outcome=AttemptOutcome.succeeded if success else AttemptOutcome.failed,
+        reported_input_tokens=usage.get("input_tokens"),
+        reported_output_tokens=usage.get("output_tokens"),
+    )
+    if settled.settled_units > settled.reserved_units:
+        # Operational metadata only: success remains success and no content is stored.
+        settled.error_code = "quota_estimate_underflow"
+        db.add(settled)
+
+
+def _terminalize_generation_after_unhandled_error(
+    db: Session,
+    *,
+    document_id: UUID,
+    exc: Exception,
+) -> GeneratedDocument | None:
+    """Close queued/submitted main work after a local unhandled error.
+
+    This path deliberately does no provider work.  It is also used after an
+    unexpected post-claim exception, where conservative settlement prevents a
+    terminal document from orphaning a submitted reservation.
+    """
+    db.rollback()
+    identity = db.get(GeneratedDocument, document_id)
+    if identity is None:
+        return None
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
+    document = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == document_id).with_for_update())
+    if owner is None or transcript is None or document is None:
+        db.rollback()
+        return None
+    if document.status in {GeneratedDocumentStatus.ready, GeneratedDocumentStatus.failed}:
+        db.commit()
+        return document
+    attempt = _main_generation_attempt(db, document_id=document.id, lock=True)
+    if attempt is None:
+        # Explicit legacy-row handling: it is failed before any new dispatch.
+        document.status = GeneratedDocumentStatus.failed
+        document.error_code = "llm_generation_attempt_missing"
+        document.error_message = "Generation accounting state is missing"
+        document.completed_at = utcnow()
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+        return document
+    if attempt.status is AttemptStatus.reserved:
+        cancel_provider_attempt(db, attempt_id=attempt.id)
+        failure_code = exc.code if isinstance(exc, AppError) else "llm_generation_preparation_failed"
+    elif attempt.status is AttemptStatus.submitted:
+        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        failure_code = exc.code if isinstance(exc, AppError) else "llm_generation_failed"
+    else:
+        db.rollback()
+        raise AppError(500, "llm_generation_attempt_conflict", "Generation accounting state conflicts")
+    document.status = GeneratedDocumentStatus.failed
+    document.error_code = failure_code
+    document.error_message = (exc.message if isinstance(exc, AppError) else "LLM generation failed")[:255]
+    document.completed_at = utcnow()
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return document
+
+
 def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDocument:
+    """Public worker boundary: never retry a non-waiting generation failure."""
+    try:
+        return _process_generated_document_impl(db, document_id=document_id)
+    except GeneratedDocumentWaitingForTranscript:
+        raise
+    except Exception as exc:
+        db.rollback()
+        attempt_before_terminal = _main_generation_attempt(db, document_id=document_id)
+        preclaim = attempt_before_terminal is not None and attempt_before_terminal.status is AttemptStatus.reserved
+        terminal = _terminalize_generation_after_unhandled_error(db, document_id=document_id, exc=exc)
+        # Preserve established synchronous preparation errors for direct callers;
+        # task execution does not retry these errors and state is already closed.
+        if preclaim and isinstance(exc, AppError):
+            raise exc
+        if terminal is not None:
+            return terminal
+        if isinstance(exc, AppError):
+            raise
+        raise AppError(500, "llm_generation_failed", "LLM generation failed") from exc
+
+
+def _process_generated_document_impl(db: Session, *, document_id: UUID) -> GeneratedDocument:
     document = db.get(GeneratedDocument, document_id)
     if document is None:
         raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(document_id)})
@@ -3345,24 +3810,28 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         user_message=user_message,
         output_token_cap=output_token_cap,
     )
-    set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
-
-    document.status = GeneratedDocumentStatus.processing
-    document.started_at = document.started_at or utcnow()
-    document.completed_at = None
-    document.error_code = None
-    document.provider_error_code = None
-    document.provider_http_status = None
-    document.error_message = None
-    document.input_token_count = None
-    document.output_token_count = None
-    document.total_token_count = None
-    document.estimated_cost_usd = None
-    document.duration_ms = None
-    document.provider_duration_ms = None
-    db.add(document)
-    db.commit()
-    db.refresh(document)
+    try:
+        claimed_document = _claim_generated_document_for_dispatch(
+            db,
+            document_id=document.id,
+            llm_request_payload=llm_request_payload,
+            system_message=system_message,
+            user_message=user_message,
+            output_token_cap=output_token_cap,
+        )
+    except AppError as exc:
+        # Exact reservation expansion is still pre-dispatch.  Fail/cancel as a
+        # single terminal transition rather than leaving stranded queued work.
+        fresh_document = db.get(GeneratedDocument, document.id)
+        if fresh_document is not None and fresh_document.status is GeneratedDocumentStatus.queued:
+            return _mark_generated_document_failed_before_llm(db, document=fresh_document, code=exc.code, message=exc.message)
+        raise
+    if claimed_document is None:
+        current = db.get(GeneratedDocument, document.id)
+        if current is None:
+            raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(document.id)})
+        return current
+    document = claimed_document
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
 
     try:
@@ -3394,6 +3863,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         document.provider_http_status = (exc.details or {}).get("provider_http_status")
         document.completed_at = utcnow()
         db.add(document)
+        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
         db.commit()
         db.refresh(document)
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
@@ -3404,6 +3874,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         document.error_message = "LLM generation failed"
         document.completed_at = utcnow()
         db.add(document)
+        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
         db.commit()
         db.refresh(document)
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
@@ -3476,6 +3947,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         )
         document.completed_at = utcnow()
         db.add(document)
+        _settle_main_generation_terminal(db, document=document, usage=usage, success=False)
         db.commit()
         db.refresh(document)
         _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
@@ -3531,6 +4003,7 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
     document.provider_duration_ms = usage.get("provider_duration_ms")
     document.estimated_cost_usd = _estimated_cost_usd(config=config, usage=usage)
     db.add(document)
+    _settle_main_generation_terminal(db, document=document, usage=usage, success=True)
     db.commit()
     db.refresh(document)
     _record_generation_usage_event(

@@ -5,6 +5,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
 from tests.db_utils import ensure_database_exists, ensure_safe_test_database_url
@@ -56,10 +57,10 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     assert current_tables() == {
         "alembic_version",
         "auth_email_tokens",
-            "account_requests",
-            "clinical_entities",
-            "clinical_entity_runs",
-            "default_quick_actions",
+        "account_requests",
+        "clinical_entities",
+        "clinical_entity_runs",
+        "default_quick_actions",
         "default_quick_action_versions",
         "default_templates",
         "default_template_versions",
@@ -68,14 +69,15 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "generated_documents",
         "post_consultation_dictation_segments",
         "post_consultation_dictations",
-            "provider_secret_cleanup_jobs",
-            "provider_usage_events",
-            "quick_actions",
-            "quick_action_versions",
-            "redaction_entities",
-            "redaction_runs",
-            "security_audit_events",
-            "smart_phrases",
+        "provider_attempts",
+        "provider_secret_cleanup_jobs",
+        "provider_usage_events",
+        "quick_actions",
+        "quick_action_versions",
+        "redaction_entities",
+        "redaction_runs",
+        "security_audit_events",
+        "smart_phrases",
         "transcript_manual_pii_entities",
         "teams",
         "team_deidentification_provider_assignments",
@@ -92,6 +94,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "user_llm_preferences",
         "user_encryption_keys",
         "user_app_preferences",
+        "user_quota_policy_events",
         "user_trusted_devices",
         "user_sessions",
         "user_mfa_methods",
@@ -100,6 +103,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "transcript_audio_cleanup_jobs",
         "transcript_ingestion_jobs",
         "transcript_versions",
+        "task_dispatch_outbox",
     }
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
     assert "ix_security_audit_events_created_at" in audit_indexes
@@ -2144,3 +2148,301 @@ def test_alembic_head_supports_quick_action_generated_document_type():
         ).scalars().all()
 
     assert "quick_action" in values
+
+
+@pytest.mark.migration
+def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fks():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    inspector = inspect(engine)
+    user_columns = {column["name"]: column for column in inspector.get_columns("users")}
+    assert {
+        "daily_token_limit",
+        "monthly_token_limit",
+        "daily_audio_seconds_limit",
+        "monthly_audio_seconds_limit",
+    } <= set(user_columns)
+    assert all(user_columns[name]["nullable"] for name in (
+        "daily_token_limit",
+        "monthly_token_limit",
+        "daily_audio_seconds_limit",
+        "monthly_audio_seconds_limit",
+    ))
+
+    ledger_checks = {item["name"] for item in inspector.get_check_constraints("user_quota_policy_events")}
+    ledger_indexes = {item["name"] for item in inspector.get_indexes("user_quota_policy_events")}
+    ledger_uniques = {item["name"] for item in inspector.get_unique_constraints("user_quota_policy_events")}
+    ledger_fks = inspector.get_foreign_keys("user_quota_policy_events")
+    assert {
+        "ck_user_quota_policy_events_event_shape",
+        "ck_user_quota_policy_events_expiry_after_effective",
+        "ck_user_quota_policy_events_revocation_shape",
+    } <= ledger_checks
+    assert {
+        "ix_user_quota_policy_events_target_created",
+        "ix_user_quota_policy_events_lookup",
+        "ix_user_quota_policy_events_active_grant",
+    } <= ledger_indexes
+    assert {
+        "uq_uqpe_operation_target_resource_period_type",
+        "uq_user_quota_policy_events_revocation_operation",
+    } <= ledger_uniques
+    assert any(fk["constrained_columns"] == ["target_user_id"] and fk["options"].get("ondelete") == "CASCADE" for fk in ledger_fks)
+    assert sum(
+        fk["constrained_columns"] in (["actor_user_id"], ["revoker_user_id"])
+        and fk["options"].get("ondelete") == "SET NULL"
+        for fk in ledger_fks
+    ) == 2
+
+    attempt_columns = {column["name"] for column in inspector.get_columns("provider_attempts")}
+    attempt_checks = {item["name"] for item in inspector.get_check_constraints("provider_attempts")}
+    attempt_indexes = {item["name"] for item in inspector.get_indexes("provider_attempts")}
+    attempt_uniques = {item["name"] for item in inspector.get_unique_constraints("provider_attempts")}
+    attempt_fks = inspector.get_foreign_keys("provider_attempts")
+    assert {
+        "authorized_at",
+        "reservation_valid_until",
+        "submitted_at",
+        "settled_at",
+        "cancelled_at",
+        "deadline_at",
+        "reserved_units",
+        "settled_units",
+        "reported_input_tokens",
+        "reported_output_tokens",
+        "reported_total_tokens",
+        "measured_audio_seconds",
+    } <= attempt_columns
+    assert not {"prompt", "response", "content", "text", "secret", "vault_secret_ref"} & attempt_columns
+    assert {
+        "ck_provider_attempts_state_shape",
+        "ck_provider_attempts_settlement_basis_shape",
+        "ck_provider_attempts_resource_payload_shape",
+    } <= attempt_checks
+    assert {
+        "ix_provider_attempts_owner_resource_authorized",
+        "ix_provider_attempts_active_reservations",
+        "ix_provider_attempts_submitted_deadline",
+        "ix_provider_attempts_team_resource_settled",
+    } <= attempt_indexes
+    assert "uq_provider_attempts_correlation_attempt" in attempt_uniques
+    assert any(fk["constrained_columns"] == ["team_id"] and fk["options"].get("ondelete") == "CASCADE" for fk in attempt_fks)
+    assert sum(
+        fk["constrained_columns"] in (["owner_user_id"], ["transcript_id"], ["transcript_ingestion_job_id"], ["generated_document_id"])
+        and fk["options"].get("ondelete") == "SET NULL"
+        for fk in attempt_fks
+    ) == 4
+
+    outbox_checks = {item["name"] for item in inspector.get_check_constraints("task_dispatch_outbox")}
+    outbox_indexes = {item["name"] for item in inspector.get_indexes("task_dispatch_outbox")}
+    assert {"ck_task_dispatch_outbox_attempt_count_nonnegative", "ck_task_dispatch_outbox_state_timestamps"} <= outbox_checks
+    assert {"ix_task_dispatch_outbox_pending_retry", "ix_task_dispatch_outbox_source"} <= outbox_indexes
+
+    expected_enums = {
+        "quotaresource": ["tokens", "audio_seconds"],
+        "quotaperiod": ["daily", "monthly"],
+        "userquotapolicyeventtype": ["grant", "reset", "limit_change"],
+        "userquotareasoncode": ["policy_change", "temporary_allowance", "failed_job_correction", "administrative_correction", "other"],
+        "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test"],
+        "attemptstatus": ["reserved", "submitted", "settled", "cancelled"],
+        "attemptoutcome": ["succeeded", "failed", "unknown", "cancelled"],
+        "providersettlementbasis": ["reported", "measured", "conservative_unknown"],
+        "taskdispatchkind": ["generation", "ingestion"],
+        "taskdispatchstate": ["pending", "published", "cancelled", "failed"],
+        "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job"],
+        "hallucinationcheckstatus": [
+            "not_applicable", "skipped_not_configured", "skipped_config_invalid", "failed_provider",
+            "failed_invalid_response", "checked_unchanged", "checked_corrected", "skipped_quota",
+        ],
+    }
+    with engine.connect() as connection:
+        for enum_name, labels in expected_enums.items():
+            actual = connection.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                    "WHERE pg_type.typname = :enum_name ORDER BY enumsortorder"
+                ),
+                {"enum_name": enum_name},
+            ).scalars().all()
+            assert actual == labels
+
+
+@pytest.mark.migration
+def test_quota_accounting_constraints_reject_incomplete_grants_and_attempt_states():
+    """Exercise SQL constraints directly; ORM metadata must name same guards."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+    inspector = inspect(engine)
+    assert {
+        "ck_user_quota_policy_events_event_shape",
+        "ck_user_quota_policy_events_revocation_shape",
+    } <= {item["name"] for item in inspector.get_check_constraints("user_quota_policy_events")}
+    assert {
+        "ck_provider_attempts_state_shape",
+        "ck_provider_attempts_resource_payload_shape",
+    } <= {item["name"] for item in inspector.get_check_constraints("provider_attempts")}
+
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    team_id = "00000000-0000-0000-0000-000000000811"
+    user_id = "00000000-0000-0000-0000-000000000812"
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+            VALUES (:team_id, 'Constraint Team', 'constraint team', 'active', 30, NOW(), NOW())
+        """), {"team_id": team_id})
+        connection.execute(text("""
+            INSERT INTO users (id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                               must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at)
+            VALUES (:user_id, 'Constraint User', 'constraint@example.com', 'hash', :team_id, 'user', false,
+                    'active', false, 'complete', false, false, NOW(), NOW())
+        """), {"team_id": team_id, "user_id": user_id})
+
+        valid_grant = """
+            INSERT INTO user_quota_policy_events (
+                id, operation_id, target_user_id, actor_user_id_snapshot, event_type, resource, period,
+                reason_code, reason, amount, effective_at
+            ) VALUES (:id, :operation_id, :user_id, :user_id, 'grant', 'tokens', 'daily',
+                      'temporary_allowance', 'valid grant', :amount, NOW())
+        """
+        connection.execute(text(valid_grant), {"id": "00000000-0000-0000-0000-000000000813", "operation_id": "00000000-0000-0000-0000-000000000814", "user_id": user_id, "amount": 1})
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(text(valid_grant), {"id": "00000000-0000-0000-0000-000000000815", "operation_id": "00000000-0000-0000-0000-000000000816", "user_id": user_id, "amount": None})
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(text("""
+                    INSERT INTO user_quota_policy_events (
+                        id, operation_id, target_user_id, actor_user_id_snapshot, revoker_user_id_snapshot,
+                        revocation_operation_id, event_type, resource, period, reason_code, reason, amount,
+                        effective_at, revoked_at, revocation_reason_code, revocation_reason
+                    ) VALUES ('00000000-0000-0000-0000-000000000817', '00000000-0000-0000-0000-000000000818',
+                              :user_id, :user_id, :user_id, '00000000-0000-0000-0000-000000000819', 'grant',
+                              'tokens', 'monthly', 'temporary_allowance', 'revoked', 1, NOW(), NOW(), 'other', NULL)
+                """), {"user_id": user_id})
+
+        valid_attempt = """
+            INSERT INTO provider_attempts (
+                id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource, status,
+                reserved_units, authorized_at, reservation_valid_until, submitted_at, deadline_at
+            ) VALUES (:id, :team_id, :user_id, :correlation_id, 1, 'llm_generation', 'tokens', 'submitted',
+                      1, NOW(), NOW() + INTERVAL '2 minutes', NOW(), NOW() + INTERVAL '1 minute')
+        """
+        connection.execute(text(valid_attempt), {"id": "00000000-0000-0000-0000-000000000820", "team_id": team_id, "user_id": user_id, "correlation_id": "00000000-0000-0000-0000-000000000821"})
+        for row_id, correlation_id, omitted_field in (
+            ("00000000-0000-0000-0000-000000000822", "00000000-0000-0000-0000-000000000823", "submitted_at"),
+            ("00000000-0000-0000-0000-000000000824", "00000000-0000-0000-0000-000000000825", "settled_at"),
+        ):
+            with pytest.raises(IntegrityError):
+                with connection.begin_nested():
+                    if omitted_field == "submitted_at":
+                        connection.execute(text("""
+                            INSERT INTO provider_attempts (id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource, status, reserved_units, authorized_at, reservation_valid_until, deadline_at)
+                            VALUES (:id, :team_id, :user_id, :correlation_id, 1, 'llm_generation', 'tokens', 'submitted', 1, NOW(), NOW() + INTERVAL '2 minutes', NOW() + INTERVAL '1 minute')
+                        """), {"id": row_id, "team_id": team_id, "user_id": user_id, "correlation_id": correlation_id})
+                    else:
+                        connection.execute(text("""
+                            INSERT INTO provider_attempts (id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource, status, outcome, settlement_basis, reserved_units, settled_units, authorized_at, reservation_valid_until, submitted_at, deadline_at)
+                            VALUES (:id, :team_id, :user_id, :correlation_id, 1, 'llm_generation', 'tokens', 'settled', 'succeeded', 'reported', 1, 1, NOW(), NOW() + INTERVAL '2 minutes', NOW(), NOW() + INTERVAL '1 minute')
+                        """), {"id": row_id, "team_id": team_id, "user_id": user_id, "correlation_id": correlation_id})
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                connection.execute(text("""
+                    INSERT INTO provider_attempts (id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource, status, reserved_units, authorized_at, reservation_valid_until)
+                    VALUES ('00000000-0000-0000-0000-000000000826', :team_id, :user_id, '00000000-0000-0000-0000-000000000827', 1, 'stt_conversation', 'audio_seconds', 'reserved', 1, NOW(), NOW() + INTERVAL '1 minute')
+                """), {"team_id": team_id, "user_id": user_id})
+        connection.execute(text("""
+            INSERT INTO provider_attempts (id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource, status, reserved_units, measured_audio_seconds, authorized_at, reservation_valid_until)
+            VALUES ('00000000-0000-0000-0000-000000000828', :team_id, :user_id, '00000000-0000-0000-0000-000000000829', 1, 'stt_conversation', 'audio_seconds', 'reserved', 2, 1.5, NOW(), NOW() + INTERVAL '1 minute')
+        """), {"team_id": team_id, "user_id": user_id})
+
+
+@pytest.mark.migration
+def test_quota_accounting_foundation_downgrade_fails_closed_then_removes_empty_schema():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+    isolated_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
+    with isolated_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+            VALUES ('00000000-0000-0000-0000-000000000801', 'Quota Rollback', 'quota rollback', 'active', 30, NOW(), NOW())
+        """))
+        connection.execute(text("""
+            INSERT INTO users (
+                id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000802', 'Quota User', 'quota-rollback@example.com', 'hash',
+                '00000000-0000-0000-0000-000000000801', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW()
+            )
+        """))
+        connection.execute(text("UPDATE users SET daily_token_limit = 0 WHERE id = '00000000-0000-0000-0000-000000000802'"))
+
+    with pytest.raises(RuntimeError, match="user quota limits are populated"):
+        command.downgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    with isolated_engine.begin() as connection:
+        connection.execute(text("UPDATE users SET daily_token_limit = NULL"))
+        connection.execute(text("""
+            INSERT INTO user_quota_policy_events (
+                id, operation_id, target_user_id, actor_user_id_snapshot, event_type, resource, period,
+                reason_code, reason, amount, effective_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000803', '00000000-0000-0000-0000-000000000804',
+                '00000000-0000-0000-0000-000000000802', '00000000-0000-0000-0000-000000000802',
+                'grant', 'tokens', 'daily', 'temporary_allowance', 'rollback blocker', 1, NOW()
+            )
+        """))
+    with pytest.raises(RuntimeError, match="user_quota_policy_events contains rows"):
+        command.downgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    with isolated_engine.begin() as connection:
+        connection.execute(text("DELETE FROM user_quota_policy_events"))
+        connection.execute(text("""
+            INSERT INTO provider_attempts (
+                id, team_id, owner_user_id, correlation_id, attempt_number, attempt_kind, resource,
+                status, reserved_units, authorized_at, reservation_valid_until
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000805', '00000000-0000-0000-0000-000000000801',
+                '00000000-0000-0000-0000-000000000802', '00000000-0000-0000-0000-000000000806', 1,
+                'llm_generation', 'tokens', 'reserved', 1, NOW(), NOW() + INTERVAL '1 minute'
+            )
+        """))
+    with pytest.raises(RuntimeError, match="provider_attempts contains rows"):
+        command.downgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    with isolated_engine.begin() as connection:
+        connection.execute(text("DELETE FROM provider_attempts"))
+        connection.execute(text("""
+            INSERT INTO task_dispatch_outbox (task_id, dispatch_kind, state, source_kind, source_id)
+            VALUES (
+                '00000000-0000-0000-0000-000000000807', 'generation', 'pending', 'generated_document',
+                '00000000-0000-0000-0000-000000000808'
+            )
+        """))
+    with pytest.raises(RuntimeError, match="task_dispatch_outbox contains rows"):
+        command.downgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    with isolated_engine.begin() as connection:
+        connection.execute(text("DELETE FROM task_dispatch_outbox"))
+    command.downgrade(alembic_config(), "b9c0d1e2f3a5")
+
+    inspector = inspect(isolated_engine)
+    assert not {"user_quota_policy_events", "provider_attempts", "task_dispatch_outbox"} & set(inspector.get_table_names())
+    assert not {
+        "daily_token_limit",
+        "monthly_token_limit",
+        "daily_audio_seconds_limit",
+        "monthly_audio_seconds_limit",
+    } & {column["name"] for column in inspector.get_columns("users")}
+    with isolated_engine.connect() as connection:
+        remaining_enums = connection.execute(
+            text(
+                "SELECT typname FROM pg_type WHERE typname IN "
+                "('quotaresource', 'quotaperiod', 'userquotapolicyeventtype', 'userquotareasoncode', "
+                "'attemptkind', 'attemptstatus', 'attemptoutcome', 'providersettlementbasis', "
+                "'taskdispatchkind', 'taskdispatchstate', "
+                "'taskdispatchsourcekind')"
+            )
+        ).scalars().all()
+    assert remaining_enums == []

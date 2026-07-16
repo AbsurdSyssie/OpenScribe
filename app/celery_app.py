@@ -43,6 +43,16 @@ celery_app.conf.update(
             "schedule": 10.0,
             "options": {"expires": 10.0},
         },
+        "publish-task-dispatch-outbox-every-10-seconds": {
+            "task": "openscribe.process_task_dispatch_outbox",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "process-quota-lifecycle-every-10-seconds": {
+            "task": "openscribe.process_quota_lifecycle",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
     },
 )
 

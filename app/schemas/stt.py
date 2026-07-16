@@ -16,6 +16,10 @@ def _validate_stt_base_url(value: str) -> str:
         raise ValueError("STT base URL must use http or https")
     if not parsed.netloc:
         raise ValueError("STT base URL must include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("STT base URL must not include credentials")
+    if parsed.query or parsed.fragment or parsed.params:
+        raise ValueError("STT base URL must not include query parameters or fragments")
     host = (parsed.hostname or "").lower()
     is_localish = host == "localhost"
     if not is_localish:
@@ -122,6 +126,8 @@ class SttConfigUpsert(BaseModel):
             raise ValueError("Transcribe path is required")
         if not trimmed.startswith("/"):
             raise ValueError("Transcribe path must start with /")
+        if "?" in trimmed or "#" in trimmed:
+            raise ValueError("Transcribe path must not include query parameters or fragments")
         return trimmed
 
     @field_validator("file_field_name")

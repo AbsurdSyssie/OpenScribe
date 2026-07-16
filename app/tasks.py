@@ -6,6 +6,8 @@ from app.db import SessionLocal
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
+from app.services.task_outbox import publish_pending_task_dispatches
+from app.services.quota_lifecycle import process_quota_lifecycle
 
 
 @celery_app.task(name="openscribe.process_transcript_ingestion_job")
@@ -30,6 +32,18 @@ def process_generated_document_task(self, *, document_id: str) -> None:
 
 def enqueue_generated_document_job(*, document_id: UUID):
     return process_generated_document_task.delay(document_id=str(document_id))
+
+
+@celery_app.task(name="openscribe.process_task_dispatch_outbox")
+def process_task_dispatch_outbox_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return publish_pending_task_dispatches(db, batch_size=batch_size)
+
+
+@celery_app.task(name="openscribe.process_quota_lifecycle")
+def process_quota_lifecycle_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return process_quota_lifecycle(db, batch_size=batch_size)
 
 
 @celery_app.task(name="openscribe.delete_expired_transcripts")

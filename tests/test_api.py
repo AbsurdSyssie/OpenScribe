@@ -3,6 +3,7 @@ import time
 import io
 import hashlib
 import subprocess
+from math import ceil
 from types import SimpleNamespace
 from dataclasses import replace
 from datetime import timedelta
@@ -44,6 +45,14 @@ from app.models import (
     DeidentificationAuthMode,
     ProviderUsageEvent,
     ProviderUsageEventType,
+    ProviderAttempt,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
+    ProviderSettlementBasis,
+    QuotaResource,
+    TaskDispatchOutbox,
+    TaskDispatchKind,
     ProviderCredentialStatus,
     ProviderSecretCleanupJob,
     ProviderSecretCleanupKind,
@@ -96,7 +105,7 @@ from app.models import (
     TemplateScope,
     utcnow,
 )
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot, upsert_stt_config as upsert_stt_config_service
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, _list_deepgram_stt_models, _list_elevenlabs_stt_models, _provider_error_code_from_response, _read_saved_stt_bearer_token, _safe_http_error_details, _transcribe_via_elevenlabs, _transcribe_via_http, _transcribe_via_openai_cloud, create_stt_config_draft, ensure_stt_service_healthy, paragraphize_timestamped_segments, replace_stt_config_draft_credential, resolve_selected_team_stt, run_saved_stt_config_test, transcribe_with_stt_snapshot, upsert_stt_config as upsert_stt_config_service
 from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert, QuickActionUpsert
 from app.schemas import LlmConfigDraftCreate, LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
 from app.services.audio import (
@@ -131,6 +140,8 @@ from app.services.templates import (
     _generate_freeform_output_openai,
     _generate_freeform_output_ollama,
     _parse_generated_note_json,
+    _translate_ollama_generation_error,
+    _translate_openai_generation_error,
     delete_personal_template,
     process_generated_document,
     generated_document_llm_request_payload,
@@ -148,9 +159,11 @@ from app.services.transcripts import (
     process_transcript_ingestion_job,
     process_transcript_audio_cleanup_jobs,
     queue_audio_chunk_ingestion,
+    queue_audio_file_ingestion,
     save_working_note,
     start_transcript as start_transcript_service,
 )
+from app.services.quotas import reserve_provider_attempt
 from app.schemas.transcripts import TranscriptStart, WorkingNoteUpdate
 from app.services import vault as vault_service
 from app.services.auth import SESSION_COOKIE_NAME, rotate_session
@@ -516,6 +529,25 @@ def make_ingestion_job_for_transcript(transcript: Transcript, **kwargs) -> Trans
         team_id=transcript.team_id,
         **kwargs,
     )
+
+
+def reserve_audio_attempt_for_job(db_session, job: TranscriptIngestionJob, *, duration_seconds: float = 1.0) -> ProviderAttempt:
+    attempt = reserve_provider_attempt(
+        db_session,
+        team_id=job.team_id,
+        owner_user_id=job.owner_user_id,
+        resource=QuotaResource.audio_seconds,
+        attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id,
+        attempt_number=1,
+        reserved_units=ceil(duration_seconds),
+        reservation_valid_until=utcnow() + timedelta(minutes=10),
+        transcript_id=job.transcript_id,
+        transcript_ingestion_job_id=job.id,
+        measured_audio_seconds=duration_seconds,
+    )
+    db_session.commit()
+    return attempt
 
 
 class FakeHttpxResponse:
@@ -2210,6 +2242,12 @@ def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
     assert result["language"] == "en"
     assert result["transcript_text"] == "more or less, I suppose"
     assert result["error_code"] is None
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.team_id == team.id))
+    assert attempt is not None
+    assert attempt.owner_user_id is None
+    assert attempt.attempt_kind is AttemptKind.stt_provider_test
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.succeeded
 
 
 def test_system_admin_can_test_saved_openai_stt_config_without_generic_fields(
@@ -2863,8 +2901,9 @@ def test_owner_can_upload_and_edit_post_consultation_dictation(
         lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
     monkeypatch.setattr(
-        "app.services.dictations.transcribe_with_team_stt",
+        "app.services.dictations.transcribe_metered_team_stt",
         lambda db, **kwargs: "Patient improving. Continue antibiotics for five days.",
     )
 
@@ -2939,8 +2978,9 @@ def test_owner_can_preview_post_consultation_dictation_without_persisting(
         lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
     monkeypatch.setattr(
-        "app.services.dictations.transcribe_with_team_stt",
+        "app.services.dictations.transcribe_metered_team_stt",
         lambda db, **kwargs: "Preview-only clinician summary.",
     )
 
@@ -2966,6 +3006,128 @@ def test_owner_can_preview_post_consultation_dictation_without_persisting(
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
+def test_synchronous_dictation_and_context_routes_settle_distinct_audio_attempts(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Metered Sync STT")
+    admin = make_user(email="admin-metered-sync-stt@example.com", password="password-1", is_system_admin=True)
+    owners = [
+        make_user(email=f"owner-metered-sync-stt-{index}@example.com", password="password-2", team=team, team_role=TeamRole.user)
+        for index in range(3)
+    ]
+    config = make_stt_config(team=team, actor=admin, label="Metered STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+    wav = make_test_wav_bytes(duration_seconds=2.25)
+    monkeypatch.setattr(
+        "app.services.dictations.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="audio.wav", content_type="audio/wav", data=wav),
+    )
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: "metered transcript")
+
+    responses = []
+    transcript_ids = []
+    paths = ["post-consultation-dictation/preview-audio-file", "quick-action-context/preview-audio-file", "post-consultation-dictation/audio-file"]
+    for owner, path in zip(owners, paths, strict=True):
+        login(client, email=owner.email, password="password-2")
+        transcript_id = client.post("/api/v1/transcripts/start", json={"title": "Metered sync"}).json()["id"]
+        transcript_ids.append(transcript_id)
+        responses.append(client.post(f"/api/v1/transcripts/{transcript_id}/{path}", files={"audio": ("audio.wav", wav, "audio/wav")}))
+        client.post("/auth/logout")
+    preview, context, appended = responses
+    assert preview.status_code == context.status_code == appended.status_code == 200
+    attempts = list(db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.transcript_id.in_([UUID(item) for item in transcript_ids])).order_by(ProviderAttempt.created_at)))
+    assert [attempt.attempt_kind for attempt in attempts] == [
+        AttemptKind.stt_post_consultation_dictation, AttemptKind.stt_prompt_context, AttemptKind.stt_post_consultation_dictation,
+    ]
+    assert {attempt.owner_user_id for attempt in attempts} == {owner.id for owner in owners}
+    assert all(attempt.team_id == team.id for attempt in attempts)
+    assert all(attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.succeeded for attempt in attempts)
+    assert all(float(attempt.measured_audio_seconds) == 2.25 and attempt.reserved_units == 3 for attempt in attempts)
+    assert db_session.scalar(select(PostConsultationDictationSegment).where(PostConsultationDictationSegment.owner_user_id == owners[2].id)) is not None
+
+
+def test_sync_stt_quota_rejection_skips_provider_call(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Sync STT quota")
+    admin = make_user(email="admin-sync-stt-quota@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-sync-stt-quota@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    owner.daily_audio_seconds_limit = 0
+    db_session.add(owner)
+    db_session.commit()
+    config = make_stt_config(team=team, actor=admin, label="Quota STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+    wav = make_test_wav_bytes(duration_seconds=1)
+    monkeypatch.setattr("app.services.dictations.normalize_audio_to_wav_16k_mono", lambda **kwargs: NormalizedAudio(filename="audio.wav", content_type="audio/wav", data=wav))
+    called = False
+    def provider_called(**kwargs):
+        nonlocal called
+        called = True
+        return "never"
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", provider_called)
+    login(client, email=owner.email, password="password-2")
+    transcript_id = client.post("/api/v1/transcripts/start", json={"title": "Quota"}).json()["id"]
+    response = client.post(f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file", files={"audio": ("audio.wav", wav, "audio/wav")})
+    assert_error(response, status_code=403, code="quota_disabled", message="Provider usage is disabled for this resource")
+    assert called is False
+    assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_id == UUID(transcript_id))) is None
+
+
+def test_sync_stt_provider_failure_settles_audio_attempt(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Sync STT failure")
+    admin = make_user(email="admin-sync-stt-failure@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-sync-stt-failure@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Failure STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+    wav = make_test_wav_bytes(duration_seconds=1)
+    monkeypatch.setattr("app.services.dictations.normalize_audio_to_wav_16k_mono", lambda **kwargs: NormalizedAudio(filename="audio.wav", content_type="audio/wav", data=wav))
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: (_ for _ in ()).throw(AppError(502, "stt_request_failed", "STT provider request failed")))
+    login(client, email=owner.email, password="password-2")
+    transcript_id = client.post("/api/v1/transcripts/start", json={"title": "Failure"}).json()["id"]
+    response = client.post(f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file", files={"audio": ("audio.wav", wav, "audio/wav")})
+    assert_error(response, status_code=502, code="stt_request_failed", message="STT provider request failed")
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_id == UUID(transcript_id)))
+    assert attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.failed
+
+
+def test_sync_dictation_persistence_failure_keeps_settled_provider_charge(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Sync STT persistence")
+    admin = make_user(email="admin-sync-stt-persist@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-sync-stt-persist@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(team=team, actor=admin, label="Persistence STT", model_name="whisper-1", available_models_json=["whisper-1"])
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.post_consultation_dictation)
+    wav = make_test_wav_bytes(duration_seconds=1)
+    monkeypatch.setattr("app.services.dictations.normalize_audio_to_wav_16k_mono", lambda **kwargs: NormalizedAudio(filename="audio.wav", content_type="audio/wav", data=wav))
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: "provider text")
+    monkeypatch.setattr("app.services.dictations.encrypt_text_for_owner", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("persistence failed")))
+    login(client, email=owner.email, password="password-2")
+    transcript_id = client.post("/api/v1/transcripts/start", json={"title": "Persistence"}).json()["id"]
+    with pytest.raises(RuntimeError, match="persistence failed"):
+        client.post(f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file", files={"audio": ("audio.wav", wav, "audio/wav")})
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_id == UUID(transcript_id)))
+    assert attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.succeeded
+
+
+def test_openai_stt_client_disables_hidden_sdk_retries(monkeypatch):
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.audio = SimpleNamespace(transcriptions=SimpleNamespace(create=lambda **_: SimpleNamespace(text="ok")))
+
+    monkeypatch.setattr("app.services.stt.OpenAI", FakeOpenAI)
+    assert _transcribe_via_openai_cloud(
+        base_url="https://api.openai.com/v1", extra_form_fields_json=None, bearer_token="secret",
+        model_name="whisper-1", language=None, audio_bytes=b"audio", filename="audio.wav",
+    ) == "ok"
+    assert captured["max_retries"] == 0
+
+
 def test_quick_action_context_audio_preview_transcribes_for_owner_without_persisting(
     client,
     db_session,
@@ -2987,13 +3149,14 @@ def test_quick_action_context_audio_preview_transcribes_for_owner_without_persis
         lambda **kwargs: NormalizedAudio(filename="quick-action-context.wav", content_type="audio/wav", data=b"normalized-context"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
     captured_stt_kwargs = {}
 
     def fake_transcribe_with_team_stt(db, **kwargs):
         captured_stt_kwargs.update(kwargs)
         return "Mention John Smith follow-up"
 
-    monkeypatch.setattr("app.services.dictations.transcribe_with_team_stt", fake_transcribe_with_team_stt)
+    monkeypatch.setattr("app.services.dictations.transcribe_metered_team_stt", fake_transcribe_with_team_stt)
 
     login(client, email=owner.email, password="password-2")
     transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Quick Action Context"})
@@ -3039,6 +3202,7 @@ def test_post_consultation_dictation_upload_requires_dictation_stt_selection(
         lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
 
     login(client, email=owner.email, password="password-2")
     transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Consultation Dictation"})
@@ -3075,6 +3239,7 @@ def test_post_consultation_dictation_preview_requires_dictation_stt_selection(
         lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
 
     login(client, email=owner.email, password="password-2")
     transcript_created = client.post("/api/v1/transcripts/start", json={"title": "Consultation Dictation"})
@@ -3112,8 +3277,9 @@ def test_transcribe_workspace_includes_post_consultation_dictation(
         lambda **kwargs: NormalizedAudio(filename="dictation.wav", content_type="audio/wav", data=b"normalized-dictation"),
     )
     monkeypatch.setattr("app.services.dictations.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.dictations.normalized_wav_duration_seconds", lambda **kwargs: 2.5)
     monkeypatch.setattr(
-        "app.services.dictations.transcribe_with_team_stt",
+        "app.services.dictations.transcribe_metered_team_stt",
         lambda db, **kwargs: "Extra dictation guidance.",
     )
 
@@ -3171,7 +3337,7 @@ def test_transcribe_workspace_stt_health_plain_for_user_diagnostic_for_leader(
     leader_health = workspace.json()["stt_health"]
     assert leader_health["status"] == "warning"
     assert leader_health["details"]["status_code"] == 503
-    assert leader_health["details"]["provider_error_code"] == "downstream_down"
+    assert leader_health["details"]["provider_error_code"] == "provider_server_error"
     assert leader_health["details"]["health_url"] == "http://127.0.0.1:9100/health"
 
 
@@ -7081,7 +7247,7 @@ def test_team_and_personal_template_routes_enforce_scope_and_allow_generation(
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
-    assert persisted_document.celery_task_id == "generated-task-1"
+    assert UUID(persisted_document.celery_task_id)
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
@@ -7269,10 +7435,14 @@ def test_generation_waits_for_pending_transcription_then_uses_fresh_snapshot(
     document = db_session.get(GeneratedDocument, UUID(generated.json()["id"]))
     assert document is not None
     initial_version_id = document.transcript_version_id
+    queued_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert queued_attempt is not None and queued_attempt.status is AttemptStatus.reserved
 
     with pytest.raises(GeneratedDocumentWaitingForTranscript):
         process_generated_document(db_session, document_id=document.id)
     assert provider_requests == []
+    db_session.refresh(queued_attempt)
+    assert queued_attempt.status is AttemptStatus.reserved
 
     db_session.refresh(transcript)
     transcript.current_draft_text_encrypted = encrypt_text_for_owner(
@@ -7290,7 +7460,6 @@ def test_generation_waits_for_pending_transcription_then_uses_fresh_snapshot(
     db_session.add(transcript)
     db_session.add(job)
     db_session.commit()
-
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.transcript_version_id != initial_version_id
@@ -8290,7 +8459,7 @@ def test_template_generation_supports_ollama_adapter(
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
-    assert persisted_document.celery_task_id == "generated-task-2"
+    assert UUID(persisted_document.celery_task_id)
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.title == "Ollama summary"
     assert is_encrypted_envelope(processed.edited_output_text_encrypted)
@@ -8582,6 +8751,20 @@ def test_structured_hallucination_check_applies_exact_patch_and_records_debug(
     assert decrypt_generated_document_section_field(db_session, owner_user_id=owner.id, section=sections["tasks"], field="edited_text_encrypted") == "Continue fluids."
     assert "Diagnosed pneumonia" not in (decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") or "")
     assert is_encrypted_envelope(processed.hallucination_check_debug_json_encrypted)
+    checker_attempts = db_session.scalars(
+        select(ProviderAttempt).where(
+            ProviderAttempt.generated_document_id == processed.id,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+        )
+    ).all()
+    assert len(checker_attempts) == 1
+    checker_attempt = checker_attempts[0]
+    assert (checker_attempt.correlation_id, checker_attempt.attempt_number, checker_attempt.status) == (
+        processed.id, 2, AttemptStatus.settled,
+    )
+    assert (checker_attempt.outcome, checker_attempt.settled_units, checker_attempt.reported_input_tokens, checker_attempt.reported_output_tokens) == (
+        AttemptOutcome.succeeded, 23, 11, 12,
+    )
 
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     assert detail.status_code == 200
@@ -8653,6 +8836,17 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.hallucination_check_status is HallucinationCheckStatus.failed_provider
+    checker_attempt = db_session.scalar(
+        select(ProviderAttempt).where(
+            ProviderAttempt.generated_document_id == processed.id,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+        )
+    )
+    assert checker_attempt is not None
+    assert (checker_attempt.status, checker_attempt.outcome, checker_attempt.settlement_basis) == (
+        AttemptStatus.settled, AttemptOutcome.unknown, ProviderSettlementBasis.conservative_unknown,
+    )
+    assert checker_attempt.settled_units == checker_attempt.reserved_units
 
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     debug = detail.json()[0]["hallucination_check_debug_json"]
@@ -8661,6 +8855,81 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
     assert debug["failure_message"] == "The LLM provider rejected the generation request"
     assert debug["provider_http_status"] == 400
     assert debug["provider_error_code"] == "bad_request"
+
+
+def test_structured_hallucination_check_invalid_response_retries_and_settles_each_attempt(
+    client, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template, db_session,
+):
+    team = make_team(name="Checker retry metering")
+    admin = make_user(email="checker-retry-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="checker-retry-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    db_session.add(TeamHallucinationCheckSelection(team_id=team.id, llm_config_id=config.id, model_name_override="gpt-4o-mini", selected_by_user_id=admin.id))
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user, owner=owner, actor=owner, name="Checker retry template", prompt_text="Use source only.",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{"section_key": "problem", "section_label": "Problem", "instruction": "Summarise.", "section_order": 1}]},
+    )
+    responses = iter((
+        ('{"title":"Review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 1}),
+        ("not json", {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7, "duration_ms": 1}),
+        ('{"status":"unchanged"}', {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7, "duration_ms": 1}),
+    ))
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: next(responses))
+    login(client, email=owner.email, password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Retry", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Cough improving."})
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=UUID(started.json()["id"]), template_id=template.id)
+    processed = process_generated_document(db_session, document_id=document.id)
+    attempts = db_session.scalars(
+        select(ProviderAttempt).where(
+            ProviderAttempt.generated_document_id == document.id,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+        ).order_by(ProviderAttempt.attempt_number)
+    ).all()
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.hallucination_check_status is HallucinationCheckStatus.checked_unchanged
+    assert [(item.attempt_number, item.outcome, item.settled_units) for item in attempts] == [
+        (2, AttemptOutcome.failed, 7), (3, AttemptOutcome.succeeded, 7),
+    ]
+
+
+def test_structured_hallucination_check_quota_failure_skips_provider_and_preserves_note(
+    client, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template, db_session,
+):
+    team = make_team(name="Checker quota metering")
+    admin = make_user(email="checker-quota-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="checker-quota-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"], has_secret=False)
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    db_session.add(TeamHallucinationCheckSelection(team_id=team.id, llm_config_id=config.id, model_name_override="gpt-4o-mini", selected_by_user_id=admin.id))
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user, owner=owner, actor=owner, name="Checker quota template", prompt_text="Use source only.",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{"section_key": "problem", "section_label": "Problem", "instruction": "Summarise.", "section_order": 1}]},
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: (calls.append(kwargs) or ('{"title":"Review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 1})),
+    )
+    login(client, email=owner.email, password="password-2")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Quota", "ingestion_mode": "whole_file", "current_draft_text_encrypted": "Cough improving."})
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=UUID(started.json()["id"]), template_id=template.id)
+    main_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    estimates = iter((main_attempt.reserved_units, 2))
+    monkeypatch.setattr("app.services.templates.estimate_token_reservation", lambda *args, **kwargs: next(estimates))
+    owner.daily_token_limit = main_attempt.reserved_units + 1
+    db_session.commit()
+    processed = process_generated_document(db_session, document_id=document.id)
+    checker_attempts = db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id, ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check)).all()
+    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.hallucination_check_status is HallucinationCheckStatus.skipped_quota
+    assert len(calls) == 1
+    assert checker_attempts == []
+    assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Problem\nCough improving."
 
 
 def test_structured_hallucination_check_vault_failure_does_not_fail_document(
@@ -8747,6 +9016,8 @@ def test_structured_hallucination_check_vault_failure_does_not_fail_document(
 
 
 def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):
+    client_options = {}
+
     class FakeCompletions:
         @staticmethod
         def create(**kwargs):
@@ -8765,6 +9036,7 @@ def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):
 
     class FakeClient:
         def __init__(self, **kwargs):
+            client_options.update(kwargs)
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setattr("app.services.templates.OpenAI", FakeClient)
@@ -8778,6 +9050,7 @@ def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):
     assert text == '{"status":"unchanged"}'
     assert usage["input_tokens"] == 3
     assert usage["output_tokens"] == 4
+    assert client_options["max_retries"] == 0
 
 
 def test_gpt_oss_hallucination_checker_uses_low_reasoning_and_larger_cap():
@@ -9239,7 +9512,7 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.followup
-    assert persisted_document.celery_task_id == "generated-task-followup"
+    assert UUID(persisted_document.celery_task_id)
     assert is_encrypted_envelope(persisted_document.follow_up_prompt_text)
     assert decrypt_generated_document_field(db_session, persisted_document, "follow_up_prompt_text") == "Arrange repeat bloods for John Smith and advise review if the cough persists."
 
@@ -10865,7 +11138,7 @@ def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generatio
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.quick_action
     assert persisted_document.quick_action_version_id is not None
-    assert persisted_document.celery_task_id == "generated-task-quick-action"
+    assert UUID(persisted_document.celery_task_id)
 
     processed = process_generated_document(db_session, document_id=persisted_document.id)
     assert processed.status is GeneratedDocumentStatus.ready
@@ -11644,7 +11917,7 @@ def test_process_generated_document_persists_provider_failure_details(
     assert processed.error_code == "llm_generation_failed"
     assert processed.error_message == "The selected model is not available on the LLM provider"
     assert processed.provider_http_status == 404
-    assert processed.provider_error_code == 'model "missing-model" not found'
+    assert processed.provider_error_code == "model_not_found"
     failure_events = list(
         db_session.scalars(
             select(ProviderUsageEvent)
@@ -11659,7 +11932,7 @@ def test_process_generated_document_persists_provider_failure_details(
     ]
     assert failure_events[-1].error_code == "llm_generation_failed"
     assert failure_events[-1].provider_http_status == 404
-    assert failure_events[-1].provider_error_code == 'model "missing-model" not found'
+    assert failure_events[-1].provider_error_code == "model_not_found"
 
 
 def test_leader_can_suspend_and_reactivate_own_team_user(client, make_team, make_user):
@@ -14179,9 +14452,10 @@ def test_transcript_delete_is_owner_only_and_cascades_versions_jobs_and_generate
     db_session.add(clinical_entity)
     db_session.commit()
     deleted_secret_refs: list[str] = []
+    source_audio = make_test_wav_bytes(duration_seconds=1)
     queued = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
-        files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
+        files={"audio": ("recording.wav", source_audio, "audio/wav")},
     )
     assert queued.status_code == 202
     job_id = UUID(queued.json()["job"]["id"])
@@ -14298,7 +14572,7 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-chunks",
         files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
-        data={"chunk_sequence_no": "1", "declared_duration_seconds": "12"},
+        data={"chunk_sequence_no": "1", "declared_duration_seconds": "999"},
     )
 
     assert uploaded.status_code == 202
@@ -14313,7 +14587,7 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
-    assert job.celery_task_id == "test-task-id"
+    assert UUID(job.celery_task_id)
     assert job.source_audio_blob is None
     assert job.source_audio_vault_ref is not None
     assert job.source_audio_size_bytes == len(b"raw-audio")
@@ -14323,6 +14597,70 @@ def test_live_audio_chunk_upload_queues_owner_job(client, db_session, make_team,
     assert job.stt_segment_start_field == "start_time"
     assert job.stt_segment_end_field == "end_time"
     assert job.stt_segment_speaker_field == "speaker_id"
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id))
+    assert attempt is not None and attempt.status is AttemptStatus.reserved
+    assert attempt.reserved_units == 12 and float(attempt.measured_audio_seconds) == 12.0
+    assert dispatch is not None and str(dispatch.task_id) == job.celery_task_id
+
+
+def test_ingestion_quota_rejection_rolls_back_rows_and_queues_new_vault_audio_cleanup(
+    db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Ingestion quota rollback")
+    owner = make_user(email="ingestion-quota@example.com", password="password-1", team=team)
+    admin = make_user(email="ingestion-quota-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    owner.daily_audio_seconds_limit = 1
+    db_session.add(owner)
+    db_session.commit()
+    transcript = start_transcript_service(
+        db_session, owner, TranscriptStart(title="Quota", ingestion_mode=TranscriptIngestionMode.whole_file),
+    )
+    written_ref = "secret:openscribe/transcript-ingestion/quota-rollback/source-audio"
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 2.0)
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", lambda **kwargs: written_ref)
+
+    with pytest.raises(AppError) as exc_info:
+        queue_audio_file_ingestion(
+            db_session, owner, transcript_id=transcript.id, filename="audio.wav", source_audio_blob=b"audio",
+        )
+
+    assert exc_info.value.code == "quota_exceeded"
+    assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript.id)) is None
+    assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_id == transcript.id)) is None
+    assert db_session.scalar(select(TaskDispatchOutbox)) is None
+    cleanup = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == written_ref))
+    assert cleanup is not None
+
+
+def test_ingestion_normalization_failure_cancels_reserved_attempt(
+    db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch,
+):
+    team = make_team(name="Ingestion normalization accounting")
+    owner = make_user(email="normalization-accounting@example.com", password="password-1", team=team)
+    admin = make_user(email="normalization-accounting-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    transcript = start_transcript_service(
+        db_session, owner, TranscriptStart(title="Normalize", ingestion_mode=TranscriptIngestionMode.live_chunked),
+    )
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 2.0)
+    _, job = queue_audio_chunk_ingestion(
+        db_session, owner, transcript_id=transcript.id, filename="chunk.webm", source_audio_bytes=b"audio",
+        chunk_sequence_no=1, declared_duration_seconds=99,
+    )
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: (_ for _ in ()).throw(AppError(422, "audio_normalization_failed", "normalization failed")),
+    )
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
+
+    assert processed is not None and processed.status is TranscriptIngestionJobStatus.failed
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    assert attempt is not None and attempt.status is AttemptStatus.cancelled
 
 
 def test_live_audio_chunk_commit_failure_queues_written_vault_audio_for_cleanup(db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -14752,7 +15090,6 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
     monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 10.0)
 
     queued_one = client.post(
@@ -15156,6 +15493,15 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
     )
     db_session.add(job)
     db_session.commit()
+    reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id,
+        resource=QuotaResource.audio_seconds, attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id, attempt_number=1, reserved_units=1,
+        reservation_valid_until=utcnow() + timedelta(minutes=10),
+        transcript_id=transcript.id, transcript_ingestion_job_id=job.id,
+        measured_audio_seconds=1,
+    )
+    db_session.commit()
 
     provider_calls = 0
     monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"audio")
@@ -15180,6 +15526,11 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
     assert provider_calls == 1
     assert processed is not None
     assert processed.status is TranscriptIngestionJobStatus.applied
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.succeeded
+    assert attempt.settlement_basis is ProviderSettlementBasis.measured
 
 
 def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim(
@@ -15206,6 +15557,7 @@ def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_af
     )
     db_session.add(job)
     db_session.commit()
+    reserve_audio_attempt_for_job(db_session, job)
     transcript_id = transcript.id
     job_id = job.id
     events: list[str] = []
@@ -15275,6 +15627,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
     job.source_audio_vault_ref = "secret:openscribe/transcript-ingestion/midflight/source-audio"
     db_session.add(job)
     db_session.commit()
+    reserve_audio_attempt_for_job(db_session, job)
 
     def fake_transcribe_with_stt_snapshot(db, **kwargs):
         refreshed_job = db.get(TranscriptIngestionJob, job.id)
@@ -15328,6 +15681,8 @@ def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight
     )
     db_session.add(job)
     db_session.commit()
+    attempt = reserve_audio_attempt_for_job(db_session, job)
+    attempt_id = attempt.id
     transcript_id = transcript.id
     job_id = job.id
 
@@ -15364,6 +15719,10 @@ def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight
     )
     assert cleanup_job is not None
     assert cleanup_job.attempt_count == 1
+    attempt = db_session.get(ProviderAttempt, attempt_id)
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.unknown
 
 
 def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call(
@@ -15391,6 +15750,8 @@ def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provide
     )
     db_session.add(job)
     db_session.commit()
+    attempt = reserve_audio_attempt_for_job(db_session, job)
+    attempt_id = attempt.id
     transcript_id = transcript.id
     job_id = job.id
 
@@ -15416,6 +15777,10 @@ def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provide
     assert db_session.get(Transcript, transcript_id) is None
     assert db_session.get(TranscriptIngestionJob, job_id) is None
     assert db_session.scalar(select(TranscriptVersion).where(TranscriptVersion.transcript_id == transcript_id)) is None
+    attempt = db_session.get(ProviderAttempt, attempt_id)
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.unknown
 
 
 def test_transcript_workspace_reconciles_stale_live_chunk_session_to_ready(client, db_session, make_team, make_user):
@@ -15543,7 +15908,11 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     db_session.add(config)
     db_session.commit()
     make_stt_selection(config=config, actor=owner)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr(
+        "app.main.enqueue_transcript_ingestion_job",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("route must use outbox")),
+    )
     login(client, email="owner@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
     transcript_id = started.json()["id"]
@@ -15563,7 +15932,7 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued
-    assert job.celery_task_id == "test-task-id"
+    assert UUID(job.celery_task_id)
     assert job.source_audio_blob is None
     assert job.source_audio_vault_ref is not None
     assert job.source_audio_size_bytes == len(b"raw-file-audio")
@@ -15573,6 +15942,11 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     assert job.stt_segment_start_field == "start_time"
     assert job.stt_segment_end_field == "end_time"
     assert job.stt_segment_speaker_field == "speaker_id"
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id))
+    assert attempt is not None and attempt.status is AttemptStatus.reserved
+    assert attempt.reserved_units == 43 and float(attempt.measured_audio_seconds) == 42.5
+    assert dispatch is not None and str(dispatch.task_id) == job.celery_task_id
 
 
 def test_retry_audio_file_route_requeues_failed_blob_for_owner(
@@ -15618,11 +15992,16 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     db_session.add(failed_job)
     db_session.commit()
     monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-file-audio")
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 15.25)
+    monkeypatch.setattr(
+        "app.services.transcripts.write_transcript_ingestion_source_audio",
+        lambda **kwargs: pytest.fail("retry must transfer existing Vault reference, not write another object"),
+    )
 
     login(client, email="owner-retry@example.com", password="password-1")
     retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
 
-    assert retried.status_code == 202
+    assert retried.status_code == 202, retried.text
     body = retried.json()
     assert body["transcript"]["status"] == "transcribing"
     assert body["job"]["job_kind"] == "audio_file"
@@ -15635,11 +16014,11 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     new_job = db_session.get(TranscriptIngestionJob, UUID(body["job"]["id"]))
     assert new_job is not None
     assert new_job.source_audio_blob is None
-    assert new_job.source_audio_vault_ref is not None
+    assert new_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/retry/source-audio"
     assert new_job.source_audio_size_bytes == len(b"raw-file-audio")
     assert new_job.source_audio_duration_seconds == 15.25
     assert new_job.source_filename == "recording.mp3"
-    assert new_job.celery_task_id == "test-task-id"
+    assert UUID(new_job.celery_task_id)
 
 
 def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
@@ -15652,6 +16031,7 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
     make_stt_selection(config=config, actor=owner)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", len(b"raw-file-audio"))
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 15.25)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 15.25)
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -15693,7 +16073,7 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
     login(client, email="owner-retry-budget@example.com", password="password-1")
     retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
 
-    assert retried.status_code == 202
+    assert retried.status_code == 202, retried.text
 
 
 def test_retry_audio_file_route_rejects_when_failed_blob_is_missing(
@@ -15789,7 +16169,7 @@ def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
     )
 
 
-def test_audio_file_upload_enqueue_failure_preserves_retry_source_for_uploaded_file(
+def test_audio_file_upload_uses_outbox_without_direct_broker_publish(
     client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
 ):
     team = make_team(name="Clinical Team")
@@ -15797,10 +16177,10 @@ def test_audio_file_upload_enqueue_failure_preserves_retry_source_for_uploaded_f
     admin = make_user(email="admin-enqueue-fail@example.com", password="password-2", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=owner)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 18.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 18.0)
 
     def fail_enqueue(**kwargs):
-        raise RuntimeError("broker down")
+        raise AssertionError("upload route must not publish directly")
 
     monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fail_enqueue)
 
@@ -15813,22 +16193,20 @@ def test_audio_file_upload_enqueue_failure_preserves_retry_source_for_uploaded_f
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
 
-    assert_error(
-        uploaded,
-        status_code=502,
-        code="ingestion_enqueue_failed",
-        message="Could not enqueue file ingestion",
-    )
+    assert uploaded.status_code == 202
     latest_job = latest_ingestion_job_for_transcript_service(db_session, transcript_id=UUID(transcript_id))
     assert latest_job is not None
-    assert latest_job.status is TranscriptIngestionJobStatus.failed
+    assert latest_job.status is TranscriptIngestionJobStatus.queued
     assert latest_job.source_audio_vault_ref is not None
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == latest_job.id))
+    assert dispatch is not None
+    assert latest_job.celery_task_id == str(dispatch.task_id)
     detail = client.get(f"/api/v1/transcripts/{transcript_id}")
     assert detail.status_code == 200
-    assert detail.json()["latest_ingestion_retry_available"] is True
+    assert detail.json()["latest_ingestion_retry_available"] is False
 
 
-def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
+def test_retry_audio_file_uses_outbox_without_direct_broker_publish(
     client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
 ):
     team = make_team(name="Clinical Team")
@@ -15874,34 +16252,32 @@ def test_retry_audio_file_enqueue_failure_keeps_retry_source_available(
 
     stored_audio = {failed_job.source_audio_vault_ref: b"raw-file-audio"}
     monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda *, secret_ref: stored_audio[secret_ref])
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 15.25)
 
     def fail_enqueue(**kwargs):
-        raise RuntimeError("broker down")
+        raise AssertionError("retry route must not publish directly")
 
     monkeypatch.setattr("app.main.enqueue_transcript_ingestion_job", fail_enqueue)
 
     login(client, email="owner-retry-enqueue-fail@example.com", password="password-1")
     retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio-file")
 
-    assert_error(
-        retried,
-        status_code=502,
-        code="ingestion_enqueue_failed",
-        message="Could not enqueue file ingestion retry",
-    )
+    assert retried.status_code == 202, retried.text
     refreshed_failed_job = db_session.get(TranscriptIngestionJob, failed_job.id)
     assert refreshed_failed_job is not None
-    assert refreshed_failed_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    assert refreshed_failed_job.source_audio_vault_ref is None
     assert refreshed_failed_job.source_audio_size_bytes is None
     latest_job = latest_ingestion_job_for_transcript_service(db_session, transcript_id=transcript.id)
     assert latest_job is not None
     assert latest_job.id != failed_job.id
-    assert latest_job.status is TranscriptIngestionJobStatus.failed
+    assert latest_job.status is TranscriptIngestionJobStatus.queued
     assert latest_job.source_audio_vault_ref is not None
-    assert latest_job.source_audio_vault_ref != "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    assert latest_job.source_audio_vault_ref == "secret:openscribe/transcript-ingestion/legacy/source-audio"
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == latest_job.id))
+    assert dispatch is not None
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
     assert detail.status_code == 200
-    assert detail.json()["latest_ingestion_retry_available"] is True
+    assert detail.json()["latest_ingestion_retry_available"] is False
 
 
 def test_audio_file_upload_fails_immediately_when_selected_stt_secret_is_missing(
@@ -15964,6 +16340,7 @@ def test_audio_file_upload_does_not_preflight_stt_health_before_queueing(
         raise AssertionError("whole-file queueing should not perform a separate STT health probe")
 
     monkeypatch.setattr("app.services.stt.ensure_stt_service_healthy", fake_ensure_stt_service_healthy)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -15991,6 +16368,7 @@ def test_audio_file_upload_queues_even_if_health_probe_helper_would_fail(
         raise AssertionError("whole-file queueing should not call the STT health probe helper")
 
     monkeypatch.setattr("app.services.stt.ensure_stt_service_healthy", fake_ensure_stt_service_healthy)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -16049,12 +16427,14 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
     make_user,
     make_stt_config,
     make_stt_selection,
+    monkeypatch,
 ):
     team = make_team(name="Clinical Team")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     leader = make_user(email="leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=leader)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
     owner = make_user(email="owner@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
     transcript_one = Transcript(
@@ -16153,12 +16533,14 @@ def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
     make_user,
     make_stt_config,
     make_stt_selection,
+    monkeypatch,
 ):
     team = make_team(name="Clinical Team")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     leader = make_user(email="leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
     config = make_stt_config(team=team, actor=admin)
     make_stt_selection(config=config, actor=leader)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
     owner_one = make_user(email="owner-one@example.com", password="password-3", team=team, team_role=TeamRole.user)
     owner_two = make_user(email="owner-two@example.com", password="password-4", team=team, team_role=TeamRole.user)
 
@@ -16215,7 +16597,7 @@ def test_audio_file_upload_enforces_hourly_upload_size_budget(
     make_stt_selection(config=config, actor=owner)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 10)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 9999.0)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 5.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 5.0)
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -16277,7 +16659,7 @@ def test_audio_file_upload_enforces_hourly_duration_budget(
     make_stt_selection(config=config, actor=owner)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 999999)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 2.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 2.0)
 
     transcript = Transcript(
         owner_user_id=owner.id,
@@ -16340,7 +16722,7 @@ def test_audio_file_upload_hourly_budget_is_isolated_per_owner(
     make_stt_selection(config=config, actor=owner_one)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_UPLOAD_BYTES", 999999)
     monkeypatch.setattr("app.services.transcripts.WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", 5.0)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 1.0)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     transcript_one = Transcript(
         owner_user_id=owner_one.id,
@@ -16475,7 +16857,7 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 42.5)
 
     from app.services.redaction import DeidentificationDetectionResult, Span
 
@@ -16501,6 +16883,11 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
 
     assert uploaded.status_code == 202
     assert processed.status is TranscriptIngestionJobStatus.applied
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job_id))
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.succeeded
+    assert attempt.settled_units == 43
     refreshed_job = db_session.get(TranscriptIngestionJob, job_id)
     assert refreshed_job is not None
     assert refreshed_job.source_audio_blob is None
@@ -16558,7 +16945,7 @@ def test_processing_audio_file_job_clears_vault_ref_and_queues_cleanup_when_dele
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", lambda *args, **kwargs: "full file transcript")
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 42.5)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 42.5)
     monkeypatch.setattr(
         "app.services.transcripts.delete_transcript_ingestion_source_audio",
         lambda *, secret_ref: (_ for _ in ()).throw(AppError(502, "vault_unavailable", "Vault is unavailable")),
@@ -16603,6 +16990,7 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         available_models_json=["gpt-4o-mini-transcribe"],
     )
     selection = make_stt_selection(config=config_one, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     login(client, email="owner-snapshot@example.com", password="password-1")
     started = client.post("/api/v1/transcripts/start", json={"title": "Imported visit", "ingestion_mode": "whole_file"})
@@ -16773,6 +17161,7 @@ def test_processing_audio_file_job_fails_when_normalized_duration_exceeds_limit(
         )
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -16831,6 +17220,7 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     uploaded = client.post(
         f"/api/v1/transcripts/{transcript_id}/audio-file",
@@ -16842,6 +17232,11 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
 
     assert processed.status is TranscriptIngestionJobStatus.failed
     assert processed.error_code == "stt_config_secret_missing"
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job_id))
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.failed
+    assert attempt.settlement_basis is ProviderSettlementBasis.measured
     assert processed.error_message == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
     assert processed.source_audio_blob is None
     assert processed.source_audio_vault_ref is not None
@@ -17677,3 +18072,214 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cle
         assert log_record.stt_transport["url"] == "http://testserver.local/stt"
     else:
         raise AssertionError("Expected generic REST STT HTTP status failure to raise an AppError")
+
+
+def _quota_generation_fixture(db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, *, suffix: str):
+    team = make_team(name=f"Quota generation {suffix}")
+    admin = make_user(email=f"quota-admin-{suffix}@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email=f"quota-owner-{suffix}@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner, name=f"Quota template {suffix}", prompt_text="Write a note.")
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=team.id, title="Quota visit",
+        current_draft_text_encrypted="Synthetic consultation source.", ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready, retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    return owner, config, template, transcript
+
+
+def test_generation_quota_rejection_rolls_back_document_attempt_and_outbox(
+    db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="reject"
+    )
+    owner.daily_token_limit = 1
+    db_session.commit()
+    with pytest.raises(AppError) as exc_info:
+        queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    assert exc_info.value.code == "quota_exceeded"
+    assert db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id)).all() == []
+    assert db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.transcript_id == transcript.id)).all() == []
+    assert db_session.scalars(select(TaskDispatchOutbox)).all() == []
+
+
+def test_generation_queue_creates_linked_attempt_and_deterministic_outbox(
+    db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="atomic"
+    )
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == document.id))
+    assert attempt is not None and attempt.status is AttemptStatus.reserved and attempt.correlation_id == document.id
+    assert dispatch is not None and dispatch.dispatch_kind is TaskDispatchKind.generation
+    assert document.celery_task_id == str(dispatch.task_id)
+    assert UUID(document.celery_task_id) == dispatch.task_id
+
+
+def test_generation_duplicate_delivery_settles_once_and_preserves_reported_usage(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="duplicate"
+    )
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    calls = []
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: (calls.append(kwargs) or '{"title":"Synthetic","content":"Output"}', {"input_tokens": 10, "output_tokens": 7, "total_tokens": 17, "duration_ms": 1}),
+    )
+    assert process_generated_document(db_session, document_id=document.id).status is GeneratedDocumentStatus.ready
+    assert process_generated_document(db_session, document_id=document.id).status is GeneratedDocumentStatus.ready
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert len(calls) == 1
+    assert attempt is not None and attempt.status is AttemptStatus.settled
+    assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units, attempt.reported_input_tokens, attempt.reported_output_tokens) == (
+        AttemptOutcome.succeeded, ProviderSettlementBasis.reported, 17, 10, 7
+    )
+
+
+def test_generation_invalid_json_and_provider_errors_settle_authoritative_attempt(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="terminal"
+    )
+    invalid = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: ("not json", {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8, "duration_ms": 1}))
+    assert process_generated_document(db_session, document_id=invalid.id).status is GeneratedDocumentStatus.failed
+    invalid_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == invalid.id))
+    assert invalid_attempt is not None and invalid_attempt.outcome is AttemptOutcome.failed and invalid_attempt.settled_units == 8
+    failed = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: (_ for _ in ()).throw(AppError(502, "llm_generation_failed", "Synthetic provider failure")))
+    assert process_generated_document(db_session, document_id=failed.id).status is GeneratedDocumentStatus.failed
+    failed_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == failed.id))
+    assert failed_attempt is not None and failed_attempt.outcome is AttemptOutcome.unknown
+    assert failed_attempt.settlement_basis is ProviderSettlementBasis.conservative_unknown
+    assert failed_attempt.settled_units == failed_attempt.reserved_units
+    generic = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic")))
+    assert process_generated_document(db_session, document_id=generic.id).status is GeneratedDocumentStatus.failed
+    generic_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == generic.id))
+    assert generic_attempt is not None and generic_attempt.outcome is AttemptOutcome.unknown
+    assert generic_attempt.settlement_basis is ProviderSettlementBasis.conservative_unknown
+
+
+def test_generation_exact_reservation_expansion_quota_failure_cancels_without_provider_call(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="expansion"
+    )
+    estimates = iter((1, 2))
+    monkeypatch.setattr("app.services.templates.estimate_token_reservation", lambda *args, **kwargs: next(estimates))
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert attempt is not None
+    owner.daily_token_limit = attempt.reserved_units
+    db_session.commit()
+    provider_calls = []
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: provider_calls.append(kwargs))
+    assert process_generated_document(db_session, document_id=document.id).status is GeneratedDocumentStatus.failed
+    db_session.refresh(document)
+    db_session.refresh(attempt)
+    assert document.status is GeneratedDocumentStatus.failed
+    assert attempt.status is AttemptStatus.cancelled
+    assert provider_calls == []
+
+
+def test_generation_exact_reservation_expands_before_dispatch(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="expand-ok"
+    )
+    estimates = iter((1, 9))
+    monkeypatch.setattr("app.services.templates.estimate_token_reservation", lambda *args, **kwargs: next(estimates))
+    document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: ('{"title":"Synthetic","content":"Output"}', {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7, "duration_ms": 1}))
+    assert process_generated_document(db_session, document_id=document.id).status is GeneratedDocumentStatus.ready
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert attempt is not None and attempt.reserved_units == 9
+
+
+def test_generation_routes_do_not_publish_directly(
+    client, db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="route"
+    )
+    monkeypatch.setattr(
+        "app.main.enqueue_generated_document_job",
+        lambda **kwargs: pytest.fail("generation route must only create outbox intent"),
+    )
+    login(client, email=owner.email, password="password-2")
+    response = client.post(f"/api/v1/transcripts/{transcript.id}/generate-output", json={"template_id": str(template.id)})
+    assert response.status_code == 202
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://user:password@stt.example.test",
+    "https://stt.example.test?token=secret",
+    "https://stt.example.test#secret",
+])
+def test_stt_schema_rejects_credential_and_request_target_components(base_url):
+    with pytest.raises(ValueError):
+        SttConfigUpsert(label="Remote", base_url=base_url, transcribe_path="/transcribe", file_field_name="file", response_text_path="text")
+    with pytest.raises(ValueError):
+        SttConfigUpsert(label="Remote", base_url="https://stt.example.test", transcribe_path="/transcribe?token=secret", file_field_name="file", response_text_path="text")
+    with pytest.raises(ValueError):
+        SttConfigUpsert(label="Remote", base_url="https://stt.example.test", transcribe_path="/transcribe#secret", file_field_name="file", response_text_path="text")
+    assert SttConfigUpsert(
+        label="Local", base_url="http://127.0.0.1:9000", transcribe_path="/transcribe",
+        file_field_name="file", response_text_path="text",
+    ).base_url == "http://127.0.0.1:9000"
+
+
+def test_saved_stt_test_sanitizes_legacy_url_before_returning_it(db_session, make_team, make_user, make_stt_config, monkeypatch):
+    team = make_team(name="Legacy STT URL")
+    admin = make_user(email="legacy-url-admin@example.com", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, base_url="http://127.0.0.1:7000", transcribe_path="/transcribe")
+    # Historic persisted values predate input validation; never echo their userinfo/query/fragment.
+    config.base_url = "http://user:password@127.0.0.1:7000?token=secret#fragment"
+    config.transcribe_path = "/transcribe?token=secret#fragment"
+    db_session.commit()
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: "ok")
+
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert result["success"] is True
+    assert result["transcribe_url"] == "http://127.0.0.1:7000/transcribe"
+    assert "password" not in str(result)
+    assert "secret" not in str(result)
+
+
+def test_provider_error_translation_keeps_only_controlled_codes(monkeypatch):
+    raw = "patient Jane Doe secret=super-secret clinical-note"
+    request = httpx.Request("POST", "https://provider.example.test/transcribe")
+    stt_response = httpx.Response(422, request=request, json={"error": {"code": raw}})
+    assert _provider_error_code_from_response(stt_response) == "invalid_request"
+    allowlisted = httpx.Response(404, request=request, json={"error": {"code": "model_not_found"}})
+    assert _provider_error_code_from_response(allowlisted) == "model_not_found"
+
+    import app.services.templates as template_service
+
+    class FakeOpenAIStatusError(Exception):
+        def __init__(self):
+            self.status_code = 422
+            self.body = {"error": {"code": raw}}
+
+    monkeypatch.setattr(template_service, "APIStatusError", FakeOpenAIStatusError)
+    openai_error = _translate_openai_generation_error(FakeOpenAIStatusError())
+    ollama_response = httpx.Response(422, request=request, json={"error": raw})
+    ollama_error = _translate_ollama_generation_error(
+        httpx.HTTPStatusError("provider failure", request=request, response=ollama_response)
+    )
+    for error in (openai_error, ollama_error):
+        assert error.details["provider_error_code"] == "invalid_request"
+        assert raw not in str(error.details)

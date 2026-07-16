@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -207,6 +207,7 @@ class HallucinationCheckStatus(str, enum.Enum):
     not_applicable = "not_applicable"
     skipped_not_configured = "skipped_not_configured"
     skipped_config_invalid = "skipped_config_invalid"
+    skipped_quota = "skipped_quota"
     failed_provider = "failed_provider"
     failed_invalid_response = "failed_invalid_response"
     checked_unchanged = "checked_unchanged"
@@ -223,6 +224,76 @@ class ProviderUsageEventType(str, enum.Enum):
     completed = "completed"
     failed = "failed"
     enqueue_failed = "enqueue_failed"
+
+
+class QuotaResource(str, enum.Enum):
+    tokens = "tokens"
+    audio_seconds = "audio_seconds"
+
+
+class QuotaPeriod(str, enum.Enum):
+    daily = "daily"
+    monthly = "monthly"
+
+
+class UserQuotaPolicyEventType(str, enum.Enum):
+    grant = "grant"
+    reset = "reset"
+    limit_change = "limit_change"
+
+
+class UserQuotaReasonCode(str, enum.Enum):
+    policy_change = "policy_change"
+    temporary_allowance = "temporary_allowance"
+    failed_job_correction = "failed_job_correction"
+    administrative_correction = "administrative_correction"
+    other = "other"
+
+
+class AttemptKind(str, enum.Enum):
+    llm_generation = "llm_generation"
+    llm_hallucination_check = "llm_hallucination_check"
+    stt_conversation = "stt_conversation"
+    stt_post_consultation_dictation = "stt_post_consultation_dictation"
+    stt_prompt_context = "stt_prompt_context"
+    stt_provider_test = "stt_provider_test"
+
+
+class AttemptStatus(str, enum.Enum):
+    reserved = "reserved"
+    submitted = "submitted"
+    settled = "settled"
+    cancelled = "cancelled"
+
+
+class AttemptOutcome(str, enum.Enum):
+    succeeded = "succeeded"
+    failed = "failed"
+    unknown = "unknown"
+    cancelled = "cancelled"
+
+
+class ProviderSettlementBasis(str, enum.Enum):
+    reported = "reported"
+    measured = "measured"
+    conservative_unknown = "conservative_unknown"
+
+
+class TaskDispatchKind(str, enum.Enum):
+    generation = "generation"
+    ingestion = "ingestion"
+
+
+class TaskDispatchState(str, enum.Enum):
+    pending = "pending"
+    published = "published"
+    cancelled = "cancelled"
+    failed = "failed"
+
+
+class TaskDispatchSourceKind(str, enum.Enum):
+    generated_document = "generated_document"
+    transcript_ingestion_job = "transcript_ingestion_job"
 
 
 class AuthEmailTokenPurpose(str, enum.Enum):
@@ -285,11 +356,18 @@ class Team(Base):
     templates: Mapped[list["PromptTemplate"]] = relationship(back_populates="team")
     quick_actions: Mapped[list["QuickAction"]] = relationship(back_populates="team")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="team")
+    provider_attempts: Mapped[list["ProviderAttempt"]] = relationship(back_populates="team", passive_deletes=True)
 
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (Index("uq_users_email_lower", text("lower(email)"), unique=True),)
+    __table_args__ = (
+        CheckConstraint("daily_token_limit IS NULL OR daily_token_limit >= 0", name="ck_users_daily_token_limit_nonnegative"),
+        CheckConstraint("monthly_token_limit IS NULL OR monthly_token_limit >= 0", name="ck_users_monthly_token_limit_nonnegative"),
+        CheckConstraint("daily_audio_seconds_limit IS NULL OR daily_audio_seconds_limit >= 0", name="ck_users_daily_audio_seconds_limit_nonnegative"),
+        CheckConstraint("monthly_audio_seconds_limit IS NULL OR monthly_audio_seconds_limit >= 0", name="ck_users_monthly_audio_seconds_limit_nonnegative"),
+        Index("uq_users_email_lower", text("lower(email)"), unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -314,6 +392,10 @@ class User(Base):
     recovery_mode: Mapped[UserRecoveryMode | None] = mapped_column(Enum(UserRecoveryMode), nullable=True)
     recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_started_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    daily_token_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_token_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_audio_seconds_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_audio_seconds_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     team: Mapped[Team | None] = relationship(back_populates="users")
     recovery_started_by: Mapped["User | None"] = relationship(
@@ -382,6 +464,12 @@ class User(Base):
     encryption_keys: Mapped[list["UserEncryptionKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(back_populates="owner")
     smart_phrases: Mapped[list["SmartPhrase"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+    quota_policy_events: Mapped[list["UserQuotaPolicyEvent"]] = relationship(
+        back_populates="target_user",
+        foreign_keys="UserQuotaPolicyEvent.target_user_id",
+        cascade="all, delete-orphan",
+    )
+    provider_attempts: Mapped[list["ProviderAttempt"]] = relationship(back_populates="owner", passive_deletes=True)
 
 
 class SecurityAuditEvent(Base):
@@ -1498,6 +1586,198 @@ class ProviderUsageEvent(Base):
     team: Mapped[Team | None] = relationship(back_populates="provider_usage_events")
     owner: Mapped[User | None] = relationship(back_populates="provider_usage_events")
     generated_document: Mapped[GeneratedDocument | None] = relationship(back_populates="provider_usage_events")
+
+
+class UserQuotaPolicyEvent(Base):
+    __tablename__ = "user_quota_policy_events"
+    __table_args__ = (
+        CheckConstraint("char_length(btrim(reason)) BETWEEN 1 AND 500", name="ck_user_quota_policy_events_reason_length"),
+        CheckConstraint("expires_at IS NULL OR expires_at > effective_at", name="ck_user_quota_policy_events_expiry_after_effective"),
+        CheckConstraint(
+            "((event_type = 'grant' AND amount > 0 AND previous_limit IS NULL AND new_limit IS NULL) OR "
+            "(event_type = 'reset' AND amount IS NULL AND previous_limit IS NULL AND new_limit IS NULL AND expires_at IS NULL) OR "
+            "(event_type = 'limit_change' AND amount IS NULL AND expires_at IS NULL "
+            "AND (previous_limit IS NULL OR previous_limit >= 0) "
+            "AND (new_limit IS NULL OR new_limit >= 0) "
+            "AND previous_limit IS DISTINCT FROM new_limit)) IS TRUE",
+            name="ck_user_quota_policy_events_event_shape",
+        ),
+        CheckConstraint(
+            "((event_type = 'grant' AND revoked_at IS NOT NULL AND revoker_user_id_snapshot IS NOT NULL "
+            "AND revocation_operation_id IS NOT NULL AND revocation_reason_code IS NOT NULL "
+            "AND char_length(btrim(revocation_reason)) BETWEEN 1 AND 500) OR "
+            "(revoker_user_id IS NULL AND revoker_user_id_snapshot IS NULL AND revocation_operation_id IS NULL "
+            "AND revoked_at IS NULL AND revocation_reason_code IS NULL AND revocation_reason IS NULL)) IS TRUE",
+            name="ck_user_quota_policy_events_revocation_shape",
+        ),
+        UniqueConstraint(
+            "operation_id",
+            "target_user_id",
+            "resource",
+            "period",
+            "event_type",
+            name="uq_uqpe_operation_target_resource_period_type",
+        ),
+        Index("ix_user_quota_policy_events_target_created", "target_user_id", "created_at"),
+        Index("ix_user_quota_policy_events_lookup", "target_user_id", "resource", "period", "effective_at"),
+        Index(
+            "ix_user_quota_policy_events_active_grant",
+            "target_user_id",
+            "resource",
+            "period",
+            "effective_at",
+            "expires_at",
+            postgresql_where=text("event_type = 'grant' AND revoked_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    target_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_user_id_snapshot: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revoker_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    revoker_user_id_snapshot: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    revocation_operation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), unique=True, nullable=True)
+    event_type: Mapped[UserQuotaPolicyEventType] = mapped_column(Enum(UserQuotaPolicyEventType), nullable=False)
+    resource: Mapped[QuotaResource] = mapped_column(Enum(QuotaResource), nullable=False)
+    period: Mapped[QuotaPeriod] = mapped_column(Enum(QuotaPeriod), nullable=False)
+    reason_code: Mapped[UserQuotaReasonCode] = mapped_column(Enum(UserQuotaReasonCode), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    previous_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    new_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revocation_reason_code: Mapped[UserQuotaReasonCode | None] = mapped_column(Enum(UserQuotaReasonCode), nullable=True)
+    revocation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    target_user: Mapped[User] = relationship(back_populates="quota_policy_events", foreign_keys=[target_user_id])
+    actor: Mapped[User | None] = relationship(foreign_keys=[actor_user_id])
+    revoker: Mapped[User | None] = relationship(foreign_keys=[revoker_user_id])
+
+
+class ProviderAttempt(Base):
+    __tablename__ = "provider_attempts"
+    __table_args__ = (
+        CheckConstraint("attempt_number >= 1", name="ck_provider_attempts_attempt_number_positive"),
+        CheckConstraint("reserved_units > 0", name="ck_provider_attempts_reserved_units_positive"),
+        CheckConstraint("settled_units IS NULL OR settled_units >= 0", name="ck_provider_attempts_settled_units_nonnegative"),
+        CheckConstraint("reported_input_tokens IS NULL OR reported_input_tokens >= 0", name="ck_provider_attempts_reported_input_tokens_nonnegative"),
+        CheckConstraint("reported_output_tokens IS NULL OR reported_output_tokens >= 0", name="ck_provider_attempts_reported_output_tokens_nonnegative"),
+        CheckConstraint("reported_total_tokens IS NULL OR reported_total_tokens >= 0", name="ck_provider_attempts_reported_total_tokens_nonnegative"),
+        CheckConstraint("measured_audio_seconds IS NULL OR measured_audio_seconds > 0", name="ck_provider_attempts_measured_audio_seconds_positive"),
+        CheckConstraint("provider_http_status IS NULL OR provider_http_status BETWEEN 100 AND 599", name="ck_provider_attempts_provider_http_status_range"),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_provider_attempts_error_code_length"),
+        CheckConstraint("provider_error_code IS NULL OR char_length(provider_error_code) <= 128", name="ck_provider_attempts_provider_error_code_length"),
+        CheckConstraint(
+            "((status = 'reserved' AND submitted_at IS NULL AND deadline_at IS NULL AND settled_at IS NULL "
+            "AND cancelled_at IS NULL AND outcome IS NULL AND settlement_basis IS NULL AND settled_units IS NULL) OR "
+            "(status = 'submitted' AND submitted_at IS NOT NULL AND deadline_at IS NOT NULL AND settled_at IS NULL "
+            "AND cancelled_at IS NULL AND outcome IS NULL AND settlement_basis IS NULL AND settled_units IS NULL) OR "
+            "(status = 'settled' AND submitted_at IS NOT NULL AND deadline_at IS NOT NULL AND settled_at IS NOT NULL "
+            "AND cancelled_at IS NULL AND outcome IN ('succeeded', 'failed', 'unknown') "
+            "AND settled_units IS NOT NULL AND settlement_basis IS NOT NULL) OR "
+            "(status = 'cancelled' AND submitted_at IS NULL AND deadline_at IS NULL AND settled_at IS NULL "
+            "AND cancelled_at IS NOT NULL AND outcome = 'cancelled' AND settlement_basis IS NULL AND settled_units IS NULL)) IS TRUE",
+            name="ck_provider_attempts_state_shape",
+        ),
+        CheckConstraint(
+            "reservation_valid_until > authorized_at",
+            name="ck_provider_attempts_reservation_valid_after_authorized",
+        ),
+        CheckConstraint(
+            "((settlement_basis = 'reported' AND resource = 'tokens' AND reported_total_tokens = settled_units) OR "
+            "(settlement_basis = 'measured' AND resource = 'audio_seconds' AND measured_audio_seconds > 0) OR "
+            "(settlement_basis = 'conservative_unknown' AND resource = 'tokens' AND reported_total_tokens IS NULL "
+            "AND settled_units = reserved_units AND outcome = 'unknown') OR settlement_basis IS NULL) IS TRUE",
+            name="ck_provider_attempts_settlement_basis_shape",
+        ),
+        CheckConstraint(
+            "((resource = 'tokens' AND measured_audio_seconds IS NULL) OR "
+            "(resource = 'audio_seconds' AND measured_audio_seconds > 0 AND reported_input_tokens IS NULL "
+            "AND reported_output_tokens IS NULL AND reported_total_tokens IS NULL)) IS TRUE",
+            name="ck_provider_attempts_resource_payload_shape",
+        ),
+        UniqueConstraint("correlation_id", "attempt_number", name="uq_provider_attempts_correlation_attempt"),
+        Index("ix_provider_attempts_owner_resource_authorized", "owner_user_id", "resource", "authorized_at"),
+        Index("ix_provider_attempts_active_reservations", "owner_user_id", "resource", "reservation_valid_until", postgresql_where=text("status = 'reserved'")),
+        Index("ix_provider_attempts_submitted_deadline", "deadline_at", postgresql_where=text("status = 'submitted'")),
+        Index("ix_provider_attempts_team_resource_settled", "team_id", "resource", "settled_at", postgresql_where=text("status = 'settled'")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    transcript_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="SET NULL"), nullable=True)
+    transcript_ingestion_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_ingestion_jobs.id", ondelete="SET NULL"), nullable=True)
+    generated_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("generated_documents.id", ondelete="SET NULL"), nullable=True)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_kind: Mapped[AttemptKind] = mapped_column(Enum(AttemptKind), nullable=False)
+    resource: Mapped[QuotaResource] = mapped_column(Enum(QuotaResource), nullable=False)
+    status: Mapped[AttemptStatus] = mapped_column(Enum(AttemptStatus), nullable=False)
+    outcome: Mapped[AttemptOutcome | None] = mapped_column(Enum(AttemptOutcome), nullable=True)
+    settlement_basis: Mapped[ProviderSettlementBasis | None] = mapped_column(Enum(ProviderSettlementBasis), nullable=True)
+    reserved_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    settled_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reported_input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reported_output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reported_total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    measured_audio_seconds: Mapped[float | None] = mapped_column(Numeric(12, 3), nullable=True)
+    provider_adapter: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reservation_valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="provider_attempts")
+    owner: Mapped[User | None] = relationship(back_populates="provider_attempts")
+    transcript: Mapped[Transcript | None] = relationship()
+    transcript_ingestion_job: Mapped[TranscriptIngestionJob | None] = relationship()
+    generated_document: Mapped[GeneratedDocument | None] = relationship()
+
+
+class TaskDispatchOutbox(Base):
+    __tablename__ = "task_dispatch_outbox"
+    __table_args__ = (
+        CheckConstraint("attempt_count >= 0", name="ck_task_dispatch_outbox_attempt_count_nonnegative"),
+        CheckConstraint("last_error_code IS NULL OR char_length(last_error_code) <= 128", name="ck_task_dispatch_outbox_last_error_code_length"),
+        CheckConstraint(
+            "(state = 'pending' AND published_at IS NULL AND cancelled_at IS NULL AND failed_at IS NULL) OR "
+            "(state = 'published' AND published_at IS NOT NULL AND cancelled_at IS NULL AND failed_at IS NULL) OR "
+            "(state = 'cancelled' AND published_at IS NULL AND cancelled_at IS NOT NULL AND failed_at IS NULL) OR "
+            "(state = 'failed' AND published_at IS NULL AND cancelled_at IS NULL AND failed_at IS NOT NULL)",
+            name="ck_task_dispatch_outbox_state_timestamps",
+        ),
+        UniqueConstraint("dispatch_kind", "source_kind", "source_id", name="uq_task_dispatch_outbox_dispatch_source"),
+        Index("ix_task_dispatch_outbox_pending_retry", "state", "next_attempt_at"),
+        Index("ix_task_dispatch_outbox_source", "source_kind", "source_id"),
+    )
+
+    task_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    dispatch_kind: Mapped[TaskDispatchKind] = mapped_column(Enum(TaskDispatchKind), nullable=False)
+    state: Mapped[TaskDispatchState] = mapped_column(Enum(TaskDispatchState), nullable=False)
+    source_kind: Mapped[TaskDispatchSourceKind] = mapped_column(Enum(TaskDispatchSourceKind), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 def transcript_expiry(days: int) -> datetime:

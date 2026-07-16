@@ -6,11 +6,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import PostConsultationDictation, PostConsultationDictationSegment, SttSelectionPurpose, Transcript, User, utcnow
+from app.models import AttemptKind, PostConsultationDictation, PostConsultationDictationSegment, SttSelectionPurpose, Transcript, User, utcnow
 from app.schemas import PostConsultationDictationDetail
-from app.services.audio import enforce_whole_file_duration_limit, enforce_whole_file_upload_size, normalize_audio_to_wav_16k_mono
+from app.services.audio import enforce_whole_file_duration_limit, enforce_whole_file_upload_size, normalize_audio_to_wav_16k_mono, normalized_wav_duration_seconds
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
-from app.services.stt import transcribe_with_team_stt
+from app.services.stt import transcribe_metered_team_stt
 from app.services.transcripts import get_active_owner_transcript
 
 
@@ -134,14 +134,20 @@ def transcribe_prompt_context_audio(
     transcript_id: UUID,
     audio_bytes: bytes,
     filename: str,
+    attempt_kind: AttemptKind,
 ) -> str:
     transcript = _get_owner_transcript(db, owner, transcript_id=transcript_id)
     enforce_whole_file_upload_size(audio_bytes=audio_bytes)
     normalized_audio = normalize_audio_to_wav_16k_mono(audio_bytes=audio_bytes, source_filename=filename)
     enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
-    transcript_text = transcribe_with_team_stt(
+    measured_duration_seconds = normalized_wav_duration_seconds(audio_bytes=normalized_audio.data)
+    transcript_text = transcribe_metered_team_stt(
         db,
         team_id=transcript.team_id,
+        owner_user_id=owner.id,
+        transcript_id=transcript.id,
+        attempt_kind=attempt_kind,
+        measured_duration_seconds=measured_duration_seconds,
         purpose=SttSelectionPurpose.post_consultation_dictation,
         audio_bytes=normalized_audio.data,
         filename=normalized_audio.filename,
@@ -166,6 +172,7 @@ def transcribe_post_consultation_dictation_audio(
         transcript_id=transcript_id,
         audio_bytes=audio_bytes,
         filename=filename,
+        attempt_kind=AttemptKind.stt_post_consultation_dictation,
     )
 
 
@@ -177,7 +184,6 @@ def append_post_consultation_dictation_audio(
     audio_bytes: bytes,
     filename: str,
 ) -> PostConsultationDictation:
-    transcript, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
     transcript_text = transcribe_post_consultation_dictation_audio(
         db,
         owner,
@@ -185,6 +191,7 @@ def append_post_consultation_dictation_audio(
         audio_bytes=audio_bytes,
         filename=filename,
     )
+    transcript, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
     next_sequence_no = (
         db.scalar(
             select(func.coalesce(func.max(PostConsultationDictationSegment.sequence_no), 0)).where(

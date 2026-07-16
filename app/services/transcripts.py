@@ -1,6 +1,7 @@
 import logging
 import os
 import hashlib
+from math import ceil
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
+    GeneratedDocument,
     Transcript,
     TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
@@ -22,20 +24,34 @@ from app.models import (
     TranscriptVersion,
     TranscriptWorkingNoteMode,
     User,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
+    ProviderAttempt,
+    QuotaResource,
+    TaskDispatchKind,
     transcript_expiry,
     utcnow,
 )
 from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS, TranscriptCreate, TranscriptStart, WorkingNoteUpdate
 from app.services.audio import (
+    WHOLE_FILE_MAX_DURATION_SECONDS,
     enforce_whole_file_duration_limit,
     inspect_audio_duration_seconds,
     normalize_audio_to_wav_16k_mono,
-    probe_audio_duration_seconds,
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import ensure_redaction_run_for_transcript_version
+from app.services.quotas import (
+    cancel_provider_attempt,
+    mark_provider_attempt_submitted,
+    reserve_provider_attempt,
+    settle_provider_attempt_audio,
+)
 from app.services.security_audit import record_security_event
-from app.services.stt import ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
+from app.services.task_outbox import add_pending_task_dispatch
+from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_transcripts
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
     read_transcript_ingestion_source_audio,
@@ -46,6 +62,11 @@ LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DU
 LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS = float(os.getenv("LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS", "600"))
 WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", str(4 * 60 * 60)))
+INGESTION_RESERVATION_VALIDITY_SECONDS = int(os.getenv("INGESTION_RESERVATION_VALIDITY_SECONDS", "900"))
+INGESTION_PROVIDER_DEADLINE_SECONDS = max(
+    int(os.getenv("INGESTION_PROVIDER_DEADLINE_SECONDS", str(int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300))),
+    int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300,
+)
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 transcript_retention_logger = logging.getLogger("openscribe.transcript_retention")
@@ -1231,7 +1252,14 @@ def delete_transcripts(
         _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
         for transcript_id in unique_ids
     ]
-    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcripts])
+    deleting_transcript_ids = [transcript.id for transcript in transcripts]
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=deleting_transcript_ids)
+    terminalize_attempts_for_transcripts(db, deleting_transcript_ids, utcnow())
+    delete_dispatches_for_sources(
+        db,
+        generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(deleting_transcript_ids)))),
+        ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(deleting_transcript_ids)))),
+    )
     deleted_count = len(transcripts)
     deleted_ids = [str(transcript.id) for transcript in transcripts]
     for transcript in transcripts:
@@ -1263,7 +1291,6 @@ def delete_expired_transcripts(
             .where(Transcript.retention_expires_at <= comparison_now)
             .order_by(Transcript.retention_expires_at.asc(), Transcript.id.asc())
             .limit(batch_size)
-            .with_for_update(skip_locked=True)
         )
     )
     if not transcripts:
@@ -1271,6 +1298,12 @@ def delete_expired_transcripts(
 
     transcript_ids = [transcript.id for transcript in transcripts]
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
+    terminalize_attempts_for_transcripts(db, transcript_ids, comparison_now)
+    delete_dispatches_for_sources(
+        db,
+        generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(transcript_ids)))),
+        ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))),
+    )
     for transcript in transcripts:
         db.delete(transcript)
     db.commit()
@@ -1280,6 +1313,34 @@ def delete_expired_transcripts(
         extra={"deleted_count": len(transcripts)},
     )
     return len(transcripts)
+
+
+def _queue_ingestion_attempt_and_dispatch(
+    db: Session, *, job: TranscriptIngestionJob, transcript: Transcript, measured_duration_seconds: float,
+) -> None:
+    """Create immutable audio reservation and deterministic dispatch with job."""
+    now = utcnow()
+    attempt = reserve_provider_attempt(
+        db,
+        team_id=transcript.team_id,
+        owner_user_id=transcript.owner_user_id,
+        resource=QuotaResource.audio_seconds,
+        attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id,
+        attempt_number=1,
+        reserved_units=ceil(measured_duration_seconds),
+        reservation_valid_until=now + timedelta(seconds=INGESTION_RESERVATION_VALIDITY_SECONDS),
+        authorized_at=now,
+        transcript_id=transcript.id,
+        transcript_ingestion_job_id=job.id,
+        provider_adapter=job.stt_adapter_kind,
+        provider_model=job.stt_model_name,
+        measured_audio_seconds=measured_duration_seconds,
+    )
+    dispatch = add_pending_task_dispatch(db, dispatch_kind=TaskDispatchKind.ingestion, source_id=job.id)
+    job.celery_task_id = str(dispatch.task_id)
+    db.add(attempt)
+    db.add(job)
 
 
 def queue_audio_chunk_ingestion(
@@ -1380,10 +1441,14 @@ def queue_audio_chunk_ingestion(
     db.add(job)
     db.add(transcript)
     try:
+        db.flush()
+        _queue_ingestion_attempt_and_dispatch(
+            db, job=job, transcript=transcript, measured_duration_seconds=measured_duration_seconds,
+        )
         db.commit()
     except Exception:
+        db.rollback()
         if source_audio_vault_ref is not None:
-            db.rollback()
             queue_orphan_transcript_audio_after_rollback(db, secret_ref=source_audio_vault_ref)
         raise
     db.refresh(transcript)
@@ -1445,47 +1510,27 @@ def queue_audio_file_ingestion(
         )
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
-    resolved_source_audio_duration_seconds = source_audio_duration_seconds
-    if resolved_source_audio_duration_seconds is None:
-        try:
-            resolved_source_audio_duration_seconds = probe_audio_duration_seconds(
-                audio_bytes=source_audio_blob,
-                source_filename=filename,
-            )
-        except AppError as exc:
-            if exc.code != "audio_duration_probe_failed":
-                raise
-            resolved_source_audio_duration_seconds = None
-    if resolved_source_audio_duration_seconds is not None:
-        _enforce_whole_file_hourly_usage_budget(
-            db,
-            owner=owner,
-            source_audio_size_bytes=len(source_audio_blob),
-            source_audio_duration_seconds=resolved_source_audio_duration_seconds,
-            exclude_job_ids=exclude_job_ids,
+    # Quota and hourly-duration enforcement must use server inspection, never
+    # caller or retry-row declarations. inspect() includes normalization fallback.
+    try:
+        resolved_source_audio_duration_seconds = inspect_audio_duration_seconds(
+            audio_bytes=source_audio_blob, source_filename=filename,
         )
-    elif WHOLE_FILE_HOURLY_UPLOAD_BYTES > 0:
-        used_bytes, _ = ingestion_usage_totals_for_owner(
-            db,
-            owner_user_id=owner.id,
-            since=utcnow() - timedelta(hours=1),
-            job_kinds=(TranscriptIngestionJobKind.audio_file,),
-            duration_column=TranscriptIngestionJob.source_audio_duration_seconds,
-            exclude_job_ids=exclude_job_ids,
+    except AppError as exc:
+        if exc.code not in {"audio_duration_probe_failed", "audio_normalization_failed"}:
+            raise
+        raise AppError(422, "business_rule_violation", "Audio duration could not be inspected", {"field": "audio"}) from exc
+    if resolved_source_audio_duration_seconds > WHOLE_FILE_MAX_DURATION_SECONDS:
+        raise AppError(
+            422, "business_rule_violation", "Audio duration exceeds the current maximum",
+            {"field": "audio", "max_duration_seconds": WHOLE_FILE_MAX_DURATION_SECONDS,
+             "duration_seconds": round(resolved_source_audio_duration_seconds, 3)},
         )
-        projected_bytes = used_bytes + len(source_audio_blob)
-        if projected_bytes > WHOLE_FILE_HOURLY_UPLOAD_BYTES:
-            raise AppError(
-                429,
-                "rate_limited",
-                "Whole-file hourly upload size limit exceeded",
-                {
-                    "window": "1 hour",
-                    "max_bytes": WHOLE_FILE_HOURLY_UPLOAD_BYTES,
-                    "used_bytes": used_bytes,
-                    "requested_bytes": len(source_audio_blob),
-                },
-            )
+    _enforce_whole_file_hourly_usage_budget(
+        db, owner=owner, source_audio_size_bytes=len(source_audio_blob),
+        source_audio_duration_seconds=resolved_source_audio_duration_seconds,
+        exclude_job_ids=exclude_job_ids,
+    )
 
     job_id = uuid4()
     persisted_source_audio_vault_ref = source_audio_vault_ref
@@ -1527,10 +1572,15 @@ def queue_audio_file_ingestion(
     db.add(job)
     db.add(transcript)
     try:
+        db.flush()
+        _queue_ingestion_attempt_and_dispatch(
+            db, job=job, transcript=transcript,
+            measured_duration_seconds=resolved_source_audio_duration_seconds,
+        )
         db.commit()
     except Exception:
+        db.rollback()
         if source_audio_vault_ref is None and persisted_source_audio_vault_ref is not None:
-            db.rollback()
             queue_orphan_transcript_audio_after_rollback(db, secret_ref=persisted_source_audio_vault_ref)
         raise
     db.refresh(transcript)
@@ -1571,16 +1621,21 @@ def retry_audio_file_ingestion(
         raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
 
     source_audio_blob = _read_retry_source_audio(latest_job)
-    source_audio_duration_seconds = latest_job.source_audio_duration_seconds
     transcript, retry_job = queue_audio_file_ingestion(
         db,
         owner,
         transcript_id=transcript.id,
         filename=latest_job.source_filename,
         source_audio_blob=source_audio_blob,
-        source_audio_duration_seconds=source_audio_duration_seconds,
+        # Always re-inspect retry bytes. Historic job duration is telemetry only.
+        source_audio_duration_seconds=None,
+        # Transfer the durable retry object instead of creating a second Vault
+        # copy.  The old row is cleared in the same transaction below.
+        source_audio_vault_ref=latest_job.source_audio_vault_ref,
         exclude_job_ids=(latest_job.id,),
     )
+    latest_job.source_audio_blob = None
+    latest_job.source_audio_vault_ref = None
     latest_job.source_audio_size_bytes = None
     latest_job.source_audio_duration_seconds = None
     db.add(latest_job)
@@ -1655,9 +1710,26 @@ def _lock_ingestion_job_and_transcript(
     return job, transcript
 
 
+def _ingestion_attempt(db: Session, *, job_id: UUID, lock: bool = False) -> ProviderAttempt | None:
+    statement = select(ProviderAttempt).where(
+        ProviderAttempt.correlation_id == job_id,
+        ProviderAttempt.attempt_number == 1,
+        ProviderAttempt.attempt_kind == AttemptKind.stt_conversation,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
 def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript) -> None:
     """Durably queue retry-audio cleanup before root cascade, then release its lock."""
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id])
+    terminalize_attempts_for_transcripts(db, [transcript.id], utcnow())
+    delete_dispatches_for_sources(
+        db,
+        generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id == transcript.id))),
+        ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id))),
+    )
     db.delete(transcript)
     db.commit()
     process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
@@ -1667,8 +1739,18 @@ def _claim_queued_ingestion_job(
     db: Session,
     *,
     job_id: UUID,
-) -> tuple[TranscriptIngestionJob, Transcript] | TranscriptIngestionJob | None:
+) -> tuple[TranscriptIngestionJob, Transcript, ProviderAttempt] | TranscriptIngestionJob | None:
     """Claim queued work once; terminal, in-flight, missing, and expired work is idempotent."""
+    identity = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job_id))
+    if identity is None:
+        _release_ingestion_transaction(db)
+        return None
+    # Initial identity read only discovers parent. State decisions occur after
+    # this required User -> Transcript -> Job -> ProviderAttempt lock order.
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    if owner is None:
+        _release_ingestion_transaction(db)
+        return None
     locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
     if locked is None:
         return None
@@ -1679,39 +1761,41 @@ def _claim_queued_ingestion_job(
         return None
     if job.status in _TERMINAL_INGESTION_JOB_STATUSES or job.status is TranscriptIngestionJobStatus.processing:
         return _return_released_ingestion_job(db, job)
-
-    claimed_job_id = job.id
-    # SQLite ignores SELECT ... FOR UPDATE. End its read transaction before
-    # conditional UPDATE so competing workers observe the committed claim
-    # instead of colliding on an older read snapshot.
-    if db.get_bind().dialect.name == "sqlite":
-        db.commit()
-
+    attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+    if attempt is None or attempt.status is not AttemptStatus.reserved or attempt.owner_user_id != owner.id:
+        if attempt is not None and attempt.status is AttemptStatus.reserved:
+            cancel_provider_attempt(db, attempt_id=attempt.id)
+        _mark_job_failed(db, transcript, job, code="ingestion_attempt_missing", message="Ingestion accounting state is missing or conflicts")
+        return _return_released_ingestion_job(db, job)
+    now = utcnow()
+    # Keep DB conditional transition even under row locks: SQLite ignores
+    # FOR UPDATE and duplicate worker delivery must still lose safely.
     claim = db.execute(
         update(TranscriptIngestionJob)
         .where(
-            TranscriptIngestionJob.id == claimed_job_id,
+            TranscriptIngestionJob.id == job.id,
             TranscriptIngestionJob.status == TranscriptIngestionJobStatus.queued,
         )
-        .values(status=TranscriptIngestionJobStatus.processing, started_at=utcnow())
+        .values(status=TranscriptIngestionJobStatus.processing, started_at=now)
     )
     if claim.rowcount != 1:
         _release_ingestion_transaction(db)
         return None
+    db.expire(job)
+    db.refresh(job)
+    mark_provider_attempt_submitted(
+        db, attempt_id=attempt.id,
+        deadline_at=now + timedelta(seconds=INGESTION_PROVIDER_DEADLINE_SECONDS), now=now,
+    )
     db.commit()
-    locked = _lock_ingestion_job_and_transcript(db, job_id=claimed_job_id)
-    if locked is None:
-        return None
-    job, transcript = locked
-    if transcript_is_expired(transcript):
-        _delete_expired_ingestion_transcript(db, transcript=transcript)
-        return None
-    if job.status is not TranscriptIngestionJobStatus.processing:
-        return _return_released_ingestion_job(db, job)
+    db.refresh(job)
+    db.refresh(transcript)
+    db.refresh(attempt)
     db.expunge(job)
     db.expunge(transcript)
+    db.expunge(attempt)
     _release_ingestion_transaction(db)
-    return job, transcript
+    return job, transcript, attempt
 
 
 def _queued_ingestion_job_for_preparation(
@@ -1743,6 +1827,24 @@ def _queued_ingestion_job_for_preparation(
     return _return_released_ingestion_job(db, job)
 
 
+def _delete_if_ingestion_root_expired_before_preparation(db: Session, *, job_id: UUID) -> bool:
+    """Expiry is definite pre-dispatch work; do not read Vault audio first."""
+    identity = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job_id))
+    if identity is None:
+        _release_ingestion_transaction(db)
+        return True
+    db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+    if locked is None:
+        return True
+    _job, transcript = locked
+    if not transcript_is_expired(transcript):
+        _release_ingestion_transaction(db)
+        return False
+    _delete_expired_ingestion_transcript(db, transcript=transcript)
+    return True
+
+
 def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
     job.status = TranscriptIngestionJobStatus.failed
     job.error_code = code
@@ -1752,6 +1854,48 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
     db.add(job)
     db.add(transcript)
     db.commit()
+
+
+def _terminalize_ingestion_job_with_attempt(
+    db: Session, *, job_id: UUID, code: str, message: str, outcome: AttemptOutcome,
+) -> TranscriptIngestionJob | None:
+    """Terminalize one worker failure; never leave a reservation orphaned."""
+    db.rollback()
+    identity = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job_id))
+    if identity is not None and identity.owner_user_id is not None:
+        db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+    if locked is None:
+        # Root deletion nulls attempt content links but not quota accounting.
+        attempt_identity = _ingestion_attempt(db, job_id=job_id)
+        if attempt_identity is not None and attempt_identity.owner_user_id is not None:
+            db.scalar(select(User).where(User.id == attempt_identity.owner_user_id).with_for_update())
+        attempt = _ingestion_attempt(db, job_id=job_id, lock=True)
+        if attempt is not None and attempt.status is AttemptStatus.submitted:
+            settle_provider_attempt_audio(db, attempt_id=attempt.id,
+                                          measured_audio_seconds=attempt.measured_audio_seconds, outcome=outcome)
+            db.commit()
+        elif attempt is not None and attempt.status is AttemptStatus.reserved:
+            cancel_provider_attempt(db, attempt_id=attempt.id)
+            db.commit()
+        return None
+    job, transcript = locked
+    attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+    if transcript_is_expired(transcript):
+        _delete_expired_ingestion_transcript(db, transcript=transcript)
+        return None
+    if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+        return _return_released_ingestion_job(db, job)
+    if attempt is None:
+        _mark_job_failed(db, transcript, job, code="ingestion_attempt_missing", message="Ingestion accounting state is missing")
+    else:
+        if attempt.status is AttemptStatus.reserved:
+            cancel_provider_attempt(db, attempt_id=attempt.id)
+        elif attempt.status is AttemptStatus.submitted:
+            settle_provider_attempt_audio(db, attempt_id=attempt.id,
+                                          measured_audio_seconds=attempt.measured_audio_seconds, outcome=outcome)
+        _mark_job_failed(db, transcript, job, code=code, message=message)
+    return _return_released_ingestion_job(db, job)
 
 
 def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
@@ -1845,13 +1989,39 @@ def _mark_stale_live_chunk_jobs_failed(db: Session, *, transcript: Transcript) -
     if not stale_jobs:
         return False
 
+    # Reconciliation may be reached from a read path; retain worker lock order
+    # before changing either job or accounting state.
+    owner = db.scalar(select(User).where(User.id == transcript.owner_user_id).with_for_update())
+    if owner is None:
+        db.rollback()
+        return False
+    locked_transcript = db.scalar(select(Transcript).where(Transcript.id == transcript.id).with_for_update())
+    if locked_transcript is None:
+        db.rollback()
+        return False
     now = utcnow()
     for job in stale_jobs:
-        job.status = TranscriptIngestionJobStatus.failed
-        job.error_code = "ingestion_processing_stale"
-        job.error_message = "Live audio chunk processing timed out before completion"
-        job.completed_at = now
-        db.add(job)
+        locked_job = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job.id).with_for_update())
+        if locked_job is None or locked_job.status not in {TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing}:
+            continue
+        attempt = _ingestion_attempt(db, job_id=locked_job.id, lock=True)
+        if attempt is not None:
+            if attempt.status is AttemptStatus.reserved:
+                cancel_provider_attempt(db, attempt_id=attempt.id, now=now)
+            elif attempt.status is AttemptStatus.submitted:
+                # Do not declare a valid long-running provider request stale
+                # before its provider timeout/deadline has elapsed.
+                if attempt.deadline_at is not None and attempt.deadline_at > now:
+                    continue
+                settle_provider_attempt_audio(
+                    db, attempt_id=attempt.id, measured_audio_seconds=attempt.measured_audio_seconds,
+                    outcome=AttemptOutcome.unknown, now=now,
+                )
+        locked_job.status = TranscriptIngestionJobStatus.failed
+        locked_job.error_code = "ingestion_processing_stale"
+        locked_job.error_message = "Live audio chunk processing timed out before completion"
+        locked_job.completed_at = now
+        db.add(locked_job)
     db.commit()
     return True
 
@@ -1923,6 +2093,9 @@ def process_transcript_ingestion_job(
     if preparation_job.status is not TranscriptIngestionJobStatus.queued:
         return preparation_job
 
+    if _delete_if_ingestion_root_expired_before_preparation(db, job_id=job_id):
+        return None
+
     try:
         audio_bytes = _read_queued_source_audio(db, preparation_job, legacy_audio_bytes=legacy_audio_bytes)
         normalized_audio = normalize_audio_to_wav_16k_mono(
@@ -1941,7 +2114,7 @@ def process_transcript_ingestion_job(
             return None
         if isinstance(claimed, TranscriptIngestionJob):
             return claimed
-        job, transcript = claimed
+        job, transcript, claimed_attempt = claimed
 
         # Successful queued -> processing claim is irreversible dispatch
         # boundary. Deletion after this point may discard only late results.
@@ -1972,13 +2145,35 @@ def process_transcript_ingestion_job(
         _release_ingestion_transaction(db)
         locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
         if locked is None:
+            # Root may have been manually deleted while provider was running.
+            _terminalize_ingestion_job_with_attempt(
+                db, job_id=job_id, code="ingestion_source_deleted",
+                message="Transcript source was deleted during ingestion", outcome=AttemptOutcome.unknown,
+            )
             return None
         job, transcript = locked
         if transcript_is_expired(transcript):
             _delete_expired_ingestion_transcript(db, transcript=transcript)
             return None
         if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+            # Another reconciliation path may have terminalized the job while
+            # the provider was in flight. Provider expenditure still settles.
+            terminal_attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+            if terminal_attempt is not None and terminal_attempt.status is AttemptStatus.submitted:
+                settle_provider_attempt_audio(
+                    db,
+                    attempt_id=terminal_attempt.id,
+                    measured_audio_seconds=terminal_attempt.measured_audio_seconds,
+                    outcome=AttemptOutcome.unknown,
+                )
+                db.commit()
             return _return_released_ingestion_job(db, job)
+        attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+        if attempt is None or attempt.status is not AttemptStatus.submitted:
+            return _terminalize_ingestion_job_with_attempt(
+                db, job_id=job.id, code="ingestion_attempt_conflict",
+                message="Ingestion accounting state conflicts", outcome=AttemptOutcome.unknown,
+            )
         now = utcnow()
         job.result_text_encrypted = encrypt_text_for_owner(
             db,
@@ -1989,6 +2184,10 @@ def process_transcript_ingestion_job(
             plaintext=transcript_text,
         )
         job.completed_at = now
+        settle_provider_attempt_audio(
+            db, attempt_id=attempt.id, measured_audio_seconds=attempt.measured_audio_seconds,
+            outcome=AttemptOutcome.succeeded,
+        )
 
         if job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
@@ -2040,32 +2239,15 @@ def process_transcript_ingestion_job(
             db.refresh(transcript)
             _apply_completed_live_chunks(db, transcript)
     except AppError as exc:
-        _release_ingestion_transaction(db)
-        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
-        if locked is None:
-            return None
-        job, transcript = locked
-        if transcript_is_expired(transcript):
-            _delete_expired_ingestion_transcript(db, transcript=transcript)
-            return None
-        if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
-            return _return_released_ingestion_job(db, job)
-        _mark_job_failed(db, transcript, job, code=exc.code, message=exc.message)
-        return _return_released_ingestion_job(db, job)
-    except Exception as exc:  # pragma: no cover
-        _release_ingestion_transaction(db)
-        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
-        if locked is None:
-            return None
-        job, transcript = locked
-        if transcript_is_expired(transcript):
-            _delete_expired_ingestion_transcript(db, transcript=transcript)
-            return None
-        if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
-            return _return_released_ingestion_job(db, job)
-        _mark_job_failed(db, transcript, job, code="ingestion_failed", message="Transcript ingestion job failed")
-        _release_ingestion_transaction(db)
-        raise AppError(502, "ingestion_failed", "Transcript ingestion job failed") from exc
+        return _terminalize_ingestion_job_with_attempt(
+            db, job_id=job_id, code=exc.code, message=exc.message,
+            outcome=AttemptOutcome.failed,
+        )
+    except Exception:  # pragma: no cover
+        return _terminalize_ingestion_job_with_attempt(
+            db, job_id=job_id, code="ingestion_failed", message="Transcript ingestion job failed",
+            outcome=AttemptOutcome.unknown,
+        )
 
     return _return_released_ingestion_job(db, job)
 

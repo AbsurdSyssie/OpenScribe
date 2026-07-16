@@ -20,6 +20,7 @@
 | Team asset defaults? | Read-only team summary; leaders manage team assets; sidebar Global defaults manages platform seeds. |
 | Account creation? | Team Members creates normal team users; separate System admins area manages admin-only accounts. |
 | Member actions? | State-aware menu; consequence-specific confirmation for destructive/high-risk actions. |
+| Quota management? | System-admin-only **Manage quotas** link in selected team's Members panel. URL state is `team_id`, `team_tab=members`, and `member_id`; only eligible normal members resolve. |
 | Account requests? | Global review; approval selects team/role; rejection requires reason. |
 | Usage? | Global service view plus dedicated team Usage tab with scoped charts and user aggregate table; metadata only. |
 | Audit? | Safe filters in URL; never sensitive values. |
@@ -79,6 +80,10 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 - Team `defaults` also shows a read-only summary of team templates and quick actions, linking to team-leader management where appropriate. System admins do not edit existing team-owned assets there. Sidebar **Global defaults** owns platform default template/quick-action CRUD and does not overwrite existing team assets when changed.
 - Team `members` provides **Add member** for a normal user in selected team; `team_id` is fixed by workspace and form chooses team role. Separate sidebar **System admins** area owns admin-only account creation/lifecycle. Normal member form never exposes an `is_system_admin` toggle.
 - Each member row has a state-aware Actions menu for suspend/reactivate, activation/password/account recovery, MFA reset, break-glass recovery, and deletion. Only valid actions are shown. Destructive/high-risk actions require consequence-specific confirmation; email actions submit with explicit outcome feedback. Server-side authorization/state validation remains authoritative.
+- Eligible normal member rows also expose **Manage quotas**. It links to `/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`; no selected member, other team tab, invalid member, system-admin target, or self-target loads quota detail.
+- Quota detail has four UTC windows: daily/monthly Tokens and daily/monthly Audio. Fields are Used, Reserved, Base, Temporary, Effective, Remaining, and reset time. `NULL` displays as **Unlimited**; zero base/effective as **Disabled**.
+- Quota forms cover base limits, allowance for one or both periods, selected-window reset or all-four reset, and active-grant revocation. Each requires a reason code plus non-empty free reason, CSRF token, and generated UUID operation id (or revocation operation id). Success uses POST/303/GET back to the canonical member panel; validation errors re-render that panel. No JSON quota-management API is part of this slice.
+- Free reasons are quota-ledger-only administrative text: never include patient/clinical data. Security audit receives controlled reason code and safe operation metadata, never free reason text. Actor/revoker UUID snapshots remain after user deletion.
 - Account-request approval/rejection lives entirely in global sidebar **Requests**. Approval requires target team and role, then links to created member in that team workspace. Rejection requires a reason and remains metadata-only.
 - Global **Usage** defaults to all-team aggregates and labels that scope explicitly. A validated `team_id` filters every aggregate and changes the visible scope label to that team's name. Team rows/charts link to URL-scoped team usage, with user drill-down constrained to that team. Existing metadata-only boundary remains unchanged.
 - Global **Audit** encodes lookback, team, actor, action, outcome, and resource filter state in validated URL query parameters. URLs may contain safe operational metadata only, never content, secrets, tokens, or plaintext session identifiers.
@@ -128,6 +133,11 @@ Related sources: `docs/admin_brief.md`, `docs/usage_tab.md`, `docs/auth.md`, `do
 | Suspend user | `POST /admin/users/{user_id}/suspend` | `admin.suspend_user`; immediate session revocation | [x] |
 | Reactivate user | `POST /admin/users/{user_id}/reactivate` | `admin.reactivate_user` | [x] |
 | Delete user | `POST /admin/users/{user_id}/delete` | `admin.delete_user`; transcript-derived/personal asset cleanup and metadata reassignment | [x] |
+| Manage user quota detail | `GET /admin?team_id=<id>&team_tab=members&member_id=<id>` | system-admin read model; eligible normal team member only | [x] |
+| Set four base quota limits | `POST /admin/users/{user_id}/quotas/limits` | `admin_quotas.update_user_base_quotas_batch`; UUID idempotency, reason code/reason | [x] |
+| Add token/audio allowance | `POST /admin/users/{user_id}/quota-grants` | `admin_quotas.grant_user_quota_batch`; one or both UTC periods | [x] |
+| Reset selected/all quota windows | `POST /admin/users/{user_id}/quota-resets` | `admin_quotas.reset_user_quota_batch`; reporting telemetry unchanged | [x] |
+| Revoke active allowance | `POST /admin/users/{user_id}/quota-grants/{grant_id}/revoke` | `admin_quotas.revoke_user_quota_grant`; revocation UUID idempotency | [x] |
 | Send activation | `POST /admin/users/{user_id}/send-activation` | account activation/recovery service | [x] |
 | Send password reset | `POST /admin/users/{user_id}/send-password-reset` | account recovery service | [ ] |
 | Break-glass password reset | `POST /admin/users/{user_id}/break-glass-password-reset` | account recovery service; explicit high-risk flow | [ ] |
@@ -219,6 +229,8 @@ Preserve EMIS allowed-section validation, structured/freeform conditional fields
 | Security audit metadata/signals, lookback, actor/action/outcome/resource filters, caps | `GET /admin?tab=audit` -> audit query/detection services and presentation helpers | [ ] |
 
 Both areas must remain metadata-only: IDs, statuses, counts, durations, token/cost estimates, provider/model names, failure codes. No transcript, note, prompt, response, secret, token, or plaintext session identifier.
+
+Quota policy is not Usage reporting. Reporting aggregates remain historical telemetry. Quota enforcement reads authoritative provider-attempt reservations/settlements; reset changes quota accounting start only, never deletes or rewrites reporting telemetry, and accepted pending reservations remain counted.
 
 ## Client-side behavior that can be lost without changing routes
 

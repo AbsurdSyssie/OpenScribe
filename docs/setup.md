@@ -51,7 +51,7 @@ alembic upgrade head
 
 This starts Docker services, initializes or unseals the persistent local Vault, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
-It also starts a local Celery worker and Celery Beat scheduler by default. Queued transcript-ingestion jobs are processed during manual testing, and Beat queues transcript-retention, retry-audio Vault, and provider-secret Vault cleanup every 10 seconds.
+It also starts a local Celery worker and Celery Beat scheduler by default. Queued transcript-ingestion jobs are processed during manual testing, and Beat queues transcript-retention, retry-audio Vault, provider-secret Vault cleanup, task-dispatch outbox publishing, and quota lifecycle cleanup every 10 seconds.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server, Celery worker, and Celery Beat processes so stale processes do not keep consuming or scheduling jobs with old Python code.
 It also checks the configured FastAPI port before starting Celery or Brave; if another process still owns the port, it exits with a direct `APP_PORT`/stop-process message instead of leaving a worker running after server startup fails.
 It exports derived dev defaults such as `APP_PORT` and `APP_BIND_HOST` before running child Python checks, so missing optional `.env` values still use the documented defaults.
@@ -66,6 +66,7 @@ Important:
 - expired transcript roots become inaccessible at their fixed `retention_expires_at` timestamp; cleanup physically deletes roots and cascading transcript-derived children on the next 10-second scheduler pass
 - retention cleanup drains expired roots in locked 100-row batches; queued cleanup messages expire after 10 seconds so a stopped worker does not later replay stale scheduler backlog
 - production deployments must run both a Celery worker and Celery Beat with the same application configuration; a worker without Beat does not schedule retention or durable Vault cleanup
+- quota accounting also requires both processes: Beat publishes pending task-dispatch outbox rows and terminalizes stale quota reservations/submissions every 10 seconds; workers execute those tasks and provider work. Each publisher transaction claims/publishes one outbox row, so concurrent publishers cannot reuse released batch locks. Outbox publish retries are safe through deterministic task IDs, and lifecycle cleanup locks normal owner/source parents before attempts (never outbox-first), safely cancels stale undispatched reservations, or conservatively settles stale submitted token attempts.
 - if port `APP_PORT` is owned by an unrelated process, stop it or change `APP_PORT` in `.env`
 - `APP_HOST` defaults to `127.0.0.1`
 - `./start-dev.sh` keeps the FastAPI frontend localhost-only by default; off-box access requires explicit `APP_HOST=0.0.0.0` and `DEV_ALLOW_REMOTE_BIND=true`
@@ -74,6 +75,16 @@ Important:
 - `./start-dev.sh` now purges queued Celery tasks before the dev worker starts; set `DEV_PURGE_CELERY_QUEUE=false` only if you intentionally want to keep the existing dev queue
 - otherwise the FastAPI app may be running newer code while the worker is still running stale imports
 - in practice this can leave transcript-ingestion jobs stuck at `queued` or transcripts stuck at `transcribing` until the worker is restarted
+
+### Quota accounting deployment and rollback
+
+For quota migration `c1d2e3f4a5b6`, use this production order:
+
+1. Stop or drain existing Celery Beat and workers before schema change; old workers must not run against the new dispatch/quota flow.
+2. Deploy application code and run `alembic upgrade head`.
+3. Start workers with new code, then start Beat with same configuration. Confirm both `openscribe.process_task_dispatch_outbox` and `openscribe.process_quota_lifecycle` run every 10 seconds.
+
+Do not downgrade this migration after quota use begins. Downgrade blocks if any user quota limit is populated or `user_quota_policy_events`, `provider_attempts`, or `task_dispatch_outbox` has rows. Treat rollback as an escalation/planned recovery; do not delete accounting or dispatch records merely to bypass blocker.
 
 By default, `./start-dev.sh` also seeds a reusable dev team and three dev accounts into the app database:
 

@@ -38,6 +38,7 @@ from ..services.smart_phrases import (
     update_personal_smart_phrase as update_personal_smart_phrase_service,
 )
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
+from ..models import AttemptKind
 from ..services.transcripts import (
     clear_working_note as clear_working_note_service,
     get_active_owner_transcript,
@@ -1197,12 +1198,6 @@ def upload_transcript_audio_chunk(
         chunk_sequence_no=chunk_sequence_no,
         declared_duration_seconds=declared_duration_seconds,
     )
-    try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
-    except Exception as exc:
-        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue live chunk ingestion")
-        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue live chunk ingestion") from exc
-    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
         transcript=transcript_detail_response(db, refreshed_transcript),
@@ -1229,12 +1224,6 @@ def upload_transcript_audio_file(
         filename=audio.filename or "audio.bin",
         source_audio_blob=audio_bytes,
     )
-    try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
-    except Exception as exc:
-        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion")
-        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion") from exc
-    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
         transcript=transcript_detail_response(db, refreshed_transcript),
@@ -1256,11 +1245,6 @@ def retry_transcript_audio_file(
         context.user,
         transcript_id=transcript_id,
     )
-    try:
-        task_result = main_module.enqueue_transcript_ingestion_job(job_id=job.id)
-    except Exception as exc:
-        mark_ingestion_job_enqueue_failed(db, job_id=job.id, message="Could not enqueue file ingestion retry")
-        raise AppError(502, "ingestion_enqueue_failed", "Could not enqueue file ingestion retry") from exc
     clear_ingestion_retry_source(
         db,
         job_id=previous_job.id,
@@ -1268,7 +1252,6 @@ def retry_transcript_audio_file(
         clear_accounting=False,
         delete_backing_secret=True,
     )
-    job = attach_task_id_to_ingestion_job(db, job_id=job.id, task_id=getattr(task_result, "id", None))
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
         transcript=transcript_detail_response(db, refreshed_transcript),
@@ -1345,6 +1328,7 @@ def preview_quick_action_context_audio_file(
         transcript_id=transcript_id,
         audio_bytes=audio_bytes,
         filename=audio.filename or "audio.bin",
+        attempt_kind=AttemptKind.stt_prompt_context,
     )
     return PromptContextPreview(text=text)
 
@@ -1494,23 +1478,9 @@ def generate_transcript_output(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    document = None
-    try:
-        document = queue_document_generation_from_template_service(
-            db,
-            context.user,
-            transcript_id=transcript_id,
-            template_id=payload.template_id,
-            request=request,
-        )
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
-    except AppError:
-        raise
-    except Exception as exc:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue note generation")
-        raise AppError(502, "generation_enqueue_failed", "Could not enqueue note generation") from exc
+    document = queue_document_generation_from_template_service(
+        db, context.user, transcript_id=transcript_id, template_id=payload.template_id, request=request
+    )
     return generated_document_response(db, document, actor=context.user)
 
 
@@ -1524,17 +1494,7 @@ def generate_transcript_followup(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    document = None
-    try:
-        document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=payload.prompt_text, request=request)
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
-    except AppError:
-        raise
-    except Exception as exc:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue follow-up generation")
-        raise AppError(502, "generation_enqueue_failed", "Could not enqueue follow-up generation") from exc
+    document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=payload.prompt_text, request=request)
     return generated_document_response(db, document, actor=context.user)
 
 
@@ -1548,24 +1508,10 @@ def run_transcript_quick_action(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    document = None
-    try:
-        document = queue_quick_action_generation_service(
-            db,
-            context.user,
-            transcript_id=transcript_id,
-            quick_action_id=payload.quick_action_id,
-            context_text=payload.context_text,
-            request=request,
-        )
-        task_result = main_module.enqueue_generated_document_job(document_id=document.id)
-        attach_generated_document_task_id_service(db, document_id=document.id, task_id=getattr(task_result, "id", None))
-    except AppError:
-        raise
-    except Exception as exc:
-        if document is not None:
-            mark_generated_document_enqueue_failed_service(db, document_id=document.id, message="Could not enqueue quick action generation")
-        raise AppError(502, "generation_enqueue_failed", "Could not enqueue quick action generation") from exc
+    document = queue_quick_action_generation_service(
+        db, context.user, transcript_id=transcript_id, quick_action_id=payload.quick_action_id,
+        context_text=payload.context_text, request=request,
+    )
     return generated_document_response(db, document, actor=context.user)
 
 

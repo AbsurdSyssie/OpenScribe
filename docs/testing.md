@@ -127,6 +127,17 @@ What it does:
 
 ## What the tests currently cover
 
+### Quota, dispatch, and lifecycle coverage inventory
+
+- **Migration constraints and downgrade:** `tests/test_migrations.py` verifies quota-accounting metadata-only constraints and foreign keys, including composite checks written as `IS TRUE` so SQL `UNKNOWN`/`NULL` cannot bypass their shape rules, `upgrade head`, and a fail-closed downgrade that only removes an empty quota schema. Provider/audio cleanup downgrade guards remain covered where durable Vault references exist.
+- **Race-safe concurrent reservation:** `tests/test_user_quotas.py` uses competing PostgreSQL reservations to verify the owner lock permits only one reservation; exact reservation expansion, measurement matching, and idempotent provider-attempt increments are also covered.
+- **Activation, reset, grants, and idempotency:** quota tests cover activation/reset boundaries, future/expired/revoked grants, atomic limit/grant/reset/revoke batches, stable original reasons, and durable idempotency history.
+- **Outbox atomicity, retry, and duplicate claims:** `tests/test_task_outbox.py` and lifecycle coverage verify source-attempt-dispatch creation is transactional and deterministic, no direct broker publish occurs, payload mismatches reject, retry/backoff and terminal failure work, duplicate dispatches remain idempotent, one claimed outbox row is published per transaction, and bounded `SKIP LOCKED` claims avoid duplicate worker delivery or outbox-first lifecycle lock inversion.
+- **LLM/STT settlement:** API and lifecycle tests cover quota rejection rollback, authoritative settlement for duplicate delivery, invalid JSON, provider errors, deadline expiry, and source deletion; LLM reservation expansion occurs before dispatch, while STT/audio attempts require validated measured duration before settlement.
+- **Sync and provider behavior:** provider tests cover discovery/allowlists, Vault-backed credential use without exposure, snapshotting selected STT configuration for queued work, blocked config changes while referenced work is in flight, provider-attempt owner/team/content-reference scope validation, controlled provider-error metadata, STT base-URL credential/query/fragment rejection with sanitized legacy response URLs, and provider-cleanup retry/reference rechecks.
+- **Admin authorization, CSRF, and XSS:** admin quota mutations require authorized targets, CSRF, and same-origin requests; browser/admin regressions protect team scope; security suites cover CSP, escaped rendering, no unsafe template rendering, and sensitive audit redaction.
+- **Deletion, retention, and team lifecycle:** lifecycle/retention tests terminalize active attempts, remove dispatches with deleted roots/users/teams, retain only permitted metadata, hard-delete expired transcript roots in bounded idempotent batches, preserve retry cleanup intents, atomically transfer retry-audio Vault references without duplicate secrets, and block unsafe team/provider cleanup paths.
+
 ### API contract
 
 - public account-request submission
@@ -424,6 +435,8 @@ What it does:
 
 ## Current notes
 
+- Final review validation (2026-07-16): `tests/test_api.py` — 400 passed; combined migration/quota/outbox/lifecycle/retention selection — 86 passed; selected admin/browser checks — 13 passed; quota CSRF checks — 4 passed.
+- Whole-repository suite was not run. Known clean-HEAD unrelated admin UI failures remain outside this documentation-only change.
 - Postgres-backed tests need real socket access to the local test database. In this environment that means running them outside the restricted sandbox.
 - The STT and LLM browser forms use `provider_model` for HTML form posts, while the JSON API and persisted field remain `model_name` / `model_name_override`. That keeps the API stable while avoiding FastAPI/Pydantic protected-namespace warnings from generated form models.
 # Admin provider redesign checks

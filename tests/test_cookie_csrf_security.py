@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from uuid import uuid4
 
 import pyotp
 import pytest
@@ -447,3 +448,20 @@ def test_home_and_admin_templates_do_not_use_inline_script_handlers():
         assert "onsubmit=" not in content, f"inline submit handler left in {path}"
         assert "onchange=" not in content, f"inline change handler left in {path}"
         assert "data-confirm-submit=" in content or "data-auto-submit" in content
+
+
+@pytest.mark.parametrize("path_suffix", [
+    "quotas/limits",
+    "quota-grants",
+    "quota-resets",
+    "quota-grants/{grant_id}/revoke",
+])
+def test_quota_browser_mutations_require_csrf_and_same_origin(raw_client, make_user, path_suffix):
+    admin = make_user(email="quota-csrf-admin@example.com", password="password-1", is_system_admin=True, mfa_required=False, mfa_enabled=False)
+    assert raw_client.post("/api/v1/auth/login", json={"email": admin.email, "password": "password-1"}).status_code == 200
+    csrf = raw_client.cookies[CSRF_COOKIE_NAME]
+    user_id, grant_id = uuid4(), uuid4()
+    path = f"/admin/users/{user_id}/{path_suffix.format(grant_id=grant_id)}"
+
+    assert raw_client.post(path, headers={"Origin": "http://testserver"}).status_code == 403
+    assert raw_client.post(path, data={"_csrf_token": csrf}, headers={"Origin": "http://evil.example"}).status_code == 403

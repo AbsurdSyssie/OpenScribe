@@ -1,4 +1,6 @@
 from datetime import timedelta
+from decimal import Decimal
+from uuid import uuid4
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,15 @@ from app.celery_app import celery_app
 from app import tasks as celery_tasks
 from app.errors import AppError
 from app.models import (
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
     GeneratedDocument,
+    ProviderAttempt,
+    QuotaResource,
+    TaskDispatchKind,
+    TaskDispatchOutbox,
+    TaskDispatchState,
     Transcript,
     TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
@@ -21,6 +31,8 @@ from app.models import (
     TranscriptVersion,
     utcnow,
 )
+from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt
+from app.services.task_outbox import add_pending_task_dispatch
 from app.services.transcripts import (
     delete_expired_transcripts,
     process_transcript_ingestion_job,
@@ -62,14 +74,67 @@ def test_retention_cleanup_deletes_expired_roots_and_derived_documents(
     db_session.commit()
     db_session.refresh(version)
     document = make_generated_document(owner=owner, transcript=expired, transcript_version=version)
+    job = TranscriptIngestionJob(
+        transcript_id=expired.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="metadata.wav",
+    )
+    db_session.add(job)
+    db_session.flush()
+    attempts = [
+        reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+            attempt_kind=AttemptKind.llm_generation, correlation_id=uuid4(), attempt_number=1,
+            reserved_units=3, authorized_at=now, reservation_valid_until=now + timedelta(minutes=2),
+            transcript_id=expired.id, generated_document_id=document.id,
+        ),
+        reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+            attempt_kind=AttemptKind.llm_generation, correlation_id=uuid4(), attempt_number=1,
+            reserved_units=3, authorized_at=now, reservation_valid_until=now + timedelta(minutes=2),
+            transcript_id=expired.id, generated_document_id=document.id,
+        ),
+        reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.audio_seconds,
+            attempt_kind=AttemptKind.stt_conversation, correlation_id=uuid4(), attempt_number=1,
+            reserved_units=3, authorized_at=now, reservation_valid_until=now + timedelta(minutes=2),
+            transcript_id=expired.id, transcript_ingestion_job_id=job.id, measured_audio_seconds=Decimal("2.1"),
+        ),
+        reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.audio_seconds,
+            attempt_kind=AttemptKind.stt_conversation, correlation_id=uuid4(), attempt_number=1,
+            reserved_units=3, authorized_at=now, reservation_valid_until=now + timedelta(minutes=2),
+            transcript_id=expired.id, transcript_ingestion_job_id=job.id, measured_audio_seconds=Decimal("2.1"),
+        ),
+    ]
+    for attempt in (attempts[1], attempts[3]):
+        mark_provider_attempt_submitted(
+            db_session, attempt_id=attempt.id, now=now, deadline_at=now + timedelta(minutes=1)
+        )
+    add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=document.id)
+    dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.ingestion, source_id=job.id)
+    dispatch.state = TaskDispatchState.failed
+    dispatch.failed_at = now
+    attempt_ids, source_ids = [attempt.id for attempt in attempts], (document.id, job.id)
+    db_session.commit()
 
     deleted = delete_expired_transcripts(db_session, now=now, batch_size=10)
+    db_session.expire_all()
+    persisted_attempts = db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.id.in_(attempt_ids))).all()
 
     assert deleted == 1
     assert db_session.get(Transcript, expired.id) is None
     assert db_session.get(TranscriptVersion, version.id) is None
     assert db_session.get(GeneratedDocument, document.id) is None
     assert db_session.get(Transcript, active.id) is not None
+    assert db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id.in_(source_ids))) is None
+    assert [item.status for item in persisted_attempts].count(AttemptStatus.cancelled) == 2
+    assert [item.outcome for item in persisted_attempts].count(AttemptOutcome.unknown) == 2
+    assert {(item.owner_user_id, item.team_id, item.transcript_id, item.generated_document_id, item.transcript_ingestion_job_id) for item in persisted_attempts} == {
+        (owner.id, team.id, None, None, None)
+    }
 
 
 def test_retention_cleanup_is_bounded_and_idempotent(db_session, make_team, make_user):

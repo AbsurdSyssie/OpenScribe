@@ -1,5 +1,53 @@
 ## Revised design
 
+> **Implementation contract (2026-07-15):** Later code review found that the
+> original "one adjustment table plus existing telemetry" footprint could not
+> provide race-safe expenditure controls. Existing LLM telemetry omits some
+> billable failures, ingestion rows omit synchronous STT calls and are deleted
+> with transcript roots, and neither source carries durable reservations. The
+> resolved design therefore keeps the four base limits and one policy-event
+> ledger described below, but also adds a metadata-only provider-attempt ledger
+> and task-dispatch outbox. Where this contract conflicts with later examples in
+> this document, this contract wins.
+>
+> - Limits remain daily/monthly tokens and daily/monthly audio seconds.
+> - `NULL` is unlimited. Zero is zero base allowance; an active explicit grant
+>   may temporarily enable that resource.
+> - Quota windows are UTC calendar days/months.
+> - Quota enforcement starts prospectively when a window changes from unlimited
+>   to finite. Historical telemetry is reporting-only and is not backfilled into
+>   authoritative quota accounting.
+> - Every potentially billable LLM or STT call receives one provider-attempt
+>   row. This includes main generation, each hallucination-check attempt, live
+>   and whole-file STT, explicit retries, dictation/context STT, and synthetic
+>   provider tests. Synthetic admin tests have no normal-user quota owner.
+> - Reservations are serialized per user. Accepted reservations survive reset,
+>   grant expiry/revocation, and later limit reductions. Authorization time is
+>   the accounting timestamp.
+> - Reported total tokens settle actual token use. Unknown post-dispatch token
+>   outcomes settle the conservative reservation. Audio settles server-measured
+>   duration. Definite pre-dispatch failures release reservations.
+> - Token input reservation uses a centralized conservative text-size estimate:
+>   outbound UTF-8 byte length plus fixed message overhead and the configured
+>   maximum completion tokens. Underestimation settles actual use, records a
+>   safe operational error, and blocks later reservations until capacity exists.
+> - Job, reservation, and deterministic task-dispatch intent commit together in
+>   a metadata-only outbox. Workers atomically claim work immediately before
+>   provider dispatch; duplicate delivery cannot invoke the provider twice.
+> - Policy actor/revoker foreign keys use `ON DELETE SET NULL`. Immutable actor
+>   UUID snapshots preserve provenance without blocking mandatory hard deletion.
+> - Free-text administrative reasons remain in the quota ledger and must not
+>   contain patient/clinical data. Security audit rows receive controlled reason
+>   codes only, never the free text.
+> - Base-limit changes create durable before/after policy events in the same
+>   transaction as the `users` update.
+> - Provider-attempt rows contain metadata only. Transcript/document/job links
+>   become null when content is deleted; owner attribution becomes null on user
+>   deletion; team deletion removes the attempt rows.
+> - Initial administration is system-admin-only through a URL-addressable member
+>   detail panel in canonical `/admin`. No JSON quota-management API is added in
+>   the first slice.
+
 Keep the four base limits on `users`, but add **one quota-adjustment ledger table** for temporary allowances and early resets.
 
 Do not modify or delete usage telemetry when an admin resets a quota. The existing provider and ingestion records should remain intact for reporting and audit purposes. OpenScribe already uses those records for per-user usage reporting.

@@ -21,6 +21,7 @@ from app.models import (
     DefaultQuickAction,
     DefaultQuickActionVersion,
     DeidentificationProvider,
+    GeneratedDocument,
     PromptTemplate,
     PromptTemplateVersion,
     ProviderUsageEvent,
@@ -67,6 +68,7 @@ from app.services.security_audit import record_security_event
 from app.services.smart_phrases import ensure_default_smart_phrase_for_user
 from app.services.provider_secret_cleanup import queue_provider_secret_cleanup
 from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
+from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_owner
 
 audit_logger = logging.getLogger("openscribe.audit")
 MIN_RETENTION_DAYS = 1
@@ -1568,7 +1570,19 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
 
     transcripts = db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id))
     transcript_rows = list(transcripts)
-    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
+    transcript_ids = [transcript.id for transcript in transcript_rows]
+    terminalize_attempts_for_owner(db, user.id, utcnow())
+    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
+    if transcript_ids:
+        delete_dispatches_for_sources(
+            db,
+            generated_document_ids=list(
+                db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(transcript_ids)))
+            ),
+            ingestion_job_ids=list(
+                db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))
+            ),
+        )
     for transcript in transcript_rows:
         db.delete(transcript)
 

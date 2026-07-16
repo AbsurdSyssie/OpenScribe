@@ -1,7 +1,8 @@
 import json
 import os
+from datetime import UTC, datetime
 from urllib.parse import urlencode
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -117,6 +118,7 @@ from ..services.default_assets import (
     list_default_quick_actions as list_default_quick_actions_service,
     list_default_templates as list_default_templates_service,
 )
+from ..services.admin_quotas import get_admin_user_quota_detail
 from .templates import templates
 
 
@@ -846,6 +848,8 @@ def render_admin(
     extra_admin_tabs: set[str] | None = None,
     workspace_team_tab: str | None = None,
     default_template_return_tab: str = "global-defaults",
+    selected_quota_member_id: str | None = None,
+    quota_form_values: dict[str, object] | None = None,
 ):
     workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
@@ -1014,6 +1018,22 @@ def render_admin(
         for user in users
         if selected_team is not None and user.team_id == selected_team.id and not user.is_system_admin
     ]
+    selected_quota_member = None
+    quota_detail = None
+    # Quota accounting is queried only for this explicit, validated Members panel.
+    if current_user.is_system_admin and workspace_team_tab == "members" and selected_team is not None and selected_quota_member_id:
+        try:
+            quota_member_id = UUID(selected_quota_member_id)
+        except ValueError:
+            quota_member_id = None
+        selected_quota_member = next((user for user in selected_team_users if user.id == quota_member_id), None)
+        if selected_quota_member is not None:
+            try:
+                quota_detail = get_admin_user_quota_detail(
+                    db, actor=current_user, user_id=selected_quota_member.id
+                )
+            except AppError:
+                selected_quota_member = None
     context = {
         "request": request,
         "current_user": current_user,
@@ -1021,6 +1041,17 @@ def render_admin(
         "users": users,
         "selected_team": selected_team,
         "selected_team_users": selected_team_users,
+        "selected_quota_member": selected_quota_member,
+        "quota_detail": quota_detail,
+        "quota_form_values": quota_form_values or {},
+        "quota_operation_ids": {
+            "limits": str(uuid4()),
+            "grant": str(uuid4()),
+            "reset": str(uuid4()),
+            "revoke": {str(item.id): str(uuid4()) for item in quota_detail.history if item.event_type.value == "grant"} if quota_detail else {},
+        },
+        "quota_reason_codes": ["policy_change", "temporary_allowance", "failed_job_correction", "administrative_correction", "other"],
+        "quota_now": datetime.now(UTC),
         "selected_team_id": selected_team_id,
         "selected_stt_config_id": selected_stt_config_id,
         "selected_llm_config_id": selected_llm_config_id,

@@ -232,6 +232,25 @@ Behavior:
 * full system-level user deletion deletes transcript-derived content immediately
 * full system-level user deletion also deletes the user’s personal templates and quick actions immediately
 
+### Implemented provider quota limits
+
+`users` also holds four nullable base limits:
+
+* `daily_token_limit`
+* `monthly_token_limit`
+* `daily_audio_seconds_limit`
+* `monthly_audio_seconds_limit`
+
+All values are non-negative integers. `NULL` means unlimited; `0` means no
+base allowance; a positive value is an enforced base allowance. A positive
+active grant can enable a zero-base window. Grants never constrain an unlimited
+base window.
+
+Quota windows are UTC calendar days and calendar months. When a window changes
+from unlimited to finite, authoritative accounting starts at that activation
+time in the current UTC window; earlier reporting telemetry is not backfilled.
+Other finite-to-finite limit changes do not restart the window.
+
 Planned account-administration clarification:
 
 * manager-initiated suspension should be modeled separately from destructive deletion semantics
@@ -925,6 +944,63 @@ Rules:
 
 * never store transcript text, prompt text, or generated output text here
 
+`provider_usage_events` remains reporting/cost telemetry. It is not used to
+authorize or enforce quota and historical telemetry is never backfilled into
+quota accounting.
+
+## 13.6 `provider_attempts`
+
+Purpose:
+
+* authoritative metadata-only ledger for quota authorization, reservations,
+  dispatch state, and settlement
+* one row for every potentially billable provider call
+
+Call kinds are `llm_generation`, `llm_hallucination_check`,
+`stt_conversation`, `stt_post_consultation_dictation`, `stt_prompt_context`,
+and `stt_provider_test`. This includes retries. Synthetic provider tests have
+no normal-user quota owner and are unmetered.
+
+The row stores team/optional owner attribution, optional transcript, ingestion
+job, and generated-document links; correlation id plus attempt number; resource;
+reservation and settlement units; safe provider metadata/error codes; and
+authorization/dispatch/terminal timestamps. It stores no transcript, prompt,
+provider response, secret, or Vault reference.
+
+Foreign keys independently enforce that referenced rows exist, but cannot prove
+their shared owner/team scope. The centralized `ProviderAttempt` service locks
+and validates the owner plus every supplied content reference, rejecting
+cross-owner, cross-team, and mismatched-transcript links before reservation.
+Durable provider error codes are controlled allowlisted metadata (or a
+status-derived safe category); raw provider error strings are never persisted.
+
+State is constrained to:
+
+* `reserved`: accepted authorization before provider dispatch
+* `submitted`: external dispatch occurred and has a deadline
+* `settled`: terminal `succeeded`, `failed`, or `unknown` usage result
+* `cancelled`: unused pre-dispatch reservation
+
+Authorization locks the owner row, serializing reservations for that user.
+Accounting uses `authorized_at`, not later dispatch or settlement time. Accepted
+reservations remain committed through resets, grant expiry/revocation, and
+later limit reductions until settlement or expiry.
+
+Token calls reserve a conservative centralized estimate: UTF-8 outbound byte
+length plus fixed per-message overhead and configured maximum completion tokens.
+Reported total tokens settle to actual use. A post-dispatch token call with
+unknown outcome settles its reservation conservatively. Audio reservations and
+settlement use server-measured duration, rounded up to whole seconds. Definite
+pre-dispatch failure cancels/releases the reservation. If actual token use
+exceeds its reservation, the extra settled usage remains authoritative and
+later reservations fail until capacity exists.
+
+Foreign keys preserve metadata while respecting hard deletion: team deletion
+cascades attempt rows; user, transcript, ingestion-job, and generated-document
+deletion set their attempt link to `NULL`. Lifecycle processing terminalizes
+active attempts before source deletion so an accepted dispatch is not silently
+lost.
+
 ---
 
 ## 14. Audit and operations tables
@@ -985,6 +1061,62 @@ Recommended fields:
 * `started_at`
 * `finished_at`
 * `created_at`
+
+## 14.3 `user_quota_policy_events`
+
+Purpose:
+
+* immutable operational ledger for quota grants, resets, and base-limit changes
+* durable before/after limit history and idempotent administrator operations
+
+Each event records operation id, target user, resource (`tokens` or
+`audio_seconds`), period (`daily` or `monthly`), event type (`grant`, `reset`,
+or `limit_change`), controlled reason code, required free-text reason,
+effective/optional expiry time, and created time. Limit-change events also hold
+the previous and new limits; grants hold a positive amount; resets hold neither.
+The base `users` update and its limit-change events commit together.
+
+An operation id is unique per target/resource/period/event type, allowing exact
+same-operation retries and rejecting conflicting reuse. Grant revocation is
+recorded on the original grant with a distinct, globally unique revocation
+operation id, revoker timestamps/reason, and immutable actor/revoker UUID
+snapshots. Live actor/revoker foreign keys use `ON DELETE SET NULL`; snapshots
+retain provenance without blocking required user deletion. Target-user deletion
+cascades its policy events.
+
+Active grants are effective, unexpired, and not revoked. They add to finite
+base limits only. A reset changes only its selected resource/period: usage starts
+at the later of the natural UTC window start and latest reset in that window, so
+a daily reset does not reset monthly usage.
+
+Reasons are administrative metadata only. Free-text reasons must not contain
+patient, clinical, transcript, prompt, or generated-note content. Security audit
+events record controlled reason codes and identifiers, never free-text reasons.
+
+## 14.4 `task_dispatch_outbox`
+
+Purpose:
+
+* durable metadata-only intent to publish generation or ingestion work to Celery
+* prevent rollback/publish gaps and duplicate provider dispatch
+
+Each row has deterministic UUIDv5 `task_id`, dispatch kind, matching polymorphic
+source kind/id, retry count, safe last error code, due time, lifecycle state,
+and timestamps. Source references are deliberately polymorphic rather than
+foreign keys; deletion lifecycle code cancels or removes relevant intent rows
+before source hard deletion.
+
+Creation commits source row, any provider-attempt reservation, and dispatch
+intent atomically. The publisher locks due pending rows with `SKIP LOCKED`,
+claims and publishes exactly one row per transaction using the stored
+deterministic task id, marks success `published`, or records only
+`task_publish_failed` with bounded exponential retry. Exhausted publication
+retries become `failed`; lifecycle reconciliation fails still-queued source work
+and terminalizes unused reservations. Lifecycle locks owner/source parents before
+attempts and never takes an outbox-first lock, avoiding inversion with normal
+worker paths. Workers atomically claim a queued source immediately before
+irreversible provider dispatch, so duplicate delivery cannot call a provider
+twice.
 
 ---
 
@@ -1066,6 +1198,11 @@ Admin must first handle:
 * provider credential refs
 * other team-scoped resources
 
+Team deletion also cascades `provider_attempts`. Quota-policy events are removed
+through their target-user cascade. Pending dispatch intents and active attempts
+are reconciled/cancelled before their source/user roots are hard-deleted; no
+content is retained in either quota or dispatch metadata table.
+
 ---
 
 ## 16. Constraints and DB-enforced truths
@@ -1080,6 +1217,19 @@ The database should enforce structural truths where practical.
 * version uniqueness within template/quick action/transcript
 * one provider preference per user/provider type
 * token uniqueness/hashing discipline
+* non-negative nullable user base quota limits
+* quota-policy event shape, nonblank bounded reason, expiry ordering, operation
+  idempotency, and grant-revocation shape
+* provider-attempt state transitions, settlement/resource payload shape,
+  positive reservations, correlation-attempt uniqueness, and deletion foreign
+  keys; composite shape checks use `... IS TRUE` so SQL `UNKNOWN`/`NULL` cannot
+  bypass them
+* task-dispatch outbox lifecycle timestamps, non-negative retry count, and one
+  dispatch intent per dispatch-kind/source-kind/source-id
+
+Quota lookup indexes support target history/window events, active grants,
+owner/resource authorization, active reservations, submitted deadlines,
+team/resource settlement, and due/source dispatch lookup.
 
 ## 16.2 Better kept in application logic
 
@@ -1201,6 +1351,8 @@ Recommended data-handling rules:
 * user active LLM preference
 * deterministic provider resolution and fallback
 * usage event logging
+* quota authorization through `provider_attempts`; telemetry remains separate
+  reporting data
 
 ---
 

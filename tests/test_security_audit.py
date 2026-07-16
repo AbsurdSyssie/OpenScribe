@@ -524,7 +524,7 @@ def test_audio_ingestion_queue_audit_excludes_filename_and_audio_content(
     config = make_stt_config(team=team, available_models_json=["whisper-1"])
     make_stt_selection(config=config, actor=owner)
     transcript = start_transcript(db_session, owner, TranscriptStart(title="Upload title", ingestion_mode=TranscriptIngestionMode.whole_file))
-    monkeypatch.setattr("app.services.transcripts.probe_audio_duration_seconds", lambda **kwargs: 4.25)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 4.25)
 
     _, job = queue_audio_file_ingestion(
         db_session,

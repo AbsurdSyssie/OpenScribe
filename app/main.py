@@ -432,6 +432,12 @@ audit_subject_hash_secret_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+TRANSCRIBER_COL_CHANGES_STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "transcriber_changes",
+    "workspace",
+    "static",
+)
 
 
 def _local_only_dev_emails() -> set[str]:
@@ -728,6 +734,11 @@ async def browser_not_found_handler(request: Request, exc: HTTPException):
 
 app.add_exception_handler(404, browser_not_found_handler)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount(
+    "/transcriber_col_changes/static",
+    StaticFiles(directory=TRANSCRIBER_COL_CHANGES_STATIC_DIR),
+    name="transcriber_col_changes_static",
+)
 
 
 SENSITIVE_NO_STORE_PATH_PREFIXES = (
@@ -735,11 +746,13 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/api/v1/transcripts",
     "/api/v1/generated-documents",
     "/api/v1/post-consultation-dictation",
+    "/transcriber_col_changes",
 )
 PUBLIC_NO_STORE_PATHS = {
     "/login",
     "/forgot-password",
     "/request-access",
+    "/settings",
     "/reset-password",
     "/activate-account",
     "/docs",

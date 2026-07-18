@@ -183,26 +183,7 @@ export function attachTranscribeActions({
     quickActionContextRecorder.stop();
   };
 
-  dom.noteSelector?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-document-id]');
-    if (!button) return;
-    selectDocumentFromUi('note', button.dataset.documentId || '');
-  });
-
-  dom.noteHistory?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-document-id]');
-    if (!button) return;
-    selectDocumentFromUi('note', button.dataset.documentId || '');
-  });
-
-  dom.followupSelector?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-document-id]');
-    if (!button) return;
-    selectDocumentFromUi('followup', button.dataset.documentId || '');
-  });
-
-  dom.noteDeleteButton?.addEventListener('click', async (event) => {
-    event.preventDefault();
+  const deleteSelectedNote = async () => {
     const generatedDocumentId = dom.latestGeneratedOutput?.dataset.latestGeneratedId || '';
     const selectedKind = dom.latestGeneratedOutput?.dataset.latestGeneratedKind || '';
     if (selectedKind === 'working_note') {
@@ -226,6 +207,36 @@ export function attachTranscribeActions({
     } catch (error) {
       showFlash(error instanceof Error ? error.message : 'Could not delete the note.', 'error');
     }
+  };
+
+  dom.noteSelector?.addEventListener('click', (event) => {
+    const hoverDeleteButton = event.target.closest('[data-note-hover-delete]');
+    if (hoverDeleteButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const documentId = hoverDeleteButton.dataset.documentId || '';
+      void selectDocumentFromUi('note', documentId).then((selected) => {
+        if (selected !== false) {
+          void deleteSelectedNote();
+        }
+      });
+      return;
+    }
+    const button = event.target.closest('[data-document-id]');
+    if (!button) return;
+    selectDocumentFromUi('note', button.dataset.documentId || '');
+  });
+
+  dom.noteHistory?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-document-id]');
+    if (!button) return;
+    selectDocumentFromUi('note', button.dataset.documentId || '');
+  });
+
+  dom.followupSelector?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-document-id]');
+    if (!button) return;
+    selectDocumentFromUi('followup', button.dataset.documentId || '');
   });
 
   dom.followupHistory?.addEventListener('click', async (event) => {

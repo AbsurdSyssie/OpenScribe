@@ -79,6 +79,7 @@ Important:
 
 - if you change transcript/job enums, Celery task code, or other worker-loaded Python models, restart `./start-dev.sh`
 - `./start-dev.sh` now replaces existing OpenScribe dev server and Celery worker processes automatically; set `DEV_RESTART_EXISTING_PROCESSES=false` only if you explicitly do not want that behavior
+- FastAPI reload watches `app/` only. Prototype files under `transcriber_changes/`, tests, and docs are served/read directly and no longer trigger disruptive Python reloads.
 - expired transcript roots become inaccessible at their fixed `retention_expires_at` timestamp; cleanup physically deletes roots and cascading transcript-derived children on the next 10-second scheduler pass
 - retention cleanup drains expired roots in locked 100-row batches; queued cleanup messages expire after 10 seconds so a stopped worker does not later replay stale scheduler backlog
 - production deployments must run both a Celery worker and Celery Beat with the same application configuration; a worker without Beat does not schedule retention or durable Vault cleanup

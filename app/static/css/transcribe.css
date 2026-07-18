@@ -1,5 +1,9 @@
 /* Transcribe workspace styles. Shared tokens come from tokens.css. */
 
+.transcribe-sidebar__brand .brand-name {
+font-size: 2rem;
+}
+
 html, body {
 height: 100%;
 overflow: hidden;
@@ -2923,20 +2927,62 @@ flex-wrap: wrap;
 gap: 0.5rem;
 }
 
+.document-switcher-item {
+position: relative;
+flex: 0 1 16rem;
+min-width: 0;
+max-width: min(16rem, 100%);
+}
+
 .document-switcher-button {
 display: flex;
 flex-direction: column;
 align-items: flex-start;
 gap: 0.12rem;
 min-width: 0;
-max-width: min(16rem, 100%);
-flex: 0 1 16rem;
+max-width: none;
+width: 100%;
+flex: 1 1 auto;
 border: 1px solid rgba(226, 222, 214, 0.95);
 border-radius: 0.8rem;
 background: rgba(245, 241, 235, 0.68);
 padding: 0.7rem 0.9rem;
+padding-right: 2.8rem;
 text-align: left;
 transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.document-switcher-item__delete {
+position: absolute;
+top: 50%;
+right: 0.45rem;
+display: inline-flex;
+align-items: center;
+justify-content: center;
+width: 1.65rem;
+height: 1.65rem;
+padding: 0;
+border: 0;
+border-radius: 0.4rem;
+background: rgba(255, 255, 255, 0.9);
+color: #b42318;
+opacity: 0;
+pointer-events: none;
+transform: translateY(-50%);
+transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.document-switcher-item:hover .document-switcher-item__delete,
+.document-switcher-item:focus-within .document-switcher-item__delete {
+opacity: 1;
+pointer-events: auto;
+}
+
+.document-switcher-item__delete:hover,
+.document-switcher-item__delete:focus-visible {
+background: #fee4e2;
+color: #912018;
+outline: none;
 }
 
 .document-switcher-button:hover, .document-switcher-button:focus-visible {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenScribe Home</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
-  <link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">
+  <link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">
   <link rel="stylesheet" href="/static/css/home.css?v=20260712-password-controls">
   {% if home_style_variant == "home2" %}
   <link rel="stylesheet" href="/static/css/home2.css?v=20260701-home-extract">
@@ -15,12 +15,13 @@
   <main class="home-pane">
       <header class="home-pane__header">
         <div>
-          <div class="eyebrow">Clinical workspace</div>
-          <h1>Your OpenScribe home</h1>
+          <a class="brand home-pane__brand" href="{{ home_page_route }}" aria-label="OpenScribe home">
+            <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
+            <span class="brand-name">OpenScribe</span>
+          </a>
           {% if home_style_variant == "home2" %}
           <p class="home2-signed-in">Signed in as {{ current_user.full_name or current_user.email }}.</p>
           {% else %}
-          <p>Keep overview fast. Use sections below for settings, assets, service policy, team admin.</p>
           {% endif %}
         </div>
         <div class="home-pane__header-actions">
@@ -41,6 +42,7 @@
           <button type="button" class="tab-shell__tab" data-tab-target="account-requests" data-tab-url="{{ home_page_route }}?tab=account-requests" role="tab" aria-selected="false" data-tour-target="requests-tab">Requests</button>
           {% endif %}
         </nav>
+        {% if is_manager %}
         <section class="stat-grid">
           <article class="panel stat-card">
             <div class="stat-card__icon">ST</div>
@@ -66,6 +68,7 @@
             </div>
           </article>
         </section>
+        {% endif %}
         {% endif %}
       </header>
 
@@ -96,6 +99,7 @@
     </section>
 
     {% if home_style_variant != "home2" %}
+    {% if is_manager %}
     <section class="stat-grid">
       <article class="panel stat-card">
         <div class="stat-card__icon">ST</div>
@@ -121,6 +125,7 @@
         </div>
       </article>
     </section>
+    {% endif %}
     {% endif %}
 
     {% if message %}

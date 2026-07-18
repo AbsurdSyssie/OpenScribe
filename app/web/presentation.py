@@ -1274,20 +1274,27 @@ def render_home(
     personal_template_latest_version = _latest_template_version(selected_personal_template) if selected_personal_template is not None else None
     team_quick_action_latest_version = _latest_quick_action_version(selected_team_quick_action) if selected_team_quick_action is not None else None
     personal_quick_action_latest_version = _latest_quick_action_version(selected_personal_quick_action) if selected_personal_quick_action is not None else None
-    available_home_tabs = ["overview"]
+    settings_mode = home_return_view == "settings"
+    resolved_available_home_tabs = ["preferences"] if settings_mode else ["overview"]
     if not current_user.is_system_admin and current_user.team_id is not None:
-        available_home_tabs.extend(["templates", "quick-actions", "smart-phrases"])
+        resolved_available_home_tabs.extend(["templates", "quick-actions", "smart-phrases"])
     if is_manager:
-        available_home_tabs.extend(["ai-services", "team-management", "account-requests"])
+        resolved_available_home_tabs.extend(
+            ["ai-services", "team-members", "account-requests"]
+            if settings_mode
+            else ["ai-services", "team-management", "account-requests"]
+        )
+    resolved_default_home_tab = resolved_available_home_tabs[0]
 
-    if active_home_tab in available_home_tabs:
-        resolved_home_tab = active_home_tab
+    normalized_home_tab = "team-members" if settings_mode and active_home_tab == "team-management" else active_home_tab
+    if normalized_home_tab in resolved_available_home_tabs:
+        resolved_home_tab = normalized_home_tab
     elif selected_team_template or selected_personal_template:
-        resolved_home_tab = "templates" if "templates" in available_home_tabs else "overview"
+        resolved_home_tab = "templates" if "templates" in resolved_available_home_tabs else resolved_default_home_tab
     elif selected_team_quick_action or selected_personal_quick_action:
-        resolved_home_tab = "quick-actions" if "quick-actions" in available_home_tabs else "overview"
+        resolved_home_tab = "quick-actions" if "quick-actions" in resolved_available_home_tabs else resolved_default_home_tab
     else:
-        resolved_home_tab = "overview"
+        resolved_home_tab = resolved_default_home_tab
 
     allowed_home_modals = {
         "personal-template",
@@ -1359,12 +1366,14 @@ def render_home(
 
 
 def home_template_name_from_return_view(return_view: str | None) -> str:
-    return "home.html"
+    return "settings.html" if return_view == "settings" else "home.html"
 
 
 def home_page_route_from_return_view(return_view: str | None) -> str:
     if return_view == "home2":
         return "/home2"
+    if return_view == "settings":
+        return "/settings"
     return "/home-restyled" if return_view == "restyled" else "/home"
 
 
@@ -1395,6 +1404,8 @@ def home_return_view_value(return_view: str | None) -> str:
         return "restyled"
     if return_view == "transcribe":
         return "transcribe"
+    if return_view == "settings":
+        return "settings"
     return ""
 
 
@@ -1411,7 +1422,7 @@ def home_redirect_url(
             params["transcript_id"] = queued_transcript_id
         params["tab"] = transcribe_tab or ("followups" if return_tab == "quick-actions" else "output")
         return f"/transcribe?{urlencode(params)}" if params else "/transcribe"
-    base = "/home2" if return_view == "home2" else ("/home-restyled" if return_view == "restyled" else "/home")
+    base = home_page_route_from_return_view(home_return_view_value(return_view))
     if return_tab:
         return f"{base}?tab={return_tab}"
     return base

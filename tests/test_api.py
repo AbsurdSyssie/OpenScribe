@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import io
@@ -6,6 +7,7 @@ import inspect
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from math import ceil
 from types import SimpleNamespace
 from dataclasses import replace
@@ -14252,6 +14254,40 @@ def test_transcribe_workspace_stream_route_does_not_depend_on_request_scoped_db_
 
     assert get_db not in dependency_calls
     assert require_full_context not in dependency_calls
+
+
+def test_transcribe_workspace_stream_resolution_does_not_block_event_loop(monkeypatch):
+    from app.web import transcribe_workspace
+
+    monkeypatch.setattr(transcribe_workspace, "open_realtime_workspace_db_session", lambda request: nullcontext(object()))
+    monkeypatch.setattr(transcribe_workspace, "resolve_realtime_workspace_user", lambda db, raw_session_token: object())
+
+    def slow_workspace_resolution(*args, **kwargs):
+        time.sleep(0.15)
+        return SimpleNamespace(model_dump=lambda mode: {"recent_transcripts": []})
+
+    monkeypatch.setattr(transcribe_workspace, "resolve_transcribe_workspace_detail", slow_workspace_resolution)
+
+    async def exercise_stream():
+        stream = transcribe_workspace.stream_transcribe_workspace_events(
+            request=SimpleNamespace(),
+            raw_session_token="session-token",
+            transcript_id=None,
+            queued_transcript_id=None,
+            once=False,
+        )
+        started_at = asyncio.get_running_loop().time()
+        event_task = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.01)
+        elapsed = asyncio.get_running_loop().time() - started_at
+        event = await event_task
+        await stream.aclose()
+        return elapsed, event
+
+    elapsed, event = asyncio.run(exercise_stream())
+
+    assert elapsed < 0.08
+    assert "event: workspace" in event
 
 
 def test_transcript_title_update_is_owner_only(client, db_session, make_team, make_user):

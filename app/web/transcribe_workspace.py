@@ -954,6 +954,7 @@ def render_transcribe(
     message: str | None = None,
     message_kind: str = "success",
     status_code: int = 200,
+    template_renderer=None,
 ):
     workspace = resolve_transcribe_workspace(
         db,
@@ -1030,7 +1031,8 @@ def render_transcribe(
         "message_kind": message_kind,
         "active_tab": active_tab if active_tab in {"transcript", "output", "followups"} else "transcript",
     }
-    return templates.TemplateResponse(request, template_name, context, status_code=status_code)
+    renderer = template_renderer or templates
+    return renderer.TemplateResponse(request, template_name, context, status_code=status_code)
 
 
 def serialize_sse_event(*, event: str, payload: dict[str, object]) -> str:
@@ -1065,6 +1067,25 @@ def resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | Non
     return user
 
 
+def resolve_realtime_workspace_payload(
+    *,
+    request,
+    raw_session_token: str | None,
+    transcript_id: str | None,
+    queued_transcript_id: str | None,
+) -> dict[str, object] | None:
+    with open_realtime_workspace_db_session(request) as db:
+        current_user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
+        if current_user is None:
+            return None
+        return resolve_transcribe_workspace_detail(
+            db,
+            current_user=current_user,
+            transcript_id=transcript_id,
+            queued_transcript_id=queued_transcript_id,
+        ).model_dump(mode="json")
+
+
 async def stream_transcribe_workspace_events(
     *,
     request,
@@ -1083,16 +1104,15 @@ async def stream_transcribe_workspace_events(
         if sent_initial_event and await request.is_disconnected():
             break
 
-        with open_realtime_workspace_db_session(request) as db:
-            current_user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
-            if current_user is None:
-                break
-            payload = resolve_transcribe_workspace_detail(
-                db,
-                current_user=current_user,
-                transcript_id=transcript_id,
-                queued_transcript_id=queued_transcript_id,
-            ).model_dump(mode="json")
+        payload = await asyncio.to_thread(
+            resolve_realtime_workspace_payload,
+            request=request,
+            raw_session_token=raw_session_token,
+            transcript_id=transcript_id,
+            queued_transcript_id=queued_transcript_id,
+        )
+        if payload is None:
+            break
 
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         current_time = asyncio.get_running_loop().time()

@@ -48,6 +48,79 @@
   width: min(720px, 100%);
 }
 
+.mfa-hero-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 168px;
+  gap: 24px;
+  align-items: center;
+}
+
+.mfa-hero-copy {
+  display: grid;
+  gap: 14px;
+}
+
+.mfa-device-visual {
+  color: var(--accent);
+}
+
+.mfa-device-visual svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.mfa-visual-halo {
+  fill: var(--accent-pale);
+}
+
+.mfa-phone {
+  fill: var(--card);
+  stroke: currentColor;
+  stroke-width: 4;
+}
+
+.mfa-phone-speaker,
+.mfa-phone-home,
+.mfa-code-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 4;
+}
+
+.mfa-app-card {
+  fill: var(--parchment);
+  stroke: var(--border-strong);
+  stroke-width: 2;
+}
+
+.mfa-app-mark {
+  fill: var(--accent);
+}
+
+.mfa-code-dots {
+  fill: none;
+  stroke: var(--ink);
+  stroke-linecap: round;
+  stroke-width: 5;
+}
+
+.mfa-timer-badge {
+  fill: var(--accent-warm);
+  stroke: var(--card);
+  stroke-width: 5;
+}
+
+.mfa-timer-face,
+.mfa-timer-hand {
+  fill: none;
+  stroke: var(--ink);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
 .auth-hero,
 .auth-page .hero {
   background: linear-gradient(180deg, rgba(245, 241, 235, 0.95) 0%, rgba(255, 255, 255, 0.98) 100%);
@@ -204,6 +277,131 @@
 .auth-page textarea {
   border-radius: 10px;
   padding: 12px 14px;
+}
+
+.auth-page .mfa-code-input {
+  width: min(100%, 360px);
+  max-width: 360px;
+  padding-left: calc(14px + 0.38em);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: clamp(1.35rem, 5vw, 1.75rem);
+  font-weight: 700;
+  letter-spacing: 0.38em;
+  text-align: center;
+}
+
+.mfa-code-control {
+  width: min(100%, 360px);
+  margin-top: 6px;
+}
+
+.mfa-code-slots {
+  display: none;
+}
+
+.js .mfa-code-control {
+  position: relative;
+}
+
+.js .auth-page .mfa-code-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-color: transparent;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  opacity: 0;
+  cursor: text;
+}
+
+.js .mfa-code-slots {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  pointer-events: none;
+}
+
+.mfa-code-slot {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 1.45rem;
+  font-weight: 700;
+  transition: transform var(--transition), border-color var(--transition), background-color var(--transition), box-shadow var(--transition);
+}
+
+.mfa-code-slot.is-current,
+.mfa-code-control:focus-within .mfa-code-slot.is-current {
+  border-color: var(--accent-soft);
+  box-shadow: var(--shadow-focus);
+}
+
+.mfa-code-slot.is-filled {
+  transform: translateY(-2px);
+  border-color: rgba(61, 122, 140, 0.38);
+  background: var(--accent-pale);
+  box-shadow: 0 6px 16px rgba(29, 79, 94, 0.1);
+}
+
+.mfa-code-control.is-complete .mfa-code-slot {
+  border-color: var(--accent);
+}
+
+.auth-page .mfa-code-input::placeholder {
+  color: rgba(113, 128, 150, 0.42);
+}
+
+.mfa-code-help {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 480px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.mfa-code-help svg {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.mfa-challenge-form .inline-check {
+  margin-top: 18px;
+}
+
+.mfa-actions-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 24px;
+}
+
+.auth-page .mfa-signout-form {
+  margin: 0;
+}
+
+.mfa-actions-row button {
+  height: 100%;
 }
 
 .auth-page textarea {
@@ -426,6 +624,11 @@
     padding: 22px;
   }
 
+  .mfa-hero-layout {
+    grid-template-columns: minmax(0, 1fr) 118px;
+    gap: 12px;
+  }
+
   .auth-actions,
   .auth-page .actions,
   .submit-row {
@@ -453,5 +656,46 @@
 
   .auth-page .toast {
     max-width: none;
+  }
+
+  .auth-page .mfa-actions-row {
+    display: flex;
+  }
+
+  .auth-page .mfa-actions-row > button,
+  .auth-page .mfa-signout-form,
+  .auth-page .mfa-signout-form button {
+    width: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .mfa-hero-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mfa-device-visual {
+    width: 112px;
+    margin-inline: auto;
+  }
+
+  .js .mfa-code-slots {
+    gap: 6px;
+  }
+
+  .mfa-code-slot {
+    min-height: 50px;
+    border-radius: 10px;
+    font-size: 1.2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mfa-code-slot {
+    transition: none;
+  }
+
+  .mfa-code-slot.is-filled {
+    transform: none;
   }
 }

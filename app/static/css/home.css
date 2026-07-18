@@ -48,6 +48,10 @@
       border-bottom: 1px solid var(--border);
     }
 
+    .home-pane__brand {
+      margin-bottom: 14px;
+    }
+
     .home-pane__header p {
       margin-top: 8px;
       max-width: 72ch;

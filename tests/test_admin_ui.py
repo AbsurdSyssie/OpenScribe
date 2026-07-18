@@ -80,7 +80,18 @@ from app.services.admin import admin_usage_overview
 from app.services.dictations import update_post_consultation_dictation
 from app.schemas.llm import LlmConfigInspectResult
 from app.schemas.stt import SttInspectResult
-from app.web.presentation import admin_page_route_from_return_view, admin_redirect_url, admin_return_view_value, default_template_return_tab, llm_form_defaults, stt_form_defaults
+from app.web.presentation import (
+    admin_page_route_from_return_view,
+    admin_redirect_url,
+    admin_return_view_value,
+    default_template_return_tab,
+    home_page_route_from_return_view,
+    home_redirect_url,
+    home_return_view_value,
+    home_template_name_from_return_view,
+    llm_form_defaults,
+    stt_form_defaults,
+)
 
 
 class FakeHttpxResponse:
@@ -603,7 +614,7 @@ def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, mak
     response = client.get("/home-restyled")
 
     assert response.status_code == 200
-    assert "Your OpenScribe home" in response.text
+    assert 'class="brand home-pane__brand"' in response.text
     assert 'data-tab-target="ai-services"' in response.text
     assert 'data-tab-target="team-management"' in response.text
     assert "AI services" in response.text
@@ -621,7 +632,7 @@ def test_home2_route_renders_admin2_styled_home_for_users_and_leaders(client, ma
     user_response = client.get("/home2")
 
     assert user_response.status_code == 200
-    assert "Your OpenScribe home" in user_response.text
+    assert 'class="brand home-pane__brand"' in user_response.text
     assert 'class="home2"' in user_response.text
     assert "_home2_admin2_style" not in user_response.text
     assert '/static/css/home2.css?v=20260701-home-extract' in user_response.text
@@ -683,6 +694,131 @@ def test_home2_blocks_system_admins_from_user_home(client, make_user):
 
     assert response.status_code == 303
     assert response.headers["location"] == "/admin"
+
+
+def test_settings_requires_auth_and_blocks_system_admins(client, make_user):
+    anonymous = client.get("/settings", follow_redirects=False)
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+
+    make_user(email="settings-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": "settings-admin@example.com", "password": "password-1"}, follow_redirects=False)
+    admin = client.get("/settings", follow_redirects=False)
+
+    assert admin.status_code == 303
+    assert admin.headers["location"] == "/admin"
+
+
+def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_user):
+    team = make_team(name="Clinic Settings")
+    member = make_user(email="settings-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    leader = make_user(email="settings-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+    user_page = client.get("/settings")
+
+    assert user_page.status_code == 200
+    assert user_page.headers["Cache-Control"] == "no-store"
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-settings">' in user_page.text
+    assert 'aria-current="page"' in user_page.text
+    assert "Preferences" in user_page.text
+    assert "Templates" in user_page.text
+    assert "Quick actions" in user_page.text
+    assert "Smart phrases" in user_page.text
+    assert "Open scribe" not in user_page.text
+    assert "AI services" not in user_page.text
+    assert "Team members" not in user_page.text
+    assert "Account requests" not in user_page.text
+    assert 'href="/home"' in user_page.text
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
+    leader_page = client.get("/settings?tab=team-members")
+
+    assert leader_page.status_code == 200
+    assert 'href="/settings?tab=ai-services"' in leader_page.text
+    assert 'href="/settings?tab=team-members"' in leader_page.text
+    assert 'href="/settings?tab=account-requests"' in leader_page.text
+    assert 'data-settings-panel="team-members"' in leader_page.text
+    assert f'action="/home/users/{member.id}/suspend"' in leader_page.text
+    assert f'action="/home/users/{member.id}/reset-mfa"' in leader_page.text
+    assert f'action="/home/users/{member.id}/delete"' not in leader_page.text
+
+
+def test_settings_quick_action_modal_and_invalid_tab_fallback(client, make_team, make_user):
+    team = make_team(name="Clinic Settings Modal")
+    user = make_user(email="settings-modal@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    modal = client.get("/settings?tab=quick-actions&modal=personal-quick-action")
+    fallback = client.get("/settings?tab=overview")
+
+    assert modal.status_code == 200
+    assert 'class="modal-shell is-open"' in modal.text
+    assert 'name="return_view" value="settings"' in modal.text
+    assert 'name="return_tab" value="quick-actions"' in modal.text
+    assert fallback.status_code == 200
+    assert 'href="/settings?tab=preferences" aria-current="page"' in fallback.text
+    assert 'data-settings-panel="preferences"' in fallback.text
+    assert 'data-settings-panel="preferences" hidden' not in fallback.text
+
+
+def test_settings_return_view_helpers_are_closed_and_url_backed():
+    assert home_return_view_value("settings") == "settings"
+    assert home_page_route_from_return_view("settings") == "/settings"
+    assert home_template_name_from_return_view("settings") == "settings.html"
+    assert home_redirect_url(return_view="settings", return_tab="templates") == "/settings?tab=templates"
+    assert home_return_view_value("https://evil.example") == ""
+    assert home_page_route_from_return_view("https://evil.example") == "/home"
+    assert home_template_name_from_return_view("https://evil.example") == "home.html"
+
+
+def test_settings_llm_preference_clear_returns_to_settings(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
+    team = make_team(name="Clinic Settings Preference")
+    admin = make_user(email="settings-pref-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, label="Settings LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini", "gpt-4.1-mini"])
+    user = make_user(email="settings-pref-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini", "gpt-4.1-mini"], model_name_override="gpt-4o-mini")
+    db_session.add(UserLlmPreference(user_id=user.id, preferred_model_name="gpt-4.1-mini"))
+    db_session.commit()
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/settings")
+    cleared = client.post(
+        "/home/llm-preference/clear",
+        data={"return_view": "settings", "return_tab": "preferences"},
+        follow_redirects=False,
+    )
+
+    assert "Use team default" in page.text
+    assert cleared.status_code == 303
+    assert cleared.headers["location"] == "/settings?tab=preferences"
+    assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
+
+
+def test_settings_leader_llm_policy_preserves_active_selection(client, make_team, make_user, make_llm_config, make_llm_selection):
+    team = make_team(name="Clinic Settings LLM Policy")
+    admin = make_user(email="settings-policy-admin@example.com", password="password-3", is_system_admin=True)
+    make_llm_config(team=team, actor=admin, label="First LLM", model_name="first-model", available_models_json=["first-model"])
+    active_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Active LLM",
+        model_name="model-a",
+        available_models_json=["model-a", "model-b"],
+    )
+    leader = make_user(email="settings-policy-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    make_llm_selection(config=active_config, actor=leader, allowed_models_json=["model-b"], model_name_override="model-b")
+    client.post("/login", data={"email": leader.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/settings?tab=ai-services")
+
+    assert page.status_code == 200
+    assert f'value="{active_config.id}" data-default-model="model-a" selected' in page.text
+    assert 'name="allowed_model_names" value="model-b" checked' in page.text
+    assert 'name="provider_model" value="model-b" checked' in page.text
+    assert 'name="allowed_model_names" value="model-a" checked' not in page.text
 
 
 def test_leader_home_separates_ai_services_from_team_member_admin(client, make_team, make_user, make_stt_config, make_llm_config):
@@ -1170,7 +1306,7 @@ def test_root_route_shows_public_splash_without_auth(client):
     assert response.status_code == 200
     assert "Open-source clinical scribing" in response.text
     assert 'href="/static/css/tokens.css?v=20260701-token-harmonise"' in response.text
-    assert 'href="/static/css/components.css?v=20260701-home-components"' in response.text
+    assert 'href="/static/css/components.css?v=20260718-brand-lockup"' in response.text
     assert 'href="/static/css/splash.css?v=20260701-splash-token-harmonise"' in response.text
     assert 'href="/login"' in response.text
     assert 'href="/request-access"' in response.text
@@ -1478,6 +1614,19 @@ def test_template_editor_page_uses_dedicated_full_page_layout(client, db_session
     assert 'Problem guidance' not in page.text
     assert '>Open<' not in page.text
     assert 'Personal template' in page.text
+
+
+def test_settings_template_editor_returns_to_settings(client, make_team, make_user):
+    team = make_team(name="Clinic Settings Editor")
+    user = make_user(email="settings-editor@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    editor = client.get("/home/templates/editor?scope=personal&return_view=settings&return_tab=templates")
+
+    assert editor.status_code == 200
+    assert 'href="/settings?tab=templates"' in editor.text
+    assert 'name="return_view" value="settings"' in editor.text
+    assert 'name="return_tab" value="templates"' in editor.text
 
 
 def test_global_default_template_editor_return_flow_is_canonical(client, db_session, make_user):
@@ -1944,15 +2093,40 @@ def test_home_page_uses_flat_sidebar_workspace_layout(client, make_team, make_us
 
     client.post("/login", data={"email": "leader-home-flat@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home?tab=team-management")
+    components_css = Path("app/static/css/components.css").read_text(encoding="utf-8")
 
     assert page.status_code == 200
     assert 'class="home-pane"' in page.text
     assert 'data-tab-nav hidden role="tablist" aria-label="Home sections"' in page.text
     assert 'data-tab-shell data-default-tab="team-management"' in page.text
-    assert "Clinical workspace" in page.text
+    assert 'class="brand home-pane__brand"' in page.text
+    assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>' in page.text
+    assert '<span class="brand-name">OpenScribe</span>' in page.text
+    assert "Clinical workspace" not in page.text
+    assert ".brand-mark" in components_css
+    assert ".brand-name" in components_css
     assert "Open consultation notes" in page.text
     assert 'class="home-shell"' not in page.text
     assert 'class="home-sidebar"' not in page.text
+
+
+def test_home_service_status_bar_is_visible_to_leaders_only(client, make_team, make_user):
+    team = make_team(name="Clinic Home Service Visibility")
+    make_user(email="leader-home-services@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    make_user(email="user-home-services@example.com", password="password-2", team=team, team_role=TeamRole.user)
+
+    client.post("/login", data={"email": "user-home-services@example.com", "password": "password-2"}, follow_redirects=False)
+    for route in ("/home", "/home2"):
+        page = client.get(route)
+        assert page.status_code == 200
+        assert 'class="stat-grid"' not in page.text
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": "leader-home-services@example.com", "password": "password-1"}, follow_redirects=False)
+    for route in ("/home", "/home2"):
+        page = client.get(route)
+        assert page.status_code == 200
+        assert 'class="stat-grid"' in page.text
 
 
 def test_admin_restyled_compatibility_route_redirects_system_admin_to_canonical_workspace(client, make_team, make_user):
@@ -2627,7 +2801,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260701-generation-loading-shared" in app_js
+    assert "documents.js?v=20260718-note-pill-datetime" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3280,8 +3454,129 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260702-transcript-empty-state"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_transcriber_col_changes_renders_authenticated_consultation_column(client, make_team, make_user):
+    anonymous = client.get("/transcriber_col_changes", follow_redirects=False)
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+
+    team = make_team(name="Clinic Consultation Column")
+    member = make_user(
+        email="consultation-column@example.com",
+        password="password-3",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    client.post("/login", data={"email": member.email, "password": "password-3"}, follow_redirects=False)
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Column test consultation", "ingestion_mode": "whole_file"},
+    )
+    assert transcript_response.status_code == 201
+
+    page = client.get("/transcriber_col_changes")
+
+    assert page.status_code == 200
+    assert page.headers["Cache-Control"] == "no-store"
+    assert 'data-route-base="/transcriber_col_changes"' in page.text
+    assert 'data-session-panel-toggle' in page.text
+    assert 'data-session-panel' in page.text
+    assert 'class="session-delete-button"' in page.text
+    assert 'data-lucide="trash-2"' in page.text
+    assert 'aria-label="Delete selected consultations"' in page.text
+    assert '>\n            Delete\n' not in page.text
+    session_panel_markup = page.text.split('id="session-panel"', 1)[1]
+    primary_sidebar_markup = page.text.split('id="session-panel"', 1)[0]
+    assert 'data-delete-selected' in session_panel_markup
+    assert 'data-delete-selected' not in primary_sidebar_markup
+    assert 'class="session-panel is-collapsed flex flex-col flex-shrink-0"' in page.text
+    assert 'data-session-panel aria-hidden="true" inert' in page.text
+    assert 'data-prototype-workspace-toolbar' in page.text
+    assert 'data-prototype-workspace-body' in page.text
+    assert 'data-prototype-main-workspace' in page.text
+    assert 'data-lucide="chevron-right"' in page.text
+    assert 'class="session-date-divider"' in page.text
+    assert 'data-lucide="sunrise"' in page.text or 'data-lucide="sun"' in page.text
+    assert re.search(r"Column test consultation.*\d{2}:\d{2}", page.text, re.DOTALL)
+    assert '/transcriber_col_changes/static/css/transcribe.css?v=20260718-consultation-delete-icon' in page.text
+    assert '/transcriber_col_changes/static/js/transcribe/app.js?v=20260718-consultation-metadata' in page.text
+
+    toolbar_index = page.text.index('data-prototype-workspace-toolbar')
+    lower_body_index = page.text.index('data-prototype-workspace-body')
+    session_panel_index = page.text.index('id="session-panel"')
+    main_workspace_index = page.text.index('data-prototype-main-workspace')
+    assert toolbar_index < lower_body_index < session_panel_index < main_workspace_index
+    assert page.text.count('data-template-picker-button') == 1
+    assert page.text.count('data-copy-structured-lines') == 1
+    assert page.text.count('data-generate-output-form') == 1
+    assert page.text.count('data-note-options-menu') == 1
+
+    class PrototypeLayoutParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.session_panel_in_lower_body = False
+            self.main_workspace_in_lower_body = False
+
+        def handle_starttag(self, tag, attrs):
+            attr_map = dict(attrs)
+            if attr_map.get("id") == "session-panel":
+                self.session_panel_in_lower_body = any("data-prototype-workspace-body" in frame[1] for frame in self.stack)
+            if "data-prototype-main-workspace" in attr_map:
+                self.main_workspace_in_lower_body = any("data-prototype-workspace-body" in frame[1] for frame in self.stack)
+            self.stack.append((tag, attr_map))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    break
+
+    layout_parser = PrototypeLayoutParser()
+    layout_parser.feed(page.text)
+    assert layout_parser.session_panel_in_lower_body
+    assert layout_parser.main_workspace_in_lower_body
+
+    stylesheet = client.get("/transcriber_col_changes/static/css/transcribe.css")
+    assert stylesheet.status_code == 200
+    assert ".session-panel" in stylesheet.text
+    assert ".transcriber-prototype-lower-body" in stylesheet.text
+    assert ".session-panel.is-collapsed" in stylesheet.text
+    assert ".session-delete-button:disabled" in stylesheet.text
+    assert "background: rgba(197, 48, 48, 0.08);" in stylesheet.text
+    assert "color: var(--error);" in stylesheet.text
+    assert "color: var(--muted);" in stylesheet.text
+    assert "transition: width 180ms ease, opacity 140ms ease;" in stylesheet.text
+    assert "@media (prefers-reduced-motion: reduce)" in stylesheet.text
+    assert 'class="flex-1 overflow-y-auto"' in page.text
+
+    prototype_js = client.get("/transcriber_col_changes/static/js/transcribe/app.js")
+    assert prototype_js.status_code == 200
+    assert "hourCycle: 'h23'" in prototype_js.text
+    assert "import { csrfFetch } from '/static/js/csrf.js';" in prototype_js.text
+    assert "createSidebarDateDivider" in prototype_js.text
+    assert "period === 'morning' ? 'sunrise' : 'sun'" in prototype_js.text
+    assert "period === 'morning' ? 'Morning' : 'Afternoon'" in prototype_js.text
+    assert "sessionList.replaceChildren(fragment)" in prototype_js.text
+    assert "String(item.ingestion_mode || '').replaceAll('_', ' ')" not in prototype_js.text
+    assert "scrollContainer?.addEventListener('scroll', loadWhenNearBottom, { passive: true })" in prototype_js.text
+    assert "if (!sessionRailPaginationStarted)" in prototype_js.text
+    shell_extras = Path("transcriber_changes/workspace/templates/transcribe/_shell_extras.html").read_text()
+    assert "classList.add('is-collapsed')" in shell_extras
+    assert "classList.remove('is-collapsed')" in shell_extras
+    assert "setAttribute('inert', '')" in shell_extras
+    assert "removeAttribute('inert')" in shell_extras
+    assert "scrollContainer?.dispatchEvent(new Event('scroll'))" in shell_extras
+    for module_name in ("actions.js", "media.js"):
+        module_text = Path(f"transcriber_changes/workspace/static/js/transcribe/{module_name}").read_text()
+        assert "from '/static/js/csrf.js'" in module_text
+        assert "from '../csrf.js'" not in module_text
+    session_panel_template = Path("transcriber_changes/workspace/templates/transcribe/_session_panel.html").read_text()
+    assert "transcript.ingestion_mode.value|replace('_', ' ')" not in session_panel_template
+    assert "classList.add('hidden')" not in shell_extras
 
 
 def test_transcribe_page_does_not_block_on_uncached_stt_health(client, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -3590,7 +3885,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260702-transcript-empty-no-dot" in page.text
+    assert "/static/css/transcribe.css?v=20260718-note-hover-delete-datetime" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/transcribe/mobile.js" in page.text
     assert 'data-workspace-endpoint="' in page.text
@@ -3648,7 +3943,6 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     assert 'transcribe_tab=output' in page.text
     assert f'data-settings-url="/home?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id=' in page.text
     assert 'transcribe_tab=followups' in page.text
-    assert "Home" in page.text
 
 
 def test_transcribe_template_editor_save_returns_to_transcribe(client, db_session, make_team, make_user):
@@ -3990,7 +4284,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260702-transcript-empty-state" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -5443,7 +5737,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;" in app_js
     assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
     assert "showFlash('Select a quick action first.', 'warning');" in actions_js
-    assert "./actions.js?v=20260525-followup-working-note" in app_js
+    assert "./actions.js?v=20260718-note-hover-delete-datetime" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -5463,8 +5757,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);" in app_js
     assert "dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';" in app_js
-    assert "const noteDeleteButton = document.querySelector('[data-note-delete]');" in app_js
-    assert "dom.noteDeleteButton?.addEventListener('click'" in actions_js
+    assert "const deleteSelectedNote = async () => {" in actions_js
+    assert "void deleteSelectedNote();" in actions_js
     assert "Delete this note permanently?" in actions_js
     assert "This consultation has transcript text. Delete it permanently?" in actions_js
     assert "One or more selected consultations have transcript text. Delete them permanently?" in actions_js
@@ -5683,7 +5977,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260702-transcript-empty-state" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -5761,13 +6055,17 @@ def test_auth_recovery_pages_use_current_shell_styling():
     mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
     auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
 
-    for html in (login_html, request_access_html, mfa_html, onboarding_html, reset_request_html, reset_confirm_html):
+    unchanged_auth_pages = (login_html, request_access_html, onboarding_html, reset_request_html, reset_confirm_html)
+    for html in (*unchanged_auth_pages, mfa_html):
         assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in html
         assert '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">' in html
-        assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">' in html
         assert '<body class="auth-page' in html
         assert "<style" not in html
         assert "panel hero" in html
+
+    for html in unchanged_auth_pages:
+        assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">' in html
+    assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260718-mfa-code-slots">' in mfa_html
 
     assert "font-family: var(--font-display);" in auth_css
     assert "var(--accent)" in auth_css
@@ -5776,6 +6074,39 @@ def test_auth_recovery_pages_use_current_shell_styling():
     assert "is-active" in onboarding_html
     assert "Account recovery" in reset_request_html
     assert "Secure account link" in reset_confirm_html
+
+
+def test_mfa_challenge_gives_clear_authenticator_code_guidance():
+    root = Path(__file__).resolve().parents[1]
+    mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
+    auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
+
+    assert 'class="mfa-device-visual" aria-hidden="true"' in mfa_html
+    assert "Codes refresh about every 30 seconds." in mfa_html
+    assert 'pattern="[0-9]{6}"' in mfa_html
+    assert 'type="text"' in mfa_html
+    assert 'autocomplete="one-time-code"' in mfa_html
+    assert 'aria-describedby="mfa-code-help"' in mfa_html
+    assert "autofocus" in mfa_html
+    assert 'id="mfa-challenge-form" method="post" action="/mfa/challenge"' in mfa_html
+    assert 'type="submit" form="mfa-challenge-form">Verify and continue</button>' in mfa_html
+    assert '<form class="mfa-signout-form" method="post" action="/logout">' in mfa_html
+    challenge_form_end = mfa_html.index("</form>", mfa_html.index('id="mfa-challenge-form"'))
+    logout_form_start = mfa_html.index('<form class="mfa-signout-form"')
+    assert challenge_form_end < logout_form_start
+    assert ".mfa-device-visual" in auth_css
+    assert ".mfa-code-input" in auth_css
+    assert mfa_html.count('data-mfa-code-slot>') == 6
+    assert 'data-mfa-countdown' not in mfa_html
+    assert 'setInterval' not in mfa_html
+    assert "replace(/[^0-9]/g, '').slice(0, 6)" in mfa_html
+    assert "addEventListener('beforeinput'" in mfa_html
+    assert "addEventListener('paste'" in mfa_html
+    assert "@media (prefers-reduced-motion: reduce)" in auth_css
+    assert ".mfa-actions-row" in auth_css
+    actions_rule = auth_css.split(".mfa-actions-row {", 1)[1].split("}", 1)[0]
+    assert "display: flex;" in actions_rule
+    assert "margin-top: 24px;" in actions_rule
 
 
 def test_home_overview_and_asset_cards_keep_white_fill_like_team_cards():
@@ -6550,7 +6881,12 @@ def test_user_transcribe_page_renders_generated_document_switchers(
 
     assert page.status_code == 200
     assert 'data-note-selector' in page.text
-    assert 'data-note-delete' in page.text
+    assert 'data-note-selector-row' in page.text
+    assert 'data-note-hover-delete' in page.text
+    assert 'document-switcher-item__delete' in page.text
+    assert 'data-note-delete' not in page.text
+    assert re.search(r'data-note-selector-row[\s\S]*data-note-selector[\s\S]*data-note-hover-delete', page.text)
+    assert re.search(r'Visit summary v2[\s\S]*?ready · \d{2}-\d{2}-\d{2} \d{2}:\d{2}', page.text)
     assert "Delete selected note permanently" in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
@@ -7815,8 +8151,21 @@ def test_completed_user_login_redirects_to_mfa_challenge_then_home(client, make_
 
     page = client.get("/mfa/challenge")
     assert page.status_code == 200
-    assert "Enter your TOTP code." in page.text
+    assert "Enter the code from your authenticator app." in page.text
+    assert "Codes refresh about every 30 seconds." in page.text
     assert "Remember this browser for 24 hours" in page.text
+
+    logout = client.post("/logout", follow_redirects=False)
+    assert logout.status_code == 303
+    assert logout.headers["location"] == "/login"
+
+    login_again = client.post(
+        "/login",
+        data={"email": "managed@example.com", "password": PERMANENT_TEST_PASSWORD},
+        follow_redirects=False,
+    )
+    assert login_again.status_code == 303
+    assert login_again.headers["location"] == "/mfa/challenge"
 
     verify = client.post(
         "/mfa/challenge",

@@ -1,0 +1,4 @@
+{% set settings_tab = active_settings_tab|default(active_home_tab|default('preferences')) %}
+<a href="/settings?tab=preferences">Preferences</a>
+{% if not current_user.is_system_admin and current_user.team_id %}<a href="/settings?tab=templates">Templates</a><a href="/settings?tab=quick-actions">Quick actions</a><a href="/settings?tab=smart-phrases">Smart phrases</a>{% endif %}
+{% if is_manager %}<a href="/settings?tab=ai-services">AI services</a><a href="/settings?tab=team-members">Team members</a><a href="/settings?tab=account-requests">Account requests</a>{% endif %}

@@ -14,6 +14,30 @@ System admin flow is out of scope here because system admins are redirected away
 
 `/home2` is a user/team-leader preview of the same Home capabilities with Admin2-style dark workspace styling. It uses the same data, form handlers, and role gates as `/home`; only route chrome and CSS differ. Its section tabs live in the left sidebar, signed-in identity sits under the sidebar title, and the speech/writing/template summary is docked at the bottom of that sidebar. Section create actions sit inside their list/panel areas instead of floating above them.
 
+## Settings Workspace
+
+`/settings` is a separate user/team-leader configuration workspace. `/home` remains unchanged and continues to own consultation launch/overview behavior. Settings is currently reachable by direct URL only.
+
+Settings uses the canonical warm `/admin` visual language without reusing the privileged admin template or context. It has a cream two-column shell, grouped sidebar navigation, serif headings, setting cards, and a responsive mobile menu.
+
+Normal-user sections:
+
+- preferences
+- personal templates
+- personal quick actions
+- smart phrases
+
+Leader additions:
+
+- team templates and quick actions
+- AI service policy
+- team members
+- account requests
+
+The page reuses existing `/home/...` form handlers and service authorization. `return_view=settings` is a closed value that returns successful or failed workflows to `/settings`; unknown values still fall back to `/home`. System admins are redirected to `/admin`.
+
+Leader Settings intentionally omits hard user deletion. Leaders may use existing suspend/reactivate, setup, recovery, and MFA controls. This preserves the architecture rule that team leaders may lock or deactivate users but may not fully delete them.
+
 ## Audience Split
 
 ### Shown to normal users and leaders

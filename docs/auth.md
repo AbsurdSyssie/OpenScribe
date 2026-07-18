@@ -91,6 +91,12 @@ For users whose onboarding is already complete:
 ### TOTP challenge step
 
 - `/mfa/challenge` is the browser challenge page
+- the browser page pairs a phone-and-timer illustration with plain-language authenticator-app guidance
+- the code field remains one accessible input with numeric keyboard and one-time-code autofill hints, presented as six visual digit slots when JavaScript is available
+- typing, paste, and autofill are normalised to a maximum of six ASCII digits while preserving leading zeroes
+- static guidance explains the approximate 30-second TOTP refresh period; the page does not show a browser-side countdown because device clocks may differ
+- digit-fill motion respects the browser's reduced-motion preference
+- verify and sign-out actions share one visual row with clear spacing from the remembered-browser control, but remain separate forms so code validation cannot block sign-out
 - `POST /api/v1/auth/mfa/totp` is the JSON challenge endpoint
 - successful TOTP verification rotates the `pending_mfa` session into a normal `full` session
 - if the user opts in to remembering the browser, the app also issues a trusted-device cookie

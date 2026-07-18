@@ -116,6 +116,15 @@ export function createDocumentNavigator({
     )
   );
 
+  const formatNoteCreatedAt = (value) => {
+    if (!value) return '';
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return value;
+    const date = new Date(timestamp);
+    const pad = (part) => String(part).padStart(2, '0');
+    return `${String(date.getUTCFullYear()).slice(-2)}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+  };
+
   const truncateSwitcherLabel = (value, maxWords = 4) => {
     const words = String(value || "").trim().split(/\s+/).filter(Boolean);
     if (!words.length) {
@@ -163,6 +172,10 @@ export function createDocumentNavigator({
     }
     container.innerHTML = "";
     documents.forEach((item) => {
+      const itemWrap = kind === 'note' ? window.document.createElement('div') : null;
+      if (itemWrap) {
+        itemWrap.className = 'document-switcher-item';
+      }
       const button = window.document.createElement("button");
       button.type = "button";
       button.className = `document-switcher-button${item.id === selectedId ? " active" : ""}`;
@@ -170,13 +183,27 @@ export function createDocumentNavigator({
       button.dataset.documentKind = kind;
       const label = item.kind === "working_note" ? "Working note" : (kind === "note" ? noteDocumentLabel(item) : followupDocumentLabel(item));
       button.title = label;
-      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(item.created_at || "")}`;
+      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(formatNoteCreatedAt(item.created_at))}`;
       button.innerHTML = `
         <span class="document-switcher-label">${escapeHtml(truncateSwitcherLabel(label))}</span>
         <span class="document-switcher-meta">${meta}</span>
       `;
-      container.appendChild(button);
+      if (itemWrap) {
+        const deleteButton = window.document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'document-switcher-item__delete';
+        deleteButton.dataset.noteHoverDelete = 'true';
+        deleteButton.dataset.documentId = item.id;
+        deleteButton.title = `Delete ${label.toLowerCase()} permanently`;
+        deleteButton.setAttribute('aria-label', deleteButton.title);
+        deleteButton.innerHTML = '<i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i>';
+        itemWrap.append(button, deleteButton);
+        container.appendChild(itemWrap);
+      } else {
+        container.appendChild(button);
+      }
     });
+    refreshIcons?.(container);
   };
 
   const renderLlmRequestPanel = (slot, document) => {
@@ -355,23 +382,23 @@ export function createDocumentNavigator({
   };
 
   const selectDocumentFromUi = async (kind, documentId) => {
-    if (!documentId) return;
+    if (!documentId) return false;
     if (kind === "note") {
       const state = getState();
       if (state.selectedNoteDocumentId === documentId) {
-        return;
+        return true;
       }
       if (hasPendingGeneratedNoteEdits?.()) {
         const savedDocument = await persistNoteEditsSilently?.();
         if (!savedDocument) {
-          return;
+          return false;
         }
       }
       clearNoteEditorDirty?.();
       setState({ selectedNoteDocumentId: documentId });
       renderSelectedNote();
       setTab("output");
-      return;
+      return true;
     }
     const state = getState();
     if (state.selectedFollowupDocumentId === documentId) {

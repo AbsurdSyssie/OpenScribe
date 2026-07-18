@@ -1,0 +1,18 @@
+<script nonce="{{ request.state.csp_nonce }}">
+  (() => {
+    document.querySelectorAll('[data-template-editor]').forEach((editor) => {
+      const modeSelect = editor.querySelector('[data-template-mode-select]');
+      const sections = editor.querySelector('[data-template-sections]');
+      if (!modeSelect || !sections) {
+        return;
+      }
+
+      const syncSectionVisibility = () => {
+        sections.hidden = modeSelect.value !== 'structured';
+      };
+
+      syncSectionVisibility();
+      modeSelect.addEventListener('change', syncSectionVisibility);
+    });
+  })();
+</script>

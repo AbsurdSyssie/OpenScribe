@@ -1,0 +1,125 @@
+{% set is_team_editor = template_editor_scope == 'team' %}
+{% set is_default_editor = template_editor_scope == 'default' %}
+{% set current_template = default_template if is_default_editor else (team_template if is_team_editor else personal_template) %}
+{% set current_version = default_template_latest_version if is_default_editor else (team_template_latest_version if is_team_editor else personal_template_latest_version) %}
+{% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
+{% set editor_is_read_only = template_editor_read_only|default(false) %}
+{% set editor_is_embedded = embedded_template_editor|default(false) %}
+{% set default_back_url = admin_page_route ~ '?tab=' ~ default_template_return_tab if is_default_editor else ('/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates') %}
+{% set back_url = template_editor_cancel_url|default(default_back_url) %}
+{% set editor_action = template_editor_action|default('/admin/default-templates' if is_default_editor else ('/home/team-templates' if is_team_editor else '/home/personal-templates')) %}
+{% set save_label = 'Save default template' if is_default_editor and current_template else 'Create default template' if is_default_editor else ('Save team template' if is_team_editor and current_template else 'Create team template' if is_team_editor else 'Save personal template' if current_template else 'Create personal template') %}
+{% set current_mode = current_version.mode.value if current_version else 'freeform' %}
+<div class="template-editor-workspace{% if editor_is_embedded %} is-embedded{% endif %}" data-template-editor{% if editor_is_read_only %} data-template-editor-read-only{% endif %}>
+  <div class="editor-header">
+    <div class="page-copy">
+      <div class="eyebrow">{{ 'Default' if is_default_editor else ('Team' if is_team_editor else 'Personal') }} template</div>
+      <h1>{{ current_template.name if current_template else ('New default template' if is_default_editor else ('New team template' if is_team_editor else 'New personal template')) }}</h1>
+      <p>{% if editor_is_read_only %}Review this shared template or copy it to your personal library to make changes.{% else %}Build reusable note instructions with room for the full brief and, when needed, structured EMIS section guidance.{% endif %}</p>
+    </div>
+  </div>
+  {% if message %}
+  <div class="flash {{ message_kind }}">{{ message }}</div>
+  {% endif %}
+  <div class="workspace-shell">
+    {% if editor_is_read_only %}
+    <article class="template-form template-preview" aria-label="Team template preview">
+      <div class="field-grid template-preview__metadata">
+        <div>
+          <span class="template-preview__label">Template name</span>
+          <p>{{ current_template.name if current_template else 'Untitled template' }}</p>
+        </div>
+        <div>
+          <span class="template-preview__label">Template style</span>
+          <p>{{ 'Sectioned EMIS note' if current_mode == 'structured' else 'Free text' }}</p>
+        </div>
+        <div class="field--wide">
+          <span class="template-preview__label">Description</span>
+          <p>{{ current_template.description if current_template and current_template.description else 'No description.' }}</p>
+        </div>
+      </div>
+      <section class="template-preview__prompt">
+        <h2>What should be written</h2>
+        <p class="template-preview__text">{{ current_version.prompt_text if current_version else 'No instructions.' }}</p>
+      </section>
+      {% if current_mode == 'structured' %}
+      <div class="section-list" data-template-sections>
+        {% for section in emis_sections %}
+        {% set section_prompt = current_section_prompts.get(section.key, '') %}
+        {% if section_prompt %}
+        <section class="section-row">
+          <h3>{{ section.label }}</h3>
+          <p class="template-preview__text">{{ section_prompt }}</p>
+        </section>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      <p class="template-preview__status">{{ 'Active' if current_template and current_template.is_active else 'Inactive' }}</p>
+      <div class="action-bar">
+        <div></div>
+        <div class="actions">
+          {% if back_url %}<a class="btn-secondary" href="{{ back_url }}">Back</a>{% endif %}
+          {% if template_editor_read_only_action_url %}
+          <form method="post" action="{{ template_editor_read_only_action_url }}">
+            {% for field_name, field_value in (template_editor_read_only_action_fields|default({})).items() %}
+            <input type="hidden" name="{{ field_name }}" value="{{ field_value }}">
+            {% endfor %}
+            <button type="submit" class="btn-primary">{{ template_editor_read_only_action_label|default('Copy to My Templates') }}</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+    {% else %}
+    <form method="post" action="{{ editor_action }}" class="template-form">
+      <input type="hidden" name="template_id" value="{{ current_template.id if current_template else '' }}">
+      <input type="hidden" name="return_view" value="{{ admin_return_view if is_default_editor else home_return_view }}">
+      {% if is_default_editor %}
+      <input type="hidden" name="return_tab" value="{{ default_template_return_tab }}">
+      {% endif %}
+      {% if not is_default_editor %}
+      <input type="hidden" name="return_tab" value="templates">
+      <input type="hidden" name="queued_transcript_id" value="{{ queued_transcript_id or '' }}">
+      <input type="hidden" name="transcribe_tab" value="{{ transcribe_return_tab or '' }}">
+      {% endif %}
+      <div class="field-grid">
+        <label>
+          Template name
+          <input type="text" name="name" maxlength="255" required value="{{ current_template.name if current_template else '' }}">
+        </label>
+        <label>
+          Template style
+          <select name="mode" data-template-mode-select>
+            <option value="freeform" {% if not current_version or current_version.mode.value == 'freeform' %}selected{% endif %}>Free text</option>
+            <option value="structured" {% if current_version and current_version.mode.value == 'structured' %}selected{% endif %}>Sectioned EMIS note</option>
+          </select>
+        </label>
+        <label class="field--wide">
+          Description
+          <input type="text" name="description" value="{{ current_template.description if current_template else '' }}">
+        </label>
+      </div>
+      <label>
+        What should be written
+        <textarea name="prompt_text" rows="10" required>{{ current_version.prompt_text if current_version else '' }}</textarea>
+      </label>
+      <div class="section-list" data-template-sections{% if current_mode != 'structured' %} hidden{% endif %}>
+        {% for section in emis_sections %}
+        <div class="section-row">
+          <h3>{{ section.label }}</h3>
+          <textarea name="section_prompt_{{ section.key }}" rows="5" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ current_section_prompts.get(section.key, '') }}</textarea>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="action-bar">
+        <label class="toggle-row"><input type="checkbox" name="is_active" value="true" {% if not current_template or current_template.is_active %}checked{% endif %}>Active</label>
+        <div class="actions">
+          {% if back_url %}<a class="btn-secondary" href="{{ back_url }}">Cancel</a>{% endif %}
+          <button type="submit" class="btn-primary">{{ save_label }}</button>
+        </div>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</div>

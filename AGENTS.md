@@ -179,6 +179,8 @@ Changes affecting any item below need targeted tests:
 
 Every change must update docs as needed.
 
+Daily progress notes under `docs/progress/` are local scratch records. The directory is ignored intentionally: never stage or force-add these files. Daily-note updates do not satisfy the tracked documentation requirement below.
+
 Update one or more of:
 - README
 - architecture notes
@@ -275,7 +277,7 @@ Explain how implementation preserved:
 - provider rules
 - structured-note contract
 
-Add this to daily note in docs/progress. YYYY/MM/DD Daily Progress Note.md
+Add this to the local daily note in `docs/progress/YYYY/MM/DD Daily Progress Note.md`, but do not stage or commit that note.
 ---
 
 ## Escalation rule

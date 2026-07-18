@@ -1,0 +1,191 @@
+<section class="settings-section" data-settings-panel="ai-services" {% if settings_tab != 'ai-services' %}hidden{% endif %}>
+  <div class="settings-section__intro">
+    <span class="settings-kicker">Team</span>
+    <h2>AI services</h2>
+    <p>Choose admin-provisioned services. Credentials stay private.</p>
+  </div>
+  <div class="service-list">
+    <article class="settings-card service-row">
+      <div class="setting-row">
+        <div>
+          <h3>Speech to text</h3>
+          <p>
+            Conversation: {% if stt_selection %}{{ stt_selection.config.label }}{% else %}Not configured{% endif %}<br>
+            Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.label }}{% else %}Not configured{% endif %}
+          </p>
+        </div>
+        <div class="setting-actions">
+          {% if stt_selection %}
+          <form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current conversation speech service?">
+            <input type="hidden" name="purpose" value="conversation">
+            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_tab" value="ai-services">
+            <button class="btn-ghost-sm" type="submit">Clear conversation</button>
+          </form>
+          {% endif %}
+          {% if stt_dictation_selection %}
+          <form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current dictation speech service?">
+            <input type="hidden" name="purpose" value="post_consultation_dictation">
+            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_tab" value="ai-services">
+            <button class="btn-ghost-sm" type="submit">Clear dictation</button>
+          </form>
+          {% endif %}
+          <button class="btn-ghost-sm" type="button" data-service-toggle="stt">Configure</button>
+        </div>
+      </div>
+      <div data-service-body="stt" hidden>
+        {% if selectable_stt_configs %}
+        <form method="post" action="/home/stt-selection" data-stt-selection-form>
+          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_tab" value="ai-services">
+          <label>Use for
+            <select name="purpose">
+              <option value="conversation">Conversation transcription</option>
+              <option value="post_consultation_dictation">Post-consultation dictation</option>
+            </select>
+          </label>
+          <label>Provider
+            <select name="stt_config_id" data-stt-config-select required>
+              {% for config in selectable_stt_configs %}
+              <option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if stt_selection and stt_selection.stt_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Model
+            <select name="provider_model" data-stt-model-select data-selected-value="{{ stt_selection.model_name_override if stt_selection else '' }}"></select>
+          </label>
+          <label>Language
+            <input name="language" value="{{ stt_selection.language_override if stt_selection else '' }}" placeholder="Provider default / auto-detect">
+          </label>
+          <button class="btn-primary-sm" type="submit">Save</button>
+        </form>
+        {% else %}
+        <p class="settings-empty">No speech services available.</p>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="settings-card service-row">
+      <div class="setting-row">
+        <div>
+          <h3>Writing assistant</h3>
+          <p>{% if llm_selection %}{{ llm_selection.config.label }}{% else %}Not configured{% endif %}</p>
+        </div>
+        <div class="setting-actions">
+          {% if llm_selection %}
+          <form method="post" action="/home/llm-selection/clear" data-confirm-submit="Remove current writing assistant?">
+            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_tab" value="ai-services">
+            <button class="btn-ghost-sm" type="submit">Clear</button>
+          </form>
+          {% endif %}
+          <button class="btn-ghost-sm" type="button" data-service-toggle="llm">Configure</button>
+        </div>
+      </div>
+      <div data-service-body="llm" hidden>
+        {% if selectable_llm_configs %}
+        <form method="post" action="/home/llm-selection" data-llm-selection-form>
+          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_tab" value="ai-services">
+          <label>Provider
+            <select name="llm_config_id" data-llm-config-select required>
+              {% for config in selectable_llm_configs %}
+              <option value="{{ config.id }}" data-default-model="{{ config.model_name or '' }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          {% for config in selectable_llm_configs %}
+          <fieldset data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
+            <legend>Allowed models</legend>
+            {% for model in config.available_models_json %}
+            {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
+            {% set is_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and config.model_name == model) %}
+            <label><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}>{{ model }}</label>
+            <label><input type="radio" name="provider_model" value="{{ model }}" {% if is_default %}checked{% endif %}>Team default</label>
+            {% endfor %}
+          </fieldset>
+          {% endfor %}
+          <button class="btn-primary-sm" type="submit">Save</button>
+        </form>
+        {% else %}
+        <p class="settings-empty">No writing assistants available.</p>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="settings-card service-row">
+      <div class="setting-row">
+        <div>
+          <h3>De-identification</h3>
+          <p>{% if deidentification_selection %}{{ deidentification_selection.provider.label }}{% else %}Built-in Native Presidio fallback{% endif %}</p>
+        </div>
+        <div class="setting-actions">
+          {% if deidentification_selection %}
+          <form method="post" action="/home/deidentification-selection/clear" data-confirm-submit="Clear selection and use built-in fallback?">
+            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_tab" value="ai-services">
+            <button class="btn-ghost-sm" type="submit">Clear</button>
+          </form>
+          {% endif %}
+          <button class="btn-ghost-sm" type="button" data-service-toggle="deidentification">Configure</button>
+        </div>
+      </div>
+      <div data-service-body="deidentification" hidden>
+        {% if selectable_deidentification_providers %}
+        <form method="post" action="/home/deidentification-selection">
+          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_tab" value="ai-services">
+          <label>Provider
+            <select name="provider_id" required>
+              {% for provider in selectable_deidentification_providers %}
+              <option value="{{ provider.id }}" {% if deidentification_selection and deidentification_selection.provider_id == provider.id %}selected{% endif %}>{{ provider.label }}{% if provider.is_builtin %} (built-in fallback){% endif %}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button class="btn-primary-sm" type="submit">Save</button>
+        </form>
+        {% else %}
+        <p class="settings-empty">No providers available.</p>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="settings-card service-row">
+      <div class="setting-row">
+        <div>
+          <h3>Clinical NLP</h3>
+          <p>{% if clinical_nlp_selection %}{{ clinical_nlp_selection.provider.label }}{% else %}Disabled{% endif %}</p>
+        </div>
+        <div class="setting-actions">
+          {% if clinical_nlp_selection %}
+          <form method="post" action="/home/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP?">
+            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_tab" value="ai-services">
+            <button class="btn-ghost-sm" type="submit">Disable</button>
+          </form>
+          {% endif %}
+          <button class="btn-ghost-sm" type="button" data-service-toggle="clinical-nlp">Configure</button>
+        </div>
+      </div>
+      <div data-service-body="clinical-nlp" hidden>
+        {% if selectable_clinical_nlp_providers %}
+        <form method="post" action="/home/clinical-nlp-selection">
+          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_tab" value="ai-services">
+          <label>Endpoint
+            <select name="provider_id" required>
+              {% for provider in selectable_clinical_nlp_providers %}
+              <option value="{{ provider.id }}" {% if clinical_nlp_selection and clinical_nlp_selection.provider_id == provider.id %}selected{% endif %}>{{ provider.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button class="btn-primary-sm" type="submit">Enable</button>
+        </form>
+        {% else %}
+        <p class="settings-empty">No clinical NLP endpoints available.</p>
+        {% endif %}
+      </div>
+    </article>
+  </div>
+</section>

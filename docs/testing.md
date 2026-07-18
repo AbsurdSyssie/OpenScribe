@@ -2,6 +2,7 @@
 
 - Admin redesign migration tests verify `/admin` renders the mockup-based neutral/team-scoped shell with URL-backed team tabs, `/legacy-admin` retains the functional current workspace, and `/admin2` remains available.
 - Admin redesign slice tests verify team member forms/actions reuse existing account routes without system-admin promotion, De-ID assignment remains distinct from global deletion, Danger zone uses existing team hard-delete, and retention-default edits preserve future-only semantics.
+- Settings workspace tests verify `/settings` requires full authentication, redirects system admins, uses `no-store`, limits normal users to personal sections, exposes leader-only sections through existing service gates, omits leader hard-delete, and preserves validated `return_view=settings` redirects and template-editor return paths.
 
 This document covers non-database testing. Database-specific behavior, safety rules, and persistence-level checks belong in [dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md).
 

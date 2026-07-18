@@ -6,14 +6,33 @@
   <title>OpenScribe MFA</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">
-  <link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">
+  <link rel="stylesheet" href="/static/css/auth.css?v=20260718-mfa-code-slots">
 </head>
 <body class="auth-page auth-page--mfa">
   <main>
     <section class="panel hero">
-      <div class="eyebrow">Additional verification</div>
-      <h1>Enter your TOTP code.</h1>
-      <p>This login needs multi-factor verification before normal access is granted.</p>
+      <div class="mfa-hero-layout">
+        <div class="mfa-hero-copy">
+          <div class="eyebrow">Additional verification</div>
+          <h1>Enter the code from your authenticator app.</h1>
+          <p>Use the current six-digit code shown in the authenticator app on your phone.</p>
+        </div>
+        <div class="mfa-device-visual" aria-hidden="true">
+          <svg viewBox="0 0 180 180" focusable="false">
+            <circle class="mfa-visual-halo" cx="90" cy="90" r="78"></circle>
+            <rect class="mfa-phone" x="48" y="22" width="84" height="136" rx="18"></rect>
+            <path class="mfa-phone-speaker" d="M78 34h24"></path>
+            <rect class="mfa-app-card" x="60" y="53" width="60" height="68" rx="10"></rect>
+            <circle class="mfa-app-mark" cx="90" cy="70" r="7"></circle>
+            <path class="mfa-code-dots" d="M72 93h2m9 0h2m9 0h2m9 0h2"></path>
+            <path class="mfa-code-line" d="M73 106h34"></path>
+            <circle class="mfa-timer-badge" cx="124" cy="130" r="24"></circle>
+            <circle class="mfa-timer-face" cx="124" cy="130" r="13"></circle>
+            <path class="mfa-timer-hand" d="M124 122v9l6 4"></path>
+            <path class="mfa-phone-home" d="M84 145h12"></path>
+          </svg>
+        </div>
+      </div>
       <div class="meta">Signed in as {{ current_user.email }}</div>
     </section>
 
@@ -22,27 +41,97 @@
       <div class="flash">{{ message }}</div>
       {% endif %}
 
-      <form method="post" action="/mfa/challenge">
-        <label>
-          6-digit TOTP code
-          <input type="text" name="code" required minlength="6" maxlength="8" inputmode="numeric" autocomplete="one-time-code">
-        </label>
+      <div class="card-top">
+        <div class="section-label">Authenticator check</div>
+        <h2>Check your phone</h2>
+        <p>Open the authenticator app you used when setting up OpenScribe, then enter the code shown for this account.</p>
+      </div>
+
+      <form class="mfa-challenge-form" id="mfa-challenge-form" method="post" action="/mfa/challenge">
+        <label for="mfa-code">6-digit code</label>
+        <div class="mfa-code-control" data-mfa-code-control>
+          <input
+            class="mfa-code-input"
+            id="mfa-code"
+            type="text"
+            name="code"
+            required
+            minlength="6"
+            maxlength="6"
+            pattern="[0-9]{6}"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            enterkeyhint="done"
+            aria-describedby="mfa-code-help"
+            placeholder="000000"
+            autofocus
+          >
+          <div class="mfa-code-slots" aria-hidden="true">
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+            <span class="mfa-code-slot" data-mfa-code-slot></span>
+          </div>
+        </div>
+        <div class="mfa-code-help" id="mfa-code-help">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="8"></circle>
+            <path d="M12 8v4l3 2"></path>
+          </svg>
+          <span>Codes refresh about every 30 seconds. If yours changes, enter the new code.</span>
+        </div>
         <label class="inline-check">
           <input type="checkbox" name="remember_device" value="true">
           <span>Remember this browser for 24 hours</span>
         </label>
-        <div class="actions">
-          <button type="submit">Verify and continue</button>
-        </div>
       </form>
 
-      <form method="post" action="/logout">
-        <button class="secondary" type="submit">Sign out</button>
-      </form>
+      <div class="mfa-actions-row">
+        <button type="submit" form="mfa-challenge-form">Verify and continue</button>
+        <form class="mfa-signout-form" method="post" action="/logout">
+          <button class="secondary" type="submit">Sign out</button>
+        </form>
+      </div>
     </section>
   <div class="toast-container" data-toast-container></div>
   <script nonce="{{ request.state.csp_nonce }}">
     (() => {
+      document.documentElement.classList.add('js');
+
+      const codeInput = document.querySelector('#mfa-code');
+      const codeControl = document.querySelector('[data-mfa-code-control]');
+      const codeSlots = Array.from(document.querySelectorAll('[data-mfa-code-slot]'));
+      const syncCodeSlots = () => {
+        if (!codeInput) return;
+        const digits = codeInput.value.replace(/[^0-9]/g, '').slice(0, 6);
+        if (codeInput.value !== digits) codeInput.value = digits;
+        codeSlots.forEach((slot, index) => {
+          const digit = digits[index] || '';
+          slot.textContent = digit;
+          slot.classList.toggle('is-filled', Boolean(digit));
+          slot.classList.toggle('is-current', index === digits.length && digits.length < 6);
+        });
+        codeControl?.classList.toggle('is-complete', digits.length === 6);
+      };
+
+      if (codeInput) {
+        codeInput.addEventListener('beforeinput', (event) => {
+          if (event.inputType === 'insertText' && event.data && /[^0-9]/.test(event.data)) {
+            event.preventDefault();
+          }
+        });
+        codeInput.addEventListener('paste', (event) => {
+          event.preventDefault();
+          codeInput.value = event.clipboardData.getData('text').replace(/[^0-9]/g, '').slice(0, 6);
+          syncCodeSlots();
+        });
+        codeInput.addEventListener('input', syncCodeSlots);
+        codeInput.addEventListener('change', syncCodeSlots);
+        syncCodeSlots();
+      }
+
       const toastContainer = document.querySelector('[data-toast-container]');
       if (!toastContainer) return;
       document.querySelectorAll('.flash').forEach((flash) => {

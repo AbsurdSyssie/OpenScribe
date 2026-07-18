@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20260525-followup-working-note';
+import { attachTranscribeActions } from './actions.js?v=20260718-note-hover-delete-datetime';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260701-generation-loading-shared';
+import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260701-generation-loading-shared';
+import { createStructuredEditor } from './structured.js?v=20260718-note-pill-datetime';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -153,7 +153,6 @@ import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.j
       const followupOutputSubtitle = document.querySelector('[data-followup-output-subtitle]');
       const noteSelectorWrap = document.querySelector('[data-note-selector-wrap]');
       const noteSelector = document.querySelector('[data-note-selector]');
-      const noteDeleteButton = document.querySelector('[data-note-delete]');
       const noteSelectorCount = document.querySelector('[data-note-selector-count]');
       const followupSelectorWrap = document.querySelector('[data-followup-selector-wrap]');
       const followupSelector = document.querySelector('[data-followup-selector]');
@@ -3620,7 +3619,6 @@ let statusDetailsHideTimer = null;
           generateOutputTemplateSelect,
           latestGeneratedOutput,
           newSessionForm,
-          noteDeleteButton,
           noteSelector,
           quickActionContextRecordButton,
           quickActionContextRecordLabel,

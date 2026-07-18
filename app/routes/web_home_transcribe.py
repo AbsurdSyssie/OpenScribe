@@ -15,6 +15,63 @@ from ..main import (
 from ..stt_normalization import normalize_stt_language
 
 
+def _render_home_page(
+    request: Request,
+    db: Session,
+    *,
+    message: str | None,
+    message_kind: str,
+    queued_transcript_id: str | None,
+    transcribe_tab: str | None,
+    tab: str | None,
+    modal: str | None,
+    team_template_id: str | None,
+    personal_template_id: str | None,
+    team_quick_action_id: str | None,
+    personal_quick_action_id: str | None,
+    home_page_route: str,
+    home_return_view: str,
+    template_name: str,
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if modal in {"personal-template", "team-template"}:
+        scope = "team" if modal == "team-template" else "personal"
+        selected_template_id = team_template_id if scope == "team" else personal_template_id
+        return RedirectResponse(
+            url=_home_template_editor_url(
+                scope=scope,
+                template_id=selected_template_id,
+                return_view=home_return_view,
+                queued_transcript_id=queued_transcript_id,
+                transcribe_tab=transcribe_tab,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        selected_team_template_id=team_template_id,
+        selected_personal_template_id=personal_template_id,
+        selected_team_quick_action_id=team_quick_action_id,
+        selected_personal_quick_action_id=personal_quick_action_id,
+        message=message,
+        message_kind=safe_message_kind,
+        queued_transcript_id=queued_transcript_id,
+        active_home_tab=tab,
+        active_home_modal=modal,
+        template_name=template_name,
+        home_page_route=home_page_route,
+        home_return_view=home_return_view,
+        transcribe_return_tab=transcribe_tab,
+    )
+
+
 @app.get("/home", response_class=HTMLResponse)
 def home_page(
     request: Request,
@@ -66,6 +123,40 @@ def home_page(
         home_page_route="/home",
         home_return_view=_home_return_view_value(return_view),
         transcribe_return_tab=transcribe_tab,
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    queued_transcript_id: str | None = None,
+    transcribe_tab: str | None = None,
+    tab: str | None = None,
+    modal: str | None = None,
+    team_template_id: str | None = None,
+    personal_template_id: str | None = None,
+    team_quick_action_id: str | None = None,
+    personal_quick_action_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return _render_home_page(
+        request,
+        db,
+        message=message,
+        message_kind=message_kind,
+        queued_transcript_id=queued_transcript_id,
+        transcribe_tab=transcribe_tab,
+        tab=tab,
+        modal=modal,
+        team_template_id=team_template_id,
+        personal_template_id=personal_template_id,
+        team_quick_action_id=team_quick_action_id,
+        personal_quick_action_id=personal_quick_action_id,
+        template_name="settings.html",
+        home_page_route="/settings",
+        home_return_view="settings",
     )
 
 

@@ -165,5 +165,6 @@ echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT} with trusted proxy ${DEV_
 .venv/bin/fastapi dev app/main.py \
   --host "${APP_BIND_HOST}" \
   --port "${APP_PORT}" \
+  --reload-dir "${ROOT_DIR}/app" \
   --proxy-headers \
   --forwarded-allow-ips "${DEV_FORWARDED_ALLOW_IPS}"

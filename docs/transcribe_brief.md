@@ -12,6 +12,21 @@ Goal:
 
 This page is owner-only. Team leaders and system admins do not gain transcript readability from role alone.
 
+## Consultation-column prototype
+
+- `/transcriber_col_changes` renders an authenticated prototype from `transcriber_changes/workspace`.
+- It reuses the canonical owner-scoped transcribe resolver, actions, and API endpoints; it does not introduce another content-access path.
+- Recent consultations move from the primary sidebar into a toggled adjacent column.
+- Primary OpenScribe sidebar remains full height. Template, copy, create, and note-option controls sit in one broad toolbar above the lower Recent consultations column and main workspace; no duplicate controls are rendered.
+- Consultations display 24-hour `HH:MM` times and are grouped by date plus morning/afternoon dividers.
+- Consultation cards omit ingestion-mode labels; status remains available through existing state pills.
+- Bulk deletion uses an icon-only Lucide trash control at the right side of the pop-out Recent consultations header. It is muted grey until at least one consultation is selected, then uses the shared error-red palette.
+- Initial rendering and live SSE refreshes use the same bold date, Lucide sunrise Morning, and Lucide sun Afternoon grouping.
+- Consultation column scrolls independently below the shared toolbar and opens/closes with a lightweight width/opacity transition; reduced-motion preference disables animation, and collapsed controls are inert.
+- History loads beyond the initial 12 consultations through cursor pagination, using IntersectionObserver plus a passive near-bottom scroll fallback that rechecks when the column opens.
+- Prototype responses use `Cache-Control: no-store`; system admins remain redirected to `/admin`.
+- `/transcribe` remains the canonical workspace while the prototype is evaluated.
+
 ## Audience and access
 
 ### Primary user

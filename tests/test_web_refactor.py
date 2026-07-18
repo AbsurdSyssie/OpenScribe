@@ -21,6 +21,12 @@ def test_render_transcribe_keeps_legacy_route_call_shape():
     assert params["request_is_localhost_only"].default is None
 
 
+def test_dev_server_reload_scope_excludes_non_app_workspace_edits():
+    script = Path("start-dev.sh").read_text()
+
+    assert '--reload-dir "${ROOT_DIR}/app"' in script
+
+
 def test_followup_redesign_orders_default_then_favorites_then_name():
     assets = [
         SimpleNamespace(id="c", name="Zebra"),
@@ -169,9 +175,9 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml" in documents_js
     assert "generationLoadingHtml({ label: 'note'" in structured_js
     assert "generationLoadingHtml({ label: 'follow-up'" in app_js
-    assert "structured.js?v=20260701-generation-loading-shared" in app_js
-    assert "documents.js?v=20260701-generation-loading-shared" in app_js
-    assert "/static/js/transcribe/app.js?v=20260702-transcript-empty-state" in shell_extras
+    assert "structured.js?v=20260718-note-pill-datetime" in app_js
+    assert "documents.js?v=20260718-note-pill-datetime" in app_js
+    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -203,7 +209,7 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     transcribe_css = Path("app/static/css/transcribe.css").read_text()
 
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in splash_template
-    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">' in splash_template
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in splash_template
     assert '<link rel="stylesheet" href="/static/css/splash.css?v=20260701-splash-token-harmonise">' in splash_template
     assert "<style" not in splash_template
     assert "--font-body" in Path("app/static/css/tokens.css").read_text()
@@ -211,12 +217,39 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert ".workflow-wrap" in splash_css
     assert ".cta-panel" in splash_css
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260702-transcript-empty-no-dot">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260718-note-hover-delete-datetime">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css
     assert ".dictation-modal" in transcribe_css
+
+
+def test_transcribe_sidebar_reuses_brand_lockup():
+    sidebar_template = Path("app/templates/transcribe/_sidebar.html").read_text()
+    transcribe_css = Path("app/static/css/transcribe.css").read_text()
+
+    assert 'class="brand transcribe-sidebar__brand"' in sidebar_template
+    assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>' in sidebar_template
+    assert '<span class="brand-name">OpenScribe</span>' in sidebar_template
+    assert ".transcribe-sidebar__brand .brand-name {\nfont-size: 2rem;\n}" in transcribe_css
+
+
+def test_transcribe_note_pills_use_compact_24_hour_timestamps():
+    workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    documents_js = Path("app/static/js/transcribe/documents.js").read_text()
+    actions_js = Path("app/static/js/transcribe/actions.js").read_text()
+    transcribe_css = Path("app/static/css/transcribe.css").read_text()
+
+    assert 'document.created_at.strftime("%y-%m-%d %H:%M")' in workspace_template
+    assert "const formatNoteCreatedAt = (value) => {" in documents_js
+    assert "getUTCFullYear()" in documents_js
+    assert "getUTCHours()" in documents_js
+    assert "getUTCMinutes()" in documents_js
+    assert 'data-note-hover-delete' in workspace_template
+    assert "deleteButton.dataset.noteHoverDelete = 'true';" in documents_js
+    assert "selectDocumentFromUi('note', documentId)" in actions_js
+    assert ".document-switcher-item__delete" in transcribe_css
 
 
 def test_home_and_template_editor_reuse_shared_visual_tokens():
@@ -229,11 +262,12 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     tokens_css = Path("app/static/css/tokens.css").read_text()
 
     token_link = '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">'
-    components_link = '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">'
+    home_components_link = '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">'
+    template_components_link = '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">'
     assert token_link in home_template
     assert token_link in template_editor
-    assert components_link in home_template
-    assert components_link in template_editor
+    assert home_components_link in home_template
+    assert template_components_link in template_editor
     assert '<link rel="stylesheet" href="/static/css/home.css?v=20260712-password-controls">' in home_template
     assert '<link rel="stylesheet" href="/static/css/home2.css?v=20260701-home-extract">' in home_template
     assert '<link rel="stylesheet" href="/static/css/template-editor.css?v=20260702-template-editor-extract">' in template_editor
@@ -260,6 +294,20 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     assert ".btn-primary" in components_css
     assert ".toast-container" in components_css
     assert "body.home2" in home2_css
+
+
+def test_primary_hover_matches_transcribe_create_button_colors():
+    components_css = Path("app/static/css/components.css").read_text()
+    tokens_css = Path("app/static/css/tokens.css").read_text()
+    tailwind_config = Path("tailwind.transcribe.config.js").read_text()
+    primary_hover_rule = components_css.split(".btn-primary-sm:focus-visible {", 1)[1].split("}", 1)[0]
+
+    assert "--accent: #1D4F5E;" in tokens_css
+    assert "--accent-soft: #3D7A8C;" in tokens_css
+    assert "deep: '#1D4F5E'" in tailwind_config
+    assert "muted: '#3D7A8C'" in tailwind_config
+    assert "background: var(--accent-soft);" in primary_hover_rule
+    assert "color: white;" in primary_hover_rule
 
 
 def test_workspace_refresh_burst_uses_polling_fallback_only():

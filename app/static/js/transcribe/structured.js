@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260701-generation-loading-shared';
+import { generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
 
 export function createStructuredEditor({
   dom,

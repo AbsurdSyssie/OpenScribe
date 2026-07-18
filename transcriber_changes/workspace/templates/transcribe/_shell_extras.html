@@ -1,0 +1,256 @@
+<form id="new-session-form" method="post" action="/transcribe/sessions" hidden>
+<input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}">
+</form>
+
+<div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
+Copied to clipboard
+</div>
+
+<script nonce="{{ request.state.csp_nonce }}">
+(function() {
+window.refreshLucideIcons = function(root) {
+if (!window.lucide?.createIcons) return;
+window.lucide.createIcons(root ? { root: root } : undefined);
+};
+window.refreshLucideIcons();
+var toastContainer = document.querySelector('[data-toast-container]');
+window.showToast = function(message, kind, duration) {
+if (!toastContainer) return;
+kind = kind || 'success';
+duration = duration || 4000;
+var toast = document.createElement('div');
+toast.className = 'toast ' + kind;
+toast.textContent = message;
+toastContainer.appendChild(toast);
+setTimeout(function() {
+toast.classList.add('hiding');
+setTimeout(function() { toast.remove(); }, 200);
+}, duration);
+};
+var flashWrap = document.querySelector('[data-flash-wrap]');
+var flashBanner = document.querySelector('[data-flash]');
+function syncQuickActionQuickPicks() {
+var quickActionSelect = document.querySelector('[data-quick-action-select]');
+var quickActionIdInput = document.querySelector('[data-quick-action-id-input]');
+var quickPickButtons = document.querySelectorAll('[data-quick-action-quick-pick]');
+var selectedId = quickActionSelect ? quickActionSelect.value : '';
+quickPickButtons.forEach(function(button) {
+button.setAttribute('aria-pressed', button.getAttribute('data-quick-action-id') === selectedId ? 'true' : 'false');
+});
+if (quickActionIdInput) {
+quickActionIdInput.value = selectedId;
+}
+}
+if (flashWrap && flashBanner) {
+var flashKind = flashBanner.classList.contains('error') ? 'error' : 'success';
+var flashMessage = (flashBanner.textContent || '').trim();
+if (flashMessage) {
+showToast(flashMessage, flashKind);
+flashWrap.hidden = true;
+}
+}
+syncQuickActionQuickPicks();
+
+document.addEventListener('change', function(e) {
+if (e.target && e.target.matches('[data-quick-action-select]')) {
+syncQuickActionQuickPicks();
+}
+});
+
+document.addEventListener('click', function(e) {
+var recordModeDropdown = e.target.closest('[data-record-mode-dropdown]');
+if (recordModeDropdown) {
+e.preventDefault();
+e.stopPropagation();
+var menu = document.querySelector('[data-record-mode-menu]');
+if (menu) {
+var isHidden = menu.hasAttribute('hidden');
+if (isHidden) {
+menu.removeAttribute('hidden');
+} else {
+menu.setAttribute('hidden', '');
+}
+recordModeDropdown.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+}
+return;
+}
+
+var recordModeOption = e.target.closest('[data-mode]');
+if (recordModeOption) {
+e.preventDefault();
+var mode = recordModeOption.getAttribute('data-mode');
+var modeSelect = document.querySelector('[data-recording-mode-select]');
+var menu = document.querySelector('[data-record-mode-menu]');
+var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
+if (modeSelect && mode) {
+modeSelect.value = mode;
+modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+}
+if (menu) menu.hidden = true;
+if (dropdownBtn) dropdownBtn.setAttribute('aria-expanded', 'false');
+syncRecordButtonLabel();
+return;
+}
+
+var menu = document.querySelector('[data-record-mode-menu]');
+var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
+if (menu && !menu.hidden && !e.target.closest('[data-record-split-button]')) {
+menu.hidden = true;
+if (dropdownBtn) dropdownBtn.setAttribute('aria-expanded', 'false');
+}
+
+var quickPickButton = e.target.closest('[data-quick-action-quick-pick]');
+if (quickPickButton) {
+e.preventDefault();
+if (quickPickButton.disabled) return;
+var quickActionSelect = document.querySelector('[data-quick-action-select]');
+var quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+if (quickActionSelect) {
+quickActionSelect.value = quickPickButton.getAttribute('data-quick-action-id') || '';
+syncQuickActionQuickPicks();
+}
+if (quickActionContextInput) {
+quickActionContextInput.focus();
+}
+return;
+}
+
+var runQuickActionButton = e.target.closest('[data-run-quick-action-trigger]');
+if (runQuickActionButton) {
+e.preventDefault();
+return;
+}
+
+var generateFollowupButton = e.target.closest('[data-generate-followup-trigger]');
+if (generateFollowupButton) {
+e.preventDefault();
+var promptInput = document.querySelector('[data-quick-action-context-input]');
+var promptHidden = document.querySelector('[data-followup-prompt-hidden]');
+var generateFollowupForm = document.querySelector('[data-generate-followup-form]');
+if (promptInput && promptHidden && generateFollowupForm) {
+var promptText = promptInput.value.trim();
+if (promptText) {
+promptHidden.value = promptText;
+generateFollowupForm.submit();
+}
+}
+return;
+}
+
+var copyFollowupButton = e.target.closest('[data-copy-followup]');
+if (copyFollowupButton) {
+e.preventDefault();
+e.stopPropagation();
+var card = copyFollowupButton.closest('.followup-card');
+var content = card ? card.querySelector('.followup-card__content') : null;
+var text = content ? content.textContent.trim() : '';
+if (text) {
+navigator.clipboard.writeText(text).then(function() {
+showToast('Copied to clipboard', 'success');
+}).catch(function() {
+showToast('Could not copy', 'error');
+});
+}
+return;
+}
+});
+function syncRecordButtonLabel() {
+var modeSelect = document.querySelector('[data-recording-mode-select]');
+var labelEl = document.querySelector('[data-record-toggle-label]');
+var options = document.querySelectorAll('[data-record-mode-menu] [data-mode]');
+if (!modeSelect || !labelEl) return;
+var mode = modeSelect.value;
+labelEl.textContent = mode === 'live_chunked' ? 'Start live' : 'Start recording';
+options.forEach(function(opt) {
+opt.classList.toggle('active', opt.getAttribute('data-mode') === mode);
+});
+}
+syncRecordButtonLabel();
+document.addEventListener('change', function(e) {
+if (e.target && e.target.matches('[data-recording-mode-select]')) {
+syncRecordButtonLabel();
+}
+  });
+
+  var sessionPanelToggle = document.querySelector('[data-session-panel-toggle]');
+  var sessionPanel = document.querySelector('[data-session-panel]');
+  if (sessionPanelToggle && sessionPanel) {
+    sessionPanelToggle.addEventListener('click', function() {
+      var isOpen = sessionPanelToggle.getAttribute('aria-expanded') === 'true';
+      if (isOpen) {
+        sessionPanelToggle.setAttribute('aria-expanded', 'false');
+        sessionPanel.setAttribute('aria-hidden', 'true');
+        sessionPanel.setAttribute('inert', '');
+        sessionPanel.classList.add('is-collapsed');
+        window.refreshLucideIcons(sessionPanelToggle);
+      } else {
+        sessionPanelToggle.setAttribute('aria-expanded', 'true');
+        sessionPanel.setAttribute('aria-hidden', 'false');
+        sessionPanel.removeAttribute('inert');
+        sessionPanel.classList.remove('is-collapsed');
+        window.refreshLucideIcons(sessionPanel);
+        window.refreshLucideIcons(sessionPanelToggle);
+        requestAnimationFrame(function() {
+          var scrollContainer = sessionPanel.querySelector('[data-session-list-sentinel]')?.parentElement;
+          scrollContainer?.dispatchEvent(new Event('scroll'));
+        });
+      }
+    });
+  }
+})();
+</script>
+
+<div class="tour-overlay" data-tour-overlay hidden>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="top" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="right" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="bottom" data-tour-close></div>
+    <div class="tour-overlay__scrim-panel" data-tour-scrim="left" data-tour-close></div>
+    <div class="tour-overlay__highlight" data-tour-highlight></div>
+    <div class="tour-overlay__card" data-tour-card>
+      <div class="tour-overlay__eyebrow">Quick guide</div>
+      <div class="tour-overlay__title" data-tour-title></div>
+      <div class="tour-overlay__body" data-tour-body></div>
+      <div class="tour-overlay__actions">
+        <div class="tour-overlay__progress" data-tour-progress></div>
+        <div class="flex items-center gap-2">
+          <button type="button" class="btn-secondary" data-tour-back>Back</button>
+          <button type="button" class="btn-secondary" data-tour-close-button>Close</button>
+          <button type="button" class="btn-primary" data-tour-next>Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="transcribe-bootstrap" type="application/json" nonce="{{ request.state.csp_nonce }}">
+    {{ {
+      "activeTranscriptId": active_transcript_id,
+      "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,
+      "activeTranscriptHasContent": active_transcript.has_transcript_content if active_transcript else false,
+      "latestSuccessfulIngestionCompletedAt": active_transcript.latest_successful_ingestion_completed_at.isoformat() if active_transcript and active_transcript.latest_successful_ingestion_completed_at else none,
+      "nextLiveChunkSequenceNo": active_transcript_next_live_chunk_sequence_no_upload if active_transcript_next_live_chunk_sequence_no_upload is not none else 1,
+      "hasSttSelection": stt_selection is not none,
+      "hasDictationSttSelection": dictation_stt_selected,
+      "hasLlmSelection": llm_selection is not none,
+      "sttAvailable": stt_available,
+      "sttHealth": stt_health,
+      "dictationSttAvailable": dictation_stt_available,
+      "sttStatusMessage": stt_status_message,
+      "dictationSttStatusMessage": dictation_stt_status_message,
+      "latestIngestionJobStatus": active_transcript_latest_job.status.value if active_transcript_latest_job else none,
+      "latestIngestionErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
+      "showRedactionDebug": show_redaction_debug,
+      "initialTranscriptErrorMessage": active_transcript_latest_job.error_message if active_transcript_latest_job else none,
+      "emisSections": structured_section_definitions,
+      "activeTranscriptPiiEntities": active_transcript_pii_entities,
+      "activeTranscriptRedactionStatus": active_transcript_redaction_status,
+      "activeTranscriptClinicalNlpStatus": active_transcript_clinical_nlp_status,
+      "activeWorkingNote": active_working_note,
+      "activeTab": 'followups' if active_tab == 'followups' else 'output',
+      "viewerRole": 'leader' if current_user.team_role and current_user.team_role.value == 'leader' else 'user',
+      "userAppPreferences": user_app_preferences_json,
+      "smartPhrases": smart_phrases if smart_phrases is defined else []
+    } | tojson }}
+  </script>
+  <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
+  <script type="module" src="/transcriber_col_changes/static/js/transcribe/app.js?v=20260718-consultation-metadata"></script>
+  {% include "_csrf_script.html" %}

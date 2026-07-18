@@ -1,34 +1,15 @@
     <aside class="w-72 bg-parchment border-r border-stone flex flex-col flex-shrink-0 min-h-0 relative z-10">
       <div class="p-5 border-b border-stone">
         <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-lg bg-teal-deep flex items-center justify-center">
-            <i class="w-5 h-5 text-white" data-lucide="mic"></i>
-          </div>
-          <div class="min-w-0">
-            <h1 class="font-display font-semibold text-ink text-lg leading-none">OpenScribe</h1>
-            <p class="text-xs text-slate mt-0.5">Consultation notes</p>
-          </div>
+          <a class="brand transcribe-sidebar__brand" href="/home" aria-label="OpenScribe home">
+            <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
+            <span class="brand-name">OpenScribe</span>
+          </a>
         </div>
       </div>
 
-      <div class="px-4 pt-4 pb-2 border-b border-stone/70">
+      <div class="px-4  pb-2 border-b border-stone/70">
         <div class="flex items-center justify-between gap-3 mb-1">
-          <div class="text-[11px] font-medium uppercase tracking-[0.2em] text-slate">Signed in</div>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 rounded-lg border border-stone bg-white px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-slate hover:text-ink hover:border-teal-muted transition"
-              data-start-guide>
-              Guide
-            </button>
-            <a
-              href="/home"
-              class="inline-flex items-center gap-1 rounded-lg border border-stone bg-white px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-slate hover:text-ink hover:border-teal-muted transition"
-              aria-label="Return home">
-              <i class="w-3.5 h-3.5" data-lucide="house" aria-hidden="true"></i>
-              Home
-            </a>
-          </div>
         </div>
         <div class="text-sm font-medium text-ink truncate">{{ current_user.full_name or current_user.email }}</div>
         <div class="text-xs text-slate truncate">{{ current_user.email }}</div>
@@ -48,7 +29,6 @@
                 <i class="w-4 h-4 flex-shrink-0" data-lucide="plus"></i>
                 <span>Create new consultation</span>
               </span>
-              <span class="text-[11px] font-medium opacity-80">Blank session</span>
             </button>
           </div>
           <div class="flex items-center justify-between">
@@ -112,24 +92,5 @@
       </form>
 
       <div class="p-4 border-t border-stone bg-parchment/80 space-y-2">
-        <div class="text-xs text-slate uppercase tracking-wider">Current tools</div>
-        <div class="flex flex-col gap-2 text-xs">
-          <div class="px-2.5 py-2 bg-white rounded-lg border border-stone text-ink">
-            Speech service:
-            {% if stt_selection %}
-            {{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}
-            {% else %}
-            Not configured
-            {% endif %}
-          </div>
-          <div class="px-2.5 py-2 bg-white rounded-lg border border-stone text-ink">
-            Writing assistant:
-            {% if llm_selection %}
-            {{ llm_selection.config.label }} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name or "default" }}
-            {% else %}
-            Not configured
-            {% endif %}
-          </div>
-        </div>
       </div>
     </aside>

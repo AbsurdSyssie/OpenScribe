@@ -1081,7 +1081,7 @@ let statusDetailsHideTimer = null;
         renderStatusDetails(items);
         if (transcriptId) {
           const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
-          if (sidebarStatus) sidebarStatus.textContent = top.label;
+          if (sidebarStatus) setSidebarStatus(sidebarStatus, top.label, activeIngestionMode, activeTranscriptHasContent);
         }
       };
 
@@ -2571,15 +2571,38 @@ let statusDetailsHideTimer = null;
       });
       syncDeleteState();
 
-      const sidebarStatusClassName = (statusLabel, ingestionMode) => {
-        const visibleStatus = displayStatusLabel(statusLabel, ingestionMode);
+      const sidebarStatusDescriptor = (statusLabel, ingestionMode, hasTranscriptContent = false) => {
+        const visibleStatus = String(displayStatusLabel(statusLabel, ingestionMode) || 'idle').toLowerCase();
+        if (visibleStatus === 'generating') {
+          return { tone: 'generating', icon: 'diamond', label: 'Generating with LLM' };
+        }
+        if (['transcribing', 'finalizing', 'uploading', 'sending chunk', 'listening', 'speech detected'].includes(visibleStatus)) {
+          return { tone: 'transcribing', icon: 'audio-waveform', label: sentenceCaseStatus(visibleStatus) };
+        }
         if (visibleStatus === 'ready') {
-          return 'flex-shrink-0 px-1.5 py-0.5 bg-teal-pale text-teal-deep text-xs font-medium rounded';
+          return hasTranscriptContent
+            ? { tone: 'complete', icon: 'check', label: 'Complete' }
+            : { tone: 'waiting', icon: 'minus', label: 'Waiting' };
         }
-        if (visibleStatus === 'failed') {
-          return 'flex-shrink-0 px-1.5 py-0.5 bg-coral/15 text-coral text-xs font-medium rounded';
+        if (['failed', 'transcription failed', 'generation failed', 'mic not detected', 'mic blocked', 'mic unavailable', 'recording blocked', 'speech issue', 'generation unavailable', 'redaction issue', 'clinical nlp issue'].includes(visibleStatus)) {
+          return { tone: 'failed', icon: 'x', label: sentenceCaseStatus(visibleStatus) };
         }
-        return 'flex-shrink-0 px-1.5 py-0.5 bg-white text-slate text-xs font-medium rounded border border-stone';
+        return { tone: 'waiting', icon: 'minus', label: 'Waiting' };
+      };
+
+      const setSidebarStatus = (node, statusLabel, ingestionMode, hasTranscriptContent = false) => {
+        const descriptor = sidebarStatusDescriptor(statusLabel, ingestionMode, hasTranscriptContent);
+        node.className = `session-status-icon session-status-icon--${descriptor.tone}`;
+        node.setAttribute('aria-label', descriptor.label);
+        node.title = descriptor.label;
+        const icon = document.createElement('i');
+        icon.dataset.lucide = descriptor.icon;
+        icon.setAttribute('aria-hidden', 'true');
+        const accessibleLabel = document.createElement('span');
+        accessibleLabel.className = 'sr-only';
+        accessibleLabel.textContent = descriptor.label;
+        node.replaceChildren(icon, accessibleLabel);
+        window.refreshLucideIcons?.(node);
       };
 
       const formatSidebarCreatedAt = (value) => {
@@ -2672,9 +2695,8 @@ let statusDetailsHideTimer = null;
         createdAt.textContent = formatSidebarCreatedAt(item.created_at);
 
         const status = document.createElement('span');
-        status.className = sidebarStatusClassName(item.status, item.ingestion_mode);
         status.dataset.sidebarStatus = item.id;
-        status.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+        setSidebarStatus(status, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
 
         const metadata = document.createElement('div');
         metadata.className = 'flex items-center gap-2 mt-1';
@@ -3432,7 +3454,7 @@ let statusDetailsHideTimer = null;
 
         sidebarTranscripts.forEach((item) => {
           const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
-          if (node) node.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+          if (node) setSidebarStatus(node, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           if (titleNode) titleNode.textContent = item.title || 'Untitled session';
           const checkbox = currentSelectionBoxes().find((input) => input.value === item.id);

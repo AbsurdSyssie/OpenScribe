@@ -3483,6 +3483,11 @@ def test_transcriber_col_changes_renders_authenticated_consultation_column(clien
     assert page.headers["Cache-Control"] == "no-store"
     assert 'data-route-base="/transcriber_col_changes"' in page.text
     assert 'data-session-panel-toggle' in page.text
+    assert 'data-primary-sidebar' in page.text
+    assert 'data-sidebar-resize' in page.text
+    assert 'data-lucide="panel-left-close"' in page.text
+    assert 'data-lucide="panel-left-open"' in page.text
+    assert 'data-lucide="list-checks"' in page.text
     assert 'data-session-panel' in page.text
     assert 'class="session-delete-button"' in page.text
     assert 'data-lucide="trash-2"' in page.text
@@ -3498,11 +3503,15 @@ def test_transcriber_col_changes_renders_authenticated_consultation_column(clien
     assert 'data-prototype-workspace-body' in page.text
     assert 'data-prototype-main-workspace' in page.text
     assert 'data-lucide="chevron-right"' in page.text
+    assert re.search(r"Recent consultations</span>\s*<i[^>]*data-lucide=\"chevron-right\"[^>]*data-toggle-icon", page.text)
     assert 'class="session-date-divider"' in page.text
     assert 'data-lucide="sunrise"' in page.text or 'data-lucide="sun"' in page.text
+    assert 'class="session-status-icon session-status-icon--' in page.text
+    assert 'data-sidebar-status=' in page.text
+    assert 'aria-label=' in page.text
     assert re.search(r"Column test consultation.*\d{2}:\d{2}", page.text, re.DOTALL)
-    assert '/transcriber_col_changes/static/css/transcribe.css?v=20260718-consultation-delete-icon' in page.text
-    assert '/transcriber_col_changes/static/js/transcribe/app.js?v=20260718-consultation-metadata' in page.text
+    assert '/transcriber_col_changes/static/css/transcribe.css?v=20260718-sidebar-resize' in page.text
+    assert '/transcriber_col_changes/static/js/transcribe/app.js?v=20260718-consultation-status-icons' in page.text
 
     toolbar_index = page.text.index('data-prototype-workspace-toolbar')
     lower_body_index = page.text.index('data-prototype-workspace-body')
@@ -3549,7 +3558,19 @@ def test_transcriber_col_changes_renders_authenticated_consultation_column(clien
     assert "background: rgba(197, 48, 48, 0.08);" in stylesheet.text
     assert "color: var(--error);" in stylesheet.text
     assert "color: var(--muted);" in stylesheet.text
+    assert ".session-status-icon--waiting" in stylesheet.text
+    assert "transform: translateY(0.5px);" in stylesheet.text
+    assert ".session-status-icon--transcribing" in stylesheet.text
+    assert ".session-status-icon--generating" in stylesheet.text
+    assert ".session-status-icon--complete" in stylesheet.text
+    assert ".session-status-icon--failed" in stylesheet.text
     assert "transition: width 180ms ease, opacity 140ms ease;" in stylesheet.text
+    assert "stroke-width: 2.75;" in stylesheet.text
+    assert ".transcribe-sidebar-resize" in stylesheet.text
+    assert ".transcribe-sidebar-collapse-toggle" in stylesheet.text
+    assert ".transcribe-sidebar.is-collapsed" in stylesheet.text
+    assert ".transcribe-sidebar.is-resizing" in stylesheet.text
+    assert "@media (min-width: 768px)" in stylesheet.text
     assert "@media (prefers-reduced-motion: reduce)" in stylesheet.text
     assert 'class="flex-1 overflow-y-auto"' in page.text
 
@@ -3564,18 +3585,41 @@ def test_transcriber_col_changes_renders_authenticated_consultation_column(clien
     assert "String(item.ingestion_mode || '').replaceAll('_', ' ')" not in prototype_js.text
     assert "scrollContainer?.addEventListener('scroll', loadWhenNearBottom, { passive: true })" in prototype_js.text
     assert "if (!sessionRailPaginationStarted)" in prototype_js.text
+    assert "icon: 'audio-waveform'" in prototype_js.text
+    assert "icon: 'diamond'" in prototype_js.text
+    assert "icon: 'check'" in prototype_js.text
+    assert "icon: 'x'" in prototype_js.text
+    assert "icon: 'minus'" in prototype_js.text
+    assert "visibleStatus === 'ready'" in prototype_js.text
+    assert "hasTranscriptContent" in prototype_js.text
+    assert "accessibleLabel.className = 'sr-only'" in prototype_js.text
     shell_extras = Path("transcriber_changes/workspace/templates/transcribe/_shell_extras.html").read_text()
     assert "classList.add('is-collapsed')" in shell_extras
     assert "classList.remove('is-collapsed')" in shell_extras
     assert "setAttribute('inert', '')" in shell_extras
     assert "removeAttribute('inert')" in shell_extras
     assert "scrollContainer?.dispatchEvent(new Event('scroll'))" in shell_extras
+    assert "openscribe:transcribe:sidebar-width" in shell_extras
+    assert "sidebarResize.addEventListener('pointerdown'" in shell_extras
+    assert "sidebarResize.addEventListener('keydown'" in shell_extras
+    assert "primarySidebar.classList.add('is-resizing')" in shell_extras
+    assert "sidebarCollapseToggles.forEach" in shell_extras
+    sidebar_template = Path("transcriber_changes/workspace/templates/transcribe/_sidebar.html").read_text()
+    assert sidebar_template.count('data-sidebar-collapse-toggle') == 2
+    assert 'data-sidebar-collapsed-icon' in sidebar_template
+    assert 'aria-label="Recent consultations"' in sidebar_template
     for module_name in ("actions.js", "media.js"):
         module_text = Path(f"transcriber_changes/workspace/static/js/transcribe/{module_name}").read_text()
         assert "from '/static/js/csrf.js'" in module_text
         assert "from '../csrf.js'" not in module_text
     session_panel_template = Path("transcriber_changes/workspace/templates/transcribe/_session_panel.html").read_text()
     assert "transcript.ingestion_mode.value|replace('_', ' ')" not in session_panel_template
+    assert "status_icon = 'audio-waveform'" in session_panel_template
+    assert "status_icon = 'check'" in session_panel_template
+    assert "status_icon = 'x'" in session_panel_template
+    assert "sidebar_state == 'ready' and transcript.has_transcript_content" in session_panel_template
+    assert "status_icon = 'minus'" in session_panel_template
+    assert 'class="sr-only">{{ status_label }}</span>' in session_panel_template
     assert "classList.add('hidden')" not in shell_extras
 
 

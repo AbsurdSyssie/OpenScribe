@@ -17,9 +17,12 @@ This page is owner-only. Team leaders and system admins do not gain transcript r
 - `/transcriber_col_changes` renders an authenticated prototype from `transcriber_changes/workspace`.
 - It reuses the canonical owner-scoped transcribe resolver, actions, and API endpoints; it does not introduce another content-access path.
 - Recent consultations move from the primary sidebar into a toggled adjacent column.
+- On desktop, the primary sidebar resizes from its right divider and stores its width locally. Below the collapse threshold it becomes a 64px icon rail; Create uses plus and Recent consultations uses Lucide `list-checks`, with accessible names and tooltips retained. Mobile keeps its existing full-width drawer.
+- A collapse control sits beside the account identity in expanded desktop sidebar and moves beneath the brand in the icon rail; it uses Lucide `panel-left-close` and `panel-left-open` respectively.
+- The Recent consultations toggle keeps its bolder chevron indicator immediately after the label and rotates it when the column opens.
 - Primary OpenScribe sidebar remains full height. Template, copy, create, and note-option controls sit in one broad toolbar above the lower Recent consultations column and main workspace; no duplicate controls are rendered.
 - Consultations display 24-hour `HH:MM` times and are grouped by date plus morning/afternoon dividers.
-- Consultation cards omit ingestion-mode labels; status remains available through existing state pills.
+- Consultation cards omit ingestion-mode labels and replace text status pills with compact accessible icons: blue circle with a short horizontal line for waiting or an empty new consultation, orange waveform for transcription activity, orange diamond for LLM generation, green check for completed transcript content, and red cross for failure. Tooltips and screen-reader labels retain status detail.
 - Bulk deletion uses an icon-only Lucide trash control at the right side of the pop-out Recent consultations header. It is muted grey until at least one consultation is selected, then uses the shared error-red palette.
 - Initial rendering and live SSE refreshes use the same bold date, Lucide sunrise Morning, and Lucide sun Afternoon grouping.
 - Consultation column scrolls independently below the shared toolbar and opens/closes with a lightweight width/opacity transition; reduced-motion preference disables animation, and collapsed controls are inert.

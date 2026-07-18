@@ -1,0 +1,31 @@
+<section class="settings-section" data-settings-panel="account" {% if settings_tab != 'account' %}hidden{% endif %}>
+  <div class="settings-section__intro"><span class="settings-kicker">Personal</span><h2>Account</h2><p>Update your name, sign-in email, or password.</p></div>
+  <div class="account-settings-grid">
+    <article class="settings-card account-settings-card">
+      <div><h3>Name</h3><p>Used to identify you inside OpenScribe.</p></div>
+      <form method="post" action="/settings/account/name" class="account-settings-form">
+        <label>Full name<input name="full_name" value="{{ current_user.full_name or '' }}" maxlength="255" autocomplete="name"></label>
+        <button class="btn-primary-sm" type="submit">Save name</button>
+      </form>
+    </article>
+    <article class="settings-card account-settings-card">
+      <div><h3>Email</h3><p>Changing sign-in email requires your current password and, when authenticator MFA is active, its current code. Other sessions will be signed out.</p></div>
+      <form method="post" action="/settings/account/email" class="account-settings-form">
+        <label>Email address<input type="email" name="email" value="{{ current_user.email }}" required autocomplete="email"></label>
+        <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
+        <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
+        <button class="btn-primary-sm" type="submit">Change email</button>
+      </form>
+    </article>
+    <article class="settings-card account-settings-card">
+      <div><h3>Password</h3><p>Use at least 12 characters with uppercase, lowercase, and a number. Other sessions will be signed out.</p></div>
+      <form method="post" action="/settings/account/password" class="account-settings-form">
+        <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
+        <label>New password<input type="password" name="new_password" required minlength="12" autocomplete="new-password"></label>
+        <label>Confirm new password<input type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></label>
+        <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
+        <button class="btn-primary-sm" type="submit">Change password</button>
+      </form>
+    </article>
+  </div>
+</section>

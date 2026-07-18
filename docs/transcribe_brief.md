@@ -12,23 +12,24 @@ Goal:
 
 This page is owner-only. Team leaders and system admins do not gain transcript readability from role alone.
 
-## Consultation-column prototype
+## Canonical consultation sidebar
 
-- `/transcriber_col_changes` renders an authenticated prototype from `transcriber_changes/workspace`.
-- It reuses the canonical owner-scoped transcribe resolver, actions, and API endpoints; it does not introduce another content-access path.
+- `/transcribe` is canonical workspace and uses this consultation layout.
+- `/transcriber_col_changes` remains authenticated prototype route backed by `transcriber_changes/workspace`; it reuses canonical owner-scoped resolution and is not an alternate content-access path.
 - Recent consultations move from the primary sidebar into a toggled adjacent column.
-- On desktop, the primary sidebar resizes from its right divider and stores its width locally. Below the collapse threshold it becomes a 64px icon rail; Create uses plus and Recent consultations uses Lucide `list-checks`, with accessible names and tooltips retained. Mobile keeps its existing full-width drawer.
+- On desktop, primary sidebar resizes from right divider, persists `openscribe:transcribe:sidebar-width`, supports pointer and keyboard separator resizing, and double-click collapse/restore. It is 64px collapsed, 192–384px expanded, and restores/defaults to 288px. Create uses plus and Recent consultations uses Lucide `list-checks`, with accessible names and tooltips retained. Mobile keeps existing full-width drawer.
 - A collapse control sits beside the account identity in expanded desktop sidebar and moves beneath the brand in the icon rail; it uses Lucide `panel-left-close` and `panel-left-open` respectively.
 - The Recent consultations toggle keeps its bolder chevron indicator immediately after the label and rotates it when the column opens.
-- Primary OpenScribe sidebar remains full height. Template, copy, create, and note-option controls sit in one broad toolbar above the lower Recent consultations column and main workspace; no duplicate controls are rendered.
+- Primary OpenScribe sidebar remains full height. Canonical note, template, copy, and note-option controls retain their existing workspace placement; sidebar promotion does not duplicate or restructure them.
 - Consultations display 24-hour `HH:MM` times and are grouped by date plus morning/afternoon dividers.
 - Consultation cards omit ingestion-mode labels and replace text status pills with compact accessible icons: blue circle with a short horizontal line for waiting or an empty new consultation, orange waveform for transcription activity, orange diamond for LLM generation, green check for completed transcript content, and red cross for failure. Tooltips and screen-reader labels retain status detail.
 - Bulk deletion uses an icon-only Lucide trash control at the right side of the pop-out Recent consultations header. It is muted grey until at least one consultation is selected, then uses the shared error-red palette.
 - Initial rendering and live SSE refreshes use the same bold date, Lucide sunrise Morning, and Lucide sun Afternoon grouping.
-- Consultation column scrolls independently below the shared toolbar and opens/closes with a lightweight width/opacity transition; reduced-motion preference disables animation, and collapsed controls are inert.
+- Consultation column scrolls independently and opens/closes with lightweight width/opacity transition; reduced-motion preference disables animation, and collapsed controls are inert. On mobile it overlays above the primary drawer, closes through an explicit close control, and closes the primary drawer before opening so no panel is trapped behind it.
 - History loads beyond the initial 12 consultations through cursor pagination, using IntersectionObserver plus a passive near-bottom scroll fallback that rechecks when the column opens.
-- Prototype responses use `Cache-Control: no-store`; system admins remain redirected to `/admin`.
-- `/transcribe` remains the canonical workspace while the prototype is evaluated.
+- Canonical responses use `Cache-Control: no-store`; system admins remain redirected to `/admin`.
+- Clinical Note, Follow Ups, and Transcript remain sibling tab panels inside the shared scroll region so hiding one panel cannot hide another.
+- Primary sidebar footer links to `/settings`; expanded mode shows its label and collapsed mode retains an accessible gear control.
 
 ## Audience and access
 
@@ -170,6 +171,7 @@ How:
 - hide the editable-note empty guidance as soon as structured or freeform note rows contain text
 - blank placeholder lines cannot be moved; blocked keyboard reorder shortcuts are still consumed so browser history navigation does not fire
 - explicit note switching changes which note is being edited
+- after explicit note switching, the selected note card is centered in the scrolling note workspace instead of resetting the workspace to its top
 
 Access:
 - owner only

@@ -6,7 +6,7 @@
   <title>Settings · OpenScribe</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">
-  <link rel="stylesheet" href="/static/css/settings.css?v=20260718-settings">
+  <link rel="stylesheet" href="/static/css/settings.css?v=20260718-library-advanced">
 </head>
 <body class="settings-page">
   {% set settings_tab = active_settings_tab|default(active_home_tab|default('preferences')) %}
@@ -16,20 +16,21 @@
       <div class="settings-account"><span class="settings-avatar">{{ (current_user.full_name or current_user.email)[0]|upper }}</span><span><strong>{{ current_user.full_name or current_user.email }}</strong><small>{{ current_user.team_role.value if current_user.team_role else 'user' }}</small></span></div>
       <nav class="settings-nav" aria-label="Settings sections">
         <div class="settings-nav__group"><p>Personal</p>
+          <a href="/settings?tab=account" {% if settings_tab == 'account' %}aria-current="page"{% endif %}><i data-lucide="user-round"></i>Account</a>
           <a href="/settings?tab=preferences" {% if settings_tab == 'preferences' %}aria-current="page"{% endif %}><i data-lucide="sliders-horizontal"></i>Preferences</a>
-          {% if not current_user.is_system_admin and current_user.team_id %}
-          <a href="/settings?tab=templates" {% if settings_tab == 'templates' %}aria-current="page"{% endif %}><i data-lucide="files"></i>Templates</a>
-          <a href="/settings?tab=quick-actions" {% if settings_tab == 'quick-actions' %}aria-current="page"{% endif %}><i data-lucide="zap"></i>Quick actions</a>
-          <a href="/settings?tab=smart-phrases" {% if settings_tab == 'smart-phrases' %}aria-current="page"{% endif %}><i data-lucide="text-cursor-input"></i>Smart phrases</a>
-          {% endif %}
         </div>
+        {% if not current_user.is_system_admin and current_user.team_id %}<div class="settings-nav__group"><p>My Library</p>
+          <a href="/settings?tab=templates" {% if settings_tab == 'templates' %}aria-current="page"{% endif %}><i data-lucide="files"></i>My Templates</a>
+          <a href="/settings?tab=quick-actions" {% if settings_tab == 'quick-actions' %}aria-current="page"{% endif %}><i data-lucide="zap"></i>My quick actions</a>
+          <a href="/settings?tab=smart-phrases" {% if settings_tab == 'smart-phrases' %}aria-current="page"{% endif %}><i data-lucide="text-cursor-input"></i>Smart phrases</a>
+        </div>{% endif %}
         {% if is_manager %}<div class="settings-nav__group"><p>Team</p>
           <a href="/settings?tab=ai-services" {% if settings_tab == 'ai-services' %}aria-current="page"{% endif %}><i data-lucide="bot"></i>AI services</a>
           <a href="/settings?tab=team-members" {% if settings_tab in ['team-members', 'team-management'] %}aria-current="page"{% endif %}><i data-lucide="users"></i>Team members</a>
           <a href="/settings?tab=account-requests" {% if settings_tab == 'account-requests' %}aria-current="page"{% endif %}><i data-lucide="user-round-plus"></i>Account requests</a>
         </div>{% endif %}
       </nav>
-      <div class="settings-sidebar__footer"><a href="/home"><i data-lucide="house"></i>Return home</a><form method="post" action="/logout"><button type="submit"><i data-lucide="log-out"></i>Sign out</button></form></div>
+      <div class="settings-sidebar__footer"><a href="/transcribe" aria-label="Return to Scribe"><i data-lucide="feather" aria-hidden="true"></i>Return to Scribe</a><form method="post" action="/logout"><button type="submit"><i data-lucide="log-out"></i>Sign out</button></form></div>
     </aside>
     <main class="settings-main">
 
@@ -37,6 +38,7 @@
       {% if message %}<div class="flash {{ message_kind }}">{{ message }}</div>{% endif %}
       {% if recovery_temporary_password %}<section class="settings-recovery panel"><div><h2>Temporary password</h2><p>Copy now. It will not display again.</p></div><input value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password"><button class="btn-primary-sm" type="button" data-recovery-copy>Copy password</button><span data-recovery-copy-status></span></section>{% endif %}
       <div class="settings-content">
+        {% include "settings/_account.html" %}
         {% include "settings/_preferences.html" %}
         {% if not current_user.is_system_admin and current_user.team_id %}{% include "settings/_assets.html" %}{% endif %}
         {% if is_manager %}{% include "settings/_ai_services.html" %}{% include "settings/_team_members.html" %}{% include "settings/_account_requests.html" %}{% endif %}

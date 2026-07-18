@@ -176,8 +176,8 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml({ label: 'note'" in structured_js
     assert "generationLoadingHtml({ label: 'follow-up'" in app_js
     assert "structured.js?v=20260718-note-pill-datetime" in app_js
-    assert "documents.js?v=20260718-note-pill-datetime" in app_js
-    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
+    assert "documents.js?v=20260718-note-selection-center" in app_js
+    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -218,7 +218,7 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert ".cta-panel" in splash_css
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260718-note-hover-delete-datetime">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260718-sidebar-settings-link">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css
@@ -231,8 +231,11 @@ def test_transcribe_sidebar_reuses_brand_lockup():
 
     assert 'class="brand transcribe-sidebar__brand"' in sidebar_template
     assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>' in sidebar_template
-    assert '<span class="brand-name">OpenScribe</span>' in sidebar_template
+    assert '<span class="brand-name" data-sidebar-full>OpenScribe</span>' in sidebar_template
+    assert 'href="/settings" class="transcribe-sidebar-settings-link"' in sidebar_template
+    assert 'data-sidebar-settings-link aria-label="Open settings" title="Open settings"' in sidebar_template
     assert ".transcribe-sidebar__brand .brand-name {\nfont-size: 2rem;\n}" in transcribe_css
+    assert ".transcribe-sidebar.is-collapsed .transcribe-sidebar-settings-link { justify-content: center;" in transcribe_css
 
 
 def test_transcribe_note_pills_use_compact_24_hour_timestamps():

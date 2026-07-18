@@ -169,10 +169,25 @@ For users whose onboarding is already complete:
   - `POST /api/v1/users/{user_id}/break-glass-account-recovery` performs the same break-glass checks and temporary-password flow, and also clears MFA/recovery-code state before forced password/TOTP onboarding
   - legacy `recover-password` and `recover-account` endpoints fail closed with `410 deprecated_recovery_endpoint`
 
+### Self-service account details
+
+Authenticated normal users and team leaders may update their own account through Settings > Account:
+
+- name changes normalize Unicode and whitespace and affect only the signed-in owner
+- email changes require the current password and, when an active primary TOTP method exists, a fresh authenticator code
+- password changes require the current password, confirmation, the existing permanent-password strength policy, and a fresh authenticator code when TOTP is active
+- email uniqueness uses the normalized database identity and returns a generic unavailable message
+- successful email or password changes revoke all active sessions and trusted devices, then issue one replacement session to the initiating browser
+- account-change audit events store action, outcome, reason code, and changed field names only; they never store submitted names, emails, passwords, or TOTP codes
+- browser forms use the existing session-bound CSRF protection; sensitive email/password attempts share a `5 per 5 minutes` client-IP limit
+
+Email changes apply immediately after strong reauthentication. Pending-address verification is not implemented in the current schema and remains a production-hardening follow-up.
+
 ## Brute-force protection
 
 - login routes are rate-limited at `5 per 5 minutes` per client IP
 - TOTP challenge and break-glass recovery routes are rate-limited at `10 per 10 minutes` per client IP
+- self-service email and password changes share a rate limit of `5 per 5 minutes` per client IP
 - public account-request submission is rate-limited at `3 per hour` per client IP
 - whole-file transcription upload routes are rate-limited at:
   - `30 per minute` by default

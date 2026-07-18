@@ -1,5 +1,7 @@
 """Home and transcribe browser routes extracted from app.main."""
 
+from urllib.parse import urlencode
+
 from pydantic import ValidationError
 
 from ..main import *  # noqa: F401,F403
@@ -10,8 +12,14 @@ from ..main import (
     _home_template_editor_url,
     _home_template_name_from_return_view,
     _page_context_or_redirect,
+    _clear_trusted_device_cookie,
+    _set_session_cookie,
     _template_config_from_form,
+    ACCOUNT_SECURITY_RATE_LIMIT,
 )
+from ..services.account import update_own_email, update_own_name, update_own_password
+from ..services.auth import create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
+from ..services.security_audit import record_security_event
 from ..stt_normalization import normalize_stt_language
 
 
@@ -158,6 +166,147 @@ def settings_page(
         home_page_route="/settings",
         home_return_view="settings",
     )
+
+
+def _render_account_error(request: Request, db: Session, context, exc: AppError):
+    record_security_event(
+        db,
+        action="account_change_failure",
+        actor=context.user,
+        target=context.user,
+        request=request,
+        details={"category": "account", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code},
+    )
+    return render_home(
+        request,
+        db,
+        current_user=context.user,
+        message=exc.message,
+        message_kind="error",
+        status_code=exc.status_code,
+        active_home_tab="account",
+        template_name="settings.html",
+        home_page_route="/settings",
+        home_return_view="settings",
+    )
+
+
+def _account_success_redirect(message: str) -> RedirectResponse:
+    query = urlencode({"tab": "account", "message": message, "message_kind": "success"})
+    return RedirectResponse(url=f"/settings?{query}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _rotate_account_session(request: Request, db: Session, context, *, reason: str) -> RedirectResponse:
+    revoke_sessions_for_user(db, context.user, reason=reason)
+    revoke_trusted_devices_for_user(db, context.user, reason=reason)
+    token = create_session(db, context.user, auth_level=context.session.auth_level)
+    response = _account_success_redirect("Account security updated")
+    _set_session_cookie(request, response, token)
+    _clear_trusted_device_cookie(response)
+    return response
+
+
+@app.post("/settings/account/name", response_class=HTMLResponse)
+def settings_account_name(
+    request: Request,
+    full_name: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        user = update_own_name(db, context.user, full_name=full_name)
+    except AppError as exc:
+        return _render_account_error(request, db, context, exc)
+    record_security_event(
+        db,
+        action="account_name_changed",
+        actor=user,
+        target=user,
+        request=request,
+        details={"category": "account", "outcome": "success", "changed_fields": ["full_name"]},
+    )
+    return _account_success_redirect("Name updated")
+
+
+@app.post("/settings/account/email", response_class=HTMLResponse)
+@ACCOUNT_SECURITY_RATE_LIMIT
+def settings_account_email(
+    request: Request,
+    email: str = Form(...),
+    current_password: str = Form(...),
+    mfa_code: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        user = update_own_email(
+            db,
+            context.user,
+            email=email,
+            current_password=current_password,
+            mfa_code=mfa_code,
+        )
+    except AppError as exc:
+        return _render_account_error(request, db, context, exc)
+    response = _rotate_account_session(request, db, context, reason="email_changed")
+    record_security_event(
+        db,
+        action="account_email_changed",
+        actor=user,
+        target=user,
+        request=request,
+        details={"category": "account", "outcome": "success", "changed_fields": ["email"]},
+    )
+    return response
+
+
+@app.post("/settings/account/password", response_class=HTMLResponse)
+@ACCOUNT_SECURITY_RATE_LIMIT
+def settings_account_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    mfa_code: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        user = update_own_password(
+            db,
+            context.user,
+            current_password=current_password,
+            new_password=new_password,
+            confirm_password=confirm_password,
+            mfa_code=mfa_code,
+        )
+    except AppError as exc:
+        return _render_account_error(request, db, context, exc)
+    response = _rotate_account_session(request, db, context, reason="password_changed")
+    record_security_event(
+        db,
+        action="account_password_changed",
+        actor=user,
+        target=user,
+        request=request,
+        details={"category": "account", "outcome": "success", "changed_fields": ["password"]},
+    )
+    return response
 
 
 @app.get("/home-restyled", response_class=HTMLResponse)
@@ -791,6 +940,50 @@ def home_duplicate_team_template(
         url=_home_template_editor_url(
             scope="team",
             template_id=str(duplicated.id),
+            return_view=return_view,
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/team-templates/{template_id}/fork", response_class=HTMLResponse)
+def home_fork_team_template(
+    request: Request,
+    template_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        forked = fork_team_template_to_personal_service(db, context.user, template_id=template_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_template_id=str(template_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "templates",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    return RedirectResponse(
+        url=_home_template_editor_url(
+            scope="personal",
+            template_id=str(forked.id),
             return_view=return_view,
             queued_transcript_id=queued_transcript_id or None,
             transcribe_tab=transcribe_tab or None,

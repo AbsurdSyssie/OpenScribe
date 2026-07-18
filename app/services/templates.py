@@ -318,6 +318,20 @@ def _resolve_team_template_for_management(db: Session, actor: User, *, template_
     return template
 
 
+def _resolve_team_template_for_fork(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
+    _require_team_member(actor)
+    template = db.scalar(
+        select(PromptTemplate).where(
+            PromptTemplate.id == template_id,
+            PromptTemplate.scope == TemplateScope.team,
+            PromptTemplate.team_id == actor.team_id,
+        )
+    )
+    if template is None:
+        raise AppError(404, "not_found", "Team template not found", {"resource": "template", "template_id": str(template_id)})
+    return template
+
+
 def _resolve_personal_template_for_management(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
     _require_team_member(actor)
     template = db.scalar(
@@ -450,9 +464,13 @@ def _next_duplicate_template_name(db: Session, actor: User, *, scope: TemplateSc
         )
     normalized_existing = {str(name or "").strip().lower() for name in existing_names}
     next_index = 2
-    while f"{candidate_base} {next_index}".strip().lower() in normalized_existing:
+    suffix = f" {next_index}"
+    candidate = f"{candidate_base[: 255 - len(suffix)].rstrip()}{suffix}"
+    while candidate.lower() in normalized_existing:
         next_index += 1
-    return f"{candidate_base} {next_index}"
+        suffix = f" {next_index}"
+        candidate = f"{candidate_base[: 255 - len(suffix)].rstrip()}{suffix}"
+    return candidate
 
 
 def _next_duplicate_quick_action_name(db: Session, actor: User, *, scope: TemplateScope, source_name: str) -> str:
@@ -578,6 +596,17 @@ def _template_version_config(version: PromptTemplateVersion) -> StructuredTempla
 
 def list_team_templates(db: Session, actor: User) -> list[PromptTemplate]:
     _require_team_leader(actor)
+    return list(
+        db.scalars(
+            select(PromptTemplate)
+            .where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == actor.team_id)
+            .order_by(PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
+        )
+    )
+
+
+def list_team_templates_for_member(db: Session, actor: User) -> list[PromptTemplate]:
+    _require_team_member(actor)
     return list(
         db.scalars(
             select(PromptTemplate)
@@ -954,6 +983,40 @@ def duplicate_personal_template(db: Session, actor: User, *, template_id: UUID) 
             is_active=template.is_active,
         ),
     )
+
+
+def fork_team_template_to_personal(db: Session, actor: User, *, template_id: UUID) -> PromptTemplate:
+    template = _resolve_team_template_for_fork(db, actor, template_id=template_id)
+    latest_version = _latest_template_version(db, template_id=template.id)
+    forked = upsert_personal_template(
+        db,
+        actor,
+        PromptTemplateUpsert(
+            scope=TemplateScope.user,
+            name=_next_duplicate_template_name(db, actor, scope=TemplateScope.user, source_name=template.name),
+            description=template.description,
+            prompt_text=latest_version.prompt_text,
+            mode=latest_version.mode,
+            config_json=_template_version_config(latest_version),
+            is_active=template.is_active,
+        ),
+    )
+    record_security_event(
+        db,
+        action="template_forked",
+        actor=actor,
+        team_id=actor.team_id,
+        details={
+            "category": "template",
+            "outcome": "success",
+            "object_type": "prompt_template",
+            "source_template_id": str(template.id),
+            "forked_template_id": str(forked.id),
+            "source_scope": TemplateScope.team.value,
+            "forked_scope": TemplateScope.user.value,
+        },
+    )
+    return forked
 
 
 def delete_team_quick_action(db: Session, actor: User, *, quick_action_id: UUID) -> None:

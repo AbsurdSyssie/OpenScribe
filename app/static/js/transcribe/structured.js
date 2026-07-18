@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
+import { generationLoadingHtml } from './documents.js?v=20260718-note-selection-center';
 
 export function createStructuredEditor({
   dom,

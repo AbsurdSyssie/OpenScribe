@@ -45,6 +45,8 @@ from app.models import (
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     LlmConfigSetupStatus,
+    MfaMethodType,
+    SessionStatus,
     TeamHallucinationCheckSelection,
     TeamLlmConfig,
     TeamLlmSelection,
@@ -69,6 +71,8 @@ from app.models import (
     User,
     UserAppPreference,
     UserLlmPreference,
+    UserMfaMethod,
+    UserSession,
     UserStatus,
     UserQuotaPolicyEvent,
     UserQuotaPolicyEventType,
@@ -78,6 +82,7 @@ from app.models import (
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
 from app.services.admin import admin_usage_overview
 from app.services.dictations import update_post_consultation_dictation
+from app.services.passwords import verify_password
 from app.schemas.llm import LlmConfigInspectResult
 from app.schemas.stt import SttInspectResult
 from app.web.presentation import (
@@ -720,17 +725,24 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">' in user_page.text
-    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-settings">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-library-advanced">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
-    assert "Templates" in user_page.text
-    assert "Quick actions" in user_page.text
+    assert '<div class="settings-nav__group"><p>My Library</p>' in user_page.text
+    assert '<a href="/settings?tab=templates"' in user_page.text
+    assert '<i data-lucide="files"></i>My Templates</a>' in user_page.text
+    assert '<a href="/settings?tab=quick-actions"' in user_page.text
+    assert '<i data-lucide="zap"></i>My quick actions</a>' in user_page.text
+    assert '<span class="settings-mobile-menu__group">My Library</span>' in user_page.text
     assert "Smart phrases" in user_page.text
+    assert user_page.text.index('href="/settings?tab=account"') < user_page.text.index('href="/settings?tab=preferences"')
+    assert user_page.text.index('href="/settings?tab=quick-actions"') < user_page.text.index('href="/settings?tab=smart-phrases"')
     assert "Open scribe" not in user_page.text
     assert "AI services" not in user_page.text
     assert "Team members" not in user_page.text
     assert "Account requests" not in user_page.text
-    assert 'href="/home"' in user_page.text
+    assert '<a href="/transcribe" aria-label="Return to Scribe"><i data-lucide="feather" aria-hidden="true"></i>Return to Scribe</a>' in user_page.text
+    assert "Return home" not in user_page.text
 
     client.post("/logout", follow_redirects=False)
     client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
@@ -746,6 +758,178 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert f'action="/home/users/{member.id}/delete"' not in leader_page.text
 
 
+def test_settings_normal_user_sees_same_team_templates_read_only(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Read-only Templates")
+    other_team = make_team(name="Other Clinic Templates")
+    member = make_user(email="template-reader@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    leader = make_user(email="template-owner@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    other_leader = make_user(email="other-template-owner@example.com", password="password-3", team=other_team, team_role=TeamRole.leader)
+    shared_template = make_template(scope=TemplateScope.team, team=team, actor=leader, name="Shared clinic note")
+    make_template(scope=TemplateScope.team, team=other_team, actor=other_leader, name="Other clinic note")
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/settings?tab=templates")
+
+    assert page.status_code == 200
+    assert "Shared clinic note" in page.text
+    assert "Other clinic note" not in page.text
+    assert "Team · freeform · Read only" in page.text
+    assert "New team template" not in page.text
+    assert f"scope=team&template_id={shared_template.id}" not in page.text
+    assert f'action="/home/team-templates/{shared_template.id}/duplicate"' not in page.text
+    assert f'action="/home/team-templates/{shared_template.id}/delete"' not in page.text
+    assert f'action="/home/team-templates/{shared_template.id}/fork"' in page.text
+    assert f'aria-label="Copy Shared clinic note to My Templates"' in page.text
+
+    denied = client.post(
+        "/home/team-templates",
+        data={
+            "template_id": str(shared_template.id),
+            "name": "Changed by member",
+            "description": "",
+            "prompt_text": "Changed prompt",
+            "mode": "freeform",
+            "return_view": "settings",
+            "return_tab": "templates",
+            "is_active": "true",
+        },
+    )
+
+    assert denied.status_code == 403
+    db_session.refresh(shared_template)
+    assert shared_template.name == "Shared clinic note"
+
+
+def test_settings_account_section_renders_owner_profile_and_security_forms(client, make_team, make_user):
+    team = make_team(name="Clinic Account Settings")
+    member = make_user(email="account-settings@example.com", full_name="Account Owner", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+
+    page = client.get("/settings?tab=account")
+
+    assert page.status_code == 200
+    assert 'href="/settings?tab=account" aria-current="page"' in page.text
+    assert 'data-settings-panel="account"' in page.text
+    assert 'action="/settings/account/name"' in page.text
+    assert 'value="Account Owner"' in page.text
+    assert 'action="/settings/account/email"' in page.text
+    assert 'value="account-settings@example.com"' in page.text
+    assert 'action="/settings/account/password"' in page.text
+    assert 'autocomplete="current-password"' in page.text
+    assert 'autocomplete="new-password"' in page.text
+
+
+def test_settings_account_updates_name_and_audits_without_profile_values(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Account Name")
+    member = make_user(email="account-name@example.com", full_name="Before Name", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+
+    response = client.post("/settings/account/name", data={"full_name": "  After   Name  "}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/settings?tab=account")
+    db_session.refresh(member)
+    assert member.full_name == "After Name"
+    event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "account_name_changed"))
+    assert event is not None
+    assert "After Name" not in str(event.details_json)
+
+
+def test_settings_account_email_requires_password_uniqueness_and_rotates_sessions(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Account Email")
+    member = make_user(email="account-email@example.com", password="Password123", team=team)
+    make_user(email="already-used@example.com", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+
+    wrong_password = client.post(
+        "/settings/account/email",
+        data={"email": "new-email@example.com", "current_password": "WrongPassword123"},
+    )
+    duplicate = client.post(
+        "/settings/account/email",
+        data={"email": "already-used@example.com", "current_password": "Password123"},
+    )
+
+    assert wrong_password.status_code == 401
+    assert "Current password is incorrect" in wrong_password.text
+    assert duplicate.status_code == 409
+    assert "Email address is unavailable" in duplicate.text
+    db_session.refresh(member)
+    assert member.email == "account-email@example.com"
+
+    changed = client.post(
+        "/settings/account/email",
+        data={"email": " NEW-EMAIL@example.com ", "current_password": "Password123"},
+        follow_redirects=False,
+    )
+
+    assert changed.status_code == 303
+    db_session.refresh(member)
+    assert member.email == "new-email@example.com"
+    sessions = list(db_session.scalars(select(UserSession).where(UserSession.user_id == member.id)))
+    assert sum(session.status is SessionStatus.active for session in sessions) == 1
+    assert any(session.status is SessionStatus.revoked and session.revoke_reason == "email_changed" for session in sessions)
+    event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "account_email_changed"))
+    assert event is not None
+    assert "new-email@example.com" not in str(event.details_json)
+
+
+def test_settings_account_password_change_validates_and_rotates_session(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Account Password")
+    member = make_user(email="account-password@example.com", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+
+    mismatch = client.post(
+        "/settings/account/password",
+        data={"current_password": "Password123", "new_password": "ChangedPassword123", "confirm_password": "DifferentPassword123"},
+    )
+    assert mismatch.status_code == 422
+    assert "New passwords do not match" in mismatch.text
+
+    changed = client.post(
+        "/settings/account/password",
+        data={"current_password": "Password123", "new_password": "ChangedPassword123", "confirm_password": "ChangedPassword123"},
+        follow_redirects=False,
+    )
+
+    assert changed.status_code == 303
+    db_session.refresh(member)
+    assert verify_password("ChangedPassword123", member.password_hash)
+    assert not verify_password("Password123", member.password_hash)
+    sessions = list(db_session.scalars(select(UserSession).where(UserSession.user_id == member.id)))
+    assert sum(session.status is SessionStatus.active for session in sessions) == 1
+    assert any(session.status is SessionStatus.revoked and session.revoke_reason == "password_changed" for session in sessions)
+
+
+def test_settings_account_email_requires_active_totp_when_configured(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Account MFA")
+    member = make_user(email="account-mfa@example.com", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+    secret = pyotp.random_base32()
+    db_session.add(UserMfaMethod(user_id=member.id, method_type=MfaMethodType.totp, secret=secret, is_primary=True, is_active=True))
+    db_session.commit()
+
+    missing = client.post(
+        "/settings/account/email",
+        data={"email": "account-mfa-new@example.com", "current_password": "Password123", "mfa_code": ""},
+    )
+    assert missing.status_code == 403
+    assert "Authenticator code is required" in missing.text
+
+    changed = client.post(
+        "/settings/account/email",
+        data={"email": "account-mfa-new@example.com", "current_password": "Password123", "mfa_code": pyotp.TOTP(secret).now()},
+        follow_redirects=False,
+    )
+    assert changed.status_code == 303
+
+
 def test_settings_quick_action_modal_and_invalid_tab_fallback(client, make_team, make_user):
     team = make_team(name="Clinic Settings Modal")
     user = make_user(email="settings-modal@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -759,9 +943,9 @@ def test_settings_quick_action_modal_and_invalid_tab_fallback(client, make_team,
     assert 'name="return_view" value="settings"' in modal.text
     assert 'name="return_tab" value="quick-actions"' in modal.text
     assert fallback.status_code == 200
-    assert 'href="/settings?tab=preferences" aria-current="page"' in fallback.text
-    assert 'data-settings-panel="preferences"' in fallback.text
-    assert 'data-settings-panel="preferences" hidden' not in fallback.text
+    assert 'href="/settings?tab=account" aria-current="page"' in fallback.text
+    assert 'data-settings-panel="account"' in fallback.text
+    assert 'data-settings-panel="account" hidden' not in fallback.text
 
 
 def test_settings_return_view_helpers_are_closed_and_url_backed():
@@ -785,16 +969,87 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
     page = client.get("/settings")
+    assert "Use team default" in page.text
+    assert '<details class="settings-advanced">' in page.text
+    assert "<summary>Advanced</summary>" in page.text
+    advanced = page.text.split('<details class="settings-advanced">', 1)[1].split("</details>", 1)[0]
+    visible_preferences = page.text.split('<details class="settings-advanced">', 1)[0]
+    assert '<select name="preferred_model_name"' in advanced
+    assert 'action="/home/llm-preference/clear"' in advanced
+    assert 'name="note_generation_length"' in visible_preferences
+    assert 'name="llm_detail_level"' in visible_preferences
+    assert '<input type="hidden" name="preferred_model_name" value="gpt-4.1-mini">' in visible_preferences
+
+    saved = client.post(
+        "/home/llm-preference",
+        data={
+            "preferred_model_name": "gpt-4.1-mini",
+            "note_generation_length": "short",
+            "llm_detail_level": "concise",
+            "return_view": "settings",
+            "return_tab": "preferences",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    saved_model = db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id))
+    saved_style = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert saved_model is not None and saved_model.preferred_model_name == "gpt-4.1-mini"
+    assert saved_style is not None
+    assert saved_style.preferences_json["note_generation_length"] == "short"
+    assert saved_style.preferences_json["llm_detail_level"] == "concise"
+
     cleared = client.post(
         "/home/llm-preference/clear",
         data={"return_view": "settings", "return_tab": "preferences"},
         follow_redirects=False,
     )
-
-    assert "Use team default" in page.text
     assert cleared.status_code == 303
     assert cleared.headers["location"] == "/settings?tab=preferences"
     assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
+
+
+def test_settings_visible_style_form_drops_stale_model_override(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Clinic Stale Model Preference")
+    admin = make_user(email="stale-model-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, model_name="current-model", available_models_json=["current-model"])
+    user = make_user(email="stale-model-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    make_llm_selection(config=config, actor=admin, allowed_models_json=["current-model"], model_name_override="current-model")
+    db_session.add(UserLlmPreference(user_id=user.id, preferred_model_name="removed-model"))
+    db_session.commit()
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/settings?tab=preferences")
+    visible_preferences = page.text.split('<details class="settings-advanced">', 1)[0]
+    assert '<input type="hidden" name="preferred_model_name" value="">' in visible_preferences
+
+    saved = client.post(
+        "/home/llm-preference",
+        data={
+            "preferred_model_name": "",
+            "note_generation_length": "long",
+            "llm_detail_level": "detailed",
+            "return_view": "settings",
+            "return_tab": "preferences",
+        },
+        follow_redirects=False,
+    )
+
+    assert saved.status_code == 303
+    db_session.expire_all()
+    model_preference = db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id))
+    style_preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert model_preference is not None and model_preference.preferred_model_name is None
+    assert style_preference is not None
+    assert style_preference.preferences_json["note_generation_length"] == "long"
+    assert style_preference.preferences_json["llm_detail_level"] == "detailed"
 
 
 def test_settings_leader_llm_policy_preserves_active_selection(client, make_team, make_user, make_llm_config, make_llm_selection):
@@ -2801,7 +3056,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260718-note-pill-datetime" in app_js
+    assert "documents.js?v=20260718-note-selection-center" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3397,6 +3652,9 @@ def test_browser_transcribe_upload_rejects_missing_csrf_token(
     page = raw_client.get("/transcribe")
     assert page.status_code == 200
     assert raw_client.cookies.get("openscribe_csrf")
+    assert "Visit one" in page.text
+    assert 'class="session-status-icon session-status-icon--waiting"' in page.text
+    assert 'form="bulk-delete-sessions"' in page.text
 
     rejected = raw_client.post(
         "/transcribe/upload",
@@ -3439,7 +3697,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-select-structured-selection' in page.text
     assert "Record" in page.text
     assert "Upload" in page.text
-    assert "Guide" in page.text
+    assert "Quick guide" in page.text
     assert 'data-tour-overlay' in page.text
     assert 'data-tour-scrim="top"' in page.text
     assert 'data-tour-scrim="right"' in page.text
@@ -3454,7 +3712,14 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
     assert 'id="transcribe-bootstrap"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime"' in page.text
+    assert 'data-session-panel-toggle' in page.text
+    assert 'data-session-panel-close' in page.text
+    assert 'data-primary-sidebar' in page.text
+    assert 'data-sidebar-resize' in page.text
+    assert 'href="/settings"' in page.text
+    assert 'data-sidebar-settings-link' in page.text
+    assert 'aria-label="Open settings"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260718-consultation-sidebar"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -3929,7 +4194,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260718-note-hover-delete-datetime" in page.text
+    assert "/static/css/transcribe.css?v=20260718-sidebar-settings-link" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/transcribe/mobile.js" in page.text
     assert 'data-workspace-endpoint="' in page.text
@@ -4328,7 +4593,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -5620,6 +5885,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
     workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
     sidebar_html = (root / "app" / "templates" / "transcribe" / "_sidebar.html").read_text(encoding="utf-8")
+    session_panel_html = (root / "app" / "templates" / "transcribe" / "_session_panel.html").read_text(encoding="utf-8")
     transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
@@ -5642,10 +5908,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const loadMoreSidebarTranscripts = async () => {" in app_js
     assert "new URL('/api/v1/transcripts', window.location.origin)" in app_js
     assert "const setupSidebarInfiniteScroll = () => {" in app_js
-    assert "data-session-list-sentinel" in sidebar_html
+    assert "data-session-list-sentinel" in session_panel_html
     assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
     assert "const seenIds = new Set();" in app_js
-    assert "if (id && !seenIds.has(id)) node.remove();" in app_js
+    assert "sessionList.replaceChildren(fragment);" in app_js
     assert "const currentSessionLinks = () => sessionList ? [...sessionList.querySelectorAll('[data-session-link]')] : [];" in app_js
     assert "const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];" in app_js
     assert "sessionList?.addEventListener('change', (event) => {" in app_js
@@ -5653,8 +5919,15 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "...(dom.sessionList || window.document).querySelectorAll('[data-session-select]')," in actions_js
     assert "dom.sessionLinks.forEach" not in actions_js
     assert "dom.selectionBoxes.filter" not in actions_js
-    assert 'data-session-list' in sidebar_html
-    assert 'data-sidebar-empty' in sidebar_html
+    assert 'data-session-panel-toggle' in sidebar_html
+    assert 'data-session-list' in session_panel_html
+    assert 'data-sidebar-empty' in session_panel_html
+    assert 'data-session-panel-close' in session_panel_html
+    assert "transcribe:mobile-sidebar-close" in (root / "app" / "static" / "js" / "transcribe" / "mobile.js").read_text(encoding="utf-8")
+    assert ".transcribe-sidebar-collapse-toggle" in transcribe_css
+    assert "[data-sidebar-collapsed-control]" in transcribe_css
+    assert ".session-panel-close" in transcribe_css
+    assert "event.key !== 'Escape'" in shell_extras
     assert "const armSilencePromptTimer = () => {" in media_js
     assert "markVadSpeechStarted();" in media_js
     assert "markVadSpeechEndedOrIdle();" in media_js
@@ -5960,7 +6233,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false, centerSelected = false } = {}) => {" in documents_js
+    assert "scrollContainer.scrollTo({ top: Math.max(0, top), behavior: 'auto' });" in documents_js
+    assert "renderSelectedNote({ centerSelected: true });" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
     assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
@@ -6021,7 +6296,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

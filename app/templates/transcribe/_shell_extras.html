@@ -166,11 +166,137 @@ opt.classList.toggle('active', opt.getAttribute('data-mode') === mode);
 });
 }
 syncRecordButtonLabel();
-document.addEventListener('change', function(e) {
-if (e.target && e.target.matches('[data-recording-mode-select]')) {
-syncRecordButtonLabel();
-}
-});
+  document.addEventListener('change', function(e) {
+    if (e.target && e.target.matches('[data-recording-mode-select]')) {
+      syncRecordButtonLabel();
+    }
+  });
+
+  var sessionPanelToggle = document.querySelector('[data-session-panel-toggle]');
+  var sessionPanel = document.querySelector('[data-session-panel]');
+  var sessionPanelClose = document.querySelector('[data-session-panel-close]');
+  var primarySidebar = document.querySelector('[data-primary-sidebar]');
+  var sidebarResize = document.querySelector('[data-sidebar-resize]');
+  var sidebarCollapseToggles = document.querySelectorAll('[data-sidebar-collapse-toggle]');
+  var sidebarWidthStorageKey = 'openscribe:transcribe:sidebar-width';
+  var sidebarCollapsedWidth = 64;
+  var sidebarRestoreWidth = 288;
+  var sidebarMinWidth = 192;
+  var sidebarMaxWidth = 384;
+  var sidebarCollapseThreshold = 112;
+  var desktopSidebarMedia = window.matchMedia('(min-width: 768px)');
+
+  function normalizedSidebarWidth(value) {
+    if (!Number.isFinite(value) || value <= sidebarCollapseThreshold) return sidebarCollapsedWidth;
+    return Math.min(sidebarMaxWidth, Math.max(sidebarMinWidth, value));
+  }
+  function storedSidebarWidth() {
+    var value = Number.parseFloat(window.localStorage.getItem(sidebarWidthStorageKey) || '');
+    return normalizedSidebarWidth(Number.isFinite(value) ? value : sidebarRestoreWidth);
+  }
+  function applySidebarWidth(value, persist) {
+    if (!primarySidebar || !desktopSidebarMedia.matches) return;
+    var width = normalizedSidebarWidth(value);
+    primarySidebar.style.width = width + 'px';
+    primarySidebar.classList.toggle('is-collapsed', width === sidebarCollapsedWidth);
+    if (sidebarResize) sidebarResize.setAttribute('aria-valuenow', String(width));
+    if (persist) window.localStorage.setItem(sidebarWidthStorageKey, String(width));
+  }
+  function syncSidebarViewport() {
+    if (!primarySidebar) return;
+    if (desktopSidebarMedia.matches) {
+      applySidebarWidth(storedSidebarWidth(), false);
+      return;
+    }
+    primarySidebar.style.removeProperty('width');
+    primarySidebar.classList.remove('is-collapsed');
+  }
+  if (primarySidebar && sidebarResize) {
+    var activePointerId = null;
+    var dragStartX = 0;
+    var dragStartWidth = sidebarRestoreWidth;
+    function stopSidebarResize() {
+      if (activePointerId !== null) sidebarResize.releasePointerCapture?.(activePointerId);
+      activePointerId = null;
+      primarySidebar.classList.remove('is-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+    sidebarResize.addEventListener('pointerdown', function(event) {
+      if (!desktopSidebarMedia.matches) return;
+      activePointerId = event.pointerId;
+      dragStartX = event.clientX;
+      dragStartWidth = primarySidebar.getBoundingClientRect().width;
+      primarySidebar.classList.add('is-resizing');
+      sidebarResize.setPointerCapture?.(activePointerId);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      event.preventDefault();
+    });
+    sidebarResize.addEventListener('pointermove', function(event) {
+      if (activePointerId === event.pointerId) applySidebarWidth(dragStartWidth + event.clientX - dragStartX, false);
+    });
+    sidebarResize.addEventListener('pointerup', function(event) {
+      if (activePointerId !== event.pointerId) return;
+      applySidebarWidth(primarySidebar.getBoundingClientRect().width, true);
+      stopSidebarResize();
+    });
+    sidebarResize.addEventListener('pointercancel', stopSidebarResize);
+    sidebarResize.addEventListener('dblclick', function() {
+      var width = primarySidebar.getBoundingClientRect().width;
+      applySidebarWidth(width === sidebarCollapsedWidth ? sidebarRestoreWidth : sidebarCollapsedWidth, true);
+    });
+    sidebarResize.addEventListener('keydown', function(event) {
+      if (!desktopSidebarMedia.matches) return;
+      var width = primarySidebar.getBoundingClientRect().width;
+      if (event.key === 'ArrowLeft') width -= 16;
+      else if (event.key === 'ArrowRight') width += 16;
+      else if (event.key === 'Home') width = sidebarCollapsedWidth;
+      else if (event.key === 'End') width = sidebarMaxWidth;
+      else return;
+      event.preventDefault();
+      applySidebarWidth(width, true);
+    });
+  }
+  sidebarCollapseToggles.forEach(function(toggle) {
+    toggle.addEventListener('click', function() {
+      if (!desktopSidebarMedia.matches || !primarySidebar) return;
+      var width = primarySidebar.getBoundingClientRect().width;
+      applySidebarWidth(width === sidebarCollapsedWidth ? sidebarRestoreWidth : sidebarCollapsedWidth, true);
+    });
+  });
+  desktopSidebarMedia.addEventListener('change', syncSidebarViewport);
+  syncSidebarViewport();
+
+  function setSessionPanelOpen(open) {
+    if (!sessionPanel || !sessionPanelToggle) return;
+    sessionPanelToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    sessionPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
+    sessionPanel.toggleAttribute('inert', !open);
+    sessionPanel.classList.toggle('is-collapsed', !open);
+    window.refreshLucideIcons?.(open ? sessionPanel : sessionPanelToggle);
+    if (open && !desktopSidebarMedia.matches) {
+      document.dispatchEvent(new CustomEvent('transcribe:mobile-sidebar-close'));
+      sessionPanel.querySelector('[data-session-panel-close]')?.focus();
+    }
+    if (open) requestAnimationFrame(function() {
+      sessionPanel.querySelector('[data-session-list-sentinel]')?.parentElement?.dispatchEvent(new Event('scroll'));
+    });
+  }
+  sessionPanelToggle?.addEventListener('click', function() {
+    setSessionPanelOpen(sessionPanelToggle.getAttribute('aria-expanded') !== 'true');
+  });
+  sessionPanelClose?.addEventListener('click', function() {
+    setSessionPanelOpen(false);
+    if (desktopSidebarMedia.matches) sessionPanelToggle?.focus();
+    else document.querySelector('[data-mobile-sidebar-toggle]')?.focus();
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key !== 'Escape' || sessionPanelToggle?.getAttribute('aria-expanded') !== 'true') return;
+    setSessionPanelOpen(false);
+    if (desktopSidebarMedia.matches) sessionPanelToggle?.focus();
+    else document.querySelector('[data-mobile-sidebar-toggle]')?.focus();
+  });
 })();
 </script>
 
@@ -226,5 +352,5 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-  <script type="module" src="/static/js/transcribe/app.js?v=20260718-note-hover-delete-datetime"></script>
+  <script type="module" src="/static/js/transcribe/app.js?v=20260718-consultation-sidebar"></script>
   {% include "_csrf_script.html" %}

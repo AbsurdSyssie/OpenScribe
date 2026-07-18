@@ -158,6 +158,7 @@ from .services.templates import (
     duplicate_personal_template as duplicate_personal_template_service,
     duplicate_team_quick_action as duplicate_team_quick_action_service,
     duplicate_team_template as duplicate_team_template_service,
+    fork_team_template_to_personal as fork_team_template_to_personal_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
@@ -687,6 +688,7 @@ app.state.limiter = limiter
 app.state.db_session_factory = SessionLocal
 LOGIN_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="login")
 MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
+ACCOUNT_SECURITY_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="account_security")
 ACCOUNT_REQUEST_RATE_LIMIT = limiter.shared_limit("3/hour", scope="account_request")
 LIVE_CHUNK_UPLOAD_RATE_LIMIT = limiter.shared_limit(
     os.getenv("LIVE_CHUNK_UPLOAD_RATE_LIMIT", "10/10 seconds"),

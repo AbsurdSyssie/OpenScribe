@@ -217,3 +217,131 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
     )
 
     subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
+def test_selecting_note_centers_rebuilt_selector_item(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "document_navigator_scroll_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8')
+              .replaceAll('export const ', 'var ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+
+            const scrollCalls = [];
+            const scrollBody = {
+              scrollTop: 640,
+              clientHeight: 400,
+              getBoundingClientRect: () => ({ top: 100, height: 400 }),
+              scrollTo: (options) => scrollCalls.push(options),
+            };
+            const makeElement = (tagName = 'div') => {
+              let html = '';
+              const element = {
+                tagName,
+                hidden: false,
+                dataset: {},
+                textContent: '',
+                children: [],
+                className: '',
+                title: '',
+                type: '',
+                set innerHTML(value) { html = value; if (!value) this.children = []; },
+                get innerHTML() { return html; },
+                appendChild(child) { this.children.push(child); return child; },
+                append(...children) { this.children.push(...children); },
+                setAttribute() {},
+                closest(selector) { return selector === '.structured-workspace__body' ? scrollBody : null; },
+                querySelector(selector) {
+                  if (selector !== '.document-switcher-button.active') return null;
+                  const pending = [...this.children];
+                  while (pending.length) {
+                    const child = pending.shift();
+                    if (child.className?.split(' ').includes('document-switcher-button') && child.className.split(' ').includes('active')) return child;
+                    pending.push(...(child.children || []));
+                  }
+                  return null;
+                },
+                getBoundingClientRect() {
+                  const index = Number(String(this.dataset.documentId || '').replace('note-', '')) || 1;
+                  return { top: 80 + index * 50, height: 50 };
+                },
+              };
+              return element;
+            };
+            const fakeDocument = {
+              activeElement: null,
+              createElement: (tagName) => makeElement(tagName),
+              querySelector: () => null,
+              dispatchEvent: () => {},
+            };
+            const sandbox = {
+              Array,
+              Boolean,
+              CustomEvent: class CustomEvent {},
+              JSON,
+              Map,
+              Math,
+              Number,
+              Object,
+              String,
+              console,
+              window: { document: fakeDocument, CustomEvent: null },
+            };
+            sandbox.window.CustomEvent = sandbox.CustomEvent;
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+
+            const noteSelector = makeElement();
+            let state = {
+              hasActiveTranscript: false,
+              workspaceNoteDocuments: Array.from({ length: 8 }, (_, index) => ({
+                id: `note-${index + 1}`,
+                title: `Note ${index + 1}`,
+                status: 'ready',
+                created_at: '2026-07-18T12:00:00Z',
+              })),
+              workspaceStructuredContext: {},
+              selectedNoteDocumentId: 'note-1',
+            };
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                noteSelector,
+                noteSelectorWrap: makeElement(),
+              },
+              helpers: {
+                escapeHtml: (value) => String(value || ''),
+                renderGeneratedOutput: () => {},
+                renderRedactionDebugPanel: () => {},
+                setTab: () => {},
+              },
+              getState: () => state,
+              setState: (patch) => { state = { ...state, ...patch }; },
+              clearNoteEditorDirty: () => {},
+            });
+
+            await navigator.selectDocumentFromUi('note', 'note-8');
+
+            assert.equal(scrollCalls.length, 1);
+            assert.equal(scrollCalls[0].top, 845);
+            assert.equal(scrollCalls[0].behavior, 'auto');
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)

@@ -62,6 +62,8 @@
 
   scrim.addEventListener('click', () => setOpen(false));
 
+  document.addEventListener('transcribe:mobile-sidebar-close', () => setOpen(false));
+
   sidebar.addEventListener('click', (event) => {
     if (!mediaQuery.matches) return;
     if (event.target.closest('[data-session-link]')) {

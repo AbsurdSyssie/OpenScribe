@@ -112,6 +112,7 @@ from ..services.templates import (
     list_personal_templates as list_personal_templates_service,
     list_team_quick_actions as list_team_quick_actions_service,
     list_team_templates as list_team_templates_service,
+    list_team_templates_for_member as list_team_templates_for_member_service,
 )
 from ..services.smart_phrases import list_personal_smart_phrases as list_personal_smart_phrases_service
 from ..services.default_assets import (
@@ -1261,7 +1262,11 @@ def render_home(
             )
             .order_by(User.created_at.asc())
         )
-    team_templates = list_team_templates_service(db, current_user) if is_manager else []
+    team_templates = (
+        list_team_templates_service(db, current_user)
+        if is_manager
+        else list_team_templates_for_member_service(db, current_user)
+    )
     personal_templates = list_personal_templates_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
     team_quick_actions = list_team_quick_actions_service(db, current_user) if is_manager else []
     personal_quick_actions = list_personal_quick_actions_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
@@ -1275,7 +1280,7 @@ def render_home(
     team_quick_action_latest_version = _latest_quick_action_version(selected_team_quick_action) if selected_team_quick_action is not None else None
     personal_quick_action_latest_version = _latest_quick_action_version(selected_personal_quick_action) if selected_personal_quick_action is not None else None
     settings_mode = home_return_view == "settings"
-    resolved_available_home_tabs = ["preferences"] if settings_mode else ["overview"]
+    resolved_available_home_tabs = ["account", "preferences"] if settings_mode else ["overview"]
     if not current_user.is_system_admin and current_user.team_id is not None:
         resolved_available_home_tabs.extend(["templates", "quick-actions", "smart-phrases"])
     if is_manager:

@@ -164,6 +164,7 @@ from app.services.templates import (
     delete_personal_template,
     process_generated_document,
     generated_document_llm_request_payload,
+    fork_team_template_to_personal,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation,
     queue_quick_action_generation,
@@ -9423,6 +9424,157 @@ def test_personal_template_api_rejects_duplicate_name_for_same_user(client, make
     )
 
     assert_error(duplicate, status_code=409, code="conflict", message="Template name already exists")
+
+
+def test_member_forks_latest_same_team_template_version_to_owned_personal_copy(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Template Fork")
+    leader = make_user(email="fork-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    member = make_user(email="fork-member@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    source = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Shared EMIS note",
+        description="Shared description",
+        prompt_text="Old team instructions.",
+        mode=TemplateMode.structured,
+        config_json={
+            "profile": "emis",
+            "sections": [
+                {
+                    "section_key": "problem",
+                    "section_label": "Problem",
+                    "instruction": "Old problem guidance.",
+                    "section_order": 1,
+                }
+            ],
+        },
+        is_active=False,
+    )
+    latest_config = {
+        "profile": "emis",
+        "sections": [
+            {
+                "section_key": "history",
+                "section_label": "History",
+                "instruction": "Use relevant history only.",
+                "section_order": 1,
+            }
+        ],
+    }
+    db_session.add(
+        PromptTemplateVersion(
+            template_id=source.id,
+            version_no=2,
+            mode=TemplateMode.structured,
+            prompt_text="Latest team instructions.",
+            config_json=latest_config,
+            created_by_user_id=leader.id,
+        )
+    )
+    make_template(scope=TemplateScope.user, owner=member, actor=member, name="Shared EMIS note 2")
+
+    login(client, email=member.email, password="password-2")
+    response = client.post(
+        f"/home/team-templates/{source.id}/fork",
+        data={"return_view": "settings", "return_tab": "templates"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    forked = db_session.scalar(
+        select(PromptTemplate).where(
+            PromptTemplate.scope == TemplateScope.user,
+            PromptTemplate.owner_user_id == member.id,
+            PromptTemplate.name == "Shared EMIS note 3",
+        )
+    )
+    assert forked is not None
+    assert response.headers["location"] == (
+        f"/home/templates/editor?scope=personal&template_id={forked.id}&return_view=settings"
+    )
+    assert forked.team_id is None
+    assert forked.description == "Shared description"
+    assert forked.is_active is False
+    forked_version = db_session.scalar(
+        select(PromptTemplateVersion).where(PromptTemplateVersion.template_id == forked.id)
+    )
+    assert forked_version is not None
+    assert forked_version.version_no == 1
+    assert forked_version.mode is TemplateMode.structured
+    assert forked_version.prompt_text == "Latest team instructions."
+    assert forked_version.config_json == latest_config
+    db_session.refresh(source)
+    assert source.name == "Shared EMIS note"
+    assert source.scope is TemplateScope.team
+    fork_audit = db_session.scalar(
+        select(SecurityAuditEvent)
+        .where(SecurityAuditEvent.action == "template_forked", SecurityAuditEvent.actor_user_id == member.id)
+        .order_by(SecurityAuditEvent.created_at.desc())
+    )
+    assert fork_audit is not None
+    assert fork_audit.details_json == {
+        "category": "template",
+        "outcome": "success",
+        "object_type": "prompt_template",
+        "source_template_id": str(source.id),
+        "forked_template_id": str(forked.id),
+        "source_scope": "team",
+        "forked_scope": "user",
+    }
+    assert "Latest team instructions." not in str(fork_audit.details_json)
+
+
+def test_team_template_fork_hides_cross_team_source_and_denies_system_admin(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    source_team = make_team(name="Fork Source Clinic")
+    other_team = make_team(name="Fork Other Clinic")
+    source_leader = make_user(email="fork-source@example.com", team=source_team, team_role=TeamRole.leader)
+    outsider = make_user(email="fork-outsider@example.com", team=other_team, team_role=TeamRole.user)
+    system_admin = make_user(email="fork-admin@example.com", is_system_admin=True)
+    source = make_template(scope=TemplateScope.team, team=source_team, actor=source_leader, name="Private team config")
+
+    with pytest.raises(AppError) as cross_team_error:
+        fork_team_template_to_personal(db_session, outsider, template_id=source.id)
+    assert cross_team_error.value.status_code == 404
+    assert cross_team_error.value.code == "not_found"
+
+    with pytest.raises(AppError) as admin_error:
+        fork_team_template_to_personal(db_session, system_admin, template_id=source.id)
+    assert admin_error.value.status_code == 403
+    assert admin_error.value.code == "forbidden"
+
+    assert db_session.scalar(
+        select(PromptTemplate).where(PromptTemplate.scope == TemplateScope.user, PromptTemplate.name.like("Private team config%"))
+    ) is None
+
+
+def test_team_template_fork_truncates_max_length_name_for_personal_suffix(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Fork Long Name Clinic")
+    leader = make_user(email="fork-long-leader@example.com", team=team, team_role=TeamRole.leader)
+    member = make_user(email="fork-long-member@example.com", team=team, team_role=TeamRole.user)
+    source = make_template(scope=TemplateScope.team, team=team, actor=leader, name="X" * 255)
+
+    forked = fork_team_template_to_personal(db_session, member, template_id=source.id)
+
+    assert len(forked.name) == 255
+    assert forked.name.endswith(" 2")
+    assert forked.owner_user_id == member.id
 
 
 def test_personal_quick_action_api_rejects_duplicate_name_for_same_user(client, make_team, make_user, make_quick_action):

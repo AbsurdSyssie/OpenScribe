@@ -16,16 +16,20 @@ System admin flow is out of scope here because system admins are redirected away
 
 ## Settings Workspace
 
-`/settings` is a separate user/team-leader configuration workspace. `/home` remains unchanged and continues to own consultation launch/overview behavior. Settings is currently reachable by direct URL only.
+`/settings` is a separate user/team-leader configuration workspace. `/home` remains unchanged and continues to own consultation launch/overview behavior. Settings is reachable from the transcribe sidebar, and its footer returns directly to `/transcribe` through the feather-labelled `Return to Scribe` link.
 
 Settings uses the canonical warm `/admin` visual language without reusing the privileged admin template or context. It has a cream two-column shell, grouped sidebar navigation, serif headings, setting cards, and a responsive mobile menu.
 
 Normal-user sections:
 
+- account details: own name, sign-in email, and password
 - preferences
-- personal templates
-- personal quick actions
-- smart phrases
+- My Library
+  - My Templates
+  - My quick actions
+  - Smart phrases
+
+Account is the default Settings section; Preferences follows it in desktop and mobile navigation.
 
 Leader additions:
 
@@ -35,6 +39,12 @@ Leader additions:
 - account requests
 
 The page reuses existing `/home/...` form handlers and service authorization. `return_view=settings` is a closed value that returns successful or failed workflows to `/settings`; unknown values still fall back to `/home`. System admins are redirected to `/admin`.
+
+Account changes use dedicated owner-only `/settings/account/...` handlers. Name changes update profile metadata. Email and password changes require current-password reauthentication, require TOTP when an active method exists, rotate sessions and trusted devices, and emit content-safe security audit metadata.
+
+Normal users can see same-team templates in My Library as read-only rows, including their mode and enabled status. They may copy a same-team template into My Templates, producing an independently editable personal template. They do not receive team-template create, edit, duplicate-in-team, or delete controls. Team-template management remains leader-only, and templates from other teams are never included.
+
+Preferences keeps note length and detail visible. Model override selection and its return-to-team-default control live in a closed `Advanced` disclosure. Saving visible writing-style settings preserves any existing model override.
 
 Leader Settings intentionally omits hard user deletion. Leaders may use existing suspend/reactivate, setup, recovery, and MFA controls. This preserves the architecture rule that team leaders may lock or deactivate users but may not fully delete them.
 
@@ -109,11 +119,13 @@ Contained information:
 User can change:
 - personal preferred LLM model
 - clear personal override back to team default
+- personal note length and detail preferences
 
 How:
 - choose one allowed model from the team-approved list
 - save preference
 - clear preference
+- open Advanced only when changing model selection
 
 Access:
 - user and leader
@@ -134,6 +146,7 @@ Contained information:
 
 User can change:
 - create, edit, activate/deactivate, and delete personal templates
+- copy a same-team template into an independently editable personal template
 
 Leader can also change:
 - create, edit, activate/deactivate, and delete team templates
@@ -144,7 +157,7 @@ How:
 - remove template permanently
 
 Access:
-- user: personal templates only
+- user: personal templates plus read-only same-team templates
 - leader: personal + team templates
 
 ### Quick action library

@@ -339,6 +339,26 @@ def test_api_csrf_requires_header_and_ignores_form_fallback(raw_client, make_use
     assert response.json()["error"]["message"] == "CSRF verification failed"
 
 
+def test_settings_account_change_rejects_missing_csrf(raw_client, db_session, make_user):
+    user = make_user(
+        email="account-csrf@example.com",
+        full_name="Original Name",
+        password="Password123",
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    assert raw_client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "Password123"},
+    ).status_code == 200
+
+    response = raw_client.post("/settings/account/name", data={"full_name": "Changed Without CSRF"})
+
+    assert response.status_code == 403
+    db_session.refresh(user)
+    assert user.full_name == "Original Name"
+
+
 def test_csrf_origin_ignores_forwarded_headers_without_trust(raw_client, make_user, monkeypatch):
     monkeypatch.delenv("TRUST_FORWARDED_ORIGIN_HEADERS", raising=False)
     make_user(email="api-csrf-forwarded@example.com", password="password-1", mfa_required=False, mfa_enabled=False)

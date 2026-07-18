@@ -206,6 +206,19 @@ export function createDocumentNavigator({
     refreshIcons?.(container);
   };
 
+  const centerSelectedDocument = (container) => {
+    const selectedButton = container?.querySelector('.document-switcher-button.active');
+    const scrollContainer = container?.closest('.structured-workspace__body');
+    if (!selectedButton || !scrollContainer) return;
+    const selectedRect = selectedButton.getBoundingClientRect();
+    const scrollRect = scrollContainer.getBoundingClientRect();
+    const top = scrollContainer.scrollTop
+      + selectedRect.top
+      - scrollRect.top
+      - (scrollContainer.clientHeight - selectedRect.height) / 2;
+    scrollContainer.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+  };
+
   const renderLlmRequestPanel = (slot, document) => {
     if (!slot) return;
     slot.innerHTML = '';
@@ -292,7 +305,7 @@ export function createDocumentNavigator({
     refreshIcons?.(followupHistory);
   };
 
-  const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {
+  const renderSelectedNote = ({ forcePreserveEditor = false, centerSelected = false } = {}) => {
     const state = getState();
     const documents = noteTargets(state);
     const selectedNote = selectedDocumentFromList(documents, state.selectedNoteDocumentId);
@@ -327,6 +340,7 @@ export function createDocumentNavigator({
       selectedId: selectedNote?.id || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null),
       kind: "note",
     });
+    if (centerSelected) centerSelectedDocument(noteSelector);
     renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
     const selectedGeneratedNote = selectedNote?.kind === "working_note" ? null : selectedNote;
     renderLlmRequestPanel(outputLlmRequestSlot, selectedGeneratedNote);
@@ -396,7 +410,7 @@ export function createDocumentNavigator({
       }
       clearNoteEditorDirty?.();
       setState({ selectedNoteDocumentId: documentId });
-      renderSelectedNote();
+      renderSelectedNote({ centerSelected: true });
       setTab("output");
       return true;
     }

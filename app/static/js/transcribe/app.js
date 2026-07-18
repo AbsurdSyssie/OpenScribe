@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20260718-note-hover-delete-datetime';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
+import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-selection-center';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260718-note-pill-datetime';
@@ -275,6 +275,7 @@ let statusDetailsHideTimer = null;
       let sessionRailNextCursor = null;
       let sessionRailHasMore = false;
       let sessionRailLoading = false;
+      let sessionRailPaginationStarted = false;
       let workspaceRefreshBurstTimeoutIds = [];
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
       const liveVadBundleVersion = '0.0.29';
@@ -1079,7 +1080,7 @@ let statusDetailsHideTimer = null;
         renderStatusDetails(items);
         if (transcriptId) {
           const sidebarStatus = document.querySelector(`[data-sidebar-status="${transcriptId}"]`);
-          if (sidebarStatus) sidebarStatus.textContent = top.label;
+          if (sidebarStatus) setSidebarStatus(sidebarStatus, top.label, activeIngestionMode, activeTranscriptHasContent);
         }
       };
 
@@ -2569,22 +2570,65 @@ let statusDetailsHideTimer = null;
       });
       syncDeleteState();
 
-      const sidebarStatusClassName = (statusLabel, ingestionMode) => {
-        const visibleStatus = displayStatusLabel(statusLabel, ingestionMode);
-        if (visibleStatus === 'ready') {
-          return 'flex-shrink-0 px-1.5 py-0.5 bg-teal-pale text-teal-deep text-xs font-medium rounded';
-        }
-        if (visibleStatus === 'failed') {
-          return 'flex-shrink-0 px-1.5 py-0.5 bg-coral/15 text-coral text-xs font-medium rounded';
-        }
-        return 'flex-shrink-0 px-1.5 py-0.5 bg-white text-slate text-xs font-medium rounded border border-stone';
+      const sidebarStatusDescriptor = (statusLabel, ingestionMode, hasTranscriptContent = false) => {
+        const visibleStatus = String(displayStatusLabel(statusLabel, ingestionMode) || 'idle').toLowerCase();
+        if (visibleStatus === 'generating') return { tone: 'generating', icon: 'diamond', label: 'Generating with LLM' };
+        if (['transcribing', 'finalizing', 'uploading', 'sending chunk', 'listening', 'speech detected'].includes(visibleStatus)) return { tone: 'transcribing', icon: 'audio-waveform', label: sentenceCaseStatus(visibleStatus) };
+        if (visibleStatus === 'ready') return hasTranscriptContent ? { tone: 'complete', icon: 'check', label: 'Complete' } : { tone: 'waiting', icon: 'minus', label: 'Waiting' };
+        if (['failed', 'transcription failed', 'generation failed', 'mic not detected', 'mic blocked', 'mic unavailable', 'recording blocked', 'speech issue', 'generation unavailable', 'redaction issue', 'clinical nlp issue'].includes(visibleStatus)) return { tone: 'failed', icon: 'x', label: sentenceCaseStatus(visibleStatus) };
+        return { tone: 'waiting', icon: 'minus', label: 'Waiting' };
+      };
+
+      const setSidebarStatus = (node, statusLabel, ingestionMode, hasTranscriptContent = false) => {
+        const descriptor = sidebarStatusDescriptor(statusLabel, ingestionMode, hasTranscriptContent);
+        node.className = `session-status-icon session-status-icon--${descriptor.tone}`;
+        node.setAttribute('aria-label', descriptor.label);
+        node.title = descriptor.label;
+        const icon = document.createElement('i');
+        icon.dataset.lucide = descriptor.icon;
+        icon.setAttribute('aria-hidden', 'true');
+        const accessibleLabel = document.createElement('span');
+        accessibleLabel.className = 'sr-only';
+        accessibleLabel.textContent = descriptor.label;
+        node.replaceChildren(icon, accessibleLabel);
+        window.refreshLucideIcons?.(node);
       };
 
       const formatSidebarCreatedAt = (value) => {
         if (!value) return '';
         const timestamp = Date.parse(value);
         if (!Number.isFinite(timestamp)) return value;
-        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+        return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' }).format(new Date(timestamp));
+      };
+
+      const sidebarSessionGroup = (value) => {
+        const timestamp = Date.parse(value || '');
+        if (!Number.isFinite(timestamp)) return { dateKey: 'unknown', dateLabel: 'Earlier', period: 'afternoon' };
+        const date = new Date(timestamp);
+        return { dateKey: date.toISOString().slice(0, 10), dateLabel: new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' }).format(date), period: date.getUTCHours() < 12 ? 'morning' : 'afternoon' };
+      };
+
+      const createSidebarDateDivider = (label) => {
+        const divider = document.createElement('div');
+        divider.className = 'session-date-divider';
+        const text = document.createElement('span');
+        text.className = 'session-date-divider__text';
+        text.textContent = label;
+        divider.append(text);
+        return divider;
+      };
+
+      const createSidebarPeriodDivider = (period) => {
+        const divider = document.createElement('div');
+        divider.className = 'session-time-divider';
+        const icon = document.createElement('i');
+        icon.className = 'session-time-divider__icon';
+        icon.dataset.lucide = period === 'morning' ? 'sunrise' : 'sun';
+        const label = document.createElement('span');
+        label.className = 'session-time-divider__label';
+        label.textContent = period === 'morning' ? 'Morning' : 'Afternoon';
+        divider.append(icon, label);
+        return divider;
       };
 
       const createSidebarSessionItem = (item) => {
@@ -2598,6 +2642,7 @@ let statusDetailsHideTimer = null;
         checkbox.className = 'mt-1';
         checkbox.type = 'checkbox';
         checkbox.name = 'transcript_ids';
+        checkbox.setAttribute('form', 'bulk-delete-sessions');
         checkbox.value = item.id;
         checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
         checkbox.setAttribute('data-session-select', '');
@@ -2618,22 +2663,21 @@ let statusDetailsHideTimer = null;
         title.className = 'font-medium text-sm text-ink truncate session-title';
         title.textContent = item.title || 'Untitled session';
 
-        const createdAt = document.createElement('div');
-        createdAt.className = 'text-xs text-slate mt-0.5';
+        const createdAt = document.createElement('span');
+        createdAt.className = 'text-xs text-slate';
         createdAt.textContent = formatSidebarCreatedAt(item.created_at);
 
         const status = document.createElement('span');
-        status.className = sidebarStatusClassName(item.status, item.ingestion_mode);
         status.dataset.sidebarStatus = item.id;
-        status.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+        setSidebarStatus(status, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
 
-        const mode = document.createElement('div');
-        mode.className = 'text-xs text-slate mt-1';
-        mode.textContent = String(item.ingestion_mode || '').replaceAll('_', ' ');
+        const metadata = document.createElement('div');
+        metadata.className = 'flex items-center gap-2 mt-1';
+        metadata.append(createdAt);
 
-        titleWrap.append(title, createdAt);
+        titleWrap.append(title);
         titleRow.append(titleWrap, status);
-        link.append(titleRow, mode);
+        link.append(titleRow, metadata);
         row.append(checkbox, link);
         wrapper.append(row);
         return wrapper;
@@ -2652,29 +2696,41 @@ let statusDetailsHideTimer = null;
 
       const renderSidebarTranscripts = () => {
         if (!sessionList) return;
-        sessionList.querySelectorAll('[data-sidebar-empty]').forEach((node) => node.remove());
         const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));
         const seenIds = new Set();
-        let previousNode = null;
+        const fragment = document.createDocumentFragment();
+        let previousDateKey = '';
+        let previousPeriod = '';
         sessionRailItems.forEach((item) => {
           if (!item?.id) return;
           seenIds.add(String(item.id));
+          const group = sidebarSessionGroup(item.created_at);
+          if (group.dateKey !== previousDateKey) {
+            fragment.append(createSidebarDateDivider(group.dateLabel));
+            previousDateKey = group.dateKey;
+            previousPeriod = '';
+          }
+          if (group.period !== previousPeriod) {
+            fragment.append(createSidebarPeriodDivider(group.period));
+            previousPeriod = group.period;
+          }
           let link = linksById.get(String(item.id));
           let node = link?.closest('.session-item') || null;
           if (!node) {
             node = createSidebarSessionItem(item);
             link = node.querySelector('[data-session-link]');
           }
-          const referenceNode = previousNode ? previousNode.nextSibling : sessionList.firstChild;
-          if (node !== referenceNode) {
-            sessionList.insertBefore(node, referenceNode);
-          }
-          previousNode = node;
+          fragment.append(node);
         });
-        sessionList.querySelectorAll('.session-item').forEach((node) => {
-          const id = node.querySelector('[data-session-link]')?.dataset.transcriptId || '';
-          if (id && !seenIds.has(id)) node.remove();
-        });
+        if (seenIds.size === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'text-sm text-slate px-4 py-3';
+          empty.dataset.sidebarEmpty = '';
+          empty.textContent = 'No consultations yet.';
+          fragment.append(empty);
+        }
+        sessionList.replaceChildren(fragment);
+        window.refreshLucideIcons?.(sessionList);
         syncDeleteState();
         if (sessionListSentinel) {
           sessionListSentinel.hidden = !sessionRailHasMore && !sessionRailLoading;
@@ -2711,6 +2767,7 @@ let statusDetailsHideTimer = null;
           const response = await fetch(url.toString(), { credentials: 'include' });
           if (!response.ok) throw new Error('Could not load consultations.');
           const page = await response.json();
+          sessionRailPaginationStarted = true;
           syncSidebarTranscripts(Array.isArray(page.items) ? page.items : []);
           sessionRailNextCursor = page.next_cursor || null;
           sessionRailHasMore = Boolean(page.has_more && sessionRailNextCursor);
@@ -2723,12 +2780,20 @@ let statusDetailsHideTimer = null;
       };
 
       const setupSidebarInfiniteScroll = () => {
-        if (!sessionListSentinel || !('IntersectionObserver' in window)) return;
+        if (!sessionListSentinel) return;
+        const scrollContainer = sessionListSentinel.parentElement;
+        const loadWhenNearBottom = () => {
+          if (!scrollContainer) return;
+          const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+          if (remaining <= 120) void loadMoreSidebarTranscripts();
+        };
+        scrollContainer?.addEventListener('scroll', loadWhenNearBottom, { passive: true });
+        if (!('IntersectionObserver' in window)) return;
         const observer = new IntersectionObserver((entries) => {
           if (entries.some((entry) => entry.isIntersecting)) {
             void loadMoreSidebarTranscripts();
           }
-        }, { root: sessionListSentinel.parentElement, rootMargin: '120px 0px' });
+        }, { root: scrollContainer, rootMargin: '120px 0px' });
         observer.observe(sessionListSentinel);
       };
       structuredEditor = createStructuredEditor({
@@ -3347,8 +3412,10 @@ let statusDetailsHideTimer = null;
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
         setRetryAvailability(retryAvailable);
-        sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
-        sessionRailHasMore = Boolean(workspace.recent_transcripts_has_more && sessionRailNextCursor);
+        if (!sessionRailPaginationStarted) {
+          sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
+          sessionRailHasMore = Boolean(workspace.recent_transcripts_has_more && sessionRailNextCursor);
+        }
         syncSidebarTranscripts(sidebarTranscripts, { replaceTop: true });
 
         currentSessionLinks().forEach((link) => {
@@ -3359,7 +3426,7 @@ let statusDetailsHideTimer = null;
 
         sidebarTranscripts.forEach((item) => {
           const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
-          if (node) node.textContent = displayStatusLabel(item.status, item.ingestion_mode);
+          if (node) setSidebarStatus(node, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           if (titleNode) titleNode.textContent = item.title || 'Untitled session';
           const checkbox = currentSelectionBoxes().find((input) => input.value === item.id);

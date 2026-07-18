@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.errors import AppError
+from app.errors import AppError, QUOTA_EXHAUSTED_MESSAGE
 from app.models import (
     AttemptKind,
     AttemptOutcome,
@@ -238,8 +238,8 @@ def _quota_error(
     if delta is not None:
         details["delta"] = delta
     if window.effective_limit == 0:
-        return AppError(403, "quota_disabled", "Provider usage is disabled for this resource", details)
-    return AppError(429, "quota_exceeded", "Provider quota exceeded", details)
+        return AppError(403, "quota_disabled", QUOTA_EXHAUSTED_MESSAGE, details)
+    return AppError(429, "quota_exceeded", QUOTA_EXHAUSTED_MESSAGE, details)
 
 
 def reserve_provider_attempt(

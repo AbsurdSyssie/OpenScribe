@@ -381,6 +381,27 @@ def test_admin_quota_panel_renders_unlimited_disabled_and_no_temporary_allowance
     assert page.count("No temporary allowance") == 4
 
 
+def test_admin_quota_panel_formats_tokens_and_audio_for_monitoring(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Formatting Team")
+    admin = make_user(email="quota-format-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-format-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = 1_250_000
+    member.monthly_token_limit = 9_500_000
+    member.daily_audio_seconds_limit = 3_661
+    member.monthly_audio_seconds_limit = 36_000
+    db_session.commit()
+    _login_quota_admin(client, admin)
+
+    page, _ = _quota_form(client, team, member)
+
+    assert "1,250,000 tokens" in page
+    assert "9,500,000 tokens" in page
+    assert "1h 1m 1s" in page
+    assert "10h" in page
+    assert "In progress" in page
+    assert "Accepted work not yet settled" in page
+
+
 def test_admin_quota_limits_post_updates_all_windows_and_uses_safe_prg(client, db_session, make_team, make_user):
     team = make_team(name="Quota Mutation Team")
     admin = make_user(email="quota-mutation-admin@example.com", password="password-1", is_system_admin=True)
@@ -3128,43 +3149,46 @@ def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
     member = make_user(email="member@example.com", password="password-3", team=team, team_role=TeamRole.user)
     monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
-    transcript_one = Transcript(
-        owner_user_id=member.id,
-        team_id=team.id,
-        title="Visit one",
-        ingestion_mode=TranscriptIngestionMode.whole_file,
-        status=TranscriptStatus.ready,
-        retention_days_applied=30,
-        retention_expires_at=utcnow() + timedelta(days=30),
-    )
-    transcript_two = Transcript(
-        owner_user_id=member.id,
-        team_id=team.id,
-        title="Visit two",
-        ingestion_mode=TranscriptIngestionMode.whole_file,
-        status=TranscriptStatus.ready,
-        retention_days_applied=30,
-        retention_expires_at=utcnow() + timedelta(days=30),
-    )
-    db_session.add_all([transcript_one, transcript_two])
+    transcripts = [
+        Transcript(
+            owner_user_id=member.id,
+            team_id=team.id,
+            title=f"Visit {upload_no}",
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=utcnow() + timedelta(days=30),
+        )
+        for upload_no in range(1, 32)
+    ]
+    db_session.add_all(transcripts)
     db_session.commit()
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
 
-    api_upload = client.post(
-        f"/api/v1/transcripts/{transcript_one.id}/audio-file",
-        files={"audio": ("visit-one.wav", b"fake-audio-one", "audio/wav")},
-    )
-    assert api_upload.status_code == 202
+    api_uploads = [
+        client.post(
+            f"/api/v1/transcripts/{transcript.id}/audio-file",
+            files={"audio": (f"visit-{upload_no}.wav", b"fake-audio", "audio/wav")},
+        )
+        for upload_no, transcript in enumerate(transcripts[:29], start=1)
+    ]
+    assert [response.status_code for response in api_uploads] == [202] * 29
 
     browser_upload = client.post(
         "/transcribe/upload",
-        data={"title": "Visit two", "transcript_id": str(transcript_two.id)},
-        files={"audio": ("visit-two.wav", b"fake-audio-two", "audio/wav")},
+        data={"title": "Visit 30", "transcript_id": str(transcripts[29].id)},
+        files={"audio": ("visit-30.wav", b"fake-audio", "audio/wav")},
+        follow_redirects=False,
     )
-    assert browser_upload.status_code == 429
-    assert "Too many requests" in browser_upload.text
-    assert "Return to transcription workspace" in browser_upload.text
+    assert browser_upload.status_code == 303
+
+    blocked_api_upload = client.post(
+        f"/api/v1/transcripts/{transcripts[30].id}/audio-file",
+        files={"audio": ("visit-31.wav", b"fake-audio", "audio/wav")},
+    )
+    assert blocked_api_upload.status_code == 429
+    assert blocked_api_upload.json()["error"]["code"] == "rate_limited"
 
 
 def test_browser_transcribe_upload_rejects_missing_csrf_token(
@@ -4947,6 +4971,58 @@ def test_user_transcribe_page_can_generate_note_output_from_template(
     assert "Queued note generation." in page.text
 
 
+def test_user_transcribe_page_explains_quota_exhaustion(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+):
+    team = make_team(name="Quota message clinic")
+    admin = make_user(email="quota-message-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-message-member@example.com", password="password-2", team=team)
+    member.daily_token_limit = 0
+    config = make_llm_config(team=team, actor=admin, model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=admin, model_name_override="gpt-4o-mini")
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=member,
+        actor=member,
+        name="Quota message note",
+        prompt_text="Write a concise note.",
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Quota message session",
+        current_draft_text_encrypted="Synthetic consultation source.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add_all([member, transcript])
+    db_session.commit()
+
+    client.post(
+        "/login",
+        data={"email": "quota-message-member@example.com", "password": "password-2"},
+        follow_redirects=False,
+    )
+    response = client.post(
+        "/transcribe/generate-output",
+        data={"transcript_id": str(transcript.id), "template_id": str(template.id)},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "Your usage quota has been used up. Contact your administrator for help." in response.text
+    assert "effective_limit" not in response.text
+    assert db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id)) is None
+
+
 def test_user_transcribe_page_shows_structured_emis_context_inputs(
     client,
     db_session,
@@ -5570,6 +5646,22 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "transcriptEmpty.hidden = isTranscribing || hasDraft" in app_js
     assert "not active_template_generation_input_available" in workspace_html
     assert "not active_quick_action_input_available" in workspace_html
+
+
+def test_live_chunk_upload_retries_only_structured_rate_limit_errors():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
+
+    assert "const parseErrorResponse = async (response, fallback) => {" in app_js
+    assert "code: payload?.error?.code || null," in app_js
+    assert "details: payload?.error?.details || null," in app_js
+    assert "await parseErrorResponse(response, fallback)" in app_js
+    assert "parseErrorResponse," in media_js
+    assert "const errorResponse = await parseErrorResponse(response" in media_js
+    assert "if (errorResponse.code !== 'rate_limited' || attempt === maxAttempts)" in media_js
+    assert "response.headers.get('Retry-After')" in media_js
+    assert "if (response.status !== 429 || attempt === maxAttempts)" not in media_js
 
 
 def test_generated_document_pii_no_reveal_mode_strips_cached_values():

@@ -14,6 +14,7 @@ export function createAudioCaptureController({
   fetchWorkspace,
   pollWorkspace,
   scheduleWorkspaceRefreshBurst,
+  parseErrorResponse,
   parseErrorMessage,
   setMicButtons,
   setMicStatus,
@@ -581,14 +582,19 @@ export function createAudioCaptureController({
         scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
         return;
       }
-      lastMessage = await parseErrorMessage(response, 'Could not send this live audio part.');
-      if (response.status !== 429 || attempt === maxAttempts) {
+      const errorResponse = await parseErrorResponse(response, 'Could not send this live audio part.');
+      lastMessage = errorResponse.message;
+      if (errorResponse.code !== 'rate_limited' || attempt === maxAttempts) {
         setNextLiveChunkSequenceNo(chunkSequenceNo);
         throw new Error(lastMessage);
       }
       setSessionProgress('Live upload rate limit reached. Waiting briefly, then retrying the same audio part...');
       setMicStatus('Live upload is catching up...');
-      await sleep(Number(config.liveChunkRateLimitRetryMs || 1200));
+      const retryAfterSeconds = Number(response.headers.get('Retry-After'));
+      const retryDelayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? retryAfterSeconds * 1000
+        : Number(config.liveChunkRateLimitRetryMs || 1200);
+      await sleep(retryDelayMs);
     }
     setNextLiveChunkSequenceNo(chunkSequenceNo);
     throw new Error(lastMessage);

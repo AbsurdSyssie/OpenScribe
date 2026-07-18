@@ -275,7 +275,7 @@ Explain how implementation preserved:
 - provider rules
 - structured-note contract
 
-Add this to daily note in docs/progress.
+Add this to daily note in docs/progress. YYYY/MM/DD Daily Progress Note.md
 ---
 
 ## Escalation rule

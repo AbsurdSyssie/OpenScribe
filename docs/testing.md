@@ -157,10 +157,12 @@ What it does:
 - repeated bad TOTP challenge attempts returning `429 rate_limited`
 - repeated public account-request submissions returning `429 rate_limited`
 - repeated live chunk transcript uploads returning `429 rate_limited`
-- live chunk uploads exceeding the rolling hourly declared-audio budget returning `429 rate_limited`
+- live chunk safeguard using the configurable `10/10 seconds` default
+- positive live hourly duration-budget overrides returning `429 rate_limited`, while the default `0` disables that duplicate audio-duration ceiling
 - repeated whole-file transcript uploads returning `429 rate_limited`
 - whole-file uploads exceeding the rolling hourly upload-size budget returning `429 rate_limited`
-- whole-file uploads exceeding the rolling hourly audio-duration budget returning `429 rate_limited`
+- whole-file route safeguards using configurable `30/minute` and `1000/day` defaults
+- positive whole-file hourly duration-budget overrides returning `429 rate_limited`, while the default `0` disables that duplicate audio-duration ceiling
 - browser and JSON whole-file upload routes sharing the same authenticated rate-limit bucket
 - live chunk upload rate limiting being isolated per authenticated user instead of globally by shared test-client IP
 - live chunk hourly duration budgeting being isolated per authenticated owner
@@ -283,6 +285,8 @@ What it does:
 - generated-document worker processing updates queued documents to `ready`, persists `provider_usage_events`, and logs metadata-only usage counts
 - provider failure tests now verify sanitized provider HTTP/error metadata is persisted without logging prompts or output text
 - generated-document generation route rate limiting per authenticated user
+- generation route safeguards using configurable `30/minute` and `2000/day` defaults
+- owner-facing quota rejection maps internal `quota_exceeded` / `quota_disabled` to safe public `quota_exceeded` contact-your-administrator copy without quota details; browser live upload retries only `rate_limited` with `Retry-After`, never quota failures
 - transcript delete cascade removing generated documents
 
 ### Admin and browser UI

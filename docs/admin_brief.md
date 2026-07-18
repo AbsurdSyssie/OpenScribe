@@ -315,7 +315,7 @@ Access:
 Notes:
 - deleting a user also deletes owned transcript-derived content
 - current user cannot delete self from this page
-- quota management is system-admin-only. It excludes system-admin accounts, the acting admin, and users without normal team membership.
+- quota management is system-admin-only. It excludes system-admin accounts, the acting admin, and users without normal team membership. Normal users and team leaders have no quota policy, usage, remaining-allowance, proactive warning, or reset-time UI; rejected requests show only safe quota-used-up contact-your-administrator copy.
 - quota panel shows four UTC windows: daily/monthly Tokens and daily/monthly Audio. Each shows Used, Reserved, Base, Temporary, Effective, Remaining, and reset time. `NULL` base/effective/remaining is labelled **Unlimited**; zero base/effective is **Disabled**.
 - base-limit, allowance, reset, and active-grant revocation forms require a controlled reason code and non-empty free reason. Free reasons must not contain patient or clinical data.
 - every mutation has a UUID operation id for idempotent browser retry, CSRF protection, and POST/303/GET return to same member panel. No JSON quota-management API exists.

@@ -169,12 +169,13 @@ For users whose onboarding is already complete:
 - TOTP challenge and break-glass recovery routes are rate-limited at `10 per 10 minutes` per client IP
 - public account-request submission is rate-limited at `3 per hour` per client IP
 - whole-file transcription upload routes are rate-limited at:
-  - `1 per 5 seconds`
-  - `100 per day`
+  - `30 per minute` by default
+  - `1000 per day` by default
 - whole-file upload throttling keys to the authenticated user when a valid session can be resolved, with safe fallback to hashed session token or client IP
 - the browser and JSON variants of each route share the same limiter bucket
 - browser rate-limit responses render a generic wait-and-retry page
 - rate-limit hits are recorded in the server logs through `openscribe.security`
+- auth-facing limits remain unchanged when provider-call safeguards are relaxed; provider quotas remain system-admin-only abuse-monitoring metadata and are not shown in normal user or team-leader UI
 
 ## Browser CSRF protection
 

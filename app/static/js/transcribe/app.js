@@ -522,14 +522,22 @@ let statusDetailsHideTimer = null;
         }
       };
 
-      const parseErrorMessage = async (response, fallback) => {
+      const parseErrorResponse = async (response, fallback) => {
         try {
           const payload = await response.json();
-          return payload?.error?.message || fallback;
+          return {
+            code: payload?.error?.code || null,
+            message: payload?.error?.message || fallback,
+            details: payload?.error?.details || null,
+          };
         } catch (_) {
-          return fallback;
+          return { code: null, message: fallback, details: null };
         }
       };
+
+      const parseErrorMessage = async (response, fallback) => (
+        await parseErrorResponse(response, fallback)
+      ).message;
 
       const showCopyToast = () => {
         if (!copyToast) return;
@@ -2534,6 +2542,7 @@ let statusDetailsHideTimer = null;
         fetchWorkspace,
         pollWorkspace,
         scheduleWorkspaceRefreshBurst,
+        parseErrorResponse,
         parseErrorMessage,
         setMicButtons,
         setMicStatus,

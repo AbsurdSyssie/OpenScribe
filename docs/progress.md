@@ -10513,3 +10513,40 @@ Added narrow STT/LLM detail updates and revision-based connection-change actions
 - `.venv/bin/pytest -q tests/test_api.py -k "explicit_credential_draft_commit_failure or inherited_credential_draft_commit_failure or provider_revisions_copy_saved_credentials_before_retired_root_cleanup or llm_no_auth_revision_drops_saved_credential"`: 5 passed.
 - `.venv/bin/pytest -q tests/test_provider_secret_cleanup.py -k "legacy_manually_shared_root_ref"`: 1 passed.
 - `git diff --check`: passed.
+
+## 2026-07-16 - Relaxed provider-call safeguards with admin-only quotas
+
+### Scope
+
+- Relaxed STT/LLM route safeguards above normal expected use while retaining them as configurable infrastructure/abuse safety valves.
+- Kept login, MFA, and public account-request limits unchanged.
+- Made system-admin quotas the primary billable audio/token control without exposing quota policy, consumption, remaining allowance, warnings, or reset times to normal users or team leaders.
+- Kept a default 1 GiB/hour whole-file byte ceiling because audio quotas do not bound upload/storage volume; duplicate rolling audio-duration ceilings now default disabled.
+
+### Checklist
+
+- Target behavior: live `10/10 seconds`; whole-file `30/minute` plus `1000/day`; LLM `30/minute` plus `2000/day`; all configurable by environment.
+- Affected schema: none.
+- Affected modules/endpoints: shared rate-limit declarations, transcript upload budgets, owner-facing application-error mapping, live upload retry behavior, STT upload and LLM generation routes.
+- Affected tests: configurable/default safeguards, disabled duration budgets, 1 GiB byte budget, generic owner-facing quota errors, and retry/no-retry browser behavior.
+- Architecture risks: exact quota metadata must remain system-admin-only; route throttling must remain separate from quota expenditure accounting; upload byte pressure still needs a safety ceiling.
+- Reuse decision: retained SlowAPI/Redis rate-limit buckets, existing metadata-only quota reservations, and structured error envelope; no new limiter or quota persistence path.
+
+### Checkpoints
+
+- Schema: no migration or persistence change.
+- Auth/ownership: auth limits unchanged; authenticated provider-call buckets retain per-user keys; normal users/team leaders gain no quota read surface.
+- Lifecycle/deletion: no transcript, provider-attempt, outbox, retention, or deletion semantic change.
+- Privacy/UI: internal `quota_exceeded` / `quota_disabled` decisions map to generic owner-facing `usage_unavailable` without limits, usage, or reset metadata. Clients retry only `rate_limited` after `Retry-After`.
+- Docs/tests: API, auth, security, setup, live STT, transcript capture, admin, and testing docs updated; focused validation recorded by implementation handoff.
+
+### Defaults
+
+- `LIVE_CHUNK_UPLOAD_RATE_LIMIT=10/10 seconds`
+- `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT=30/minute`
+- `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT=1000/day`
+- `LLM_GENERATION_BURST_RATE_LIMIT=30/minute`
+- `LLM_GENERATION_DAILY_RATE_LIMIT=2000/day`
+- `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`
+- `WHOLE_FILE_HOURLY_UPLOAD_BYTES=1073741824`
+- `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=0`

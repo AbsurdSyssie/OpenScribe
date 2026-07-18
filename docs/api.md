@@ -64,9 +64,12 @@ Browser navigation behavior:
 
 ### User quota administration
 
-Quota administration is browser-only in this first slice; no JSON quota
-management routes exist under `/api/v1`. Full authenticated system administrators
-use CSRF-protected form posts from canonical `/admin` member detail panels:
+Quota policy and usage are abuse-monitoring controls visible only to full
+authenticated system administrators. Normal users and team leaders receive no
+quota dashboard, allowance, remaining-use, warning, or reset-time UI. Quota
+administration is browser-only in this first slice; no JSON quota-management
+routes exist under `/api/v1`. System administrators use CSRF-protected form posts
+from canonical `/admin` member detail panels:
 
 - `POST /admin/users/{user_id}/quotas/limits`
 - `POST /admin/users/{user_id}/quota-grants`
@@ -79,16 +82,22 @@ retry, a controlled reason code, and a nonblank administrative reason. HTML
 responses redirect back to the selected member panel on success; they do not
 expose a JSON management surface.
 
-Provider authorization errors use the normal JSON error envelope when a
-billable application route is denied:
+Provider authorization internally distinguishes:
 
-- `403 quota_disabled`: effective allowance for a required window is zero
-- `429 quota_exceeded`: reservation would exceed a finite daily or monthly
+- `quota_disabled`: effective allowance for a required window is zero
+- `quota_exceeded`: reservation would exceed a finite daily or monthly
   window
 
-Error details contain quota metadata only (resource, period, limits, consumed,
-reserved, request, remaining, and UTC reset time). They contain no provider,
-transcript, prompt, or generated content.
+Those internal errors and their metadata are available only to the quota service
+and system-admin management view. Owner-facing API responses preserve the
+appropriate HTTP status, return the public code `quota_exceeded`, and show
+`Your usage quota has been used up. Contact your administrator for help.` They
+do not expose limits, usage, remaining allowance, period, or reset time.
+
+Normal workspace UI does not render quota metadata. It retries only
+`rate_limited` after `Retry-After`; public `quota_exceeded` responses are not
+retried. Internally, both `quota_exceeded` and `quota_disabled` use that public
+response without exposing quota policy to users.
 
 ### Transcripts
 
@@ -275,6 +284,12 @@ Rate-limited requests return the same envelope with:
 - status `429`
 - code `rate_limited`
 - message `Too many requests`
+- a `Retry-After` response header that clients should honor before retrying
+
+Internal `quota_exceeded` and `quota_disabled` outcomes are provider
+authorization decisions, not route-rate-limit outcomes. Public clients receive
+both as `quota_exceeded` with safe contact-your-administrator copy and no quota
+metadata. Clients must not retry them as transient `rate_limited` responses.
 
 ## Current auth and authorization rules
 
@@ -290,8 +305,8 @@ Rate-limited requests return the same envelope with:
 - completed MFA-enabled users may receive `auth_level = pending_mfa` after password success
 - login is rate-limited at `5 per 5 minutes` per client IP
 - whole-file transcript uploads are rate-limited at:
-  - `1 per 5 seconds`
-  - `100 per day`
+  - `30 per minute` by default via `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT`
+  - `1000 per day` by default via `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT`
 - whole-file upload throttling is shared across:
   - `POST /api/v1/transcripts/{transcript_id}/audio-file`
   - `POST /transcribe/upload`
@@ -574,8 +589,8 @@ Current generation behavior:
   - source version references may be cleared when the source asset is deleted
   - already queued work still has enough context to run
 - generation routes are throttled per authenticated user:
-  - `1 per 5 seconds`
-  - `100 per day`
+  - `30 per minute` by default via `LLM_GENERATION_BURST_RATE_LIMIT`
+  - `2000 per day` by default via `LLM_GENERATION_DAILY_RATE_LIMIT`
 - browser and JSON generation routes share the same authenticated limiter bucket
 - generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
 - generation metadata now carries team/user IDs, provider/model names, statuses, durations, input/output/total token counts, and safe provider error metadata when available
@@ -663,8 +678,8 @@ Current transcript-start behavior:
 Current live chunk-ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks` accepts multipart audio upload for owner-only live chunked transcripts
-- live chunk upload is rate-limited to `1 request/second` per authenticated user/session bucket
-- live chunk queueing also enforces a rolling hourly audio budget per authenticated owner; the default ceiling is `3600` uploaded seconds per hour via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS`
+- live chunk upload is rate-limited to `10 requests/10 seconds` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`
+- the separate rolling hourly audio budget is disabled by default (`LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`) because system-admin quota accounting meters server-measured audio; a positive deployment value re-enables this additional safety ceiling
 - the route currently requires:
   - `audio`
   - `chunk_sequence_no`
@@ -703,9 +718,8 @@ Current whole-file ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
 - whole-file queueing now records both `source_audio_size_bytes` and `source_audio_duration_seconds` on the ingestion job for later upload reporting
-- whole-file queueing enforces a rolling hourly upload budget per authenticated owner:
-- upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `209715200`)
-- source audio duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS` (default `14400`)
+- whole-file queueing keeps a rolling hourly upload-byte safety budget per authenticated owner via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `1073741824`, or 1 GiB/hour)
+- the separate rolling source-duration budget is disabled by default (`WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=0`) because system-admin quota accounting meters server-measured audio; a positive deployment value re-enables it
 - whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row

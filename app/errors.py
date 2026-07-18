@@ -13,6 +13,8 @@ from app.services.security_audit import record_security_event
 
 security_logger = logging.getLogger("openscribe.security")
 
+QUOTA_EXHAUSTED_MESSAGE = "Your usage quota has been used up. Contact your administrator for help."
+
 
 @dataclass(slots=True)
 class AppError(Exception):
@@ -83,6 +85,13 @@ def _security_relevant_validation_issues(exc: RequestValidationError) -> list[di
 
 
 async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
+    if exc.code in {"quota_disabled", "quota_exceeded"}:
+        # Explain the actionable failure without exposing policy or usage metadata.
+        return error_response(
+            exc.status_code,
+            "quota_exceeded",
+            QUOTA_EXHAUSTED_MESSAGE,
+        )
     return error_response(exc.status_code, exc.code, exc.message, exc.details)
 
 

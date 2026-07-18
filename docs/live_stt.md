@@ -95,7 +95,7 @@ Recommended initial constants:
 - forced chunk flush: `30000ms`
 - minimum speech duration before sending: `400ms`
 - minimum spacing between live chunk upload attempts: `1100ms`
-- retry delay after a live chunk `429`: `1200ms`
+- fallback retry delay after a live chunk route-level `429 rate_limited`: `1200ms`; prefer server `Retry-After` when present
 
 These values are intentionally conservative and easy to adjust after real clinical testing.
 
@@ -161,10 +161,10 @@ The live browser path uses existing owner-only routes:
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `GET /api/v1/transcribe/workspace`
 
-The live chunk upload route is rate-limited to `1 request/second` per authenticated user/session bucket.
-Live chunk queueing also enforces a rolling hourly declared-audio budget per authenticated owner, defaulting to `3600` uploaded seconds per hour via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS`.
+The live chunk upload route is rate-limited to `10 requests/10 seconds` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`.
+The separate rolling hourly duration budget defaults disabled via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`, because system-admin quota accounting meters server-measured audio. Set a positive value only when an additional deployment safety ceiling is wanted.
 Each queued live chunk now persists `source_audio_size_bytes` and `declared_duration_seconds` for later usage reporting.
-The browser paces live uploads so request starts are at least `1100ms` apart and retries a `429` response with the same `chunk_sequence_no` before surfacing failure.
+The browser paces live uploads so request starts are at least `1100ms` apart. It retries only structured `rate_limited` responses, honoring `Retry-After` and reusing the same `chunk_sequence_no`. Internal `quota_exceeded` and `quota_disabled` decisions are returned publicly as `quota_exceeded` with safe contact-your-administrator copy; they fail without retry and expose no quota usage/allowance details in normal UI.
 
 No new transcript-content visibility is introduced.
 
@@ -205,7 +205,8 @@ For `live_chunked` sessions:
 
 If a live chunk upload fails:
 
-- transient route-level `429` responses are retried briefly with the same sequence number
+- transient route-level `429 rate_limited` responses are retried briefly with the same sequence number after `Retry-After`
+- public `quota_exceeded` responses are not retried; users see that quota is used up and should contact their administrator while quota policy and usage remain system-admin-only
 - the browser should stop active capture
 - the UI should surface the error clearly
 - the transcript remains owner-only and in its existing backend state

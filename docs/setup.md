@@ -35,6 +35,22 @@ The app and tests use separate databases by default:
 - CSRF secret: local/test uses a development-only fallback when unset; production uses `CSRF_SECRET` or auto-bootstraps a stable Vault KV secret
 - cookie security mode: `auto`
 
+Provider-call safeguards are deployment-configurable and deliberately sit above
+normal use. Defaults are:
+
+- `LIVE_CHUNK_UPLOAD_RATE_LIMIT=10/10 seconds`
+- `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT=30/minute`
+- `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT=1000/day`
+- `LLM_GENERATION_BURST_RATE_LIMIT=30/minute`
+- `LLM_GENERATION_DAILY_RATE_LIMIT=2000/day`
+- `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0` (disabled)
+- `WHOLE_FILE_HOURLY_UPLOAD_BYTES=1073741824` (1 GiB/hour)
+- `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=0` (disabled)
+
+Login, MFA, and public account-request limits remain unchanged. Per-user STT/LLM
+quotas are separate system-admin-only abuse controls; normal user and team-leader
+UI does not show quota policy or consumption.
+
 ## Apply database migrations
 
 ```bash

@@ -2,7 +2,10 @@ import json
 import time
 import io
 import hashlib
+import inspect
+import os
 import subprocess
+import sys
 from math import ceil
 from types import SimpleNamespace
 from dataclasses import replace
@@ -22,7 +25,21 @@ from scripts.reset_unreadable_owner_content import reset_unreadable_owner_conten
 
 from app.errors import AppError
 from app.services import transcripts as transcript_service
-from app.main import CSRF_COOKIE_NAME, api, app as fastapi_app, get_db, require_full_context
+from app.main import (
+    ACCOUNT_REQUEST_RATE_LIMIT,
+    CSRF_COOKIE_NAME,
+    LIVE_CHUNK_UPLOAD_RATE_LIMIT,
+    LLM_GENERATION_BURST_RATE_LIMIT,
+    LLM_GENERATION_DAILY_RATE_LIMIT,
+    LOGIN_RATE_LIMIT,
+    MFA_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT,
+    api,
+    app as fastapi_app,
+    get_db,
+    require_full_context,
+)
 from app.models import (
     AccountRequest,
     AccountRequestStatus,
@@ -152,6 +169,7 @@ from app.services.templates import (
     upsert_personal_template,
 )
 from app.services.transcripts import (
+    LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS,
     WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS,
     WHOLE_FILE_HOURLY_UPLOAD_BYTES,
     create_manual_pii_entity,
@@ -721,6 +739,52 @@ def test_public_account_request_submission_is_rate_limited(client):
 
     assert [response.status_code for response in responses[:3]] == [201, 201, 201]
     assert_error(responses[3], status_code=429, code="rate_limited", message="Too many requests")
+
+
+def _configured_rate_limit_value(decorator) -> str:
+    return inspect.getclosurevars(decorator).nonlocals["limit_value"]
+
+
+def test_rate_limit_defaults_keep_auth_strict_and_relax_provider_actions():
+    assert _configured_rate_limit_value(LOGIN_RATE_LIMIT) == "5/5 minutes"
+    assert _configured_rate_limit_value(MFA_RATE_LIMIT) == "10/10 minutes"
+    assert _configured_rate_limit_value(ACCOUNT_REQUEST_RATE_LIMIT) == "3/hour"
+    assert _configured_rate_limit_value(LIVE_CHUNK_UPLOAD_RATE_LIMIT) == "10/10 seconds"
+    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT) == "30/minute"
+    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT) == "1000/day"
+    assert _configured_rate_limit_value(LLM_GENERATION_BURST_RATE_LIMIT) == "30/minute"
+    assert _configured_rate_limit_value(LLM_GENERATION_DAILY_RATE_LIMIT) == "2000/day"
+
+
+def test_provider_action_rate_limits_accept_environment_overrides():
+    names = [
+        "LIVE_CHUNK_UPLOAD_RATE_LIMIT",
+        "WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT",
+        "WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT",
+        "LLM_GENERATION_BURST_RATE_LIMIT",
+        "LLM_GENERATION_DAILY_RATE_LIMIT",
+    ]
+    overrides = {
+        "LIVE_CHUNK_UPLOAD_RATE_LIMIT": "7/11 seconds",
+        "WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT": "41/minute",
+        "WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT": "1201/day",
+        "LLM_GENERATION_BURST_RATE_LIMIT": "43/minute",
+        "LLM_GENERATION_DAILY_RATE_LIMIT": "2201/day",
+    }
+    script = (
+        "import inspect, json; import app.main as main; "
+        f"names = {names!r}; "
+        "print(json.dumps({name: inspect.getclosurevars(getattr(main, name)).nonlocals['limit_value'] for name in names}))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "APP_ENV": "test", **overrides},
+    )
+
+    assert json.loads(completed.stdout.strip()) == overrides
 
 
 def test_public_account_request_submission_and_duplicate_rules(client, make_user):
@@ -3068,7 +3132,13 @@ def test_sync_stt_quota_rejection_skips_provider_call(
     login(client, email=owner.email, password="password-2")
     transcript_id = client.post("/api/v1/transcripts/start", json={"title": "Quota"}).json()["id"]
     response = client.post(f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file", files={"audio": ("audio.wav", wav, "audio/wav")})
-    assert_error(response, status_code=403, code="quota_disabled", message="Provider usage is disabled for this resource")
+    details = assert_error(
+        response,
+        status_code=403,
+        code="quota_exceeded",
+        message="Your usage quota has been used up. Contact your administrator for help.",
+    )
+    assert details is None
     assert called is False
     assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_id == UUID(transcript_id))) is None
 
@@ -11771,11 +11841,11 @@ def test_generate_output_is_rate_limited_per_authenticated_user(
 
     responses = [
         client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
-        for _ in range(21)
+        for _ in range(31)
     ]
 
-    assert [response.status_code for response in responses[:20]] == [202] * 20
-    assert_error(responses[20], status_code=429, code="rate_limited", message="Too many requests")
+    assert [response.status_code for response in responses[:30]] == [202] * 30
+    assert_error(responses[30], status_code=429, code="rate_limited", message="Too many requests")
 
 
 def test_process_generated_document_logs_usage_metadata(
@@ -14810,19 +14880,16 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
     db_session.commit()
 
     login(client, email="owner-live-one@example.com", password="password-2")
-    first = client.post(
-        f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
-        files={"audio": ("chunk-one.webm", b"raw-audio-1", "audio/webm")},
-        data={"chunk_sequence_no": "1", "declared_duration_seconds": "1"},
-    )
-    assert first.status_code == 202
-
-    second = client.post(
-        f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
-        files={"audio": ("chunk-two.webm", b"raw-audio-2", "audio/webm")},
-        data={"chunk_sequence_no": "2", "declared_duration_seconds": "1"},
-    )
-    assert_error(second, status_code=429, code="rate_limited", message="Too many requests")
+    responses = [
+        client.post(
+            f"/api/v1/transcripts/{transcript_one.id}/audio-chunks",
+            files={"audio": (f"chunk-{sequence_no}.webm", b"raw-audio", "audio/webm")},
+            data={"chunk_sequence_no": str(sequence_no), "declared_duration_seconds": "1"},
+        )
+        for sequence_no in range(1, 12)
+    ]
+    assert [response.status_code for response in responses[:10]] == [202] * 10
+    assert_error(responses[10], status_code=429, code="rate_limited", message="Too many requests")
 
     client.post("/api/v1/auth/logout")
     login(client, email="owner-live-two@example.com", password="password-3")
@@ -16437,47 +16504,41 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
     monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
     owner = make_user(email="owner@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
-    transcript_one = Transcript(
-        owner_user_id=owner.id,
-        team_id=team.id,
-        title="Visit one",
-        ingestion_mode=TranscriptIngestionMode.whole_file,
-        status=TranscriptStatus.ready,
-        retention_days_applied=30,
-        retention_expires_at=utcnow() + timedelta(days=30),
-    )
-    transcript_two = Transcript(
-        owner_user_id=owner.id,
-        team_id=team.id,
-        title="Visit two",
-        ingestion_mode=TranscriptIngestionMode.whole_file,
-        status=TranscriptStatus.ready,
-        retention_days_applied=30,
-        retention_expires_at=utcnow() + timedelta(days=30),
-    )
-    db_session.add_all([transcript_one, transcript_two])
+    transcripts = [
+        Transcript(
+            owner_user_id=owner.id,
+            team_id=team.id,
+            title=f"Visit {upload_no}",
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=utcnow() + timedelta(days=30),
+        )
+        for upload_no in range(1, 32)
+    ]
+    db_session.add_all(transcripts)
     db_session.commit()
 
     login(client, email="owner@example.com", password="password-3")
 
-    first = client.post(
-        f"/api/v1/transcripts/{transcript_one.id}/audio-file",
-        files={"audio": ("recording-one.mp3", b"raw-file-audio-1", "audio/mpeg")},
-    )
-    second = client.post(
-        f"/api/v1/transcripts/{transcript_two.id}/audio-file",
-        files={"audio": ("recording-two.mp3", b"raw-file-audio-2", "audio/mpeg")},
-    )
+    responses = [
+        client.post(
+            f"/api/v1/transcripts/{transcript.id}/audio-file",
+            files={"audio": (f"recording-{upload_no}.mp3", b"raw-file-audio", "audio/mpeg")},
+        )
+        for upload_no, transcript in enumerate(transcripts, start=1)
+    ]
 
-    assert first.status_code == 202
-    assert_error(second, status_code=429, code="rate_limited", message="Too many requests")
+    assert [response.status_code for response in responses[:30]] == [202] * 30
+    assert_error(responses[30], status_code=429, code="rate_limited", message="Too many requests")
 
 
-def test_whole_file_upload_default_caps_match_four_hour_policy():
+def test_audio_upload_default_caps_leave_quota_as_primary_usage_control():
     assert WHOLE_FILE_MAX_UPLOAD_BYTES == 200 * 1024 * 1024
     assert WHOLE_FILE_MAX_DURATION_SECONDS == 4 * 60 * 60
-    assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 200 * 1024 * 1024
-    assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 4 * 60 * 60
+    assert LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS == 0
+    assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 1024 * 1024 * 1024
+    assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 0
     assert AUDIO_FFMPEG_TIMEOUT_SECONDS == 30 * 60
     assert STT_TRANSCRIPTION_TIMEOUT_SECONDS == 4 * 60 * 60
 

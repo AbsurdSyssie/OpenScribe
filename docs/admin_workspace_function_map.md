@@ -20,7 +20,7 @@
 | Team asset defaults? | Read-only team summary; leaders manage team assets; sidebar Global defaults manages platform seeds. |
 | Account creation? | Team Members creates normal team users; separate System admins area manages admin-only accounts. |
 | Member actions? | State-aware menu; consequence-specific confirmation for destructive/high-risk actions. |
-| Quota management? | System-admin-only **Manage quotas** link in selected team's Members panel. URL state is `team_id`, `team_tab=members`, and `member_id`; only eligible normal members resolve. |
+| Quota management? | System-admin-only **Manage quotas** link in selected team's Members panel. URL state is `team_id`, `team_tab=members`, and `member_id`; only eligible normal members resolve. Normal user/team-leader surfaces show no quota policy or usage. |
 | Account requests? | Global review; approval selects team/role; rejection requires reason. |
 | Usage? | Global service view plus dedicated team Usage tab with scoped charts and user aggregate table; metadata only. |
 | Audit? | Safe filters in URL; never sensitive values. |

@@ -1,3 +1,11 @@
+import asyncio
+import json
+
+import pytest
+
+from app.errors import AppError, app_error_handler
+
+
 def test_team_and_user_lists_return_plain_arrays(client, make_user):
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     client.post("/api/v1/auth/login", json={"email": "admin@example.com", "password": "password-1"})
@@ -34,3 +42,29 @@ def test_rate_limit_response_includes_retry_after(client, make_user):
 
     assert responses[-1].status_code == 429
     assert responses[-1].headers["Retry-After"] == "300"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "internal_code"),
+    [(403, "quota_disabled"), (429, "quota_exceeded")],
+)
+def test_quota_errors_explain_exhaustion_without_disclosing_policy_details(status_code, internal_code):
+    response = asyncio.run(
+        app_error_handler(
+            None,
+            AppError(
+                status_code,
+                internal_code,
+                "Internal quota message",
+                {"limit": 100, "used": 100, "reset_at": "2026-07-17T00:00:00Z"},
+            ),
+        )
+    )
+
+    assert response.status_code == status_code
+    assert json.loads(response.body) == {
+        "error": {
+            "code": "quota_exceeded",
+            "message": "Your usage quota has been used up. Contact your administrator for help.",
+        }
+    }

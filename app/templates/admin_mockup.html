@@ -3555,8 +3555,16 @@
                   <div class="meta"><span>{{ selected_quota_member.email }}</span><span>{{ selected_quota_member.team_role.value|title }}</span><span>{{ selected_quota_member.status.value|title }}</span><span>UTC windows</span></div>
                   <p class="text-slate">Administrative reasons are visible in quota history. Do not include patient, transcript, note, prompt, credential, or other confidential content.</p>
                   <div class="usage-table-wrap">
-                    <table class="usage-table"><thead><tr><th>Resource</th><th>Window</th><th>Used</th><th>Reserved</th><th>Base</th><th>Temporary</th><th>Effective</th><th>Remaining</th><th>Reset</th></tr></thead><tbody>
-                    {% for window in quota_detail.windows %}<tr><td>{{ 'Tokens' if window.resource.value == 'tokens' else 'Audio' }}</td><td>{{ 'Daily' if window.period.value == 'daily' else 'Monthly' }}</td><td>{{ window.consumed }}</td><td>{{ window.pending_reserved }}</td><td>{% if window.base_limit is none %}Unlimited{% elif window.base_limit == 0 %}Disabled{% else %}{{ window.base_limit }}{% endif %}</td><td>{% if window.temporary_allowance %}{{ window.temporary_allowance }}{% else %}No temporary allowance{% endif %}</td><td>{% if window.effective_limit is none %}Unlimited{% elif window.effective_limit == 0 %}Disabled{% else %}{{ window.effective_limit }}{% endif %}</td><td>{% if window.remaining is none %}Unlimited{% else %}{{ window.remaining }}{% endif %}</td><td>{{ window.resets_at.strftime('%Y-%m-%d %H:%M UTC') }}</td></tr>{% endfor %}
+                    <table class="usage-table"><thead><tr><th>Resource</th><th>Window</th><th>Used</th><th>In progress</th><th>Effective limit</th><th>Remaining</th><th>Resets</th></tr></thead><tbody>
+                    {% for window in quota_detail.windows %}<tr>
+                      <td><strong>{{ 'AI tokens' if window.resource.value == 'tokens' else 'Transcription audio' }}</strong></td>
+                      <td>{{ 'Daily' if window.period.value == 'daily' else 'Monthly' }}</td>
+                      <td>{{ window.consumed|quota_units(window.resource.value) }}{% if window.effective_limit and window.effective_limit > 0 %}{% set used_pct = (((window.consumed + window.pending_reserved) * 100) / window.effective_limit)|round|int %}<div class="usage-meter" aria-label="{{ used_pct }}% committed"><span data-style-width-pct="{{ 100 if used_pct > 100 else used_pct }}"></span></div>{% endif %}</td>
+                      <td>{{ window.pending_reserved|quota_units(window.resource.value) }}<br><small>Accepted work not yet settled</small></td>
+                      <td>{% if window.effective_limit is none %}<strong>Unlimited</strong><br><small>No abuse ceiling · No temporary allowance</small>{% elif window.effective_limit == 0 %}<strong>Disabled</strong><br><small>No temporary allowance</small>{% else %}<strong>{{ window.effective_limit|quota_units(window.resource.value) }}</strong><br><small>Base {{ window.base_limit|quota_units(window.resource.value) }}{% if window.temporary_allowance %} + {{ window.temporary_allowance|quota_units(window.resource.value) }} allowance{% else %} · No temporary allowance{% endif %}</small>{% endif %}</td>
+                      <td>{% if window.remaining is none %}Unlimited{% else %}{{ window.remaining|quota_units(window.resource.value) }}{% endif %}</td>
+                      <td>{{ window.resets_at.strftime('%d %b %Y, %H:%M UTC') }}</td>
+                    </tr>{% endfor %}
                     </tbody></table>
                   </div>
                   <div class="summary-grid">

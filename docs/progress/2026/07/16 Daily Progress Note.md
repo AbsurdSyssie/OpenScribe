@@ -54,3 +54,41 @@ Updated database, API, setup, testing, admin workspace, usage, DB-testing, and q
 - **Deletion:** active reservations cancel; submitted calls settle conservatively; content/user links become null; transcript children cascade; team deletion removes attempts; outbox metadata is removed with hard-deleted sources.
 - **Provider rules:** existing team/user provider selection remains authoritative. One explicit request maps to one attempt; hidden OpenAI retries are disabled. Token usage settles reported/unknown; audio settles server measurement.
 - **Structured-note contract:** EMIS keys, JSON validation, redaction, and ownership behavior remain unchanged. Hallucination-check quota exhaustion preserves the valid main note and records `skipped_quota`.
+
+---
+
+## Follow-up: relaxed provider-call safeguards
+
+### Scope
+
+Relaxed STT and LLM route throttles now that per-user quota accounting is authoritative. Quotas remain system-admin-only abuse-monitoring metadata; normal users and team leaders receive no quota values, remaining allowance, warnings, or reset times.
+
+### Checklist and checkpoints
+
+- [x] Auth safeguards unchanged: login, MFA, and public account-request limits retain existing values.
+- [x] Live, whole-file, and LLM route safeguards raised and made environment-configurable.
+- [x] Rolling audio-duration rate budgets disabled by default; audio quota remains authoritative.
+- [x] Whole-file byte ceiling retained and raised to 1 GiB/hour because quota does not bound upload/storage bytes.
+- [x] Internal quota failures map to generic owner-facing `usage_unavailable` without quota details.
+- [x] Live client retries only `rate_limited` and honors `Retry-After`.
+- [x] Admin quota table uses readable token/audio units and distinguishes accepted in-progress work.
+- [x] No schema, ownership, deletion, provider-selection, or structured-note contract change.
+
+### Files and documentation
+
+- Runtime/UI: `app/main.py`, `app/errors.py`, `app/services/quotas.py`, `app/services/transcripts.py`, `app/static/js/transcribe/app.js`, `app/static/js/transcribe/media.js`, `app/templates/admin_mockup.html`, `app/web/templates.py`, `.env.example`.
+- Tests: focused API/error/admin UI coverage for new defaults, public error sanitization, limiter behavior, and admin formatting.
+- Docs: API, auth, setup, security, live/transcript capture, testing, DB testing, admin workspace, and usage references updated.
+
+### Risks / assumptions
+
+- Request ceilings remain emergency infrastructure safeguards, not expenditure controls.
+- Administrators are responsible for configuring finite quota policy where desired; nullable quota values remain unlimited by contract.
+- Exact quota state remains available only through system-admin quota management.
+
+### Verification
+
+- Focused limiter/error/admin UI matrix: **13 passed**, 625 deselected.
+- Broader quota service and admin UI regression: **28 passed**, 223 deselected.
+- JavaScript syntax, Python compile, and `git diff --check`: passed.
+- Existing Starlette/httpx deprecation warning only.

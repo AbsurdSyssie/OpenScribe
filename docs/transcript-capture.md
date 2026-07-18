@@ -292,8 +292,8 @@ Implemented now for manual browser testing:
 - the workspace also blocks new-session creation while the latest session is still transcribing in the backend
 - the browser shell now surfaces blocked new-session attempts as toasts instead of a persistent sidebar warning, so the session rail does not shift during recording state changes
 - whole-file upload routes are throttled to reduce authenticated abuse:
-  - `1 per 5 seconds`
-  - `100 per day`
+  - `30 per minute` by default
+  - `1000 per day` by default
 - the browser and JSON whole-file upload routes share the same authenticated limiter bucket
 - browser state-changing routes now require a CSRF token alongside the normal session cookie
 - the workspace shows recent owner transcripts in the sidebar and opens the latest or explicitly selected transcript
@@ -397,8 +397,8 @@ Implemented now for manual browser testing:
 - the initial server-rendered follow-up history now uses the same copy/delete action hooks as the JS-refreshed cards, so those controls still work before the first workspace refresh
 - template and quick-action save paths now translate raced unique-index collisions back into targeted 409 conflict responses, including concurrent version-number races during save
 - generation routes are rate-limited per authenticated user:
-  - `1 per 5 seconds`
-  - `100 per day`
+  - `30 per minute` by default
+  - `2000 per day` by default
 - metadata-only usage logging now records generation event type, IDs, provider/model names, durations, and separate input/output/total token counts when the provider returns them
 - the same metadata is now persisted into `provider_usage_events` for later per-user and per-team usage analysis
 - generated-document rows now also retain per-run input/output/total token counts, durations, and safe provider error metadata for owner-visible debugging without storing prompts or note text
@@ -510,9 +510,10 @@ Implemented now for `live_chunked`:
 - multipart `audio`
 - `chunk_sequence_no`
 - optional `declared_duration_seconds`
-- `1 request/second` rate limiting per authenticated user/session bucket
-- browser-side live upload pacing at `1100ms` between request starts plus short same-sequence retry on route-level `429`
-- rolling hourly audio budgeting per authenticated owner, default `3600` uploaded seconds/hour
+- `10 requests/10 seconds` default rate limiting per authenticated user/session bucket
+- browser-side live upload pacing at `1100ms` between request starts plus same-sequence retry only for route-level `429 rate_limited`, honoring `Retry-After`
+- no retry for public `quota_exceeded` responses backed by internal `quota_exceeded` / `quota_disabled` decisions; normal UI tells the user their quota is used up and to contact their administrator, without displaying policy, usage, allowance, or reset metadata
+- rolling hourly audio budgeting is available as an extra deployment safety ceiling but defaults disabled (`LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`) because system-admin quotas meter measured audio
 - owner-only enforcement
 - rejection when the transcript ingestion mode is not `live_chunked`
 - queued ingestion job response
@@ -555,9 +556,9 @@ Implemented now for `whole_file`:
 - queued whole-file jobs now persist:
   - `source_audio_size_bytes`
   - `source_audio_duration_seconds`
-- rolling hourly whole-file upload budgets per authenticated owner:
-  - upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES`
-  - source duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS`
+- rolling hourly whole-file safeguards per authenticated owner:
+  - upload bytes via `WHOLE_FILE_HOURLY_UPLOAD_BYTES`, default 1 GiB/hour
+  - optional source duration via `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS`, default disabled (`0`)
 - rejection at queue time when no active team STT selection exists
 - queue-time snapshot of the resolved STT provider execution settings so later team-provider changes do not retarget already-submitted audio
 - New Celery task payloads contain only `job_id`; workers read queued source audio from the stored Vault ref, while legacy `audio_b64` messages are accepted during rollout and moved into Vault-backed source storage before processing

@@ -413,6 +413,12 @@ The current implementation uses DB-backed opaque sessions. Redis-backed server-s
   - login: `5 per 5 minutes`
   - TOTP challenge: `10 per 10 minutes`
   - public account requests: `3 per hour`
+  - live STT chunks: `10 per 10 seconds` by default
+  - whole-file STT: `30 per minute` and `1000 per day` by default
+  - LLM generation: `30 per minute` and `2000 per day` by default
+- auth limits remain fixed; provider-call safeguards are deployment-configurable safety valves set well above normal use because authoritative per-user quotas now meter billable STT/LLM work
+- quota policy, usage, remaining allowance, proactive warnings, and reset times are system-admin-only abuse-monitoring metadata; normal user and team-leader UI does not expose them
+- route-level `rate_limited` responses include `Retry-After` and may be retried after that delay; internal `quota_exceeded` and `quota_disabled` outcomes are exposed as public `quota_exceeded` with safe contact-your-administrator copy, no quota metadata, and no retry
 - rate-limit hits are persisted in `security_audit_events` and may also be logged through the server logger `openscribe.security`
 - HTML and JSON login routes share the same login bucket
 - HTML and JSON TOTP challenge routes share the same MFA bucket
@@ -420,10 +426,10 @@ The current implementation uses DB-backed opaque sessions. Redis-backed server-s
 
 Current limitations:
 
-- the implemented limiter is IP-based, not account-based
+- auth/public limiter groups are IP-based; provider-call safeguards use authenticated user keys with hashed-session/IP fallback when user resolution is unavailable
 - rotating-IP attacks are still a future hardening area
 - rate-limit events are persisted in `security_audit_events`, not a separate security-events table
-- `Retry-After` is not yet emitted on 429 responses
+- route safeguards remain defense-in-depth rather than expenditure accounting; changing them does not change system-admin quota policy
 
 ## Transcript retry-audio deletion
 

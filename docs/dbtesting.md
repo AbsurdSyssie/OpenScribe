@@ -548,8 +548,10 @@ Expected:
 
 - duplicate identical reservation is idempotent; a changed payload returns
   `409 provider_attempt_idempotency_conflict`
-- a zero effective window returns `403 quota_disabled`; finite exhaustion
-  returns `429 quota_exceeded`
+- quota service internally returns `403 quota_disabled` for a zero effective
+  window and `429 quota_exceeded` for finite exhaustion; the public application
+  error boundary preserves status but maps both to public `quota_exceeded` with
+  safe contact-your-administrator copy and no quota metadata
 - concurrent reservations cannot both exceed same user allowance
 - expired reserved attempts cancel; expired submitted token attempts settle as
   `unknown` against their conservative reservation; audio settles measured units

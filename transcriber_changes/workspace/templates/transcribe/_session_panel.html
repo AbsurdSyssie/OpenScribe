@@ -22,13 +22,31 @@
         {% if transcript.ingestion_mode.value == 'whole_file' and sidebar_state == 'recording' %}
           {% set sidebar_state = 'idle' %}
         {% endif %}
-        {% if sidebar_state == 'ready' %}
-        <span class="flex-shrink-0 px-1.5 py-0.5 bg-teal-pale text-teal-deep text-xs font-medium rounded" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+        {% if sidebar_state == 'ready' and transcript.has_transcript_content %}
+          {% set status_tone = 'complete' %}
+          {% set status_icon = 'check' %}
+          {% set status_label = 'Transcription complete' %}
         {% elif sidebar_state == 'failed' %}
-        <span class="flex-shrink-0 px-1.5 py-0.5 bg-coral/15 text-coral text-xs font-medium rounded" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+          {% set status_tone = 'failed' %}
+          {% set status_icon = 'x' %}
+          {% set status_label = 'Transcription failed' %}
+        {% elif sidebar_state == 'transcribing' %}
+          {% set status_tone = 'transcribing' %}
+          {% set status_icon = 'audio-waveform' %}
+          {% set status_label = 'Transcribing' %}
         {% else %}
-        <span class="flex-shrink-0 px-1.5 py-0.5 bg-white text-slate text-xs font-medium rounded border border-stone" data-sidebar-status="{{ transcript.id }}">{{ sidebar_state }}</span>
+          {% set status_tone = 'waiting' %}
+          {% set status_icon = 'minus' %}
+          {% set status_label = 'Waiting' %}
         {% endif %}
+        <span
+          class="session-status-icon session-status-icon--{{ status_tone }}"
+          data-sidebar-status="{{ transcript.id }}"
+          aria-label="{{ status_label }}"
+          title="{{ status_label }}">
+          <i data-lucide="{{ status_icon }}" aria-hidden="true"></i>
+          <span class="sr-only">{{ status_label }}</span>
+        </span>
       </div>
       <div class="flex items-center gap-2 mt-1">
         <span class="text-xs text-slate">{{ transcript.created_at.strftime('%H:%M') }}</span>

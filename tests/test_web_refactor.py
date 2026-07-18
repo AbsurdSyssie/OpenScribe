@@ -258,6 +258,7 @@ def test_transcribe_note_pills_use_compact_24_hour_timestamps():
 def test_home_and_template_editor_reuse_shared_visual_tokens():
     home_template = Path("app/templates/home.html").read_text()
     template_editor = Path("app/templates/template_editor.html").read_text()
+    template_editor_workspace = Path("app/templates/_template_editor_workspace.html").read_text()
     home_css = Path("app/static/css/home.css").read_text()
     home2_css = Path("app/static/css/home2.css").read_text()
     template_editor_css = Path("app/static/css/template-editor.css").read_text()
@@ -289,14 +290,40 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     assert ".action-bar" in template_editor_css
     assert ".template-list-item" in template_editor_css
     assert "button, .button-link" not in template_editor_css
-    assert "class=\"btn-secondary\"" in template_editor
-    assert "class=\"btn-primary\"" in template_editor
+    assert "class=\"btn-secondary\"" in template_editor_workspace
+    assert "class=\"btn-primary\"" in template_editor_workspace
     assert "--accent-warm" in tokens_css
     assert "--shadow-inset" in tokens_css
     assert "--radius-xl" in tokens_css
     assert ".btn-primary" in components_css
     assert ".toast-container" in components_css
     assert "body.home2" in home2_css
+
+
+def test_template_editor_extracts_reusable_body_without_nested_page_shell():
+    template_editor = Path("app/templates/template_editor.html").read_text()
+    workspace = Path("app/templates/_template_editor_workspace.html").read_text()
+
+    assert '{% include "_template_editor_workspace.html" %}' in template_editor
+    assert 'class="app-shell"' not in workspace
+    assert 'class="sidebar"' not in workspace
+    assert '_csrf_script.html' not in workspace
+    assert '<script' not in workspace
+    assert '{% include "_template_editor_script.html" %}' in template_editor
+    assert workspace.count('name="is_active"') == 1
+    assert "embedded_template_editor|default(false)" in workspace
+    assert "template_editor_read_only|default(false)" in workspace
+
+
+def test_reusable_template_editor_has_editable_and_read_only_contracts():
+    workspace = Path("app/templates/_template_editor_workspace.html").read_text()
+
+    assert 'data-template-editor-read-only' in workspace
+    assert '<article class="template-form template-preview"' in workspace
+    assert '<form method="post" action="{{ editor_action }}" class="template-form">' in workspace
+    assert "template_editor_read_only_action_url" in workspace
+    assert "Copy to My Templates" in workspace
+    assert 'name="{{ field_name }}" value="{{ field_value }}"' in workspace
 
 
 def test_primary_hover_matches_transcribe_create_button_colors():

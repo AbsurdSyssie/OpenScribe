@@ -18,7 +18,7 @@
           {% if stt_selection %}
           <form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current conversation speech service?">
             <input type="hidden" name="purpose" value="conversation">
-            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_view" value="workspace">
             <input type="hidden" name="return_tab" value="ai-services">
             <button class="btn-ghost-sm" type="submit">Clear conversation</button>
           </form>
@@ -26,7 +26,7 @@
           {% if stt_dictation_selection %}
           <form method="post" action="/home/stt-selection/clear" data-confirm-submit="Remove current dictation speech service?">
             <input type="hidden" name="purpose" value="post_consultation_dictation">
-            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_view" value="workspace">
             <input type="hidden" name="return_tab" value="ai-services">
             <button class="btn-ghost-sm" type="submit">Clear dictation</button>
           </form>
@@ -37,7 +37,7 @@
       <div data-service-body="stt" hidden>
         {% if selectable_stt_configs %}
         <form method="post" action="/home/stt-selection" data-stt-selection-form>
-          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_view" value="workspace">
           <input type="hidden" name="return_tab" value="ai-services">
           <label>Use for
             <select name="purpose">
@@ -75,7 +75,7 @@
         <div class="setting-actions">
           {% if llm_selection %}
           <form method="post" action="/home/llm-selection/clear" data-confirm-submit="Remove current writing assistant?">
-            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_view" value="workspace">
             <input type="hidden" name="return_tab" value="ai-services">
             <button class="btn-ghost-sm" type="submit">Clear</button>
           </form>
@@ -86,7 +86,7 @@
       <div data-service-body="llm" hidden>
         {% if selectable_llm_configs %}
         <form method="post" action="/home/llm-selection" data-llm-selection-form>
-          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_view" value="workspace">
           <input type="hidden" name="return_tab" value="ai-services">
           <label>Provider
             <select name="llm_config_id" data-llm-config-select required>
@@ -123,7 +123,7 @@
         <div class="setting-actions">
           {% if deidentification_selection %}
           <form method="post" action="/home/deidentification-selection/clear" data-confirm-submit="Clear selection and use built-in fallback?">
-            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_view" value="workspace">
             <input type="hidden" name="return_tab" value="ai-services">
             <button class="btn-ghost-sm" type="submit">Clear</button>
           </form>
@@ -134,7 +134,7 @@
       <div data-service-body="deidentification" hidden>
         {% if selectable_deidentification_providers %}
         <form method="post" action="/home/deidentification-selection">
-          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_view" value="workspace">
           <input type="hidden" name="return_tab" value="ai-services">
           <label>Provider
             <select name="provider_id" required>
@@ -160,7 +160,7 @@
         <div class="setting-actions">
           {% if clinical_nlp_selection %}
           <form method="post" action="/home/clinical-nlp-selection/clear" data-confirm-submit="Disable clinical NLP?">
-            <input type="hidden" name="return_view" value="settings">
+            <input type="hidden" name="return_view" value="workspace">
             <input type="hidden" name="return_tab" value="ai-services">
             <button class="btn-ghost-sm" type="submit">Disable</button>
           </form>
@@ -171,7 +171,7 @@
       <div data-service-body="clinical-nlp" hidden>
         {% if selectable_clinical_nlp_providers %}
         <form method="post" action="/home/clinical-nlp-selection">
-          <input type="hidden" name="return_view" value="settings">
+          <input type="hidden" name="return_view" value="workspace">
           <input type="hidden" name="return_tab" value="ai-services">
           <label>Endpoint
             <select name="provider_id" required>

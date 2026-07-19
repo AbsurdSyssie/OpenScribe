@@ -26,6 +26,12 @@ export function createAudioCaptureController({
   reportMicIssue,
   confirmBeforeStartRecording,
 }) {
+  let workspaceRecordingEventState = 'stopped';
+  const dispatchWorkspaceRecordingEvent = (state) => {
+    if (state === workspaceRecordingEventState && state !== 'failed') return;
+    workspaceRecordingEventState = state === 'started' ? 'started' : 'stopped';
+    document.dispatchEvent(new CustomEvent(`openscribe:recording-${state}`));
+  };
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   const MIC_VISUALIZER_BAR_COUNT = 12;
   const VAD_SILENCE_PROMPT_MS = 30000;
@@ -327,6 +333,7 @@ export function createAudioCaptureController({
     cleanupBatchVad();
     resetMicVisualizer();
     setMicButtons(false);
+    dispatchWorkspaceRecordingEvent('stopped');
   };
 
   const armLiveChunkTimeout = () => {
@@ -947,6 +954,7 @@ export function createAudioCaptureController({
       }
       setMicButtons(false);
       setVisibleStatus('failed');
+      dispatchWorkspaceRecordingEvent('failed');
       setSessionProgress('Recording stopped because this part could not be uploaded. No later audio was recorded after the failed part.');
       return;
     }
@@ -1000,9 +1008,11 @@ export function createAudioCaptureController({
       beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
+      dispatchWorkspaceRecordingEvent('started');
       startLiveListeningLoop();
     } catch (error) {
       resetRecordingState();
+      dispatchWorkspaceRecordingEvent('failed');
       reportMicIssue?.(error);
       setMicStatus('Microphone access was denied, or live speech detection could not start.', 'error');
     }
@@ -1063,6 +1073,7 @@ export function createAudioCaptureController({
       beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
       setMicButtons(true);
+      dispatchWorkspaceRecordingEvent('started');
       batchVadInstance.start();
       setMicVisualizerVadActive(false);
       setMicStatus('Listening for speech. Voice-only capture keeps buffered speech until you stop.');
@@ -1071,6 +1082,7 @@ export function createAudioCaptureController({
       markVadSpeechEndedOrIdle();
     } catch (error) {
       resetRecordingState();
+      dispatchWorkspaceRecordingEvent('failed');
       reportMicIssue?.(error);
       setMicStatus('Microphone access was denied or unavailable.', 'error');
     }
@@ -1104,6 +1116,7 @@ export function createAudioCaptureController({
       }, 0);
     } catch (_) {
       resetRecordingState();
+      dispatchWorkspaceRecordingEvent('failed');
       setMicStatus('Could not finish voice-only microphone capture.', 'error');
     }
   };

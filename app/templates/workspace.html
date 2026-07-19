@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ workspace_page_title|default('Workspace') }} · OpenScribe</title>
+  <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
+  <link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">
+  <link rel="stylesheet" href="/static/css/workspace.css?v=20260719-library-rail-flush">
+  {% if active_workspace_section == 'scribe' %}{% include "transcribe/_head_assets.html" %}<link rel="stylesheet" href="/static/css/transcribe-mobile.css?v=20260506-mobile">{% else %}<link rel="stylesheet" href="/static/css/settings.css?v=20260718-template-library">{% endif %}
+  {% if active_workspace_section == 'smart-phrases' %}<link rel="stylesheet" href="/static/css/settings-smart-phrases.css?v=20260718-library-editor">{% endif %}
+  <script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>
+</head>
+<body class="workspace-page{% if active_workspace_section == 'scribe' %} workspace-page--scribe h-screen overflow-hidden{% endif %}{% if active_workspace_section in ['templates', 'quick-actions', 'smart-phrases'] %} workspace-page--library{% endif %}" data-workspace-section="{{ active_workspace_section }}" data-active-transcript-id="{{ active_transcript_id or '' }}">
+  <div class="workspace-shell" data-workspace-shell
+    {% if active_workspace_section == 'scribe' %}
+    data-workspace-scribe-shell
+    data-workspace-endpoint="{{ workspace_endpoint }}"
+    data-workspace-stream-endpoint="{{ workspace_stream_endpoint }}"
+    data-route-base="{{ transcribe_route_base }}"
+    data-layout-state="normal"
+    {% endif %}>
+    {% include "workspace/_sidebar.html" %}{% include "workspace/_mobile_header.html" %}
+    {% if active_workspace_section == 'scribe' %}
+      {% include "transcribe/_workspace.html" %}
+    {% else %}
+      <main class="workspace-main"><div class="workspace-section workspace-section--settings settings-content">
+        {% if message %}<div class="flash {{ message_kind|default('success') }}">{{ message }}</div>{% endif %}
+        {% set settings_tab = active_workspace_section %}
+        {% if active_workspace_section == 'account' %}{% include "settings/_account.html" %}
+        {% elif active_workspace_section == 'preferences' %}{% include "settings/_preferences.html" %}
+        {% elif active_workspace_section == 'templates' %}{% include "settings/_template_library.html" %}
+        {% elif active_workspace_section == 'quick-actions' %}{% include "settings/_quick_action_library.html" %}
+        {% elif active_workspace_section == 'smart-phrases' %}{% include "settings/_smart_phrase_library.html" %}
+        {% elif active_workspace_section == 'ai-services' %}{% include "settings/_ai_services.html" %}
+        {% elif active_workspace_section == 'team-members' %}{% include "settings/_team_members.html" %}
+        {% elif active_workspace_section == 'account-requests' %}{% include "settings/_account_requests.html" %}{% endif %}
+      </div></main>
+    {% endif %}
+  </div>
+  {% if active_workspace_section != 'scribe' %}<form id="new-session-form" method="post" action="{{ new_consultation_url|default('/transcribe/sessions') }}" hidden><input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}"></form>{% endif %}
+  {% if active_workspace_section == 'scribe' %}{% include "transcribe/_shell_extras.html" %}{% else %}<script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>{% include "_template_editor_script.html" %}{% include "_csrf_script.html" %}{% endif %}
+  <script type="module" src="/static/js/workspace/app.js?v=20260719-sidebar-visual-fix"></script>
+  {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/settings/app.js?v=20260719-workspace"></script>{% endif %}
+  {% if active_workspace_section == 'smart-phrases' %}<script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>{% endif %}
+</body></html>

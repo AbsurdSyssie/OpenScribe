@@ -22,18 +22,32 @@ from ..services.auth import create_session, revoke_sessions_for_user, revoke_tru
 from ..services.security_audit import record_security_event
 from ..services.templates import fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service
 from ..stt_normalization import normalize_stt_language
+from ..web.workspace import (
+    WORKSPACE_ACCOUNT,
+    WORKSPACE_ACCOUNT_REQUESTS,
+    WORKSPACE_AI_SERVICES,
+    WORKSPACE_LIBRARY_SECTIONS,
+    WORKSPACE_PREFERENCES,
+    WORKSPACE_QUICK_ACTIONS,
+    WORKSPACE_SMART_PHRASES,
+    WORKSPACE_TEAM_MEMBERS,
+    WORKSPACE_TEAM_SECTIONS,
+    WORKSPACE_TEMPLATES,
+    WORKSPACE_SECTION_PATHS,
+    render_workspace,
+)
 
 
 def _settings_template_url(*, scope: str, template_id: str) -> str:
-    return f"/settings?{urlencode({'tab': 'templates', 'scope': scope, 'template_id': template_id})}"
+    return f"/workspace/library/templates?{urlencode({'scope': scope, 'template_id': template_id})}"
 
 
 def _settings_quick_action_url(*, scope: str, quick_action_id: str) -> str:
-    return f"/settings?{urlencode({'tab': 'quick-actions', 'scope': scope, 'quick_action_id': quick_action_id})}"
+    return f"/workspace/library/quick-actions?{urlencode({'scope': scope, 'quick_action_id': quick_action_id})}"
 
 
 def _is_settings_return(return_view: str) -> bool:
-    return _home_return_view_value(return_view) == "settings"
+    return _home_return_view_value(return_view) in {"settings", "workspace"}
 
 
 def _render_home_page(
@@ -150,64 +164,181 @@ def home_page(
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(
     request: Request,
-    message: str | None = None,
-    message_kind: str = "success",
-    queued_transcript_id: str | None = None,
-    transcribe_tab: str | None = None,
     tab: str | None = None,
-    modal: str | None = None,
     scope: str | None = None,
     template_id: str | None = None,
     quick_action_id: str | None = None,
-    team_template_id: str | None = None,
-    personal_template_id: str | None = None,
-    team_quick_action_id: str | None = None,
-    personal_quick_action_id: str | None = None,
-    db: Session = Depends(get_db),
+    smart_phrase_id: str | None = None,
 ):
-    valid_template_id = template_id == "new"
-    if template_id and not valid_template_id:
-        try:
-            UUID(template_id)
-            valid_template_id = True
-        except ValueError:
-            valid_template_id = False
-    if valid_template_id and scope == "personal":
-        personal_template_id = template_id
-        team_template_id = None
-    elif valid_template_id and scope == "team":
-        team_template_id = template_id
-        personal_template_id = None
-    valid_quick_action_id = quick_action_id == "new"
-    if quick_action_id and not valid_quick_action_id:
-        try:
-            UUID(quick_action_id)
-            valid_quick_action_id = True
-        except ValueError:
-            valid_quick_action_id = False
-    if valid_quick_action_id and scope == "personal":
-        personal_quick_action_id = quick_action_id
-        team_quick_action_id = None
-    elif valid_quick_action_id and scope == "team":
-        team_quick_action_id = quick_action_id
-        personal_quick_action_id = None
-    return _render_home_page(
+    destinations = {
+        "account": "/workspace/account",
+        "preferences": "/workspace/preferences",
+        "templates": "/workspace/library/templates",
+        "quick-actions": "/workspace/library/quick-actions",
+        "smart-phrases": "/workspace/library/smart-phrases",
+        "ai-services": "/workspace/team/ai-services",
+        "team-members": "/workspace/team/members",
+        "team-management": "/workspace/team/members",
+        "account-requests": "/workspace/team/account-requests",
+    }
+    destination = destinations.get(tab or "", "/workspace/preferences")
+    params: dict[str, str] = {}
+    if tab == "templates" and scope in {"personal", "team"}:
+        editor_id = _valid_workspace_editor_id(template_id)
+        if editor_id:
+            params = {"scope": scope, "template_id": editor_id}
+    elif tab == "quick-actions" and scope in {"personal", "team"}:
+        editor_id = _valid_workspace_editor_id(quick_action_id)
+        if editor_id:
+            params = {"scope": scope, "quick_action_id": editor_id}
+    elif tab == "smart-phrases":
+        editor_id = _valid_workspace_editor_id(smart_phrase_id)
+        if editor_id:
+            params = {"smart_phrase_id": editor_id}
+    if params:
+        destination = f"{destination}?{urlencode(params)}"
+    return RedirectResponse(
+        url=destination,
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
+def _valid_workspace_editor_id(value: str | None) -> str | None:
+    if value == "new":
+        return value
+    if not value:
+        return None
+    try:
+        UUID(value)
+    except ValueError:
+        return None
+    return value
+
+
+def _workspace_section_page(
+    request: Request,
+    db: Session,
+    *,
+    section: str,
+    scope: str | None = None,
+    template_id: str | None = None,
+    quick_action_id: str | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if section in WORKSPACE_LIBRARY_SECTIONS and context.user.team_id is None:
+        return HTMLResponse("Workspace section unavailable", status_code=status.HTTP_403_FORBIDDEN)
+    if section in WORKSPACE_TEAM_SECTIONS and (
+        context.user.team_id is None or context.user.team_role is not TeamRole.leader
+    ):
+        return HTMLResponse("Workspace section unavailable", status_code=status.HTTP_403_FORBIDDEN)
+    if section == WORKSPACE_ACCOUNT:
+        safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+        return render_workspace(
+            request,
+            db,
+            current_user=context.user,
+            active_section=section,
+            section_context={"message": message, "message_kind": safe_message_kind},
+        )
+    valid_scope = scope if scope in {"personal", "team"} else None
+    valid_template_id = _valid_workspace_editor_id(template_id)
+    valid_quick_action_id = _valid_workspace_editor_id(quick_action_id)
+    legacy_response = _render_home_page(
         request,
         db,
-        message=message,
-        message_kind=message_kind,
-        queued_transcript_id=queued_transcript_id,
-        transcribe_tab=transcribe_tab,
-        tab=tab,
-        modal=modal,
-        team_template_id=team_template_id,
-        personal_template_id=personal_template_id,
-        team_quick_action_id=team_quick_action_id,
-        personal_quick_action_id=personal_quick_action_id,
+        message=None,
+        message_kind="success",
+        queued_transcript_id=None,
+        transcribe_tab=None,
+        tab=section,
+        modal=None,
+        team_template_id=valid_template_id if valid_scope == "team" else None,
+        personal_template_id=valid_template_id if valid_scope == "personal" else None,
+        team_quick_action_id=valid_quick_action_id if valid_scope == "team" else None,
+        personal_quick_action_id=valid_quick_action_id if valid_scope == "personal" else None,
         template_name="settings.html",
-        home_page_route="/settings",
+        home_page_route=WORKSPACE_SECTION_PATHS[section],
         home_return_view="settings",
     )
+    return render_workspace(
+        request,
+        db,
+        current_user=context.user,
+        active_section=section,
+        section_context=dict(legacy_response.context),
+        status_code=legacy_response.status_code,
+    )
+
+
+@app.get("/workspace/account", response_class=HTMLResponse)
+def workspace_account_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    db: Session = Depends(get_db),
+):
+    return _workspace_section_page(
+        request,
+        db,
+        section=WORKSPACE_ACCOUNT,
+        message=message,
+        message_kind=message_kind,
+    )
+
+
+@app.get("/workspace/preferences", response_class=HTMLResponse)
+def workspace_preferences_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_PREFERENCES)
+
+
+@app.get("/workspace/library/templates", response_class=HTMLResponse)
+def workspace_templates_page(
+    request: Request,
+    scope: str | None = None,
+    template_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_TEMPLATES, scope=scope, template_id=template_id
+    )
+
+
+@app.get("/workspace/library/quick-actions", response_class=HTMLResponse)
+def workspace_quick_actions_page(
+    request: Request,
+    scope: str | None = None,
+    quick_action_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_QUICK_ACTIONS, scope=scope, quick_action_id=quick_action_id
+    )
+
+
+@app.get("/workspace/library/smart-phrases", response_class=HTMLResponse)
+def workspace_smart_phrases_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_SMART_PHRASES)
+
+
+@app.get("/workspace/team/ai-services", response_class=HTMLResponse)
+def workspace_ai_services_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_AI_SERVICES)
+
+
+@app.get("/workspace/team/members", response_class=HTMLResponse)
+def workspace_team_members_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_TEAM_MEMBERS)
+
+
+@app.get("/workspace/team/account-requests", response_class=HTMLResponse)
+def workspace_account_requests_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_ACCOUNT_REQUESTS)
 
 
 def _render_account_error(request: Request, db: Session, context, exc: AppError):
@@ -219,23 +350,19 @@ def _render_account_error(request: Request, db: Session, context, exc: AppError)
         request=request,
         details={"category": "account", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code},
     )
-    return render_home(
+    return render_workspace(
         request,
         db,
         current_user=context.user,
-        message=exc.message,
-        message_kind="error",
+        active_section=WORKSPACE_ACCOUNT,
+        section_context={"message": exc.message, "message_kind": "error"},
         status_code=exc.status_code,
-        active_home_tab="account",
-        template_name="settings.html",
-        home_page_route="/settings",
-        home_return_view="settings",
     )
 
 
 def _account_success_redirect(message: str) -> RedirectResponse:
-    query = urlencode({"tab": "account", "message": message, "message_kind": "success"})
-    return RedirectResponse(url=f"/settings?{query}", status_code=status.HTTP_303_SEE_OTHER)
+    query = urlencode({"message": message, "message_kind": "success"})
+    return RedirectResponse(url=f"/workspace/account?{query}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _rotate_account_session(request: Request, db: Session, context, *, reason: str) -> RedirectResponse:
@@ -1372,7 +1499,7 @@ def home_delete_team_quick_action(
             transcribe_return_tab=transcribe_tab or None,
         )
     if _is_settings_return(return_view):
-        return RedirectResponse(url="/settings?tab=quick-actions", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/workspace/library/quick-actions", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,
@@ -1636,7 +1763,7 @@ def home_delete_personal_quick_action(
             transcribe_return_tab=transcribe_tab or None,
         )
     if _is_settings_return(return_view):
-        return RedirectResponse(url="/settings?tab=quick-actions", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/workspace/library/quick-actions", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,

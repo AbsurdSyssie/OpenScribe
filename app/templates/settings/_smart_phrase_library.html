@@ -10,7 +10,7 @@
     <aside class="smart-phrase-library-sidebar" aria-label="Smart phrase library">
       <div class="smart-phrase-library-sidebar__header">
         <div><span class="settings-kicker">My Library</span><h2>Smart phrases</h2></div>
-        <a class="btn-primary-sm" href="/settings?tab=smart-phrases&amp;smart_phrase_id=new">New</a>
+        <a class="btn-primary-sm" href="/workspace/library/smart-phrases?smart_phrase_id=new">New</a>
       </div>
 
       <label class="smart-phrase-library-search">
@@ -23,7 +23,7 @@
         <div class="smart-phrase-library-group__header"><h3 id="personal-smart-phrase-heading">Personal</h3><span data-smart-phrase-count>{{ personal_smart_phrases|length }}</span></div>
         <div class="smart-phrase-library-list" data-smart-phrase-list>
           {% for phrase in personal_smart_phrases|sort(attribute='trigger') %}
-          {% set selection_url = '/settings?tab=smart-phrases&smart_phrase_id=' ~ phrase.id %}
+          {% set selection_url = '/workspace/library/smart-phrases?smart_phrase_id=' ~ phrase.id %}
           <div class="smart-phrase-library-row{% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %} is-current{% endif %}" data-smart-phrase-row data-smart-phrase-record="{{ {'id': phrase.id|string, 'trigger': phrase.trigger, 'expansion_text': phrase.expansion_text, 'description': phrase.description or ''}|tojson|forceescape }}">
             <a class="smart-phrase-library-row__select" href="{{ selection_url }}" {% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %}aria-current="page"{% endif %}>
               <strong>/{{ phrase.trigger }}</strong>
@@ -44,7 +44,7 @@
 
     <div class="smart-phrase-library-detail">
       {% if can_open_smart_phrase %}
-      <a class="smart-phrase-library-back" href="/settings?tab=smart-phrases"><i data-lucide="arrow-left"></i>Back to smart phrases</a>
+      <a class="smart-phrase-library-back" href="/workspace/library/smart-phrases"><i data-lucide="arrow-left"></i>Back to smart phrases</a>
       <div class="smart-phrase-editor-workspace">
         <header class="smart-phrase-editor-header">
           <div>
@@ -73,7 +73,7 @@
           <div class="smart-phrase-editor-actions">
             <button type="submit" class="btn-primary-sm" data-smart-phrase-save>Save phrase</button>
             {% if selected_smart_phrase %}<button type="button" class="btn-ghost-sm" data-smart-phrase-duplicate>Duplicate</button><button type="button" class="btn-danger-sm" data-smart-phrase-delete>Delete</button>{% endif %}
-            <a class="btn-ghost-sm" href="/settings?tab=smart-phrases">Cancel</a>
+            <a class="btn-ghost-sm" href="/workspace/library/smart-phrases">Cancel</a>
           </div>
           <p class="smart-phrase-editor-status" data-smart-phrase-status role="status" aria-live="polite"></p>
         </form>

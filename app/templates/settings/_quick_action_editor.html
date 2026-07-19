@@ -16,12 +16,12 @@
     <div class="setting-row"><div><h3>{{ current_action.name }}</h3><p>{{ current_action.description or 'No description.' }}</p></div><span class="asset-status-pill {{ 'asset-status-pill--enabled' if current_action.is_active else 'asset-status-pill--disabled' }}">{{ 'Enabled' if current_action.is_active else 'Disabled' }}</span></div>
     <div class="field-stack"><label>Quick action text</label><div class="quick-action-preview__text">{{ current_version.prompt_text if current_version else '' }}</div></div>
     <p class="form-hint">Team quick actions are read-only for team members. Team leaders can edit them.</p>
-    <form method="post" action="/home/team-quick-actions/{{ current_action.id }}/fork"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button class="btn-primary" type="submit"><i data-lucide="copy-plus"></i>Copy to Personal</button></form>
+    <form method="post" action="/home/team-quick-actions/{{ current_action.id }}/fork"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button class="btn-primary" type="submit"><i data-lucide="copy-plus"></i>Copy to Personal</button></form>
   </article>
   {% else %}
   <form class="template-form" method="post" action="/home/{{ 'team' if is_team_editor else 'personal' }}-quick-actions" data-dirty-guard>
     <input type="hidden" name="quick_action_id" value="{{ current_action.id if current_action else '' }}">
-    <input type="hidden" name="return_view" value="settings">
+    <input type="hidden" name="return_view" value="workspace">
     <input type="hidden" name="return_tab" value="quick-actions">
     <section class="settings-card field-stack">
       <label>Quick action name<input name="name" maxlength="255" required value="{{ editor_values.get('name', '') if editor_values else (current_action.name if current_action else '') }}"></label>
@@ -29,7 +29,7 @@
       <label>Quick action text<textarea name="prompt_text" rows="12" required>{{ editor_values.get('prompt_text', '') if editor_values else (current_version.prompt_text if current_version else '') }}</textarea></label>
       <label class="toggle-row"><input type="checkbox" name="is_active" value="true" {% if editor_values and editor_values.get('is_active') or not editor_values and (not current_action or current_action.is_active) %}checked{% endif %}>Active</label>
     </section>
-    <div class="action-bar"><a class="btn-ghost" href="/settings?tab=quick-actions">Cancel</a><button class="btn-primary" type="submit">{{ 'Save team quick action' if is_team_editor else 'Save personal quick action' }}</button></div>
+    <div class="action-bar"><a class="btn-ghost" href="/workspace/library/quick-actions">Cancel</a><button class="btn-primary" type="submit">{{ 'Save team quick action' if is_team_editor else 'Save personal quick action' }}</button></div>
   </form>
   {% endif %}
 </div>

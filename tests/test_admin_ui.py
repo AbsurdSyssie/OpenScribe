@@ -703,15 +703,18 @@ def test_home2_blocks_system_admins_from_user_home(client, make_user):
 
 def test_settings_requires_auth_and_blocks_system_admins(client, make_user):
     anonymous = client.get("/settings", follow_redirects=False)
-    assert anonymous.status_code == 303
-    assert anonymous.headers["location"] == "/login"
+    assert anonymous.status_code == 307
+    assert anonymous.headers["location"] == "/workspace/preferences"
+    assert client.get(anonymous.headers["location"], follow_redirects=False).headers["location"] == "/login"
 
     make_user(email="settings-admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": "settings-admin@example.com", "password": "password-1"}, follow_redirects=False)
     admin = client.get("/settings", follow_redirects=False)
-
-    assert admin.status_code == 303
-    assert admin.headers["location"] == "/admin"
+    assert admin.status_code == 307
+    assert admin.headers["location"] == "/workspace/preferences"
+    admin_workspace = client.get(admin.headers["location"], follow_redirects=False)
+    assert admin_workspace.status_code == 303
+    assert admin_workspace.headers["location"] == "/admin"
 
 
 def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_user):
@@ -720,38 +723,42 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     leader = make_user(email="settings-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
-    user_page = client.get("/settings")
+    user_page = client.get("/workspace/preferences")
 
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
-    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in user_page.text
     assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-template-library">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
-    assert '<div class="settings-nav__group"><p>My Library</p>' in user_page.text
-    assert '<a href="/settings?tab=templates"' in user_page.text
-    assert '<i data-lucide="files"></i>My Templates</a>' in user_page.text
-    assert '<a href="/settings?tab=quick-actions"' in user_page.text
-    assert '<i data-lucide="zap"></i>My quick actions</a>' in user_page.text
-    assert '<span class="settings-mobile-menu__group">My Library</span>' in user_page.text
+    assert '<div class="workspace-nav__group"><p data-sidebar-full>My Library</p>' in user_page.text
+    assert 'href="/workspace/library/templates"' in user_page.text
+    assert 'data-lucide="files"' in user_page.text
+    assert 'My Templates' in user_page.text
+    assert 'href="/workspace/library/quick-actions"' in user_page.text
+    assert 'data-lucide="zap"' in user_page.text
+    assert 'data-workspace-drawer-toggle' in user_page.text
+    assert 'data-settings-menu' not in user_page.text
     assert "Smart phrases" in user_page.text
-    assert user_page.text.index('href="/settings?tab=account"') < user_page.text.index('href="/settings?tab=preferences"')
-    assert user_page.text.index('href="/settings?tab=quick-actions"') < user_page.text.index('href="/settings?tab=smart-phrases"')
+    assert user_page.text.index('href="/workspace/account"') < user_page.text.index('href="/workspace/preferences"')
+    assert user_page.text.index('href="/workspace/library/quick-actions"') < user_page.text.index('href="/workspace/library/smart-phrases"')
     assert "Open scribe" not in user_page.text
     assert "AI services" not in user_page.text
     assert "Team members" not in user_page.text
     assert "Account requests" not in user_page.text
-    assert '<a href="/transcribe" aria-label="Return to Scribe"><i data-lucide="feather" aria-hidden="true"></i>Return to Scribe</a>' in user_page.text
+    assert 'data-back-to-scribe' in user_page.text
+    assert "Back to Scribe" in user_page.text
+    assert 'href="/transcribe"' not in user_page.text
     assert "Return home" not in user_page.text
 
     client.post("/logout", follow_redirects=False)
     client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
-    leader_page = client.get("/settings?tab=team-members")
+    leader_page = client.get("/workspace/team/members")
 
     assert leader_page.status_code == 200
-    assert 'href="/settings?tab=ai-services"' in leader_page.text
-    assert 'href="/settings?tab=team-members"' in leader_page.text
-    assert 'href="/settings?tab=account-requests"' in leader_page.text
+    assert 'href="/workspace/team/ai-services"' in leader_page.text
+    assert 'href="/workspace/team/members"' in leader_page.text
+    assert 'href="/workspace/team/account-requests"' in leader_page.text
     assert 'data-settings-panel="team-members"' in leader_page.text
     assert f'action="/home/users/{member.id}/suspend"' in leader_page.text
     assert f'action="/home/users/{member.id}/reset-mfa"' in leader_page.text
@@ -774,14 +781,14 @@ def test_settings_normal_user_sees_same_team_templates_read_only(
     make_template(scope=TemplateScope.team, team=other_team, actor=other_leader, name="Other clinic note")
     client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get("/settings?tab=templates")
+    page = client.get("/workspace/library/templates")
 
     assert page.status_code == 200
     assert "Shared clinic note" in page.text
     assert "Other clinic note" not in page.text
     assert "freeform · Enabled · Read only" in page.text
     assert 'aria-label="New team template"' not in page.text
-    assert f"/settings?tab=templates&amp;scope=team&amp;template_id={shared_template.id}" in page.text
+    assert f"/workspace/library/templates?scope=team&amp;template_id={shared_template.id}" in page.text
     assert f'action="/home/team-templates/{shared_template.id}/duplicate"' not in page.text
     assert f'action="/home/team-templates/{shared_template.id}/delete"' not in page.text
     assert f'action="/home/team-templates/{shared_template.id}/fork"' in page.text
@@ -795,7 +802,7 @@ def test_settings_normal_user_sees_same_team_templates_read_only(
             "description": "",
             "prompt_text": "Changed prompt",
             "mode": "freeform",
-            "return_view": "settings",
+            "return_view": "workspace",
             "return_tab": "templates",
             "is_active": "true",
         },
@@ -817,23 +824,24 @@ def test_settings_templates_use_context_sidebar_and_embedded_personal_editor(
     personal = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Personal consultation")
     client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
 
-    library = client.get("/settings?tab=templates")
-    selected = client.get(f"/settings?tab=templates&scope=personal&template_id={personal.id}")
+    library = client.get("/workspace/library/templates")
+    selected = client.get(f"/workspace/library/templates?scope=personal&template_id={personal.id}")
 
     assert library.status_code == 200
-    assert 'data-settings-menu aria-controls="settings-mobile-menu" aria-expanded="false"' in library.text
+    assert 'data-workspace-drawer-toggle' in library.text
+    assert 'data-settings-menu' not in library.text
     assert 'class="template-library-sidebar" aria-label="Template library"' in library.text
     assert 'id="personal-template-heading">Personal</h3>' in library.text
     assert 'id="team-template-heading">Team</h3>' in library.text
     assert "Select a template" in library.text
     assert selected.status_code == 200
     assert 'class="template-library-shell has-selection"' in selected.text
-    assert 'class="template-library-back" href="/settings?tab=templates"' in selected.text
-    assert f'href="/settings?tab=templates&amp;scope=personal&amp;template_id={personal.id}" aria-current="page"' in selected.text
+    assert 'class="template-library-back" href="/workspace/library/templates"' in selected.text
+    assert f'href="/workspace/library/templates?scope=personal&amp;template_id={personal.id}" aria-current="page"' in selected.text
     assert 'data-template-editor' in selected.text
     assert 'action="/home/personal-templates"' in selected.text
     assert 'name="template_id" value="%s"' % personal.id in selected.text
-    assert 'name="return_view" value="settings"' in selected.text
+    assert 'name="return_view" value="workspace"' in selected.text
     assert 'class="app-shell"' not in selected.text
 
 
@@ -849,7 +857,7 @@ def test_settings_team_template_selection_is_read_only_for_member_and_editable_f
     shared = make_template(scope=TemplateScope.team, team=team, actor=leader, name="Shared examination", prompt_text="Team-only config text")
 
     client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
-    member_page = client.get(f"/settings?tab=templates&scope=team&template_id={shared.id}")
+    member_page = client.get(f"/workspace/library/templates?scope=team&template_id={shared.id}")
 
     assert member_page.status_code == 200
     assert 'data-template-editor-read-only' in member_page.text
@@ -860,15 +868,15 @@ def test_settings_team_template_selection_is_read_only_for_member_and_editable_f
     assert ">Copy to Personal</button>" in member_page.text
     forked = client.post(
         f"/home/team-templates/{shared.id}/fork",
-        data={"return_view": "settings", "return_tab": "templates"},
+        data={"return_view": "workspace", "return_tab": "templates"},
         follow_redirects=False,
     )
     assert forked.status_code == 303
-    assert forked.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+    assert forked.headers["location"].startswith("/workspace/library/templates?scope=personal&template_id=")
 
     client.post("/logout", follow_redirects=False)
     client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
-    leader_page = client.get(f"/settings?tab=templates&scope=team&template_id={shared.id}")
+    leader_page = client.get(f"/workspace/library/templates?scope=team&template_id={shared.id}")
 
     assert leader_page.status_code == 200
     assert 'data-template-editor-read-only' not in leader_page.text
@@ -876,11 +884,11 @@ def test_settings_team_template_selection_is_read_only_for_member_and_editable_f
     assert 'aria-label="New team template"' in leader_page.text
     duplicated = client.post(
         f"/home/team-templates/{shared.id}/duplicate",
-        data={"return_view": "settings", "return_tab": "templates"},
+        data={"return_view": "workspace", "return_tab": "templates"},
         follow_redirects=False,
     )
     assert duplicated.status_code == 303
-    assert duplicated.headers["location"].startswith("/settings?tab=templates&scope=team&template_id=")
+    assert duplicated.headers["location"].startswith("/workspace/library/templates?scope=team&template_id=")
 
 
 def test_settings_template_save_and_validation_stay_in_embedded_workspace(
@@ -894,11 +902,11 @@ def test_settings_template_save_and_validation_stay_in_embedded_workspace(
 
     invalid = client.post(
         "/home/personal-templates",
-        data={"name": " Unsaved name ", "description": "Keep this description", "prompt_text": " ", "mode": "freeform", "return_view": "settings", "return_tab": "templates"},
+        data={"name": " Unsaved name ", "description": "Keep this description", "prompt_text": " ", "mode": "freeform", "return_view": "workspace", "return_tab": "templates"},
     )
     saved = client.post(
         "/home/personal-templates",
-        data={"name": "Embedded template", "prompt_text": "Write note", "mode": "freeform", "return_view": "settings", "return_tab": "templates", "is_active": "true"},
+        data={"name": "Embedded template", "prompt_text": "Write note", "mode": "freeform", "return_view": "workspace", "return_tab": "templates", "is_active": "true"},
         follow_redirects=False,
     )
 
@@ -909,15 +917,15 @@ def test_settings_template_save_and_validation_stay_in_embedded_workspace(
     assert 'value=" Unsaved name "' in invalid.text
     assert 'value="Keep this description"' in invalid.text
     assert saved.status_code == 303
-    assert saved.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+    assert saved.headers["location"].startswith("/workspace/library/templates?scope=personal&template_id=")
     saved_id = saved.headers["location"].rsplit("=", 1)[1]
     duplicated = client.post(
         f"/home/personal-templates/{saved_id}/duplicate",
-        data={"return_view": "settings", "return_tab": "templates"},
+        data={"return_view": "workspace", "return_tab": "templates"},
         follow_redirects=False,
     )
     assert duplicated.status_code == 303
-    assert duplicated.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+    assert duplicated.headers["location"].startswith("/workspace/library/templates?scope=personal&template_id=")
 
 
 def test_settings_template_selection_does_not_expose_cross_team_template(
@@ -933,7 +941,7 @@ def test_settings_template_selection_does_not_expose_cross_team_template(
     foreign = make_template(scope=TemplateScope.team, team=other_team, actor=other_leader, name="Foreign secret template", prompt_text="Foreign prompt")
     client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get(f"/settings?tab=templates&scope=team&template_id={foreign.id}")
+    page = client.get(f"/workspace/library/templates?scope=team&template_id={foreign.id}")
 
     assert page.status_code == 200
     assert "Foreign secret template" not in page.text
@@ -946,10 +954,11 @@ def test_settings_account_section_renders_owner_profile_and_security_forms(clien
     member = make_user(email="account-settings@example.com", full_name="Account Owner", password="Password123", team=team)
     client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
 
-    page = client.get("/settings?tab=account")
+    page = client.get("/workspace/account")
 
     assert page.status_code == 200
-    assert 'href="/settings?tab=account" aria-current="page"' in page.text
+    assert 'href="/workspace/account"' in page.text
+    assert 'aria-current="page"' in page.text
     assert 'data-settings-panel="account"' in page.text
     assert 'action="/settings/account/name"' in page.text
     assert 'value="Account Owner"' in page.text
@@ -968,7 +977,7 @@ def test_settings_account_updates_name_and_audits_without_profile_values(client,
     response = client.post("/settings/account/name", data={"full_name": "  After   Name  "}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/settings?tab=account")
+    assert response.headers["location"].startswith("/workspace/account")
     db_session.refresh(member)
     assert member.full_name == "After Name"
     event = db_session.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.action == "account_name_changed"))
@@ -1070,19 +1079,17 @@ def test_settings_quick_action_editor_and_invalid_tab_fallback(client, make_team
     user = make_user(email="settings-modal@example.com", password="password-1", team=team, team_role=TeamRole.user)
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
-    editor = client.get("/settings?tab=quick-actions&scope=personal&quick_action_id=new")
-    fallback = client.get("/settings?tab=overview")
+    editor = client.get("/workspace/library/quick-actions?scope=personal&quick_action_id=new")
+    fallback = client.get("/settings?tab=overview", follow_redirects=False)
 
     assert editor.status_code == 200
     assert 'data-quick-action-editor' in editor.text
     assert 'action="/home/personal-quick-actions"' in editor.text
-    assert 'name="return_view" value="settings"' in editor.text
+    assert 'name="return_view" value="workspace"' in editor.text
     assert 'name="return_tab" value="quick-actions"' in editor.text
     assert 'class="modal-shell is-open"' not in editor.text
-    assert fallback.status_code == 200
-    assert 'href="/settings?tab=account" aria-current="page"' in fallback.text
-    assert 'data-settings-panel="account"' in fallback.text
-    assert 'data-settings-panel="account" hidden' not in fallback.text
+    assert fallback.status_code == 307
+    assert fallback.headers["location"] == "/workspace/preferences"
 
 
 def test_settings_return_view_helpers_are_closed_and_url_backed():
@@ -1090,6 +1097,9 @@ def test_settings_return_view_helpers_are_closed_and_url_backed():
     assert home_page_route_from_return_view("settings") == "/settings"
     assert home_template_name_from_return_view("settings") == "settings.html"
     assert home_redirect_url(return_view="settings", return_tab="templates") == "/settings?tab=templates"
+    assert home_return_view_value("workspace") == "workspace"
+    assert home_page_route_from_return_view("workspace") == "/workspace/preferences"
+    assert home_redirect_url(return_view="workspace", return_tab="templates") == "/workspace/library/templates"
     assert home_return_view_value("https://evil.example") == ""
     assert home_page_route_from_return_view("https://evil.example") == "/home"
     assert home_template_name_from_return_view("https://evil.example") == "home.html"
@@ -1105,7 +1115,7 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     db_session.commit()
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get("/settings")
+    page = client.get("/workspace/preferences")
     assert "Use team default" in page.text
     assert '<details class="settings-advanced">' in page.text
     assert "<summary>Advanced</summary>" in page.text
@@ -1123,7 +1133,7 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
             "preferred_model_name": "gpt-4.1-mini",
             "note_generation_length": "short",
             "llm_detail_level": "concise",
-            "return_view": "settings",
+            "return_view": "workspace",
             "return_tab": "preferences",
         },
         follow_redirects=False,
@@ -1138,11 +1148,11 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
 
     cleared = client.post(
         "/home/llm-preference/clear",
-        data={"return_view": "settings", "return_tab": "preferences"},
+        data={"return_view": "workspace", "return_tab": "preferences"},
         follow_redirects=False,
     )
     assert cleared.status_code == 303
-    assert cleared.headers["location"] == "/settings?tab=preferences"
+    assert cleared.headers["location"] == "/workspace/preferences"
     assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
 
 
@@ -1163,7 +1173,7 @@ def test_settings_visible_style_form_drops_stale_model_override(
     db_session.commit()
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get("/settings?tab=preferences")
+    page = client.get("/workspace/preferences")
     visible_preferences = page.text.split('<details class="settings-advanced">', 1)[0]
     assert '<input type="hidden" name="preferred_model_name" value="">' in visible_preferences
 
@@ -1173,7 +1183,7 @@ def test_settings_visible_style_form_drops_stale_model_override(
             "preferred_model_name": "",
             "note_generation_length": "long",
             "llm_detail_level": "detailed",
-            "return_view": "settings",
+            "return_view": "workspace",
             "return_tab": "preferences",
         },
         follow_redirects=False,
@@ -1204,7 +1214,7 @@ def test_settings_leader_llm_policy_preserves_active_selection(client, make_team
     make_llm_selection(config=active_config, actor=leader, allowed_models_json=["model-b"], model_name_override="model-b")
     client.post("/login", data={"email": leader.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get("/settings?tab=ai-services")
+    page = client.get("/workspace/team/ai-services")
 
     assert page.status_code == 200
     assert f'value="{active_config.id}" data-default-model="model-a" selected' in page.text
@@ -3844,7 +3854,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-lucide="upload"' in page.text
     assert "Create a transcript root first" not in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
-    assert 'data-route-base="/transcribe"' in page.text
+    assert 'data-route-base="/workspace"' in page.text
     assert 'data-workspace-stream-endpoint="' in page.text
     assert 'src="/static/vendor/onnxruntime-web/1.22.0/ort.wasm.min.js"' in page.text
     assert 'src="/static/vendor/vad-web/0.0.29/bundle.min.js"' in page.text
@@ -3853,9 +3863,10 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-session-panel-close' in page.text
     assert 'data-primary-sidebar' in page.text
     assert 'data-sidebar-resize' in page.text
-    assert 'href="/settings"' in page.text
-    assert 'data-sidebar-settings-link' in page.text
-    assert 'aria-label="Open settings"' in page.text
+    assert 'href="/workspace/account"' in page.text
+    assert 'href="/settings"' not in page.text
+    assert 'aria-label="Workspace navigation"' in page.text
+    assert "My Library" in page.text
     assert 'src="/static/js/transcribe/app.js?v=20260719-partial-render-v6"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
@@ -4333,7 +4344,8 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
     assert "/static/css/transcribe.css?v=20260719-session-panel-align" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
-    assert "/static/js/transcribe/mobile.js" in page.text
+    assert "/static/js/workspace/app.js" in page.text
+    assert "/static/js/transcribe/mobile.js" not in page.text
     assert 'data-workspace-endpoint="' in page.text
 
 
@@ -4380,7 +4392,9 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert 'href="/home"' in page.text
+    assert 'href="/home"' not in page.text
+    assert 'href="/workspace/account"' in page.text
+    assert 'href="/workspace/preferences"' in page.text
     assert 'data-workspace-settings-link' in page.text
     assert 'justify-between border-b border-stone bg-white px-4 gap-3' in page.text
     assert f'data-settings-url="/home/templates/editor?scope=personal&template_id=' in page.text

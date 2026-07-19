@@ -111,6 +111,7 @@ from ..services.templates import (
     list_personal_quick_actions as list_personal_quick_actions_service,
     list_personal_templates as list_personal_templates_service,
     list_team_quick_actions as list_team_quick_actions_service,
+    list_team_quick_actions_for_member as list_team_quick_actions_for_member_service,
     list_team_templates as list_team_templates_service,
     list_team_templates_for_member as list_team_templates_for_member_service,
 )
@@ -1191,6 +1192,8 @@ def render_home(
     home_return_view: str = "",
     transcribe_return_tab: str | None = None,
     template_editor_scope: str | None = None,
+    template_editor_form_values: dict[str, object] | None = None,
+    quick_action_editor_form_values: dict[str, object] | None = None,
     home_style_variant: str = "",
 ):
     is_manager = current_user.is_system_admin or current_user.team_role is TeamRole.leader
@@ -1268,7 +1271,11 @@ def render_home(
         else list_team_templates_for_member_service(db, current_user)
     )
     personal_templates = list_personal_templates_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
-    team_quick_actions = list_team_quick_actions_service(db, current_user) if is_manager else []
+    team_quick_actions = (
+        list_team_quick_actions_service(db, current_user)
+        if is_manager
+        else list_team_quick_actions_for_member_service(db, current_user)
+    )
     personal_quick_actions = list_personal_quick_actions_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
     personal_smart_phrases = list_personal_smart_phrases_service(db, current_user) if not current_user.is_system_admin and current_user.team_id is not None else []
     selected_team_template = next((template for template in team_templates if str(template.id) == selected_team_template_id), None)
@@ -1347,6 +1354,8 @@ def render_home(
         "home_page_route": home_page_route,
         "home_return_view": home_return_view,
         "template_editor_scope": template_editor_scope,
+        "template_editor_form_values": template_editor_form_values,
+        "quick_action_editor_form_values": quick_action_editor_form_values,
         "team_template": selected_team_template,
         "personal_template": selected_personal_template,
         "team_quick_action": selected_team_quick_action,

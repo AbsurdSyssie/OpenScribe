@@ -6,7 +6,8 @@
   <title>Settings · OpenScribe</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">
-  <link rel="stylesheet" href="/static/css/settings.css?v=20260718-library-advanced">
+  <link rel="stylesheet" href="/static/css/settings.css?v=20260718-template-library">
+  <link rel="stylesheet" href="/static/css/settings-smart-phrases.css?v=20260718-library-editor">
 </head>
 <body class="settings-page">
   {% set settings_tab = active_settings_tab|default(active_home_tab|default('preferences')) %}
@@ -33,7 +34,7 @@
       <div class="settings-sidebar__footer"><a href="/transcribe" aria-label="Return to Scribe"><i data-lucide="feather" aria-hidden="true"></i>Return to Scribe</a><form method="post" action="/logout"><button type="submit"><i data-lucide="log-out"></i>Sign out</button></form></div>
     </aside>
     <main class="settings-main">
-
+      <button class="settings-mobile-nav" type="button" data-settings-menu aria-controls="settings-mobile-menu" aria-expanded="false"><i data-lucide="menu"></i>Settings menu</button>
       <nav id="settings-mobile-menu" class="settings-mobile-menu" hidden aria-label="Settings sections">{% include "settings/_nav.html" %}</nav>
       {% if message %}<div class="flash {{ message_kind }}">{{ message }}</div>{% endif %}
       {% if recovery_temporary_password %}<section class="settings-recovery panel"><div><h2>Temporary password</h2><p>Copy now. It will not display again.</p></div><input value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password"><button class="btn-primary-sm" type="button" data-recovery-copy>Copy password</button><span data-recovery-copy-status></span></section>{% endif %}
@@ -43,7 +44,6 @@
         {% if not current_user.is_system_admin and current_user.team_id %}{% include "settings/_assets.html" %}{% endif %}
         {% if is_manager %}{% include "settings/_ai_services.html" %}{% include "settings/_team_members.html" %}{% include "settings/_account_requests.html" %}{% endif %}
       </div>
-      {% include "settings/_quick_action_modals.html" %}
     </main>
   </div>
   <script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>
@@ -57,10 +57,22 @@
     document.querySelectorAll('[data-stt-selection-form]').forEach((form) => { const config = form.querySelector('[data-stt-config-select]'); const model = form.querySelector('[data-stt-model-select]'); const sync = () => { if (!config || !model) return; const option = config.options[config.selectedIndex]; const models = JSON.parse(option?.dataset.models || '[]'); const selected = model.dataset.selectedValue || ''; model.innerHTML = '<option value="">Use endpoint default</option>'; models.forEach((value) => { const item = new Option(value, value); model.add(item); }); model.value = models.includes(selected) ? selected : (models.includes(option?.dataset.defaultModel) ? option.dataset.defaultModel : ''); }; config?.addEventListener('change', sync); sync(); });
     document.querySelectorAll('[data-llm-selection-form]').forEach((form) => { const select = form.querySelector('[data-llm-config-select]'); const sync = () => { const id = select?.value; form.querySelectorAll('[data-llm-model-group]').forEach((group) => { const active = group.dataset.llmModelGroup === id; group.hidden = !active; group.querySelectorAll('input').forEach((input) => { input.disabled = !active; }); }); }; select?.addEventListener('change', sync); sync(); });
     document.querySelector('[data-recovery-copy]')?.addEventListener('click', async () => { const input = document.querySelector('[data-recovery-temp-password]'); const status = document.querySelector('[data-recovery-copy-status]'); try { await navigator.clipboard.writeText(input.value); status.textContent = 'Copied'; } catch (_) { input.select(); document.execCommand('copy'); status.textContent = 'Copied'; } });
+    document.querySelectorAll('[data-dirty-guard]').forEach((form) => {
+      const snapshot = () => {
+        const data = new FormData(form);
+        data.delete('_csrf_token');
+        return new URLSearchParams(data).toString();
+      };
+      const initial = snapshot();
+      let submitting = false;
+      form.addEventListener('submit', () => { submitting = true; });
+      window.addEventListener('beforeunload', (event) => { if (submitting || snapshot() === initial) return; event.preventDefault(); event.returnValue = ''; });
+    });
   })();
   </script>
   <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>
-  <script type="module" src="/static/js/home/smart-phrases.js?v=20260502-api-csrf"></script>
+  <script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>
+  {% include "_template_editor_script.html" %}
   {% include "_csrf_script.html" %}
 </body>
 </html>

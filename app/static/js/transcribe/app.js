@@ -1,6 +1,6 @@
-import { attachTranscribeActions } from './actions.js?v=20260718-note-hover-delete-datetime';
+import { attachTranscribeActions } from './actions.js?v=20260719-workspace-switch-save';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-selection-center';
+import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
 import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260718-note-pill-datetime';
@@ -10,6 +10,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
+import { keepSessionRailItemVisible, reconcileSessionRailItems, sortSessionRailItems } from './sessionRail.js?v=20260719-preserve-loaded';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -276,6 +277,14 @@ let statusDetailsHideTimer = null;
       let sessionRailHasMore = false;
       let sessionRailLoading = false;
       let sessionRailPaginationStarted = false;
+      const sessionRailPageSize = 12;
+      let sessionRailRenderVersion = 0;
+      let sessionRailTranscriptToReveal = null;
+      let lastSessionRailRegionSignature = null;
+      let lastPiiRegionSignature = null;
+      let lastDictationRegionSignature = null;
+      let lastNoteRegionSignature = null;
+      let lastFollowupRegionSignature = null;
       let workspaceRefreshBurstTimeoutIds = [];
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
       const liveVadBundleVersion = '0.0.29';
@@ -844,6 +853,37 @@ let statusDetailsHideTimer = null;
           }
         })();
         return followupSaveInFlight;
+      };
+
+      const persistFollowupEditsUntilDrained = async ({ keepalive = false } = {}) => {
+        let savedDocument = null;
+        while (true) {
+          if (followupSaveTimer) {
+            window.clearTimeout(followupSaveTimer);
+            followupSaveTimer = null;
+          }
+          if (followupSaveInFlight) {
+            followupSaveQueued = true;
+            savedDocument = await followupSaveInFlight;
+            if (!savedDocument) return null;
+            continue;
+          }
+          if (!followupEditorDirty) return savedDocument;
+          savedDocument = await persistFollowupEditsSilently({ keepalive });
+          if (!savedDocument) return null;
+        }
+      };
+
+      const persistPendingEditorsBeforeWorkspaceSwitch = async () => {
+        if (noteEditorDirty || noteSaveInFlight) {
+          const savedNote = await persistNoteEditsUntilDrained({ keepalive: false });
+          if (!savedNote && noteEditorDirty) return false;
+        }
+        if (followupEditorDirty || followupSaveInFlight) {
+          const savedFollowup = await persistFollowupEditsUntilDrained({ keepalive: false });
+          if (!savedFollowup && followupEditorDirty) return false;
+        }
+        return true;
       };
 
       function scheduleNoteAutosave({ immediate = false } = {}) {
@@ -2581,6 +2621,14 @@ let statusDetailsHideTimer = null;
 
       const setSidebarStatus = (node, statusLabel, ingestionMode, hasTranscriptContent = false) => {
         const descriptor = sidebarStatusDescriptor(statusLabel, ingestionMode, hasTranscriptContent);
+        if (
+          node.dataset.statusTone === descriptor.tone
+          && node.dataset.statusIcon === descriptor.icon
+          && node.dataset.statusLabel === descriptor.label
+        ) return;
+        node.dataset.statusTone = descriptor.tone;
+        node.dataset.statusIcon = descriptor.icon;
+        node.dataset.statusLabel = descriptor.label;
         node.className = `session-status-icon session-status-icon--${descriptor.tone}`;
         node.setAttribute('aria-label', descriptor.label);
         node.title = descriptor.label;
@@ -2683,19 +2731,70 @@ let statusDetailsHideTimer = null;
         return wrapper;
       };
 
-      const sortSessionRailItems = (items) => {
-        return [...items].sort((left, right) => {
-          const leftTime = Date.parse(left.created_at || '');
-          const rightTime = Date.parse(right.created_at || '');
-          const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
-          const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
-          if (safeRightTime !== safeLeftTime) return safeRightTime - safeLeftTime;
-          return String(right.id || '').localeCompare(String(left.id || ''));
+      const workspaceRegionSignature = (value) => JSON.stringify(value);
+
+      const generatedDocumentRegionData = (document) => ({
+        id: document?.id || '',
+        status: document?.status || '',
+        updatedAt: document?.updated_at || '',
+        mode: document?.document_mode || '',
+        generatorType: document?.generator_type || '',
+        hallucinationCheckBucket: document?.hallucination_check_bucket || '',
+        sectionCount: Array.isArray(document?.sections) ? document.sections.length : 0,
+      });
+
+      const piiEntityRegionData = (entity) => ({
+        id: entity?.id || '',
+        type: entity?.entity_type || '',
+        placeholder: entity?.placeholder || '',
+        occurrenceCount: entity?.occurrence_count ?? 0,
+        source: entity?.source || '',
+        hasValue: entity?.has_value !== false,
+      });
+
+      const scheduleSessionRailScrollAfterLayout = (callback) => {
+        if (!window.requestAnimationFrame) {
+          callback();
+          return;
+        }
+        window.requestAnimationFrame(() => window.requestAnimationFrame(callback));
+      };
+
+      const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {
+        if (!transcriptIdToReveal || !scrollContainer || !sessionList) return;
+        const link = currentSessionLinks().find((candidate) => candidate.dataset.transcriptId === transcriptIdToReveal);
+        const item = link?.closest('.session-item');
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        keepSessionRailItemVisible({ scrollContainer, item, behavior });
+      };
+
+      const scheduleSessionRailReveal = (transcriptIdToReveal) => {
+        if (!transcriptIdToReveal || !sessionList) return;
+        const scrollContainer = sessionListSentinel?.parentElement || sessionList.parentElement;
+        sessionRailTranscriptToReveal = transcriptIdToReveal;
+        const renderVersion = ++sessionRailRenderVersion;
+        scheduleSessionRailScrollAfterLayout(() => {
+          if (renderVersion !== sessionRailRenderVersion) return;
+          revealSessionRailTranscript(transcriptIdToReveal, scrollContainer);
+          if (sessionRailTranscriptToReveal === transcriptIdToReveal) sessionRailTranscriptToReveal = null;
         });
       };
 
-      const renderSidebarTranscripts = () => {
+      const syncSessionRailSentinel = () => {
+        if (!sessionListSentinel) return;
+        sessionListSentinel.hidden = !sessionRailHasMore && !sessionRailLoading;
+        sessionListSentinel.textContent = sessionRailLoading ? 'Loading...' : '';
+      };
+
+      const renderSidebarTranscripts = ({ revealTranscriptId = null } = {}) => {
         if (!sessionList) return;
+        const scrollContainer = sessionListSentinel?.parentElement || sessionList.parentElement;
+        const previousScrollTop = scrollContainer?.scrollTop || 0;
+        if (revealTranscriptId) sessionRailTranscriptToReveal = revealTranscriptId;
+        const transcriptIdToReveal = sessionRailTranscriptToReveal;
+        const renderVersion = ++sessionRailRenderVersion;
+        const previousListHeight = sessionList.offsetHeight;
+        if (previousListHeight > 0) sessionList.style.minHeight = `${previousListHeight}px`;
         const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));
         const seenIds = new Set();
         const fragment = document.createDocumentFragment();
@@ -2731,38 +2830,59 @@ let statusDetailsHideTimer = null;
         }
         sessionList.replaceChildren(fragment);
         window.refreshLucideIcons?.(sessionList);
-        syncDeleteState();
-        if (sessionListSentinel) {
-          sessionListSentinel.hidden = !sessionRailHasMore && !sessionRailLoading;
-          sessionListSentinel.textContent = sessionRailLoading ? 'Loading...' : '';
+        if (transcriptIdToReveal || previousScrollTop > 0) {
+          scheduleSessionRailScrollAfterLayout(() => {
+            if (renderVersion !== sessionRailRenderVersion) return;
+            sessionList.style.minHeight = '';
+            if (transcriptIdToReveal) {
+              revealSessionRailTranscript(transcriptIdToReveal, scrollContainer);
+              if (sessionRailTranscriptToReveal === transcriptIdToReveal) sessionRailTranscriptToReveal = null;
+              return;
+            }
+            scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });
+          });
+        } else {
+          sessionList.style.minHeight = '';
         }
+        syncDeleteState();
+        syncSessionRailSentinel();
       };
 
       const syncSidebarTranscripts = (items, options = {}) => {
-        if (!sessionList || !Array.isArray(items)) return;
+        if (!sessionList || !Array.isArray(items)) return false;
+        const previousStructureSignature = workspaceRegionSignature(sessionRailItems.map((item) => ({
+          id: item?.id || '',
+          createdAt: item?.created_at || '',
+        })));
         const incoming = items.filter((item) => item?.id);
-        const incomingIds = new Set(incoming.map((item) => String(item.id)));
         const existingById = new Map(sessionRailItems.map((item) => [String(item.id), item]));
         incoming.forEach((item) => existingById.set(String(item.id), { ...(existingById.get(String(item.id)) || {}), ...item }));
         if (options.replaceTop) {
-          const preserved = sessionRailItems.filter((item) => item?.id && !incomingIds.has(String(item.id)));
-          sessionRailItems = sortSessionRailItems([
-            ...incoming.map((item) => existingById.get(String(item.id))),
-            ...preserved.map((item) => existingById.get(String(item.id)) || item),
-          ].filter(Boolean));
+          sessionRailItems = reconcileSessionRailItems({
+            currentItems: sessionRailItems,
+            workspaceItems: incoming,
+            pageSize: sessionRailPageSize,
+            preserveLoaded: options.preserveLoaded,
+          });
         } else {
           sessionRailItems = sortSessionRailItems([...existingById.values()]);
         }
-        renderSidebarTranscripts();
+        const nextStructureSignature = workspaceRegionSignature(sessionRailItems.map((item) => ({
+          id: item?.id || '',
+          createdAt: item?.created_at || '',
+        })));
+        const structureChanged = previousStructureSignature !== nextStructureSignature;
+        if (structureChanged) renderSidebarTranscripts(options);
+        return structureChanged;
       };
 
       const loadMoreSidebarTranscripts = async () => {
         if (!sessionRailHasMore || sessionRailLoading || !sessionRailNextCursor) return;
         sessionRailLoading = true;
-        renderSidebarTranscripts();
+        syncSessionRailSentinel();
         try {
           const url = new URL('/api/v1/transcripts', window.location.origin);
-          url.searchParams.set('limit', '12');
+          url.searchParams.set('limit', String(sessionRailPageSize));
           url.searchParams.set('cursor', sessionRailNextCursor);
           const response = await fetch(url.toString(), { credentials: 'include' });
           if (!response.ok) throw new Error('Could not load consultations.');
@@ -2775,7 +2895,7 @@ let statusDetailsHideTimer = null;
           sessionRailHasMore = true;
         } finally {
           sessionRailLoading = false;
-          renderSidebarTranscripts();
+          syncSessionRailSentinel();
         }
       };
 
@@ -3412,32 +3532,67 @@ let statusDetailsHideTimer = null;
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
         setRetryAvailability(retryAvailable);
+        const recentTranscriptsTopHasMore = Boolean(
+          workspace.recent_transcripts_has_more && workspace.recent_transcripts_next_cursor
+        );
         if (!sessionRailPaginationStarted) {
           sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
-          sessionRailHasMore = Boolean(workspace.recent_transcripts_has_more && sessionRailNextCursor);
+          sessionRailHasMore = recentTranscriptsTopHasMore;
         }
-        syncSidebarTranscripts(sidebarTranscripts, { replaceTop: true });
+        const sessionRailRegionSignature = workspaceRegionSignature(sidebarTranscripts.slice(0, sessionRailPageSize).map((item) => ({
+          id: item?.id || '',
+          createdAt: item?.created_at || '',
+        })));
+        const sessionRailRegionChanged = sessionRailRegionSignature !== lastSessionRailRegionSignature;
+        lastSessionRailRegionSignature = sessionRailRegionSignature;
+        let sessionRailStructureChanged = false;
+        if (sessionRailRegionChanged) {
+          sessionRailStructureChanged = syncSidebarTranscripts(sidebarTranscripts, {
+            replaceTop: true,
+            preserveLoaded: sessionRailPaginationStarted && recentTranscriptsTopHasMore,
+            revealTranscriptId: activeTranscriptChanged ? transcriptId : null,
+          });
+        }
+        syncSessionRailSentinel();
 
         currentSessionLinks().forEach((link) => {
           const isActive = link.dataset.transcriptId === transcriptId;
           link.classList.toggle('active', isActive);
           link.closest('.session-item')?.classList.toggle('active', isActive);
         });
+        if (activeTranscriptChanged && !sessionRailStructureChanged) {
+          scheduleSessionRailReveal(transcriptId);
+        }
 
         sidebarTranscripts.forEach((item) => {
           const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
           if (node) setSidebarStatus(node, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
-          if (titleNode) titleNode.textContent = item.title || 'Untitled session';
+          const nextTitle = item.title || 'Untitled session';
+          if (titleNode && titleNode.textContent !== nextTitle) titleNode.textContent = nextTitle;
           const checkbox = currentSelectionBoxes().find((input) => input.value === item.id);
-          if (checkbox) checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
+          const nextHasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
+          if (checkbox && checkbox.dataset.hasTranscriptContent !== nextHasTranscriptContent) {
+            checkbox.dataset.hasTranscriptContent = nextHasTranscriptContent;
+          }
         });
+
+        const piiRegionSignature = workspaceRegionSignature({
+          transcriptId,
+          entities: workspaceTranscriptPiiEntities.map(piiEntityRegionData),
+          redactionStatus: workspaceRedactionStatus,
+          clinicalNlpStatus: workspaceClinicalNlpStatus,
+        });
+        const piiRegionChanged = piiRegionSignature !== lastPiiRegionSignature;
+        lastPiiRegionSignature = piiRegionSignature;
 
         if (transcript) {
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           const draftText = transcript.current_draft_text || '';
           renderDraft(draftText, { force: activeTranscriptChanged });
-          renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });
+          if (piiRegionChanged) {
+            renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });
+          }
           syncGenerationAvailability(draftText);
           if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
           if (renameTitleInput) renameTitleInput.value = transcript.title || '';
@@ -3452,7 +3607,9 @@ let statusDetailsHideTimer = null;
         } else {
           currentTranscriptStatus = null;
           renderDraft('', { force: activeTranscriptChanged });
-          renderPiiEntities([], { updateTranscriptHighlights: false });
+          if (piiRegionChanged) {
+            renderPiiEntities([], { updateTranscriptHighlights: false });
+          }
           syncGenerationAvailability('');
           if (sessionTitleDisplay) sessionTitleDisplay.value = '';
           if (renameTitleInput) renameTitleInput.value = '';
@@ -3463,7 +3620,16 @@ let statusDetailsHideTimer = null;
           setRetryAvailability(false);
           setSessionProgress('Create or open a consultation to begin.');
         }
-        renderDictation(dictation);
+        const dictationRegionSignature = workspaceRegionSignature({
+          transcriptId,
+          id: dictation?.id || '',
+          updatedAt: dictation?.updated_at || '',
+          segmentCount: dictation?.segment_count ?? 0,
+          isUserEdited: Boolean(dictation?.is_combined_text_user_edited),
+        });
+        const dictationRegionChanged = dictationRegionSignature !== lastDictationRegionSignature;
+        lastDictationRegionSignature = dictationRegionSignature;
+        if (dictationRegionChanged) renderDictation(dictation);
         activeWorkingNote = workingNote || null;
         maybeShowDictationNudge({
           previousStatus: previousTranscriptStatus,
@@ -3488,10 +3654,29 @@ let statusDetailsHideTimer = null;
           ? selectedNoteDocumentId
           : (selectedDocumentFromList(noteDocuments, null)?.id || (transcriptId ? workingNoteTargetId(transcriptId) : null));
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
-        const preserveDirtyFollowupEditor = shouldPreserveFollowupEditorRender(selectedFollowupDocumentId || '');
-        const noteRenderState = renderSelectedNote();
-        const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);
-        renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
+        const noteRegionSignature = workspaceRegionSignature({
+          transcriptId,
+          workingNoteMode: workingNote?.mode || '',
+          workingNoteUpdatedAt: workingNote?.updated_at || '',
+          documents: noteDocuments.map(generatedDocumentRegionData),
+        });
+        const followupRegionSignature = workspaceRegionSignature({
+          transcriptId,
+          documents: followupDocuments.map(generatedDocumentRegionData),
+        });
+        const noteRegionChanged = noteRegionSignature !== lastNoteRegionSignature;
+        const followupRegionChanged = followupRegionSignature !== lastFollowupRegionSignature;
+        lastNoteRegionSignature = noteRegionSignature;
+        lastFollowupRegionSignature = followupRegionSignature;
+        let preserveDirtyNoteEditor = true;
+        if (noteRegionChanged) {
+          const noteRenderState = renderSelectedNote();
+          preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);
+        }
+        if (followupRegionChanged) {
+          const preserveDirtyFollowupEditor = shouldPreserveFollowupEditorRender(selectedFollowupDocumentId || '');
+          renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
+        }
         structuredEditor.syncStructuredEditorAvailability();
         setMicButtons(isCaptureUiActive());
         setDictationMicButtons(false);
@@ -3731,6 +3916,7 @@ let statusDetailsHideTimer = null;
         pollWorkspace,
         scheduleWorkspaceRefreshBurst,
         syncTranscriptTitleIfNeeded,
+        persistPendingEditorsBeforeWorkspaceSwitch,
         enqueueTemplateGeneration,
         setVisibleStatus,
         setSessionProgress,
@@ -3815,6 +4001,12 @@ let statusDetailsHideTimer = null;
       }).attach();
 
       setupSidebarInfiniteScroll();
+      document.addEventListener('transcribe:session-panel-opened', () => {
+        scheduleSessionRailReveal(transcriptId);
+      });
+      if (document.querySelector('[data-session-panel]')?.getAttribute('aria-hidden') === 'false') {
+        scheduleSessionRailReveal(transcriptId);
+      }
 
       window.addEventListener('pagehide', () => {
         captureController?.handlePageLifecycleExit?.();

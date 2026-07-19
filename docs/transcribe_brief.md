@@ -26,6 +26,12 @@ This page is owner-only. Team leaders and system admins do not gain transcript r
 - Bulk deletion uses an icon-only Lucide trash control at the right side of the pop-out Recent consultations header. It is muted grey until at least one consultation is selected, then uses the shared error-red palette.
 - Initial rendering and live SSE refreshes use the same bold date, Lucide sunrise Morning, and Lucide sun Afternoon grouping.
 - Consultation column scrolls independently and opens/closes with lightweight width/opacity transition; reduced-motion preference disables animation, and collapsed controls are inert. On mobile it overlays above the primary drawer, closes through an explicit close control, and closes the primary drawer before opening so no panel is trapped behind it.
+- Selecting a consultation through the column keeps the panel open and preserves its exact position when the active row remains visible. A partially clipped active row receives only the minimum nearest-edge scroll needed to become fully visible, with reduced-motion preference respected.
+- Selecting an already loaded older consultation does not replace or truncate rail content. The workspace response's appended active consultation is treated as supplemental metadata rather than part of the newest-page boundary, so loaded newer and older rows remain in place.
+- Desktop remembers whether Recent consultations was last open or closed across refreshes and future visits in the same browser. Mobile always starts closed and does not overwrite the desktop preference.
+- On desktop, the consultation title, recording controls, and tab row span the full workspace width. Beneath the tabs, the fixed-width Recent consultations rail and active tab are structural siblings: opening the rail resizes only this lower row, while its header shares exact top and bottom lines with the active tab header. Follow Ups promotes its current output title and Copy/Delete controls into that aligned header band. Mobile keeps its full-height overlay.
+- Full workspace payloads remain the synchronization contract, but metadata-only client-side region fingerprints skip unchanged rail, PII, dictation, note, and follow-up renderers without retaining duplicate content-bearing signature strings. Routine status updates patch existing rail rows instead of detaching the full list.
+- Switching consultations or creating a new one first drains pending note and follow-up autosaves. A failed save blocks the switch instead of discarding the dirty editor.
 - History loads beyond the initial 12 consultations through cursor pagination, using IntersectionObserver plus a passive near-bottom scroll fallback that rechecks when the column opens.
 - Canonical responses use `Cache-Control: no-store`; system admins remain redirected to `/admin`.
 - Clinical Note, Follow Ups, and Transcript remain sibling tab panels inside the shared scroll region so hiding one panel cannot hide another.
@@ -171,7 +177,6 @@ How:
 - hide the editable-note empty guidance as soon as structured or freeform note rows contain text
 - blank placeholder lines cannot be moved; blocked keyboard reorder shortcuts are still consumed so browser history navigation does not fire
 - explicit note switching changes which note is being edited
-- after explicit note switching, the selected note card is centered in the scrolling note workspace instead of resetting the workspace to its top
 
 Access:
 - owner only

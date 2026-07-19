@@ -297,6 +297,12 @@ Instead:
 - ask for architectural direction in change summary
 
 ---
+## Agents
+- You may delegate very light tasks to the luna agent. This agent is fast and good for easy tasks, if there are nuances to the task you need to be direct in explaining them
+-- You may delegate easier or lighter tasks to the terra agent. This agent is capable and can reason on its own, make sure to explain any nuances.
+- Heavy or complex tasks should be done by sol, this is the most capable agent.
+-- Most documentation can be done by terra or luna, with a final review by sol with the aim of correcting anything that is inaccurate
+---
 
 ## Practical bias
 

@@ -176,8 +176,8 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml({ label: 'note'" in structured_js
     assert "generationLoadingHtml({ label: 'follow-up'" in app_js
     assert "structured.js?v=20260718-note-pill-datetime" in app_js
-    assert "documents.js?v=20260718-note-selection-center" in app_js
-    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
+    assert "documents.js?v=20260718-note-pill-datetime" in app_js
+    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -218,7 +218,7 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert ".cta-panel" in splash_css
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260718-sidebar-settings-link">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260719-session-panel-align">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css

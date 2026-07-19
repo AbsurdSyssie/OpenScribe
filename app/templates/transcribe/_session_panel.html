@@ -19,7 +19,7 @@
 {%- endmacro %}
 
 <div id="session-panel" class="session-panel is-collapsed flex flex-col flex-shrink-0" data-session-panel aria-hidden="true" inert>
-  <div class="p-4 border-b border-stone flex items-center justify-between gap-3 shrink-0">
+  <div class="session-panel__header p-4 border-b border-stone flex items-center justify-between gap-3 shrink-0" data-session-panel-header>
     <div class="text-xs font-medium text-slate uppercase tracking-wider">Recent consultations</div>
     <div class="flex items-center gap-1">
       <button type="submit" form="bulk-delete-sessions" class="session-delete-button" data-delete-selected aria-label="Delete selected consultations" title="Delete selected consultations" disabled><i class="w-4 h-4" data-lucide="trash-2" aria-hidden="true"></i><span class="sr-only">Delete selected consultations</span></button>

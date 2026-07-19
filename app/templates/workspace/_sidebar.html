@@ -1,0 +1,51 @@
+<aside id="workspace-sidebar" class="workspace-sidebar transcribe-sidebar" data-primary-sidebar aria-label="Workspace sidebar" tabindex="-1">
+  <div class="workspace-sidebar__brand-row">
+    <a class="brand workspace-sidebar__brand" href="{{ back_to_scribe_url|default('/workspace?open_recent=1') }}" data-back-to-scribe data-recording-navigation aria-label="OpenScribe — Back to Scribe">
+      <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
+      <span class="brand-name" data-sidebar-full>OpenScribe</span>
+    </a>
+  </div>
+  <div class="workspace-sidebar__account">
+    <div class="workspace-sidebar__identity" data-sidebar-full><strong>{{ current_user.full_name or current_user.email }}</strong><small>{{ current_user.email }}</small></div>
+    <button type="button" class="workspace-sidebar__collapse" data-sidebar-collapse-toggle aria-label="Collapse sidebar" title="Collapse sidebar"><i data-sidebar-collapse-icon-expanded data-lucide="panel-left-close" aria-hidden="true"></i><i data-sidebar-collapse-icon-collapsed data-lucide="panel-left-open" aria-hidden="true"></i></button>
+  </div>
+  <div class="workspace-sidebar__top">
+    <button type="submit" form="new-session-form" class="workspace-new-consultation" data-new-session-button data-recording-navigation aria-label="Create new consultation" title="Create new consultation">
+      <i data-lucide="plus" aria-hidden="true"></i><span data-sidebar-full>Create new consultation</span>
+    </button>
+    {% if active_workspace_section == 'scribe' %}
+    <button type="button" class="workspace-recent-toggle" data-session-panel-toggle aria-expanded="false" aria-controls="session-panel" aria-label="Recent consultations" title="Recent consultations">
+      <i data-lucide="list-checks" aria-hidden="true"></i><span data-sidebar-full>Recent consultations</span>
+    </button>
+    {% else %}
+    <a class="workspace-nav__link workspace-back-link" href="{{ back_to_scribe_url|default('/workspace?open_recent=1') }}" data-back-to-scribe data-recording-navigation>
+      <i data-lucide="arrow-left" aria-hidden="true"></i><span data-sidebar-full>Back to Scribe</span>
+    </a>
+    {% endif %}
+  </div>
+  {% if active_workspace_section == 'scribe' %}
+  <form id="bulk-delete-sessions" hidden method="post" action="/transcribe/sessions/delete"></form>
+  {% endif %}
+  <nav class="workspace-nav" aria-label="Workspace navigation">
+    <div class="workspace-nav__group"><p data-sidebar-full>Personal</p>
+      <a class="workspace-nav__link" href="/workspace/account" aria-label="Account" data-recording-navigation {% if active_workspace_section == 'account' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="user-round" aria-hidden="true"></i><span data-sidebar-full>Account</span></a>
+      <a class="workspace-nav__link" href="/workspace/preferences" aria-label="Preferences" data-recording-navigation {% if active_workspace_section == 'preferences' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="sliders-horizontal" aria-hidden="true"></i><span data-sidebar-full>Preferences</span></a>
+    </div>
+    {% if not current_user.is_system_admin and current_user.team_id %}
+    <div class="workspace-nav__group"><p data-sidebar-full>My Library</p>
+      <a class="workspace-nav__link" href="/workspace/library/templates" aria-label="My Templates" data-recording-navigation {% if active_workspace_section == 'templates' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="files" aria-hidden="true"></i><span data-sidebar-full>My Templates</span></a>
+      <a class="workspace-nav__link" href="/workspace/library/quick-actions" aria-label="My quick actions" data-recording-navigation {% if active_workspace_section == 'quick-actions' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="zap" aria-hidden="true"></i><span data-sidebar-full>My quick actions</span></a>
+      <a class="workspace-nav__link" href="/workspace/library/smart-phrases" aria-label="Smart phrases" data-recording-navigation {% if active_workspace_section == 'smart-phrases' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="text-cursor-input" aria-hidden="true"></i><span data-sidebar-full>Smart phrases</span></a>
+    </div>
+    {% endif %}
+    {% if is_manager %}
+    <div class="workspace-nav__group"><p data-sidebar-full>Team</p>
+      <a class="workspace-nav__link" href="/workspace/team/ai-services" aria-label="AI services" data-recording-navigation {% if active_workspace_section == 'ai-services' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="bot" aria-hidden="true"></i><span data-sidebar-full>AI services</span></a>
+      <a class="workspace-nav__link" href="/workspace/team/members" aria-label="Team members" data-recording-navigation {% if active_workspace_section == 'team-members' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="users" aria-hidden="true"></i><span data-sidebar-full>Team members</span></a>
+      <a class="workspace-nav__link" href="/workspace/team/account-requests" aria-label="Account requests" data-recording-navigation {% if active_workspace_section == 'account-requests' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="user-round-plus" aria-hidden="true"></i><span data-sidebar-full>Account requests</span></a>
+    </div>
+    {% endif %}
+  </nav>
+  <div class="workspace-sidebar__footer"><form method="post" action="/logout"><button type="submit" aria-label="Sign out"><i class="workspace-nav__icon" data-lucide="log-out" aria-hidden="true"></i><span data-sidebar-full>Sign out</span></button></form></div>
+</aside>
+<button type="button" class="workspace-sidebar-resize" data-sidebar-resize role="separator" aria-orientation="vertical" aria-label="Resize workspace sidebar" aria-valuemin="64" aria-valuemax="384" aria-valuenow="288"></button>

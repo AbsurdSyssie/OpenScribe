@@ -13,6 +13,7 @@ from ..main import (
     _transcribe_redirect,
 )
 from ..web.transcribe_workspace import _missing_stt_selection_message
+from ..web.workspace import WORKSPACE_SCRIBE, render_workspace
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +50,19 @@ def _render_transcribe_page(request: Request, db: Session, *, current_user: User
 @app.get("/transcribe", response_class=HTMLResponse)
 def transcribe_page(
     request: Request,
+    transcript_id: str | None = None,
+):
+    params = {"transcript_id": transcript_id} if transcript_id else {}
+    destination = f"/workspace?{urlencode(params)}" if params else "/workspace"
+    return RedirectResponse(
+        url=destination,
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
+@app.get("/workspace", response_class=HTMLResponse)
+def workspace_scribe_page(
+    request: Request,
     message: str | None = None,
     message_kind: str = "success",
     transcript_id: str | None = None,
@@ -62,7 +76,7 @@ def transcribe_page(
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-    return _render_transcribe_page(
+    legacy_response = _render_transcribe_page(
         request,
         db,
         current_user=context.user,
@@ -71,6 +85,17 @@ def transcribe_page(
         active_tab=tab,
         message=message,
         message_kind=safe_message_kind,
+    )
+    section_context = dict(legacy_response.context)
+    section_context["transcribe_route_base"] = "/workspace"
+    active_transcript = section_context.get("active_transcript")
+    section_context["active_transcript_id"] = str(active_transcript.id) if active_transcript else None
+    return render_workspace(
+        request,
+        db,
+        current_user=context.user,
+        active_section=WORKSPACE_SCRIBE,
+        section_context=section_context,
     )
 
 
@@ -366,7 +391,7 @@ def transcribe_upload_dictation_file(
             queued_transcript_id=transcript_id,
         )
     return RedirectResponse(
-        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': f'Dictation appended. {detail.segment_count} pass(es) saved.', 'message_kind': 'success'})}",
+        url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': f'Dictation appended. {detail.segment_count} pass(es) saved.', 'message_kind': 'success'})}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -396,7 +421,7 @@ def transcribe_save_dictation_text(
             queued_transcript_id=transcript_id,
         )
     return RedirectResponse(
-        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': 'Dictation saved.', 'message_kind': 'success'})}",
+        url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'history', 'message': 'Dictation saved.', 'message_kind': 'success'})}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -429,7 +454,7 @@ def transcribe_generate_output(
             queued_transcript_id=transcript_id,
         )
     return RedirectResponse(
-        url=f"/transcribe?transcript_id={transcript_id}&tab=output&message=Queued+note+generation.&message_kind=success",
+        url=f"/workspace?transcript_id={transcript_id}&tab=output&message=Queued+note+generation.&message_kind=success",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -451,11 +476,11 @@ def transcribe_generate_followup(
         document = queue_followup_generation_service(db, context.user, transcript_id=transcript_id, prompt_text=prompt_text, request=request)
     except AppError as exc:
         return RedirectResponse(
-            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
+            url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
-        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued follow-up generation.', 'message_kind': 'success'})}",
+        url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued follow-up generation.', 'message_kind': 'success'})}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -477,7 +502,7 @@ def transcribe_run_quick_action(
     clean_context_text = (context_text or "").strip()
     if len(clean_context_text) > 4000:
         return RedirectResponse(
-            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Additional context must be 4000 characters or fewer', 'message_kind': 'error'})}",
+            url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Additional context must be 4000 characters or fewer', 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
@@ -491,11 +516,11 @@ def transcribe_run_quick_action(
         )
     except AppError as exc:
         return RedirectResponse(
-            url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
+            url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': exc.message, 'message_kind': 'error'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
-        url=f"/transcribe?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued quick action generation.', 'message_kind': 'success'})}",
+        url=f"/workspace?{urlencode({'transcript_id': str(transcript_id), 'tab': 'followups', 'message': 'Queued quick action generation.', 'message_kind': 'success'})}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -529,7 +554,7 @@ def transcribe_create_session(
             message_kind="error",
             status_code=exc.status_code,
         )
-    return RedirectResponse(url=f"/transcribe?transcript_id={transcript.id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=f"/workspace?transcript_id={transcript.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/transcribe/sessions/delete", response_class=HTMLResponse)
@@ -560,7 +585,7 @@ def transcribe_delete_sessions(
             message_kind="error",
             status_code=status_code,
         )
-    return RedirectResponse(url="/transcribe", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/workspace", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/transcribe/sessions/{transcript_id}/title", response_class=HTMLResponse)
@@ -591,7 +616,7 @@ def transcribe_update_session_title(
             message_kind="error",
             status_code=exc.status_code,
         )
-    return RedirectResponse(url=f"/transcribe?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=f"/workspace?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/transcribe/sessions/{transcript_id}/mode", response_class=HTMLResponse)
@@ -624,4 +649,4 @@ def transcribe_update_session_mode(
             message_kind="error",
             status_code=exc.status_code,
         )
-    return RedirectResponse(url=f"/transcribe?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=f"/workspace?transcript_id={transcript_id}", status_code=status.HTTP_303_SEE_OTHER)

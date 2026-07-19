@@ -749,6 +749,7 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/api/v1/generated-documents",
     "/api/v1/post-consultation-dictation",
     "/transcriber_col_changes",
+    "/workspace",
 )
 PUBLIC_NO_STORE_PATHS = {
     "/login",

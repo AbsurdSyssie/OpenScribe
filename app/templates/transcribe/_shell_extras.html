@@ -205,8 +205,14 @@ syncRecordButtonLabel();
   function applySidebarWidth(value, persist) {
     if (!primarySidebar || !desktopSidebarMedia.matches) return;
     var width = normalizedSidebarWidth(value);
+    var collapsed = width === sidebarCollapsedWidth;
     primarySidebar.style.width = width + 'px';
-    primarySidebar.classList.toggle('is-collapsed', width === sidebarCollapsedWidth);
+    primarySidebar.classList.toggle('is-collapsed', collapsed);
+    sidebarCollapseToggles.forEach(function(toggle) {
+      var label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+      toggle.setAttribute('aria-label', label);
+      toggle.setAttribute('title', label);
+    });
     if (sidebarResize) sidebarResize.setAttribute('aria-valuenow', String(width));
     if (persist) {
       try {

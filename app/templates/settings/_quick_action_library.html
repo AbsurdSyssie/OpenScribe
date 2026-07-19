@@ -7,19 +7,19 @@
     <aside class="template-library-sidebar" aria-label="Quick action library">
       <div class="template-library-sidebar__header">
         <div><span class="settings-kicker">My Library</span><h2>Quick actions</h2></div>
-        <a class="btn-primary-sm" href="/settings?tab=quick-actions&amp;scope=personal&amp;quick_action_id=new">New</a>
+        <a class="btn-primary-sm" href="/workspace/library/quick-actions?scope=personal&amp;quick_action_id=new">New</a>
       </div>
 
       <section class="template-library-group" aria-labelledby="personal-quick-action-heading">
         <div class="template-library-group__header"><h3 id="personal-quick-action-heading">Personal</h3><span>{{ personal_quick_actions|length }}</span></div>
         <div class="template-library-list">
-          {% for quick_action in personal_quick_actions %}{% set selection_url = '/settings?tab=quick-actions&scope=personal&quick_action_id=' ~ quick_action.id %}
+          {% for quick_action in personal_quick_actions %}{% set selection_url = '/workspace/library/quick-actions?scope=personal&quick_action_id=' ~ quick_action.id %}
           <div class="template-library-row{% if selected_scope == 'personal' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}">
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'personal' and selected_action and selected_action.id == quick_action.id %}aria-current="page"{% endif %}><strong>{{ quick_action.name }}</strong><small>{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</small></a>
             <div class="template-library-row__actions setting-actions">
               <a href="{{ selection_url }}" aria-label="Edit {{ quick_action.name }}"><i data-lucide="pencil"></i></a>
-              <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }}"><i data-lucide="copy"></i></button></form>
-              <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Delete {{ quick_action.name }}"><i data-lucide="trash-2"></i></button></form>
+              <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }}"><i data-lucide="copy"></i></button></form>
+              <form method="post" action="/home/personal-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this personal quick action permanently?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Delete {{ quick_action.name }}"><i data-lucide="trash-2"></i></button></form>
             </div>
           </div>
           {% else %}<p class="template-library-empty">No personal quick actions.</p>{% endfor %}
@@ -27,17 +27,17 @@
       </section>
 
       <section class="template-library-group" aria-labelledby="team-quick-action-heading">
-        <div class="template-library-group__header"><h3 id="team-quick-action-heading">Team</h3><span>{{ team_quick_actions|length }}</span>{% if is_manager %}<a href="/settings?tab=quick-actions&amp;scope=team&amp;quick_action_id=new" aria-label="New team quick action"><i data-lucide="plus"></i></a>{% endif %}</div>
+        <div class="template-library-group__header"><h3 id="team-quick-action-heading">Team</h3><span>{{ team_quick_actions|length }}</span>{% if is_manager %}<a href="/workspace/library/quick-actions?scope=team&amp;quick_action_id=new" aria-label="New team quick action"><i data-lucide="plus"></i></a>{% endif %}</div>
         <div class="template-library-list">
-          {% for quick_action in team_quick_actions %}{% set selection_url = '/settings?tab=quick-actions&scope=team&quick_action_id=' ~ quick_action.id %}
+          {% for quick_action in team_quick_actions %}{% set selection_url = '/workspace/library/quick-actions?scope=team&quick_action_id=' ~ quick_action.id %}
           <div class="template-library-row{% if selected_scope == 'team' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}">
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'team' and selected_action and selected_action.id == quick_action.id %}aria-current="page"{% endif %}><strong>{{ quick_action.name }}</strong><small>{{ 'Enabled' if quick_action.is_active else 'Disabled' }}{% if not is_manager %} · Read only{% endif %}</small></a>
             <div class="template-library-row__actions setting-actions">
-              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/fork"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }} to Personal"><i data-lucide="copy-plus"></i></button></form>
+              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/fork"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }} to Personal"><i data-lucide="copy-plus"></i></button></form>
               {% if is_manager %}
               <a href="{{ selection_url }}" aria-label="Edit {{ quick_action.name }}"><i data-lucide="pencil"></i></a>
-              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }}"><i data-lucide="copy"></i></button></form>
-              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Delete {{ quick_action.name }}"><i data-lucide="trash-2"></i></button></form>
+              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/duplicate"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }}"><i data-lucide="copy"></i></button></form>
+              <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/delete" data-confirm-submit="Delete this team quick action permanently?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Delete {{ quick_action.name }}"><i data-lucide="trash-2"></i></button></form>
               {% endif %}
             </div>
           </div>
@@ -48,7 +48,7 @@
 
     <div class="template-library-detail">
       {% if can_open_selection %}
-      <a class="template-library-back" href="/settings?tab=quick-actions"><i data-lucide="arrow-left"></i>Back to quick actions</a>
+      <a class="template-library-back" href="/workspace/library/quick-actions"><i data-lucide="arrow-left"></i>Back to quick actions</a>
       {% set quick_action_editor_scope = selected_scope %}
       {% set quick_action_editor_read_only = selected_scope == 'team' and not is_manager %}
       {% include "settings/_quick_action_editor.html" %}

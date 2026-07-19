@@ -1,7 +1,7 @@
     <aside class="transcribe-sidebar w-72 bg-parchment border-r border-stone flex flex-col flex-shrink-0 min-h-0 relative z-10" data-primary-sidebar>
       <div class="p-5 border-b border-stone">
         <div class="flex items-center gap-3">
-          <a class="brand transcribe-sidebar__brand" href="/home" aria-label="OpenScribe home">
+          <a class="brand transcribe-sidebar__brand" href="/workspace?open_recent=1" aria-label="Back to Scribe">
             <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
             <span class="brand-name" data-sidebar-full>OpenScribe</span>
           </a>
@@ -37,7 +37,7 @@
       <form id="bulk-delete-sessions" class="hidden" method="post" action="/transcribe/sessions/delete"></form>
 
       <div class="p-4 border-t border-stone bg-parchment/80 space-y-2 mt-auto">
-        <a href="/settings" class="transcribe-sidebar-settings-link" data-sidebar-settings-link aria-label="Open settings" title="Open settings">
+        <a href="/workspace/preferences" class="transcribe-sidebar-settings-link" data-sidebar-settings-link aria-label="Open preferences" title="Open preferences">
           <i class="w-4 h-4 flex-shrink-0" data-lucide="settings" aria-hidden="true"></i>
           <span data-sidebar-full>Settings</span>
         </a>

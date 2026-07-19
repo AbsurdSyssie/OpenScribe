@@ -7,22 +7,22 @@
     <aside class="template-library-sidebar" aria-label="Template library">
       <div class="template-library-sidebar__header">
         <div><span class="settings-kicker">My Library</span><h2>Templates</h2></div>
-        <a class="btn-primary-sm" href="/settings?tab=templates&amp;scope=personal&amp;template_id=new">New</a>
+        <a class="btn-primary-sm" href="/workspace/library/templates?scope=personal&amp;template_id=new">New</a>
       </div>
 
       <section class="template-library-group" aria-labelledby="personal-template-heading">
         <div class="template-library-group__header"><h3 id="personal-template-heading">Personal</h3><span>{{ personal_templates|length }}</span></div>
         <div class="template-library-list">
           {% for template in personal_templates %}{% set latest_version = template.versions|sort(attribute='version_no')|last %}
-          {% set selection_url = '/settings?tab=templates&scope=personal&template_id=' ~ template.id %}
+          {% set selection_url = '/workspace/library/templates?scope=personal&template_id=' ~ template.id %}
           <div class="template-library-row{% if selected_scope == 'personal' and selected_template and selected_template.id == template.id %} is-current{% endif %}">
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'personal' and selected_template and selected_template.id == template.id %}aria-current="page"{% endif %}>
               <strong>{{ template.name }}</strong><small>{{ latest_version.mode.value }} · {{ 'Enabled' if template.is_active else 'Disabled' }}</small>
             </a>
             <div class="template-library-row__actions setting-actions">
               <a href="{{ selection_url }}" aria-label="Edit {{ template.name }}"><i data-lucide="pencil"></i></a>
-              <form method="post" action="/home/personal-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }}"><i data-lucide="copy"></i></button></form>
-              <form method="post" action="/home/personal-templates/{{ template.id }}/delete" data-confirm-submit="Delete this personal template permanently?"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Delete {{ template.name }}"><i data-lucide="trash-2"></i></button></form>
+              <form method="post" action="/home/personal-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }}"><i data-lucide="copy"></i></button></form>
+              <form method="post" action="/home/personal-templates/{{ template.id }}/delete" data-confirm-submit="Delete this personal template permanently?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Delete {{ template.name }}"><i data-lucide="trash-2"></i></button></form>
             </div>
           </div>
           {% else %}<p class="template-library-empty">No personal templates.</p>{% endfor %}
@@ -30,19 +30,19 @@
       </section>
 
       <section class="template-library-group" aria-labelledby="team-template-heading">
-        <div class="template-library-group__header"><h3 id="team-template-heading">Team</h3><span>{{ team_templates|length }}</span>{% if is_manager %}<a href="/settings?tab=templates&amp;scope=team&amp;template_id=new" aria-label="New team template"><i data-lucide="plus"></i></a>{% endif %}</div>
+        <div class="template-library-group__header"><h3 id="team-template-heading">Team</h3><span>{{ team_templates|length }}</span>{% if is_manager %}<a href="/workspace/library/templates?scope=team&amp;template_id=new" aria-label="New team template"><i data-lucide="plus"></i></a>{% endif %}</div>
         <div class="template-library-list">
           {% for template in team_templates %}{% set latest_version = template.versions|sort(attribute='version_no')|last %}
-          {% set selection_url = '/settings?tab=templates&scope=team&template_id=' ~ template.id %}
+          {% set selection_url = '/workspace/library/templates?scope=team&template_id=' ~ template.id %}
           <div class="template-library-row{% if selected_scope == 'team' and selected_template and selected_template.id == template.id %} is-current{% endif %}">
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'team' and selected_template and selected_template.id == template.id %}aria-current="page"{% endif %}>
               <strong>{{ template.name }}</strong><small>{{ latest_version.mode.value }} · {{ 'Enabled' if template.is_active else 'Disabled' }}{% if not is_manager %} · Read only{% endif %}</small>
             </a>
             <div class="template-library-row__actions setting-actions">
-              <form method="post" action="/home/team-templates/{{ template.id }}/fork"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }} to Personal"><i data-lucide="copy-plus"></i></button></form>
+              <form method="post" action="/home/team-templates/{{ template.id }}/fork"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }} to Personal"><i data-lucide="copy-plus"></i></button></form>
               {% if is_manager %}<a href="{{ selection_url }}" aria-label="Edit {{ template.name }}"><i data-lucide="pencil"></i></a>
-              <form method="post" action="/home/team-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }} as team template"><i data-lucide="copy"></i></button></form>
-              <form method="post" action="/home/team-templates/{{ template.id }}/delete" data-confirm-submit="Delete this team template permanently?"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Delete {{ template.name }}"><i data-lucide="trash-2"></i></button></form>{% endif %}
+              <form method="post" action="/home/team-templates/{{ template.id }}/duplicate"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Copy {{ template.name }} as team template"><i data-lucide="copy"></i></button></form>
+              <form method="post" action="/home/team-templates/{{ template.id }}/delete" data-confirm-submit="Delete this team template permanently?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="templates"><button type="submit" aria-label="Delete {{ template.name }}"><i data-lucide="trash-2"></i></button></form>{% endif %}
             </div>
           </div>
           {% else %}<p class="template-library-empty">No team templates.</p>{% endfor %}
@@ -52,15 +52,15 @@
 
     <div class="template-library-detail">
       {% if can_open_selection %}
-      <a class="template-library-back" href="/settings?tab=templates"><i data-lucide="arrow-left"></i>Back to templates</a>
+      <a class="template-library-back" href="/workspace/library/templates"><i data-lucide="arrow-left"></i>Back to templates</a>
       {% set template_editor_scope = selected_scope %}
       {% set template_editor_read_only = selected_scope == 'team' and not is_manager %}
       {% set embedded_template_editor = true %}
-      {% set template_editor_cancel_url = '/settings?tab=templates' %}
+      {% set template_editor_cancel_url = '/workspace/library/templates' %}
       {% if template_editor_read_only and selected_template %}
       {% set template_editor_read_only_action_url = '/home/team-templates/' ~ selected_template.id ~ '/fork' %}
       {% set template_editor_read_only_action_label = 'Copy to Personal' %}
-      {% set template_editor_read_only_action_fields = {'return_view': 'settings', 'return_tab': 'templates'} %}
+      {% set template_editor_read_only_action_fields = {'return_view': 'workspace', 'return_tab': 'templates'} %}
       {% endif %}
       {% include "_template_editor_workspace.html" %}
       {% else %}

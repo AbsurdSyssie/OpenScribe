@@ -1388,6 +1388,8 @@ def home_page_route_from_return_view(return_view: str | None) -> str:
         return "/home2"
     if return_view == "settings":
         return "/settings"
+    if return_view == "workspace":
+        return "/workspace/preferences"
     return "/home-restyled" if return_view == "restyled" else "/home"
 
 
@@ -1420,6 +1422,8 @@ def home_return_view_value(return_view: str | None) -> str:
         return "transcribe"
     if return_view == "settings":
         return "settings"
+    if return_view == "workspace":
+        return "workspace"
     return ""
 
 
@@ -1435,7 +1439,20 @@ def home_redirect_url(
         if queued_transcript_id:
             params["transcript_id"] = queued_transcript_id
         params["tab"] = transcribe_tab or ("followups" if return_tab == "quick-actions" else "output")
-        return f"/transcribe?{urlencode(params)}" if params else "/transcribe"
+        return f"/workspace?{urlencode(params)}" if params else "/workspace"
+    if return_view == "workspace":
+        workspace_paths = {
+            "account": "/workspace/account",
+            "preferences": "/workspace/preferences",
+            "templates": "/workspace/library/templates",
+            "quick-actions": "/workspace/library/quick-actions",
+            "smart-phrases": "/workspace/library/smart-phrases",
+            "ai-services": "/workspace/team/ai-services",
+            "team-members": "/workspace/team/members",
+            "team-management": "/workspace/team/members",
+            "account-requests": "/workspace/team/account-requests",
+        }
+        return workspace_paths.get(return_tab or "", "/workspace/preferences")
     base = home_page_route_from_return_view(home_return_view_value(return_view))
     if return_tab:
         return f"{base}?tab={return_tab}"
@@ -1453,7 +1470,7 @@ def transcribe_redirect(*, message: str, message_kind: str, queued_transcript_id
     params: dict[str, str] = {"message": message, "message_kind": message_kind}
     if queued_transcript_id is not None:
         params["queued_transcript_id"] = str(queued_transcript_id)
-    return f"/transcribe?{urlencode(params)}"
+    return f"/workspace?{urlencode(params)}"
 
 
 def render_onboarding(

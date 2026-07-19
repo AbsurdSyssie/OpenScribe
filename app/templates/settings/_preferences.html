@@ -13,7 +13,7 @@
     <div class="setting-row setting-row--form">
       <div><h3>Writing style</h3><p>Set usual note length and level of detail.</p></div>
       <form method="post" action="/home/llm-preference">
-        <input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="preferences"><input type="hidden" name="preferred_model_name" value="{{ personal_model or '' }}">
+        <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences"><input type="hidden" name="preferred_model_name" value="{{ personal_model or '' }}">
         <label>Length<select name="note_generation_length"><option value="short" {% if home_note_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option><option value="normal" {% if home_note_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option><option value="long" {% if home_note_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option></select></label>
         <label>Detail<select name="llm_detail_level"><option value="concise" {% if home_detail_level == 'concise' %}selected{% endif %}>Concise</option><option value="balanced" {% if home_detail_level == 'balanced' %}selected{% endif %}>Balanced</option><option value="detailed" {% if home_detail_level == 'detailed' %}selected{% endif %}>Detailed</option></select></label>
         <button class="btn-primary-sm" type="submit">Save preferences</button>
@@ -23,11 +23,11 @@
       <summary>Advanced</summary>
       <div class="settings-advanced__intro"><h3>Writing assistant model</h3><p>Choose a team-approved model or return to team default.</p></div>
       <form method="post" action="/home/llm-preference">
-        <input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="preferences">
+        <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
         <label>Model<select name="preferred_model_name" {% if allowed_llm_models|length <= 1 %}disabled{% endif %}><option value="">Use team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or 'none' }})</option>{% for model in allowed_llm_models %}<option value="{{ model }}" {% if personal_model == model %}selected{% endif %}>{{ model }}</option>{% endfor %}</select>{% if allowed_llm_models|length <= 1 %}<input type="hidden" name="preferred_model_name" value="">{% endif %}</label>
         <button class="btn-primary-sm" type="submit">Save model</button>
       </form>
-      {% if user_llm_preference %}<form method="post" action="/home/llm-preference/clear"><input type="hidden" name="return_view" value="settings"><input type="hidden" name="return_tab" value="preferences"><button class="btn-ghost-sm" type="submit">Use team default</button></form>{% endif %}
+      {% if user_llm_preference %}<form method="post" action="/home/llm-preference/clear"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences"><button class="btn-ghost-sm" type="submit">Use team default</button></form>{% endif %}
     </details>
     {% else %}<p class="settings-empty">No writing assistant configured.</p>{% endif %}
     {% endif %}

@@ -20,7 +20,7 @@ export function createTranscribeLayout({
     if (getCurrentAssistantTab() === 'followups') {
       const selectedOption = dom.runQuickActionSelect?.selectedOptions?.[0] || null;
       const transcriptId = getTranscriptId() || '';
-      dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=quick-actions&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId)}&transcribe_tab=followups`;
+      dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/settings?tab=quick-actions';
       dom.workspaceSettingsLink.title = 'Edit quick actions';
       dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit quick actions');
       return;

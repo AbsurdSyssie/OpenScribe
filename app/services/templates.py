@@ -360,6 +360,20 @@ def _resolve_team_quick_action_for_management(db: Session, actor: User, *, quick
     return quick_action
 
 
+def _resolve_team_quick_action_for_fork(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
+    _require_team_member(actor)
+    quick_action = db.scalar(
+        select(QuickAction).where(
+            QuickAction.id == quick_action_id,
+            QuickAction.scope == TemplateScope.team,
+            QuickAction.team_id == actor.team_id,
+        )
+    )
+    if quick_action is None:
+        raise AppError(404, "not_found", "Team quick action not found", {"resource": "quick_action", "quick_action_id": str(quick_action_id)})
+    return quick_action
+
+
 def _resolve_personal_quick_action_for_management(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
     _require_team_member(actor)
     quick_action = db.scalar(
@@ -646,6 +660,17 @@ def list_available_templates_for_user(db: Session, actor: User) -> list[PromptTe
 
 def list_team_quick_actions(db: Session, actor: User) -> list[QuickAction]:
     _require_team_leader(actor)
+    return list(
+        db.scalars(
+            select(QuickAction)
+            .where(QuickAction.scope == TemplateScope.team, QuickAction.team_id == actor.team_id)
+            .order_by(QuickAction.updated_at.desc(), QuickAction.id.desc())
+        )
+    )
+
+
+def list_team_quick_actions_for_member(db: Session, actor: User) -> list[QuickAction]:
+    _require_team_member(actor)
     return list(
         db.scalars(
             select(QuickAction)
@@ -1075,6 +1100,38 @@ def duplicate_personal_quick_action(db: Session, actor: User, *, quick_action_id
             is_active=quick_action.is_active,
         ),
     )
+
+
+def fork_team_quick_action_to_personal(db: Session, actor: User, *, quick_action_id: UUID) -> QuickAction:
+    quick_action = _resolve_team_quick_action_for_fork(db, actor, quick_action_id=quick_action_id)
+    latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
+    forked = upsert_personal_quick_action(
+        db,
+        actor,
+        QuickActionUpsert(
+            scope=TemplateScope.user,
+            name=_next_duplicate_quick_action_name(db, actor, scope=TemplateScope.user, source_name=quick_action.name),
+            description=quick_action.description,
+            prompt_text=latest_version.prompt_text,
+            is_active=quick_action.is_active,
+        ),
+    )
+    record_security_event(
+        db,
+        action="quick_action_forked",
+        actor=actor,
+        team_id=actor.team_id,
+        details={
+            "category": "template",
+            "outcome": "success",
+            "object_type": "quick_action",
+            "source_quick_action_id": str(quick_action.id),
+            "forked_quick_action_id": str(forked.id),
+            "source_scope": TemplateScope.team.value,
+            "forked_scope": TemplateScope.user.value,
+        },
+    )
+    return forked
 
 
 def list_generated_documents_for_transcript(db: Session, actor: User, *, transcript_id: UUID) -> list[GeneratedDocument]:

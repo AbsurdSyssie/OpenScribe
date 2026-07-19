@@ -20,6 +20,12 @@ System admin flow is out of scope here because system admins are redirected away
 
 Settings uses the canonical warm `/admin` visual language without reusing the privileged admin template or context. It has a cream two-column shell, grouped sidebar navigation, serif headings, setting cards, and a responsive mobile menu.
 
+My Templates uses a master-detail layout inside Settings. Selecting it keeps the primary Settings sidebar and opens a contextual template sidebar grouped as `Personal` and `Team`; selecting a row opens the shared template editor or read-only preview in the detail pane. Row actions remain beside each template. Selection state uses `/settings?tab=templates&scope=personal|team&template_id=<id|new>`, does not auto-select the first template, and falls back to the empty detail state for invalid or inaccessible IDs. On narrow screens the list and detail become separate views with `Back to templates` navigation.
+
+My quick actions follows same master-detail contract and exact `Personal` / `Team` grouping. Personal actions open editable forms. Same-team Team actions open read-only previews for normal users; copying snapshots latest action version into independently owned Personal action. Leaders retain Team create, edit, duplicate-in-Team, and delete controls. Selection uses `/settings?tab=quick-actions&scope=personal|team&quick_action_id=<id|new>`. Transcriber action settings links now use this canonical Settings route.
+
+Smart phrases now use persistent Settings list/editor instead of Settings drawer creator. Personal rows support edit, duplicate, and confirmed immediate delete; `new` opens blank editor. Search stays in contextual sidebar, API errors render inline without losing typed values, and selection uses `/settings?tab=smart-phrases&smart_phrase_id=<id|new>`. Legacy `/home` drawer remains only for legacy Home workspace.
+
 Normal-user sections:
 
 - account details: own name, sign-in email, and password
@@ -42,7 +48,7 @@ The page reuses existing `/home/...` form handlers and service authorization. `r
 
 Account changes use dedicated owner-only `/settings/account/...` handlers. Name changes update profile metadata. Email and password changes require current-password reauthentication, require TOTP when an active method exists, rotate sessions and trusted devices, and emit content-safe security audit metadata.
 
-Normal users can see same-team templates in My Library as read-only rows, including their mode and enabled status. They may copy a same-team template into My Templates, producing an independently editable personal template. They do not receive team-template create, edit, duplicate-in-team, or delete controls. Team-template management remains leader-only, and templates from other teams are never included.
+Normal users can see same-team templates and quick actions in My Library as read-only rows and semantic previews. They may copy either asset into Personal, producing independently editable personal config that opens inside Settings. They do not receive Team create, edit, duplicate-in-Team, or delete controls. Team management remains leader-only, and assets from other teams are never included.
 
 Preferences keeps note length and detail visible. Model override selection and its return-to-team-default control live in a closed `Advanced` disclosure. Saving visible writing-style settings preserves any existing model override.
 
@@ -164,7 +170,7 @@ Access:
 
 Contained information:
 - personal quick actions
-- leader-visible team quick actions
+- same-team quick actions
 - per quick action:
   - name
   - scope: personal or team
@@ -174,6 +180,7 @@ Contained information:
 
 User can change:
 - create, edit, activate/deactivate, and delete personal quick actions
+- review same-team Team quick actions and copy them into independently owned Personal actions
 
 Leader can also change:
 - create, edit, activate/deactivate, and delete team quick actions
@@ -184,7 +191,7 @@ How:
 - remove quick action permanently
 
 Access:
-- user: personal quick actions only
+- user: personal quick actions plus read-only same-team quick actions
 - leader: personal + team quick actions
 
 ### Team speech-to-text policy

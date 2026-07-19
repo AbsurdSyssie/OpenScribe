@@ -725,7 +725,7 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">' in user_page.text
-    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-library-advanced">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260718-template-library">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
     assert '<div class="settings-nav__group"><p>My Library</p>' in user_page.text
@@ -779,13 +779,13 @@ def test_settings_normal_user_sees_same_team_templates_read_only(
     assert page.status_code == 200
     assert "Shared clinic note" in page.text
     assert "Other clinic note" not in page.text
-    assert "Team · freeform · Read only" in page.text
-    assert "New team template" not in page.text
-    assert f"scope=team&template_id={shared_template.id}" not in page.text
+    assert "freeform · Enabled · Read only" in page.text
+    assert 'aria-label="New team template"' not in page.text
+    assert f"/settings?tab=templates&amp;scope=team&amp;template_id={shared_template.id}" in page.text
     assert f'action="/home/team-templates/{shared_template.id}/duplicate"' not in page.text
     assert f'action="/home/team-templates/{shared_template.id}/delete"' not in page.text
     assert f'action="/home/team-templates/{shared_template.id}/fork"' in page.text
-    assert f'aria-label="Copy Shared clinic note to My Templates"' in page.text
+    assert f'aria-label="Copy Shared clinic note to Personal"' in page.text
 
     denied = client.post(
         "/home/team-templates",
@@ -804,6 +804,141 @@ def test_settings_normal_user_sees_same_team_templates_read_only(
     assert denied.status_code == 403
     db_session.refresh(shared_template)
     assert shared_template.name == "Shared clinic note"
+
+
+def test_settings_templates_use_context_sidebar_and_embedded_personal_editor(
+    client,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Template Library")
+    member = make_user(email="template-library@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    personal = make_template(scope=TemplateScope.user, owner=member, actor=member, name="Personal consultation")
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+
+    library = client.get("/settings?tab=templates")
+    selected = client.get(f"/settings?tab=templates&scope=personal&template_id={personal.id}")
+
+    assert library.status_code == 200
+    assert 'data-settings-menu aria-controls="settings-mobile-menu" aria-expanded="false"' in library.text
+    assert 'class="template-library-sidebar" aria-label="Template library"' in library.text
+    assert 'id="personal-template-heading">Personal</h3>' in library.text
+    assert 'id="team-template-heading">Team</h3>' in library.text
+    assert "Select a template" in library.text
+    assert selected.status_code == 200
+    assert 'class="template-library-shell has-selection"' in selected.text
+    assert 'class="template-library-back" href="/settings?tab=templates"' in selected.text
+    assert f'href="/settings?tab=templates&amp;scope=personal&amp;template_id={personal.id}" aria-current="page"' in selected.text
+    assert 'data-template-editor' in selected.text
+    assert 'action="/home/personal-templates"' in selected.text
+    assert 'name="template_id" value="%s"' % personal.id in selected.text
+    assert 'name="return_view" value="settings"' in selected.text
+    assert 'class="app-shell"' not in selected.text
+
+
+def test_settings_team_template_selection_is_read_only_for_member_and_editable_for_leader(
+    client,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Team Template Detail")
+    member = make_user(email="team-template-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    leader = make_user(email="team-template-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    shared = make_template(scope=TemplateScope.team, team=team, actor=leader, name="Shared examination", prompt_text="Team-only config text")
+
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+    member_page = client.get(f"/settings?tab=templates&scope=team&template_id={shared.id}")
+
+    assert member_page.status_code == 200
+    assert 'data-template-editor-read-only' in member_page.text
+    assert 'aria-label="Team template preview"' in member_page.text
+    assert "Team-only config text" in member_page.text
+    assert 'action="/home/team-templates" class="template-form"' not in member_page.text
+    assert f'action="/home/team-templates/{shared.id}/fork"' in member_page.text
+    assert ">Copy to Personal</button>" in member_page.text
+    forked = client.post(
+        f"/home/team-templates/{shared.id}/fork",
+        data={"return_view": "settings", "return_tab": "templates"},
+        follow_redirects=False,
+    )
+    assert forked.status_code == 303
+    assert forked.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
+    leader_page = client.get(f"/settings?tab=templates&scope=team&template_id={shared.id}")
+
+    assert leader_page.status_code == 200
+    assert 'data-template-editor-read-only' not in leader_page.text
+    assert 'action="/home/team-templates" class="template-form"' in leader_page.text
+    assert 'aria-label="New team template"' in leader_page.text
+    duplicated = client.post(
+        f"/home/team-templates/{shared.id}/duplicate",
+        data={"return_view": "settings", "return_tab": "templates"},
+        follow_redirects=False,
+    )
+    assert duplicated.status_code == 303
+    assert duplicated.headers["location"].startswith("/settings?tab=templates&scope=team&template_id=")
+
+
+def test_settings_template_save_and_validation_stay_in_embedded_workspace(
+    client,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic Embedded Save")
+    member = make_user(email="embedded-save@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+
+    invalid = client.post(
+        "/home/personal-templates",
+        data={"name": " Unsaved name ", "description": "Keep this description", "prompt_text": " ", "mode": "freeform", "return_view": "settings", "return_tab": "templates"},
+    )
+    saved = client.post(
+        "/home/personal-templates",
+        data={"name": "Embedded template", "prompt_text": "Write note", "mode": "freeform", "return_view": "settings", "return_tab": "templates", "is_active": "true"},
+        follow_redirects=False,
+    )
+
+    assert invalid.status_code == 422
+    assert 'data-settings-panel="templates"' in invalid.text
+    assert 'class="template-library-shell has-selection"' in invalid.text
+    assert 'action="/home/personal-templates"' in invalid.text
+    assert 'value=" Unsaved name "' in invalid.text
+    assert 'value="Keep this description"' in invalid.text
+    assert saved.status_code == 303
+    assert saved.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+    saved_id = saved.headers["location"].rsplit("=", 1)[1]
+    duplicated = client.post(
+        f"/home/personal-templates/{saved_id}/duplicate",
+        data={"return_view": "settings", "return_tab": "templates"},
+        follow_redirects=False,
+    )
+    assert duplicated.status_code == 303
+    assert duplicated.headers["location"].startswith("/settings?tab=templates&scope=personal&template_id=")
+
+
+def test_settings_template_selection_does_not_expose_cross_team_template(
+    client,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Clinic Scoped Library")
+    other_team = make_team(name="Other Scoped Library")
+    member = make_user(email="scoped-library@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other_leader = make_user(email="other-scoped-library@example.com", password="password-2", team=other_team, team_role=TeamRole.leader)
+    foreign = make_template(scope=TemplateScope.team, team=other_team, actor=other_leader, name="Foreign secret template", prompt_text="Foreign prompt")
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/settings?tab=templates&scope=team&template_id={foreign.id}")
+
+    assert page.status_code == 200
+    assert "Foreign secret template" not in page.text
+    assert "Foreign prompt" not in page.text
+    assert "Select a template" in page.text
 
 
 def test_settings_account_section_renders_owner_profile_and_security_forms(client, make_team, make_user):
@@ -930,18 +1065,20 @@ def test_settings_account_email_requires_active_totp_when_configured(client, db_
     assert changed.status_code == 303
 
 
-def test_settings_quick_action_modal_and_invalid_tab_fallback(client, make_team, make_user):
+def test_settings_quick_action_editor_and_invalid_tab_fallback(client, make_team, make_user):
     team = make_team(name="Clinic Settings Modal")
     user = make_user(email="settings-modal@example.com", password="password-1", team=team, team_role=TeamRole.user)
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
-    modal = client.get("/settings?tab=quick-actions&modal=personal-quick-action")
+    editor = client.get("/settings?tab=quick-actions&scope=personal&quick_action_id=new")
     fallback = client.get("/settings?tab=overview")
 
-    assert modal.status_code == 200
-    assert 'class="modal-shell is-open"' in modal.text
-    assert 'name="return_view" value="settings"' in modal.text
-    assert 'name="return_tab" value="quick-actions"' in modal.text
+    assert editor.status_code == 200
+    assert 'data-quick-action-editor' in editor.text
+    assert 'action="/home/personal-quick-actions"' in editor.text
+    assert 'name="return_view" value="settings"' in editor.text
+    assert 'name="return_tab" value="quick-actions"' in editor.text
+    assert 'class="modal-shell is-open"' not in editor.text
     assert fallback.status_code == 200
     assert 'href="/settings?tab=account" aria-current="page"' in fallback.text
     assert 'data-settings-panel="account"' in fallback.text
@@ -3056,7 +3193,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260718-note-selection-center" in app_js
+    assert "documents.js?v=20260718-note-pill-datetime" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3719,7 +3856,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' in page.text
     assert 'data-sidebar-settings-link' in page.text
     assert 'aria-label="Open settings"' in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260718-consultation-sidebar"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260719-partial-render-v6"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4194,7 +4331,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260718-sidebar-settings-link" in page.text
+    assert "/static/css/transcribe.css?v=20260719-session-panel-align" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/transcribe/mobile.js" in page.text
     assert 'data-workspace-endpoint="' in page.text
@@ -4250,8 +4387,7 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     assert 'return_view=transcribe' in page.text
     assert f'queued_transcript_id={transcript.id}' in page.text
     assert 'transcribe_tab=output' in page.text
-    assert f'data-settings-url="/home?tab=quick-actions&modal=personal-quick-action&personal_quick_action_id=' in page.text
-    assert 'transcribe_tab=followups' in page.text
+    assert f'data-settings-url="/settings?tab=quick-actions&scope=personal&quick_action_id=' in page.text
 
 
 def test_transcribe_template_editor_save_returns_to_transcribe(client, db_session, make_team, make_user):
@@ -4546,7 +4682,8 @@ def test_transcribe_workspace_refresh_renders_updated_pii_entities():
     transcript_branch = app_js.split("if (transcript) {", 1)[1].split("} else {", 1)[0]
 
     assert "workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);" in app_js
-    assert "renderDraft(draftText, { force: activeTranscriptChanged });\n          renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in transcript_branch
+    assert "renderDraft(draftText, { force: activeTranscriptChanged });" in transcript_branch
+    assert "if (piiRegionChanged) {\n            renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in transcript_branch
 
 
 def test_transcribe_copy_review_uses_real_panels_without_sentinel_elements():
@@ -4593,7 +4730,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -5904,7 +6041,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "confirmBeforeStartRecording," in media_js
     assert "New consultation started. Recording will begin here." in app_js
     assert "const syncSidebarTranscripts = (items, options = {}) => {" in app_js
-    assert "syncSidebarTranscripts(sidebarTranscripts, { replaceTop: true });" in app_js
+    assert "revealTranscriptId: activeTranscriptChanged ? transcriptId : null," in app_js
     assert "const loadMoreSidebarTranscripts = async () => {" in app_js
     assert "new URL('/api/v1/transcripts', window.location.origin)" in app_js
     assert "const setupSidebarInfiniteScroll = () => {" in app_js
@@ -5912,10 +6049,40 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
     assert "const seenIds = new Set();" in app_js
     assert "sessionList.replaceChildren(fragment);" in app_js
+    assert "sessionList.style.minHeight = `${previousListHeight}px`;" in app_js
+    assert "sessionList.style.minHeight = '';" in app_js
+    assert "const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {" in app_js
+    assert "import { keepSessionRailItemVisible, reconcileSessionRailItems, sortSessionRailItems } from './sessionRail.js?v=20260719-preserve-loaded';" in app_js
+    assert "keepSessionRailItemVisible({ scrollContainer, item, behavior });" in app_js
+    assert "scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });" in app_js
+    assert "document.addEventListener('transcribe:session-panel-opened'" in app_js
+    assert "const sessionRailRegionChanged = sessionRailRegionSignature !== lastSessionRailRegionSignature;" in app_js
+    assert "if (sessionRailRegionChanged) {" in app_js
+    assert "const previousStructureSignature = workspaceRegionSignature(sessionRailItems.map((item) => ({" in app_js
+    assert "const structureChanged = previousStructureSignature !== nextStructureSignature;" in app_js
+    assert "if (structureChanged) renderSidebarTranscripts(options);" in app_js
+    assert "preserveLoaded: sessionRailPaginationStarted && recentTranscriptsTopHasMore," in app_js
+    assert "workspaceItems: incoming," in app_js
+    assert "sidebarTranscripts.slice(0, sessionRailPageSize).map" in app_js
+    assert "node.dataset.statusTone === descriptor.tone" in app_js
+    assert "if (titleNode && titleNode.textContent !== nextTitle)" in app_js
+    assert "const syncSessionRailSentinel = () => {" in app_js
+    assert "sessionRailLoading = true;\n        syncSessionRailSentinel();" in app_js
+    assert "const piiRegionChanged = piiRegionSignature !== lastPiiRegionSignature;" in app_js
+    assert "if (piiRegionChanged) {" in app_js
+    assert "const dictationRegionChanged = dictationRegionSignature !== lastDictationRegionSignature;" in app_js
+    assert "if (dictationRegionChanged) renderDictation(dictation);" in app_js
+    assert "const noteRegionChanged = noteRegionSignature !== lastNoteRegionSignature;" in app_js
+    assert "if (noteRegionChanged) {" in app_js
+    assert "if (followupRegionChanged) {" in app_js
     assert "const currentSessionLinks = () => sessionList ? [...sessionList.querySelectorAll('[data-session-link]')] : [];" in app_js
     assert "const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];" in app_js
     assert "sessionList?.addEventListener('change', (event) => {" in app_js
     assert "dom.sessionList?.addEventListener('click', async (event) => {" in actions_js
+    assert actions_js.count("!(await persistPendingEditorsBeforeWorkspaceSwitch())") == 2
+    assert "const persistPendingEditorsBeforeWorkspaceSwitch = async () => {" in app_js
+    assert "await persistNoteEditsUntilDrained({ keepalive: false });" in app_js
+    assert "await persistFollowupEditsUntilDrained({ keepalive: false });" in app_js
     assert "...(dom.sessionList || window.document).querySelectorAll('[data-session-select]')," in actions_js
     assert "dom.sessionLinks.forEach" not in actions_js
     assert "dom.selectionBoxes.filter" not in actions_js
@@ -5928,6 +6095,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "[data-sidebar-collapsed-control]" in transcribe_css
     assert ".session-panel-close" in transcribe_css
     assert "event.key !== 'Escape'" in shell_extras
+    assert "document.dispatchEvent(new CustomEvent('transcribe:session-panel-opened'));" in shell_extras
     assert "const armSilencePromptTimer = () => {" in media_js
     assert "markVadSpeechStarted();" in media_js
     assert "markVadSpeechEndedOrIdle();" in media_js
@@ -6041,7 +6209,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "id: workingNoteTargetId(transcriptId || '')," in documents_js
     assert "onNoteEditorChanged: markNoteEditorDirty," in app_js
     assert "const noteRenderState = renderSelectedNote();" in app_js
-    assert "const preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);" in app_js
+    assert "let preserveDirtyNoteEditor = true;" in app_js
+    assert "preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);" in app_js
     assert "if (!preserveDirtyNoteEditor) {" in app_js
     assert "const hasNoteInput = structuredEditor?.hasNoteInputContent?.() || false;" not in app_js
     assert "hasStructuredInput" not in app_js
@@ -6054,7 +6223,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;" in app_js
     assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
     assert "showFlash('Select a quick action first.', 'warning');" in actions_js
-    assert "./actions.js?v=20260718-note-hover-delete-datetime" in app_js
+    assert "./actions.js?v=20260719-workspace-switch-save" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6233,9 +6402,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ forcePreserveEditor = false, centerSelected = false } = {}) => {" in documents_js
-    assert "scrollContainer.scrollTo({ top: Math.max(0, top), behavior: 'auto' });" in documents_js
-    assert "renderSelectedNote({ centerSelected: true });" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
     assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
@@ -6259,6 +6426,48 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "transcriptEmpty.hidden = isTranscribing || hasDraft" in app_js
     assert "not active_template_generation_input_available" in workspace_html
     assert "not active_quick_action_input_available" in workspace_html
+
+
+def test_transcribe_session_panel_desktop_open_state_is_persisted_without_affecting_mobile():
+    root = Path(__file__).resolve().parents[1]
+    shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
+
+    assert "var sessionPanelStorageKey = 'openscribe:transcribe:consultations-open';" in shell_extras
+    assert "return window.localStorage.getItem(sessionPanelStorageKey) === 'true';" in shell_extras
+    assert "window.localStorage.setItem(sessionPanelStorageKey, open ? 'true' : 'false');" in shell_extras
+    assert "if (options.persist && desktopSidebarMedia.matches)" in shell_extras
+    assert "desktopSidebarMedia.matches && storedSessionPanelOpen()" in shell_extras
+    assert "desktopSidebarMedia.addEventListener('change', syncSessionPanelViewport);" in shell_extras
+    assert "sessionPanel.style.transition = 'none';" in shell_extras
+    assert "sessionPanel.style.removeProperty('transition');" in shell_extras
+    assert "sessionPanel.toggleAttribute('inert', !open);" in shell_extras
+    assert "document.dispatchEvent(new CustomEvent('transcribe:session-panel-opened'));" in shell_extras
+
+
+def test_transcribe_session_panel_uses_structural_lower_row_without_content_signatures():
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    transcribe_html = (root / "app" / "templates" / "transcribe.html").read_text(encoding="utf-8")
+    workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
+    shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
+    transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
+    document_region = app_js.split("const generatedDocumentRegionData = (document) => ({", 1)[1].split(
+        "const piiEntityRegionData", 1
+    )[0]
+
+    assert '{% include "transcribe/_session_panel.html" %}' not in transcribe_html
+    assert '<div class="transcribe-lower-row">\n{% include "transcribe/_session_panel.html" %}' in workspace_html
+    assert workspace_html.index('data-tab-trigger="history"') < workspace_html.index('class="transcribe-lower-row"')
+    assert workspace_html.count('data-workspace-context-header') == 3
+    assert 'class="followup-output-header-v2 workspace-context-header" data-workspace-context-header' in workspace_html
+    assert "var sessionPanelHeader = document.querySelector('[data-session-panel-header]');" in shell_extras
+    assert "document.querySelector('[data-tab-panel]:not([hidden]) [data-workspace-context-header]')" in shell_extras
+    assert "sessionPanel.style.setProperty('--workspace-context-header-height', headerHeight + 'px');" in shell_extras
+    assert ".transcribe-lower-row {" in transcribe_css
+    assert "height: var(--workspace-context-header-height, auto);" in transcribe_css
+    assert "editedOutputText" not in document_region
+    assert "followUpPromptText" not in document_region
+    assert "llmRequestPayload" not in document_region
 
 
 def test_live_chunk_upload_retries_only_structured_rate_limit_errors():
@@ -6296,7 +6505,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260718-consultation-sidebar" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -6323,7 +6532,7 @@ def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
                     {
                         "panel": frame["panel"],
                         "ancestor_panels": active_ancestors,
-                            "inside_scroll": any(item["class"] == "flex-1 min-h-0 bg-parchment" for item in self.stack),
+                            "inside_scroll": any("transcribe-tab-workspace" in item["class"] for item in self.stack),
                     }
                 )
             self.stack.append(frame)

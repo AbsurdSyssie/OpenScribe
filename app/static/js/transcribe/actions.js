@@ -16,6 +16,7 @@ export function attachTranscribeActions({
   pollWorkspace,
   scheduleWorkspaceRefreshBurst,
   syncTranscriptTitleIfNeeded,
+  persistPendingEditorsBeforeWorkspaceSwitch,
   enqueueTemplateGeneration,
   setVisibleStatus,
   setSessionProgress,
@@ -476,6 +477,8 @@ export function attachTranscribeActions({
       showFlash('Stop recording before switching consultations.', 'warning');
       return;
     }
+    if (persistPendingEditorsBeforeWorkspaceSwitch
+      && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
     const workspace = await fetchWorkspace(nextTranscriptId);
     if (!workspace) {
       window.location.assign(link.href);
@@ -495,6 +498,8 @@ export function attachTranscribeActions({
         return;
       }
       try {
+        if (persistPendingEditorsBeforeWorkspaceSwitch
+          && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
         const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';
         const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',

@@ -251,6 +251,26 @@ border-left: 3px solid #D4A574;
   transition: width 180ms ease, opacity 140ms ease;
 }
 
+.transcribe-lower-row {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.transcribe-tab-workspace {
+  overflow: hidden;
+}
+
+.workspace-context-header,
+.session-panel__header {
+  min-height: 4rem;
+}
+
+.session-panel__header {
+  height: var(--workspace-context-header-height, auto);
+}
+
 .session-panel.is-collapsed {
   width: 0;
   opacity: 0;
@@ -319,6 +339,8 @@ border-left: 3px solid #D4A574;
   .session-panel {
     position: fixed;
     inset: 0 auto 0 0;
+    height: 100%;
+    margin-top: 0;
     z-index: 190;
     width: min(88vw, 22rem);
     max-width: min(88vw, 22rem);
@@ -594,6 +616,7 @@ background: var(--bg);
 padding: 0.75rem 1rem;
 background: white;
 border-bottom: 1px solid var(--border);
+flex: 0 0 auto;
 }
 
 .note-header-row {
@@ -2133,10 +2156,18 @@ color: #9B2C2C;
 display: grid;
 grid-template-columns: minmax(34rem, 1.55fr) minmax(26rem, 0.95fr);
 gap: 1rem;
-height: 100%;
+flex: 1 1 auto;
+min-height: 0;
 padding: 1rem;
 background: var(--bg);
 overflow: hidden;
+}
+
+.followup-output-header-v2.workspace-context-header {
+padding: 0.75rem 1rem;
+background: white;
+border-bottom: 1px solid var(--border);
+flex: 0 0 auto;
 }
 
 .followup-panel-v2 {

@@ -5,16 +5,18 @@
 {% set current_section_prompts = default_template_section_prompts if is_default_editor else (team_template_section_prompts if is_team_editor else personal_template_section_prompts) %}
 {% set editor_is_read_only = template_editor_read_only|default(false) %}
 {% set editor_is_embedded = embedded_template_editor|default(false) %}
+{% set editor_form_values = template_editor_form_values|default(none) %}
 {% set default_back_url = admin_page_route ~ '?tab=' ~ default_template_return_tab if is_default_editor else ('/transcribe?transcript_id=' ~ queued_transcript_id ~ '&tab=' ~ (transcribe_return_tab or 'output') if home_return_view == 'transcribe' and queued_transcript_id else home_page_route ~ '?tab=templates') %}
 {% set back_url = template_editor_cancel_url|default(default_back_url) %}
 {% set editor_action = template_editor_action|default('/admin/default-templates' if is_default_editor else ('/home/team-templates' if is_team_editor else '/home/personal-templates')) %}
 {% set save_label = 'Save default template' if is_default_editor and current_template else 'Create default template' if is_default_editor else ('Save team template' if is_team_editor and current_template else 'Create team template' if is_team_editor else 'Save personal template' if current_template else 'Create personal template') %}
-{% set current_mode = current_version.mode.value if current_version else 'freeform' %}
+{% set current_mode = editor_form_values.get('mode') if editor_form_values else (current_version.mode.value if current_version else 'freeform') %}
+{% set editor_section_prompts = editor_form_values.get('section_prompts', {}) if editor_form_values else current_section_prompts %}
 <div class="template-editor-workspace{% if editor_is_embedded %} is-embedded{% endif %}" data-template-editor{% if editor_is_read_only %} data-template-editor-read-only{% endif %}>
   <div class="editor-header">
     <div class="page-copy">
       <div class="eyebrow">{{ 'Default' if is_default_editor else ('Team' if is_team_editor else 'Personal') }} template</div>
-      <h1>{{ current_template.name if current_template else ('New default template' if is_default_editor else ('New team template' if is_team_editor else 'New personal template')) }}</h1>
+      <h1>{{ editor_form_values.get('name') if editor_form_values else (current_template.name if current_template else ('New default template' if is_default_editor else ('New team template' if is_team_editor else 'New personal template'))) }}</h1>
       <p>{% if editor_is_read_only %}Review this shared template or copy it to your personal library to make changes.{% else %}Build reusable note instructions with room for the full brief and, when needed, structured EMIS section guidance.{% endif %}</p>
     </div>
   </div>
@@ -86,7 +88,7 @@
       <div class="field-grid">
         <label>
           Template name
-          <input type="text" name="name" maxlength="255" required value="{{ current_template.name if current_template else '' }}">
+          <input type="text" name="name" maxlength="255" required value="{{ editor_form_values.get('name', '') if editor_form_values else (current_template.name if current_template else '') }}">
         </label>
         <label>
           Template style
@@ -97,23 +99,23 @@
         </label>
         <label class="field--wide">
           Description
-          <input type="text" name="description" value="{{ current_template.description if current_template else '' }}">
+          <input type="text" name="description" value="{{ editor_form_values.get('description', '') if editor_form_values else (current_template.description if current_template else '') }}">
         </label>
       </div>
       <label>
         What should be written
-        <textarea name="prompt_text" rows="10" required>{{ current_version.prompt_text if current_version else '' }}</textarea>
+        <textarea name="prompt_text" rows="10" required>{{ editor_form_values.get('prompt_text', '') if editor_form_values else (current_version.prompt_text if current_version else '') }}</textarea>
       </label>
       <div class="section-list" data-template-sections{% if current_mode != 'structured' %} hidden{% endif %}>
         {% for section in emis_sections %}
         <div class="section-row">
           <h3>{{ section.label }}</h3>
-          <textarea name="section_prompt_{{ section.key }}" rows="5" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ current_section_prompts.get(section.key, '') }}</textarea>
+          <textarea name="section_prompt_{{ section.key }}" rows="5" placeholder="Explain what should go into the {{ section.label|lower }} section.">{{ editor_section_prompts.get(section.key, '') }}</textarea>
         </div>
         {% endfor %}
       </div>
       <div class="action-bar">
-        <label class="toggle-row"><input type="checkbox" name="is_active" value="true" {% if not current_template or current_template.is_active %}checked{% endif %}>Active</label>
+        <label class="toggle-row"><input type="checkbox" name="is_active" value="true" {% if editor_form_values and editor_form_values.get('is_active') or not editor_form_values and (not current_template or current_template.is_active) %}checked{% endif %}>Active</label>
         <div class="actions">
           {% if back_url %}<a class="btn-secondary" href="{{ back_url }}">Cancel</a>{% endif %}
           <button type="submit" class="btn-primary">{{ save_label }}</button>

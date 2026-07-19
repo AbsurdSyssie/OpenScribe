@@ -20,7 +20,20 @@ from ..main import (
 from ..services.account import update_own_email, update_own_name, update_own_password
 from ..services.auth import create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
 from ..services.security_audit import record_security_event
+from ..services.templates import fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service
 from ..stt_normalization import normalize_stt_language
+
+
+def _settings_template_url(*, scope: str, template_id: str) -> str:
+    return f"/settings?{urlencode({'tab': 'templates', 'scope': scope, 'template_id': template_id})}"
+
+
+def _settings_quick_action_url(*, scope: str, quick_action_id: str) -> str:
+    return f"/settings?{urlencode({'tab': 'quick-actions', 'scope': scope, 'quick_action_id': quick_action_id})}"
+
+
+def _is_settings_return(return_view: str) -> bool:
+    return _home_return_view_value(return_view) == "settings"
 
 
 def _render_home_page(
@@ -143,12 +156,41 @@ def settings_page(
     transcribe_tab: str | None = None,
     tab: str | None = None,
     modal: str | None = None,
+    scope: str | None = None,
+    template_id: str | None = None,
+    quick_action_id: str | None = None,
     team_template_id: str | None = None,
     personal_template_id: str | None = None,
     team_quick_action_id: str | None = None,
     personal_quick_action_id: str | None = None,
     db: Session = Depends(get_db),
 ):
+    valid_template_id = template_id == "new"
+    if template_id and not valid_template_id:
+        try:
+            UUID(template_id)
+            valid_template_id = True
+        except ValueError:
+            valid_template_id = False
+    if valid_template_id and scope == "personal":
+        personal_template_id = template_id
+        team_template_id = None
+    elif valid_template_id and scope == "team":
+        team_template_id = template_id
+        personal_template_id = None
+    valid_quick_action_id = quick_action_id == "new"
+    if quick_action_id and not valid_quick_action_id:
+        try:
+            UUID(quick_action_id)
+            valid_quick_action_id = True
+        except ValueError:
+            valid_quick_action_id = False
+    if valid_quick_action_id and scope == "personal":
+        personal_quick_action_id = quick_action_id
+        team_quick_action_id = None
+    elif valid_quick_action_id and scope == "team":
+        team_quick_action_id = quick_action_id
+        personal_quick_action_id = None
     return _render_home_page(
         request,
         db,
@@ -805,7 +847,7 @@ def home_upsert_team_template(
         return response
     try:
         template_mode = TemplateMode(mode)
-        upsert_team_template_service(
+        saved_template = upsert_team_template_service(
             db,
             context.user,
             PromptTemplateUpsert(
@@ -838,17 +880,39 @@ def home_upsert_team_template(
             request,
             db,
             current_user=context.user,
-            selected_team_template_id=template_id or None,
+            selected_team_template_id=template_id or ("new" if _is_settings_return(return_view) else None),
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "templates",
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name="template_editor.html",
+            template_name="settings.html" if _is_settings_return(return_view) else "template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
             template_editor_scope="team",
+            template_editor_form_values={
+                "name": name,
+                "description": description,
+                "prompt_text": prompt_text,
+                "mode": mode,
+                "is_active": is_active == "true",
+                "section_prompts": {
+                    "problem": section_prompt_problem,
+                    "history": section_prompt_history,
+                    "family_history": section_prompt_family_history,
+                    "social_history": section_prompt_social_history,
+                    "examination": section_prompt_examination,
+                    "comment": section_prompt_comment,
+                    "tasks": section_prompt_tasks,
+                    "investigations": section_prompt_investigations,
+                },
+            },
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_template_url(scope="team", template_id=str(saved_template.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_redirect_url(
@@ -930,11 +994,16 @@ def home_duplicate_team_template(
             active_home_tab=return_tab or "templates",
             status_code=exc.status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name="template_editor.html",
+            template_name="settings.html" if _is_settings_return(return_view) else "template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
             template_editor_scope="team",
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_template_url(scope="team", template_id=str(duplicated.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_template_editor_url(
@@ -980,6 +1049,11 @@ def home_fork_team_template(
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
         )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_template_url(scope="personal", template_id=str(forked.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     return RedirectResponse(
         url=_home_template_editor_url(
             scope="personal",
@@ -1022,7 +1096,7 @@ def home_upsert_personal_template(
         return response
     try:
         template_mode = TemplateMode(mode)
-        upsert_personal_template_service(
+        saved_template = upsert_personal_template_service(
             db,
             context.user,
             PromptTemplateUpsert(
@@ -1055,17 +1129,39 @@ def home_upsert_personal_template(
             request,
             db,
             current_user=context.user,
-            selected_personal_template_id=template_id or None,
+            selected_personal_template_id=template_id or ("new" if _is_settings_return(return_view) else None),
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "templates",
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name="template_editor.html",
+            template_name="settings.html" if _is_settings_return(return_view) else "template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
             template_editor_scope="personal",
+            template_editor_form_values={
+                "name": name,
+                "description": description,
+                "prompt_text": prompt_text,
+                "mode": mode,
+                "is_active": is_active == "true",
+                "section_prompts": {
+                    "problem": section_prompt_problem,
+                    "history": section_prompt_history,
+                    "family_history": section_prompt_family_history,
+                    "social_history": section_prompt_social_history,
+                    "examination": section_prompt_examination,
+                    "comment": section_prompt_comment,
+                    "tasks": section_prompt_tasks,
+                    "investigations": section_prompt_investigations,
+                },
+            },
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_template_url(scope="personal", template_id=str(saved_template.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_redirect_url(
@@ -1105,11 +1201,16 @@ def home_duplicate_personal_template(
             active_home_tab=return_tab or "templates",
             status_code=exc.status_code,
             queued_transcript_id=queued_transcript_id or None,
-            template_name="template_editor.html",
+            template_name="settings.html" if _is_settings_return(return_view) else "template_editor.html",
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
             template_editor_scope="personal",
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_template_url(scope="personal", template_id=str(duplicated.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_template_editor_url(
@@ -1185,7 +1286,7 @@ def home_upsert_team_quick_action(
     if response is not None:
         return response
     try:
-        upsert_team_quick_action_service(
+        saved_quick_action = upsert_team_quick_action_service(
             db,
             context.user,
             QuickActionUpsert(
@@ -1204,17 +1305,28 @@ def home_upsert_team_quick_action(
             request,
             db,
             current_user=context.user,
-            selected_team_quick_action_id=quick_action_id or None,
+            selected_team_quick_action_id=quick_action_id or ("new" if _is_settings_return(return_view) else None),
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "quick-actions",
-            active_home_modal=home_modal or "team-quick-action",
+            active_home_modal=None if _is_settings_return(return_view) else (home_modal or "team-quick-action"),
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
+            quick_action_editor_form_values={
+                "name": name,
+                "description": description,
+                "prompt_text": prompt_text,
+                "is_active": is_active == "true",
+            },
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_quick_action_url(scope="team", quick_action_id=str(saved_quick_action.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_redirect_url(
@@ -1248,6 +1360,7 @@ def home_delete_team_quick_action(
             request,
             db,
             current_user=context.user,
+            selected_team_quick_action_id=str(quick_action_id),
             message=exc.message,
             message_kind="error",
             active_home_tab=return_tab or "quick-actions",
@@ -1258,6 +1371,8 @@ def home_delete_team_quick_action(
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
         )
+    if _is_settings_return(return_view):
+        return RedirectResponse(url="/settings?tab=quick-actions", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,
@@ -1302,6 +1417,11 @@ def home_duplicate_team_quick_action(
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
         )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_quick_action_url(scope="team", quick_action_id=str(duplicated.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,
@@ -1309,6 +1429,54 @@ def home_duplicate_team_quick_action(
             queued_transcript_id=queued_transcript_id or None,
             transcribe_tab=transcribe_tab or None,
         ) + f"&modal=team-quick-action&team_quick_action_id={duplicated.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/team-quick-actions/{quick_action_id}/fork", response_class=HTMLResponse)
+def home_fork_team_quick_action(
+    request: Request,
+    quick_action_id: UUID,
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    queued_transcript_id: str = Form(""),
+    transcribe_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    try:
+        forked = fork_team_quick_action_to_personal_service(db, context.user, quick_action_id=quick_action_id)
+    except AppError as exc:
+        return render_home(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_quick_action_id=str(quick_action_id),
+            message=exc.message,
+            message_kind="error",
+            active_home_tab=return_tab or "quick-actions",
+            status_code=exc.status_code,
+            queued_transcript_id=queued_transcript_id or None,
+            template_name=_home_template_name_from_return_view(return_view),
+            home_page_route=_home_page_route_from_return_view(return_view),
+            home_return_view=_home_return_view_value(return_view),
+            transcribe_return_tab=transcribe_tab or None,
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_quick_action_url(scope="personal", quick_action_id=str(forked.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(
+            return_view=return_view,
+            return_tab=return_tab or "quick-actions",
+            queued_transcript_id=queued_transcript_id or None,
+            transcribe_tab=transcribe_tab or None,
+        ) + f"&modal=personal-quick-action&personal_quick_action_id={forked.id}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1333,7 +1501,7 @@ def home_upsert_personal_quick_action(
     if response is not None:
         return response
     try:
-        upsert_personal_quick_action_service(
+        saved_quick_action = upsert_personal_quick_action_service(
             db,
             context.user,
             QuickActionUpsert(
@@ -1352,17 +1520,28 @@ def home_upsert_personal_quick_action(
             request,
             db,
             current_user=context.user,
-            selected_personal_quick_action_id=quick_action_id or None,
+            selected_personal_quick_action_id=quick_action_id or ("new" if _is_settings_return(return_view) else None),
             message=detail,
             message_kind="error",
             active_home_tab=return_tab or "quick-actions",
-            active_home_modal=home_modal or "personal-quick-action",
+            active_home_modal=None if _is_settings_return(return_view) else (home_modal or "personal-quick-action"),
             status_code=status_code,
             queued_transcript_id=queued_transcript_id or None,
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
+            quick_action_editor_form_values={
+                "name": name,
+                "description": description,
+                "prompt_text": prompt_text,
+                "is_active": is_active == "true",
+            },
+        )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_quick_action_url(scope="personal", quick_action_id=str(saved_quick_action.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
         url=_home_redirect_url(
@@ -1408,6 +1587,11 @@ def home_duplicate_personal_quick_action(
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
         )
+    if _is_settings_return(return_view):
+        return RedirectResponse(
+            url=_settings_quick_action_url(scope="personal", quick_action_id=str(duplicated.id)),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,
@@ -1440,6 +1624,7 @@ def home_delete_personal_quick_action(
             request,
             db,
             current_user=context.user,
+            selected_personal_quick_action_id=str(quick_action_id),
             message=exc.message,
             message_kind="error",
             active_home_tab=return_tab or "quick-actions",
@@ -1450,6 +1635,8 @@ def home_delete_personal_quick_action(
             home_return_view=_home_return_view_value(return_view),
             transcribe_return_tab=transcribe_tab or None,
         )
+    if _is_settings_return(return_view):
+        return RedirectResponse(url="/settings?tab=quick-actions", status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse(
         url=_home_redirect_url(
             return_view=return_view,

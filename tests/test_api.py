@@ -9497,7 +9497,7 @@ def test_member_forks_latest_same_team_template_version_to_owned_personal_copy(
     )
     assert forked is not None
     assert response.headers["location"] == (
-        f"/home/templates/editor?scope=personal&template_id={forked.id}&return_view=settings"
+        f"/settings?tab=templates&scope=personal&template_id={forked.id}"
     )
     assert forked.team_id is None
     assert forked.description == "Shared description"

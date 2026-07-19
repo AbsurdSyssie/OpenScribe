@@ -249,10 +249,12 @@ title="Open related settings">
 </a>
 </div>
 
-<div class="flex-1 min-h-0 bg-parchment">
+<div class="transcribe-lower-row">
+{% include "transcribe/_session_panel.html" %}
+<div class="transcribe-tab-workspace flex-1 min-w-0 min-h-0 bg-parchment">
 <div class="main-panel h-full" data-tab-panel="output">
 <div class="structured-workspace">
-<div class="structured-workspace__header">
+<div class="structured-workspace__header workspace-context-header" data-workspace-context-header>
 {% set latest_template = preferred_template if preferred_template is defined and preferred_template else (available_templates[0] if available_templates else none) %}
 {% set latest_template_version = latest_template.versions|sort(attribute='version_no')|last if latest_template else none %}
 {% set selected_template_version = latest_template_version %}
@@ -547,11 +549,9 @@ data-generated-freeform-panel
 </div>
 </div>
 
-<div class="main-panel h-full" data-tab-panel="followups" hidden>
-<div class="followup-workspace-v2" data-tour-target="followups-panel">
-<section class="followup-panel-v2 followup-output-v2">
+<div class="main-panel h-full followup-tab-panel" data-tab-panel="followups" hidden>
 {% set initial_followup_title = latest_followup_document.title or latest_followup_document.source_quick_action_name or 'Generated follow-up' if latest_followup_document else 'Generated follow-up' %}
-<div class="followup-output-header-v2">
+<div class="followup-output-header-v2 workspace-context-header" data-workspace-context-header>
 <div class="followup-output-title-wrap-v2">
 <span class="followup-output-icon-v2"><i data-lucide="message-square-text"></i></span>
 <div>
@@ -564,6 +564,8 @@ data-generated-freeform-panel
 <button type="button" class="btn-ghost-sm" data-followup-delete-latest>Delete</button>
 </div>
 </div>
+<div class="followup-workspace-v2" data-tour-target="followups-panel">
+<section class="followup-panel-v2 followup-output-v2">
 <div
 class="followup-output-card-v2"
 data-latest-followup-output
@@ -661,7 +663,7 @@ class="sr-only"
 {% for quick_action in available_quick_actions %}
 <option
 value="{{ quick_action.id }}"
-data-settings-url="/home?tab=quick-actions&modal={% if quick_action.scope.value == 'team' %}team-quick-action&team_quick_action_id{% else %}personal-quick-action&personal_quick_action_id{% endif %}={{ quick_action.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=followups">
+data-settings-url="/settings?tab=quick-actions&scope={% if quick_action.scope.value == 'team' %}team{% else %}personal{% endif %}&quick_action_id={{ quick_action.id }}">
 {{ quick_action.name }}
 </option>
 {% endfor %}
@@ -755,7 +757,7 @@ hidden
 
 <div class="main-panel h-full" data-tab-panel="history" hidden>
 <div class="structured-workspace h-full">
-<div class="structured-workspace__header">
+<div class="structured-workspace__header workspace-context-header" data-workspace-context-header>
 <div class="flex items-center justify-between gap-4">
 <div class="min-w-0">
 <span class="text-sm font-medium text-ink">Consultation sources</span>
@@ -892,6 +894,7 @@ Clinical NLP has not run for this transcript yet.
 {% endif %}
 </span>
 <span>Your consultation text stays private to you.</span>
+</div>
 </div>
 </div>
 </div>

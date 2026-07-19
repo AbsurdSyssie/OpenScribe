@@ -1,0 +1,86 @@
+{% set requested_smart_phrase_id = request.query_params.get('smart_phrase_id', '') %}
+{% set phrase_selection = namespace(item=none) %}
+{% for phrase in personal_smart_phrases %}
+  {% if phrase.id|string == requested_smart_phrase_id %}{% set phrase_selection.item = phrase %}{% endif %}
+{% endfor %}
+{% set selected_smart_phrase = phrase_selection.item %}
+{% set can_open_smart_phrase = requested_smart_phrase_id == 'new' or selected_smart_phrase %}
+<section class="settings-section settings-section--smart-phrases" data-settings-panel="smart-phrases" {% if settings_tab != 'smart-phrases' %}hidden{% endif %}>
+  <div class="smart-phrase-library-shell{% if can_open_smart_phrase %} has-selection{% endif %}" data-smart-phrase-library>
+    <aside class="smart-phrase-library-sidebar" aria-label="Smart phrase library">
+      <div class="smart-phrase-library-sidebar__header">
+        <div><span class="settings-kicker">My Library</span><h2>Smart phrases</h2></div>
+        <a class="btn-primary-sm" href="/settings?tab=smart-phrases&amp;smart_phrase_id=new">New</a>
+      </div>
+
+      <label class="smart-phrase-library-search">
+        <span>Search personal phrases</span>
+        <input type="search" data-smart-phrase-search placeholder="Search trigger or expansion" autocomplete="off">
+      </label>
+      <div class="smart-phrase-library-feedback" data-smart-phrase-library-feedback role="alert" hidden></div>
+
+      <section class="smart-phrase-library-group" aria-labelledby="personal-smart-phrase-heading">
+        <div class="smart-phrase-library-group__header"><h3 id="personal-smart-phrase-heading">Personal</h3><span data-smart-phrase-count>{{ personal_smart_phrases|length }}</span></div>
+        <div class="smart-phrase-library-list" data-smart-phrase-list>
+          {% for phrase in personal_smart_phrases|sort(attribute='trigger') %}
+          {% set selection_url = '/settings?tab=smart-phrases&smart_phrase_id=' ~ phrase.id %}
+          <div class="smart-phrase-library-row{% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %} is-current{% endif %}" data-smart-phrase-row data-smart-phrase-record="{{ {'id': phrase.id|string, 'trigger': phrase.trigger, 'expansion_text': phrase.expansion_text, 'description': phrase.description or ''}|tojson|forceescape }}">
+            <a class="smart-phrase-library-row__select" href="{{ selection_url }}" {% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %}aria-current="page"{% endif %}>
+              <strong>/{{ phrase.trigger }}</strong>
+              <small>{{ phrase.expansion_text.replace('\n', ' ')[:90] }}</small>
+            </a>
+            <div class="smart-phrase-library-row__actions setting-actions">
+              <a href="{{ selection_url }}" aria-label="Edit {{ phrase.trigger }}"><i data-lucide="pencil"></i></a>
+              <button type="button" data-smart-phrase-duplicate-row aria-label="Duplicate {{ phrase.trigger }}"><i data-lucide="copy"></i></button>
+              <button type="button" data-smart-phrase-delete-row aria-label="Delete {{ phrase.trigger }}"><i data-lucide="trash-2"></i></button>
+            </div>
+          </div>
+          {% else %}
+          <p class="smart-phrase-library-empty" data-smart-phrase-empty>No personal smart phrases.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </aside>
+
+    <div class="smart-phrase-library-detail">
+      {% if can_open_smart_phrase %}
+      <a class="smart-phrase-library-back" href="/settings?tab=smart-phrases"><i data-lucide="arrow-left"></i>Back to smart phrases</a>
+      <div class="smart-phrase-editor-workspace">
+        <header class="smart-phrase-editor-header">
+          <div>
+            <p class="smart-phrase-editor-eyebrow">Personal smart phrase</p>
+            <h1>{% if selected_smart_phrase %}/{{ selected_smart_phrase.trigger }}{% else %}New smart phrase{% endif %}</h1>
+            <p>Type slash followed by trigger in note editor, then press Enter or Tab.</p>
+          </div>
+        </header>
+
+        <form class="smart-phrase-editor-form" data-smart-phrase-form data-smart-phrase-id="{{ selected_smart_phrase.id if selected_smart_phrase else '' }}" novalidate>
+          <div class="smart-phrase-editor-error" data-smart-phrase-error role="alert" hidden></div>
+          <label>
+            <span>Trigger</span>
+            <span class="smart-phrase-trigger-field"><span aria-hidden="true">/</span><input name="trigger" value="{{ selected_smart_phrase.trigger if selected_smart_phrase else '' }}" maxlength="64" pattern="[A-Z0-9_]+" placeholder="CESRF" autocomplete="off" autocapitalize="characters" required></span>
+            <small>Use A–Z, numbers, and underscores. Slash added when used.</small>
+          </label>
+          <label>
+            <span>Expansion</span>
+            <textarea name="expansion_text" maxlength="2000" rows="12" required>{{ selected_smart_phrase.expansion_text if selected_smart_phrase else '' }}</textarea>
+            <small>Text inserted into note.</small>
+          </label>
+          <label>
+            <span>Description <small>Optional</small></span>
+            <input name="description" value="{{ (selected_smart_phrase.description or '') if selected_smart_phrase else '' }}" maxlength="255">
+          </label>
+          <div class="smart-phrase-editor-actions">
+            <button type="submit" class="btn-primary-sm" data-smart-phrase-save>Save phrase</button>
+            {% if selected_smart_phrase %}<button type="button" class="btn-ghost-sm" data-smart-phrase-duplicate>Duplicate</button><button type="button" class="btn-danger-sm" data-smart-phrase-delete>Delete</button>{% endif %}
+            <a class="btn-ghost-sm" href="/settings?tab=smart-phrases">Cancel</a>
+          </div>
+          <p class="smart-phrase-editor-status" data-smart-phrase-status role="status" aria-live="polite"></p>
+        </form>
+      </div>
+      {% else %}
+      <div class="smart-phrase-library-placeholder"><i data-lucide="text-cursor-input"></i><h2>Select a smart phrase</h2><p>Choose personal phrase to edit, duplicate, or delete it.</p></div>
+      {% endif %}
+    </div>
+  </div>
+</section>

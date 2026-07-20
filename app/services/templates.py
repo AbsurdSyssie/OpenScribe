@@ -62,6 +62,13 @@ from app.schemas.templates import (
     StructuredTemplateConfig,
 )
 from app.services.llm import active_team_hallucination_check_selection, resolve_user_llm
+from app.services.llm_adapters import LlmGenerationRequest
+from app.services.llm_adapters.gemini_enterprise import (
+    gemini_output_token_cap,
+    generate_gemini_text,
+    gemini_request_snapshot,
+)
+from app.services.llm_credentials import resolve_llm_runtime_credential
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.redaction import (
@@ -83,7 +90,6 @@ from app.services.transcripts import (
     transcript_is_expired,
     transcript_version_text,
 )
-from app.services.vault import read_team_llm_bearer_token
 from app.services.quotas import (
     cancel_provider_attempt,
     estimate_token_reservation,
@@ -94,6 +100,7 @@ from app.services.quotas import (
     settle_provider_attempt_unknown_tokens,
 )
 from app.services.task_outbox import add_pending_task_dispatch
+from app.services.vault import read_team_llm_bearer_token
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quota_lifecycle import (
     delete_dispatches_for_sources,
@@ -159,6 +166,18 @@ class NoteGenerationOptions(TypedDict):
     llm_detail_level: str
 
 
+def _resolve_generation_credential(config: TeamLlmConfig) -> object | None:
+    if config.auth_mode is LlmAuthMode.bearer:
+        if not config.vault_secret_ref:
+            raise AppError(422, "business_rule_violation", "The LLM provider credential is not configured")
+        return read_team_llm_bearer_token(
+            team_id=config.team_id,
+            config_id=config.id,
+            secret_ref=config.vault_secret_ref,
+        )
+    return resolve_llm_runtime_credential(config)
+
+
 def _normalize_note_generation_options(preferences_json: dict[str, object] | None) -> NoteGenerationOptions:
     payload = preferences_json if isinstance(preferences_json, dict) else {}
     raw_length = payload.get("note_generation_length")
@@ -192,6 +211,17 @@ def _document_waits_for_transcript(db: Session, *, document: GeneratedDocument) 
 
 def _note_generation_output_token_cap(options: NoteGenerationOptions) -> int:
     return NOTE_GENERATION_LENGTH_TOKEN_CAPS.get(options["note_generation_length"], NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH])
+
+
+def _provider_output_token_cap(
+    *,
+    adapter_kind: LlmAdapterKind,
+    model: str,
+    nominal_cap: int,
+) -> int:
+    if adapter_kind is LlmAdapterKind.gemini_enterprise:
+        return gemini_output_token_cap(model, nominal_cap)
+    return nominal_cap
 
 
 def _note_generation_detail_guidance(options: NoteGenerationOptions) -> str:
@@ -2093,6 +2123,7 @@ def _generation_request_snapshot(
     system_message: str,
     user_message: str,
     output_token_cap: int | None = None,
+    response_json_schema: dict[str, object] | None = None,
 ) -> dict[str, object]:
     messages = [
         {"role": "system", "content": system_message},
@@ -2114,9 +2145,97 @@ def _generation_request_snapshot(
         }
         if output_token_cap is not None:
             request_body["options"] = {"num_predict": output_token_cap}
+    elif adapter_kind is LlmAdapterKind.gemini_enterprise:
+        nominal_output_token_cap = (
+            output_token_cap
+            or NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH]
+        )
+        provider_output_token_cap = _provider_output_token_cap(
+            adapter_kind=adapter_kind,
+            model=model,
+            nominal_cap=nominal_output_token_cap,
+        )
+        request_body = gemini_request_snapshot(
+            LlmGenerationRequest(
+                model=model,
+                system_message=system_message,
+                user_message=user_message,
+                temperature=0.2,
+                max_output_tokens=provider_output_token_cap,
+                expect_json=response_json_schema is not None,
+                response_schema=response_json_schema,
+            )
+        )
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
     return request_body
+
+
+def _gemini_request_from_snapshot(request_body: dict[str, object]) -> LlmGenerationRequest:
+    config = request_body.get("config")
+    contents = request_body.get("contents")
+    if not isinstance(config, dict) or not isinstance(contents, list) or not contents:
+        raise AppError(500, "llm_request_invalid", "Stored Gemini request is invalid")
+    first_content = contents[0]
+    parts = first_content.get("parts") if isinstance(first_content, dict) else None
+    first_part = parts[0] if isinstance(parts, list) and parts else None
+    user_message = first_part.get("text") if isinstance(first_part, dict) else None
+    model = request_body.get("model")
+    system_message = config.get("system_instruction")
+    max_output_tokens = config.get("max_output_tokens")
+    temperature = config.get("temperature")
+    response_schema = config.get("response_schema")
+    if response_schema is None:
+        # Compatibility for encrypted request snapshots created before Gemini
+        # Enterprise switched to the documented responseSchema field.
+        response_schema = config.get("response_json_schema")
+    if not isinstance(model, str) or not isinstance(system_message, str) or not isinstance(user_message, str):
+        raise AppError(500, "llm_request_invalid", "Stored Gemini request is invalid")
+    if not isinstance(max_output_tokens, int) or not isinstance(temperature, (int, float)):
+        raise AppError(500, "llm_request_invalid", "Stored Gemini request is invalid")
+    if response_schema is not None and not isinstance(response_schema, dict):
+        raise AppError(500, "llm_request_invalid", "Stored Gemini response schema is invalid")
+    return LlmGenerationRequest(
+        model=model,
+        system_message=system_message,
+        user_message=user_message,
+        temperature=float(temperature),
+        max_output_tokens=max_output_tokens,
+        expect_json=config.get("response_mime_type") == "application/json",
+        response_schema=response_schema,
+    )
+
+
+def _generate_freeform_output_gemini(
+    *,
+    config: TeamLlmConfig,
+    provider_config: dict[str, object],
+    credential: object | None,
+    request_body: dict[str, object],
+) -> tuple[str, GenerationUsage]:
+    result = generate_gemini_text(
+        project_id=str(provider_config.get("project_id") or ""),
+        location=str(provider_config.get("location") or ""),
+        credentials=credential,
+        capacity_mode=str(provider_config.get("capacity_mode") or "auto"),
+        request=_gemini_request_from_snapshot(request_body),
+    )
+    return result.text, _generation_usage(
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        total_tokens=result.total_tokens,
+        duration_ms=result.duration_ms,
+        provider_duration_ms=result.provider_duration_ms,
+    )
+
+
+def _request_output_token_cap(request_body: dict[str, object]) -> int | None:
+    direct = request_body.get("max_completion_tokens")
+    if isinstance(direct, int):
+        return direct
+    config = request_body.get("config")
+    nested = config.get("max_output_tokens") if isinstance(config, dict) else None
+    return nested if isinstance(nested, int) else None
 
 
 def _build_template_generation_messages(
@@ -2150,6 +2269,97 @@ def _build_template_generation_messages(
     )
 
 
+def _freeform_note_response_json_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "content"],
+        "properties": {
+            "title": {"type": "string"},
+            "content": {"type": "string"},
+        },
+    }
+
+
+def _structured_note_response_json_schema(
+    template_config: StructuredTemplateConfig,
+    *,
+    enterprise_compatible: bool = False,
+) -> dict[str, object]:
+    ordered_sections = sorted(
+        template_config.sections,
+        key=lambda item: item.section_order,
+    )
+    if enterprise_compatible:
+        section_keys = [section.section_key for section in ordered_sections]
+        return {
+            "type": "object",
+            "required": ["title", "content"],
+            "propertyOrdering": ["title", "content"],
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short two-to-three-word summary of the consultation for the user to read.",
+                },
+                "content": {
+                    "type": "object",
+                    "description": (
+                        "EMIS consultation note sections. Populate a section only when the provided clinical "
+                        "sources support relevant content; omit empty sections."
+                    ),
+                    "propertyOrdering": section_keys,
+                    "properties": {
+                        section.section_key: {
+                            "type": "string",
+                            "description": f"{section.section_label}: {section.instruction}",
+                        }
+                        for section in ordered_sections
+                    },
+                },
+            },
+        }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "content"],
+        "properties": {
+            "title": {"type": "string"},
+            "content": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    section.section_key: {"type": "string"}
+                    for section in ordered_sections
+                },
+            },
+        },
+    }
+
+
+def _hallucination_check_response_json_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["status"],
+        "properties": {
+            "status": {"type": "string", "enum": ["unchanged", "corrected"]},
+            "edits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["section_key", "original", "replacement"],
+                    "properties": {
+                        "section_key": {"type": "string"},
+                        "original": {"type": "string"},
+                        "replacement": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+
+
 def _build_structured_template_generation_messages(
     *,
     template_name: str,
@@ -2159,32 +2369,57 @@ def _build_structured_template_generation_messages(
     template_config: StructuredTemplateConfig,
     working_note_text: str = "",
     detail_guidance: str = NOTE_GENERATION_DETAIL_GUIDANCE[DEFAULT_LLM_DETAIL_LEVEL],
+    schema_driven: bool = False,
 ) -> tuple[str, str]:
-    section_lines = [
-        f'- "{section.section_key}": {section.instruction}'
-        for section in sorted(template_config.sections, key=lambda item: item.section_order)
-    ]
-    return (
-        "You generate a structured medical note from a transcript using the provided EMIS section instructions. "
-        f"Output detail: {detail_guidance} "
-        "Return only a valid JSON object with exactly two top-level fields: "
-        "\"title\" and \"content\". "
-        "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
-        "The \"content\" field must be an object. "
-        "Only use these allowed section keys, and do not invent any others: "
-        f"{', '.join(section.section_key for section in sorted(template_config.sections, key=lambda item: item.section_order))}. "
-        "Each included section value must be a string. Omit sections that have no relevant content. "
-        "Do not include markdown fences, commentary, or any text outside the JSON object. "
-        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping transcript as chronology and factual anchor. "
-        "Do not invent facts absent from the provided sources. "
-        "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. "
-        "Treat them as deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent new placeholders.",
-        (
+    source_rules = (
+        "If clinician-authored working note or post-consultation dictation is provided, treat it as stronger "
+        "clinician-authored guidance for summary, assessment, terminology, and plan wording, while keeping "
+        "transcript as chronology and factual anchor. Do not invent facts absent from the provided sources. "
+        "The transcript and instructions may contain pseudonym placeholders like [PHI-1]. Treat them as "
+        "deliberate confidential replacements. Preserve any placeholder exactly as written and do not invent "
+        "new placeholders."
+    )
+    if schema_driven:
+        system_message = (
+            "You generate a structured medical note from provided clinical sources. "
+            "Follow the provided response schema. "
+            f"Output detail: {detail_guidance} "
+            f"{source_rules}"
+        )
+        user_prefix = (
+            f"Template name: {template_name}\n\n"
+            f"Global instructions:\n{global_instruction}\n\n"
+        )
+    else:
+        ordered_sections = sorted(template_config.sections, key=lambda item: item.section_order)
+        section_lines = [
+            f'- "{section.section_key}": {section.instruction}'
+            for section in ordered_sections
+        ]
+        system_message = (
+            "You generate a structured medical note from a transcript using the provided EMIS section instructions. "
+            f"Output detail: {detail_guidance} "
+            "Return only a valid JSON object with exactly two top-level fields: "
+            "\"title\" and \"content\". "
+            "The \"title\" field must be a short two to three word summary of the consultation for the user to read. "
+            "The \"content\" field must be an object. "
+            "Only use these allowed section keys, and do not invent any others: "
+            f"{', '.join(section.section_key for section in ordered_sections)}. "
+            "Each included section value must be a string. Omit sections that have no relevant content. "
+            "Do not include markdown fences, commentary, or any text outside the JSON object. "
+            f"{source_rules}"
+        )
+        user_prefix = (
             f"Template name: {template_name}\n\n"
             f"Global instructions:\n{global_instruction}\n\n"
             "EMIS sections to fill:\n"
             f"{chr(10).join(section_lines)}\n\n"
-            f"Consultation transcript:\n{transcript_text}"
+        )
+    return (
+        system_message,
+        (
+            user_prefix
+            + f"Consultation transcript:\n{transcript_text}"
             + (f"\n\nConsultation working note:\n{working_note_text}" if working_note_text.strip() else "")
             + (f"\n\nPost-consultation dictation:\n{dictation_text}" if dictation_text.strip() else "")
         ),
@@ -2351,10 +2586,13 @@ def _hallucination_check_edit_cap(options: NoteGenerationOptions) -> int:
 def _apply_hallucination_check_request_overrides(request_body: dict[str, object], *, model_name: str) -> None:
     if "temperature" in request_body:
         request_body["temperature"] = 0
+    nested_config = request_body.get("config")
+    if isinstance(nested_config, dict) and "temperature" in nested_config:
+        nested_config["temperature"] = 0
     if "gpt-oss" not in model_name.lower():
         return
     request_body["reasoning_effort"] = "low"
-    current_cap = request_body.get("max_completion_tokens")
+    current_cap = _request_output_token_cap(request_body)
     if not isinstance(current_cap, int) or current_cap < GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS:
         request_body["max_completion_tokens"] = GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS
 
@@ -2480,6 +2718,7 @@ def _checker_provider_snapshot(config: TeamLlmConfig) -> dict[str, object]:
         "adapter_kind": config.adapter_kind.value,
         "base_url": config.base_url,
         "provider_preset": config.provider_preset,
+        "provider_config": dict(config.provider_config_json or {}),
     }
 
 
@@ -2603,11 +2842,7 @@ def _run_hallucination_check(
     edit_cap = _hallucination_check_edit_cap(note_generation_options)
     output_token_cap = _note_generation_output_token_cap(note_generation_options)
     try:
-        bearer_token = (
-            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
-            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
-            else None
-        )
+        runtime_credential = _resolve_generation_credential(config)
     except AppError as exc:
         if debug_payload is not None:
             debug_payload["failure_code"] = exc.code
@@ -2650,9 +2885,10 @@ def _run_hallucination_check(
             system_message=system_message,
             user_message=user_message,
             output_token_cap=output_token_cap,
+            response_json_schema=_hallucination_check_response_json_schema(),
         )
         _apply_hallucination_check_request_overrides(request_body, model_name=model_name)
-        max_completion_tokens = request_body.get("max_completion_tokens")
+        max_completion_tokens = _request_output_token_cap(request_body)
         if not isinstance(max_completion_tokens, int) or max_completion_tokens <= 0:
             # This is deterministic local configuration failure, before any
             # provider dispatch or billable checker attempt.
@@ -2669,6 +2905,7 @@ def _run_hallucination_check(
             LlmAdapterKind.openai_chat,
             LlmAdapterKind.bedrock_chat,
             LlmAdapterKind.ollama_chat,
+            LlmAdapterKind.gemini_enterprise,
         }:
             # Adapter validation is local and deterministic. Do not reserve a
             # checker call that cannot be submitted.
@@ -2738,9 +2975,16 @@ def _run_hallucination_check(
             raise
         try:
             if config.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-                response_text, checker_usage = _generate_freeform_output_openai(api_key=bearer_token or "", base_url=config.base_url, request_body=request_body)
+                response_text, checker_usage = _generate_freeform_output_openai(api_key=runtime_credential if isinstance(runtime_credential, str) else "", base_url=config.base_url, request_body=request_body)
             elif config.adapter_kind is LlmAdapterKind.ollama_chat:
-                response_text, checker_usage = _generate_freeform_output_ollama(base_url=config.base_url, bearer_token=bearer_token, request_body=request_body)
+                response_text, checker_usage = _generate_freeform_output_ollama(base_url=config.base_url, bearer_token=runtime_credential if isinstance(runtime_credential, str) else None, request_body=request_body)
+            elif config.adapter_kind is LlmAdapterKind.gemini_enterprise:
+                response_text, checker_usage = _generate_freeform_output_gemini(
+                    config=config,
+                    provider_config=dict(config.provider_config_json or {}),
+                    credential=runtime_credential,
+                    request_body=request_body,
+                )
             else:  # pragma: no cover
                 raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": config.adapter_kind.value})
         except AppError as exc:
@@ -3097,10 +3341,15 @@ def _queue_generated_document_with_quota(
     config: TeamLlmConfig,
 ) -> GeneratedDocument:
     """Commit document, reservation, and metadata-only dispatch intent together."""
-    output_cap = (
+    nominal_output_cap = (
         _note_generation_output_token_cap(_note_generation_options_from_document(db, document=document))
         if document.generator_type is GeneratedDocumentGeneratorType.template
         else 1600
+    )
+    output_cap = _provider_output_token_cap(
+        adapter_kind=config.adapter_kind,
+        model=document.model_used or config.model_name or "",
+        nominal_cap=nominal_output_cap,
     )
     reserved_units = estimate_token_reservation(
         _initial_generation_reservation_strings(db, document=document, transcript=transcript),
@@ -3211,6 +3460,7 @@ def queue_document_generation_from_template(
         model_used=resolved_model_name,
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
+        llm_provider_config_json=dict(config.provider_config_json or {}),
     )
     set_generated_document_text(
         db,
@@ -3313,6 +3563,7 @@ def queue_followup_generation(
         model_used=resolved_model_name,
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
+        llm_provider_config_json=dict(config.provider_config_json or {}),
     )
     set_generated_document_text(db, document=generated_document, field="follow_up_prompt_text", plaintext=clean_prompt_text)
     set_generated_document_text(
@@ -3419,6 +3670,7 @@ def queue_quick_action_generation(
         model_used=resolved_model_name,
         llm_adapter_kind=config.adapter_kind.value,
         llm_base_url=config.base_url,
+        llm_provider_config_json=dict(config.provider_config_json or {}),
     )
     set_generated_document_text(
         db,
@@ -3802,7 +4054,9 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
     )
     extra_phi_index.extend(manual_phi_index)
 
+    adapter_kind = LlmAdapterKind(document.llm_adapter_kind or config.adapter_kind.value)
     output_token_cap: int | None = None
+    response_json_schema: dict[str, object] | None = None
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         note_generation_options = _note_generation_options_from_document(db, document=document)
         output_token_cap = _note_generation_output_token_cap(note_generation_options)
@@ -3825,6 +4079,10 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         if document.document_mode is TemplateMode.structured:
             if template_config is None:
                 raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
+            response_json_schema = _structured_note_response_json_schema(
+                template_config,
+                enterprise_compatible=adapter_kind is LlmAdapterKind.gemini_enterprise,
+            )
             redacted_structured_context, structured_phi_index = _redact_dynamic_prompt_value(
                 db,
                 structured_context_json,
@@ -3867,8 +4125,10 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
                 template_config=template_config,
                 working_note_text=working_note_text,
                 detail_guidance=detail_guidance,
+                schema_driven=adapter_kind is LlmAdapterKind.gemini_enterprise,
             )
         else:
+            response_json_schema = _freeform_note_response_json_schema()
             system_message, user_message = _build_template_generation_messages(
                 template_name=document.source_template_name,
                 prompt_text=prompt_text,
@@ -3951,7 +4211,6 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
     else:  # pragma: no cover
         raise AppError(422, "business_rule_violation", "Unsupported generated document type", {"generator_type": document.generator_type.value})
 
-    adapter_kind = LlmAdapterKind(document.llm_adapter_kind or config.adapter_kind.value)
     base_url = document.llm_base_url or config.base_url
     llm_request_payload = _generation_request_snapshot(
         adapter_kind=adapter_kind,
@@ -3960,13 +4219,11 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         system_message=system_message,
         user_message=user_message,
         output_token_cap=output_token_cap,
+        response_json_schema=response_json_schema,
     )
+    provider_output_token_cap = _request_output_token_cap(llm_request_payload)
     try:
-        bearer_token = (
-            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
-            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
-            else None
-        )
+        runtime_credential = _resolve_generation_credential(config)
     except Exception as exc:
         raise _GeneratedDocumentPreclaimError(exc) from exc
     try:
@@ -3976,7 +4233,7 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
             llm_request_payload=llm_request_payload,
             system_message=system_message,
             user_message=user_message,
-            output_token_cap=output_token_cap,
+            output_token_cap=provider_output_token_cap,
         )
     except AppError as exc:
         # Exact reservation expansion is still pre-dispatch.  Fail/cancel as a
@@ -3997,14 +4254,21 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         request_body = llm_request_payload
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(
-                api_key=bearer_token or "",
+                api_key=runtime_credential if isinstance(runtime_credential, str) else "",
                 base_url=base_url,
                 request_body=request_body,
             )
         elif adapter_kind is LlmAdapterKind.ollama_chat:
             generated_text, usage = _generate_freeform_output_ollama(
                 base_url=base_url,
-                bearer_token=bearer_token,
+                bearer_token=runtime_credential if isinstance(runtime_credential, str) else None,
+                request_body=request_body,
+            )
+        elif adapter_kind is LlmAdapterKind.gemini_enterprise:
+            generated_text, usage = _generate_freeform_output_gemini(
+                config=config,
+                provider_config=dict(document.llm_provider_config_json or {}),
+                credential=runtime_credential,
                 request_body=request_body,
             )
         else:  # pragma: no cover

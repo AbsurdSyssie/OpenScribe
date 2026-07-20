@@ -428,6 +428,16 @@ Long whole-file processing has separate timeout knobs:
 - `AUDIO_FFMPEG_TIMEOUT_SECONDS` default: `1800`
 - `STT_TRANSCRIPTION_TIMEOUT_SECONDS` default: `14400`
 
+### Gemini Enterprise credentials
+
+Enable `aiplatform.googleapis.com` and grant the runtime identity `roles/aiplatform.user` or a narrower approved custom role in the wizard project. For production on Google Cloud, prefer an attached service account. For local development, configure ADC with `gcloud auth application-default login`. If ADC deliberately uses a different quota project, the identity also needs `serviceusage.services.use` and the API enabled on that quota project.
+
+Workloads outside Google Cloud should configure Workload Identity Federation in the deployment environment, then select Application Default Credentials in OpenScribe. Do not upload WIF `external_account` files through the admin wizard. Service-account key JSON is an advanced fallback and is stored in Vault.
+
+Complete bare-metal, current Compose-layout, fully-containerized app/worker, networking, location, verification, and troubleshooting instructions are in [Gemini Enterprise setup](gemini-enterprise-setup.md).
+
+Rollout control: `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false` hides and rejects new Gemini provider submissions. Standard tests mock all Google calls; use a separate low-privilege staging project for live smoke checks in `global` and the intended production location.
+
 ### Database reset
 
 From the project directory:

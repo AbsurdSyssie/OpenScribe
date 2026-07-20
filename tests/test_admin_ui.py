@@ -6371,7 +6371,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;" in app_js
     assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));" in app_js
     assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText));" in app_js
-    assert "runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;" in app_js
+    assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
     assert "showFlash('Select a quick action first.', 'warning');" in actions_js
     assert "./actions.js?v=20260719-workspace-switch-save" in app_js
@@ -6444,6 +6444,17 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;" in app_js
     assert "templatePickerButton.disabled = generationBusy || !canChooseTemplate;" in app_js
     assert "button.disabled = generationBusy || !canChooseTemplate;" in app_js
+    assert "runQuickActionSelect.disabled = !canRunQuickAction;" in app_js
+    assert "quickActionContextInput.disabled = !canUseFollowupRequest;" in app_js
+    assert "quickActionContextRecordButton.disabled = !canUseFollowupRequest;" in app_js
+    assert "recordCustomPromptButton.disabled = !canUseFollowupRequest;" in app_js
+    assert "quickActionQuickPicks.forEach((button) => {\n          button.disabled = !canRunQuickAction;" in app_js
+    assert "quickActionCardRunButtons.forEach((button) => {\n          button.disabled = !canRunQuickAction;" in app_js
+    assert "generateFollowupPromptInput.disabled = !canGenerateFollowup;" in app_js
+    assert "generateFollowupTrigger.disabled = !canGenerateFollowup;" in app_js
+    assert "runQuickActionTrigger.disabled = generationBusy ||" not in app_js
+    assert "quickActionContextInput.disabled = generationBusy ||" not in app_js
+    assert "generateFollowupTrigger.disabled = generationBusy || !canGenerateFollowup;" not in app_js
     assert "if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;" in app_js
     assert "syncGenerationAvailability," not in actions_js
     assert "const NOTE_GENERATION_CLICK_GUARD_MS" not in actions_js
@@ -9220,3 +9231,20 @@ def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_
 
     assert page.status_code == 200
     assert 'class="panel provider-scope"' in page.text
+
+
+def test_active_admin_gemini_wizard_uses_typed_google_fields_and_file_input():
+    markup = Path("app/templates/admin_mockup.html").read_text()
+
+    assert 'data-llm-provider-choice="Gemini Enterprise"' in markup
+    assert 'name="google_project_id"' in markup
+    assert 'name="google_location"' in markup
+    assert 'list="llm-google-location-options"' in markup
+    assert '<option value="europe-west2">London regional</option>' in markup
+    assert "not eu-west2" in markup
+    assert 'name="google_auth_method"' in markup
+    assert 'id="llm-google-service-account-file" type="file"' in markup
+    assert 'name="capacity_mode"' in markup
+    assert "Check credentials and find models" in markup
+    assert "google_service_account_json: googleCredential" in markup
+    assert "external_account" not in markup

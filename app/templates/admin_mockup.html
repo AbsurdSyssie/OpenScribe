@@ -3157,7 +3157,9 @@
                       <div>
                         <strong>{{ config.label }}</strong>
                         <div class="provider-subtext">
-                          {{ config.base_url }}
+                          {% if config.adapter_kind.value == 'gemini_enterprise' %}
+                          Project: {{ config.provider_config_json.get('project_id', '—') }} · Location: {{ config.provider_config_json.get('location', '—') }} · Credential source: {{ 'Runtime identity' if config.auth_mode.value == 'google_adc' else 'Service account' }}
+                          {% else %}{{ config.base_url }}{% endif %}
                         </div>
                       </div>
                       <span>{{ config.adapter_kind.value }}</span
@@ -3168,7 +3170,7 @@
                         }}</span
                       >
                       <div class="quick-actions">
-                        <button class="btn small" type="button" data-edit-llm-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-bedrock-region="{% if config.adapter_kind.value == 'bedrock_chat' %}{{ config.base_url.split('.')[1] }}{% endif %}" data-model-name="{{ config.model_name or '' }}" data-available-models='{{ config.available_models_json|tojson }}' data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
+                        <button class="btn small" type="button" data-edit-llm-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-bedrock-region="{% if config.adapter_kind.value == 'bedrock_chat' %}{{ config.base_url.split('.')[1] }}{% endif %}" data-google-project-id="{{ config.provider_config_json.get('project_id', '') }}" data-google-location="{{ config.provider_config_json.get('location', '') }}" data-google-auth-method="{{ 'application_default' if config.auth_mode.value == 'google_adc' else 'service_account_json' if config.auth_mode.value == 'google_service_account' else '' }}" data-capacity-mode="{{ config.provider_config_json.get('capacity_mode', 'auto') }}" data-model-name="{{ config.model_name or '' }}" data-available-models='{{ config.available_models_json|tojson }}' data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
                         <form
                           method="post"
                           action="/admin/llm-configs/{{ config.id }}/inspect"
@@ -4416,7 +4418,14 @@
                 >
                   <strong>Bedrock HTTP gateway</strong
                   ><small>Supported provider preset.</small>
-                </button>
+                </button>{% if llm_form.llm_provider_presets|selectattr('key', 'equalto', 'gemini_enterprise')|list %}<button
+                  class="provider-choice"
+                  type="button"
+                  data-llm-provider-choice="Gemini Enterprise"
+                >
+                  <strong>Gemini Enterprise</strong
+                  ><small>Google Cloud runtime identity or service account.</small>
+                </button>{% endif %}
               </div>
               <div class="advanced-choice">
                 <button
@@ -4473,6 +4482,42 @@
                     type="password"
                     placeholder="Enter API key"
                   />
+                </div>
+                <div class="field full" id="llm-google-project-field" hidden>
+                  <label>Google Cloud project ID</label>
+                  <input id="llm-google-project" name="google_project_id" type="text" autocomplete="off" />
+                </div>
+                <div class="field full" id="llm-google-location-field" hidden>
+                  <label>Location</label>
+                  <input id="llm-google-location" name="google_location" type="text" list="llm-google-location-options" placeholder="europe-west2" autocomplete="off" />
+                  <datalist id="llm-google-location-options">
+                    <option value="europe-west2">London regional</option>
+                    <option value="eu">European Union multi-region</option>
+                    <option value="global">Global</option>
+                    <option value="us">United States multi-region</option>
+                  </datalist>
+                  <p class="field-help">Use an exact Google location ID; for London enter europe-west2, not eu-west2. Global may process data globally.</p>
+                </div>
+                <div class="field full" id="llm-google-auth-field" hidden>
+                  <label>Authentication method</label>
+                  <select id="llm-google-auth" name="google_auth_method">
+                    <option value="application_default">Application Default Credentials (recommended)</option>
+                    <option value="service_account_json">Service-account JSON (advanced)</option>
+                  </select>
+                  <p class="field-help">ADC uses this application's runtime identity. Workload Identity Federation must be deployment-configured.</p>
+                </div>
+                <div class="field full" id="llm-google-service-account-field" hidden>
+                  <label>Service-account JSON file</label>
+                  <input id="llm-google-service-account-file" type="file" accept="application/json,.json" />
+                  <p class="field-help">Long-lived keys carry extra risk. File is never redisplayed and is stored only in Vault after validation.</p>
+                </div>
+                <div class="field full" id="llm-google-capacity-field" hidden>
+                  <label>Capacity mode</label>
+                  <select id="llm-google-capacity" name="capacity_mode">
+                    <option value="auto">Auto</option>
+                    <option value="shared">Shared</option>
+                    <option value="dedicated">Dedicated</option>
+                  </select>
                 </div>
               </div>
             </section>
@@ -5086,19 +5131,27 @@
           );
         llmBack.hidden = n === 1;
         llmNext.textContent =
-          n === 2 ? "Find models" : n === 4 ? "Save provider" : "Continue";
+          n === 2 ? "Check credentials and find models" : n === 4 ? "Save provider" : "Continue";
       }
       function llmFields({ resetValues = true } = {}) {
         const custom = llmProvider === "Custom OpenAI-compatible",
           ollama = llmProvider === "Ollama",
-          bedrock = llmProvider === "Bedrock HTTP gateway";
+          bedrock = llmProvider === "Bedrock HTTP gateway",
+          gemini = llmProvider === "Gemini Enterprise";
         document.getElementById("llm-provider-name-field").hidden = !custom;
         document.getElementById("llm-base-url-field").hidden = !(
           custom || ollama
         );
         document.getElementById("llm-region-field").hidden = !bedrock;
-        document.getElementById("llm-api-key-field").hidden = ollama;
-        document.getElementById("llm-connection-help").textContent = ollama
+        document.getElementById("llm-api-key-field").hidden = ollama || gemini;
+        ["project", "location", "auth", "capacity"].forEach((name) => {
+          document.getElementById(`llm-google-${name}-field`).hidden = !gemini;
+        });
+        const serviceAccount = gemini && document.getElementById("llm-google-auth").value === "service_account_json";
+        document.getElementById("llm-google-service-account-field").hidden = !serviceAccount;
+        document.getElementById("llm-connection-help").textContent = gemini
+          ? "Choose project, location, and the Google credential source used by this runtime."
+          : ollama
           ? "Confirm the Ollama server address."
           : bedrock
             ? "Choose the region and enter the API key."
@@ -5113,6 +5166,15 @@
         if (ollama && resetValues)
           document.getElementById("llm-base-url").value =
             "http://localhost:11434";
+      }
+      document.getElementById("llm-google-auth").addEventListener("change", () => llmFields({ resetValues: false }));
+      async function llmServiceAccountJson() {
+        if (llmProvider !== "Gemini Enterprise" || document.getElementById("llm-google-auth").value !== "service_account_json") return null;
+        const file = document.getElementById("llm-google-service-account-file").files[0];
+        if (!file) return null;
+        if (file.size > 65536) throw new Error("Service-account JSON file must be 64 KiB or smaller.");
+        try { return JSON.parse(await file.text()); }
+        catch (_) { throw new Error("Service-account file must contain valid JSON."); }
       }
       function modelOptions() {
         return [
@@ -5181,7 +5243,7 @@
           : "Create, inspect, and configure a team-specific large-language-model provider.";
         document.getElementById("llm-change-key-help").hidden = !editing;
         document.getElementById("llm-api-key").value = "";
-        const llmNames = {openai: "OpenAI", openrouter: "OpenRouter", xai: "xAI", groq: "Groq", mistral: "Mistral", deepseek: "DeepSeek", together: "Together AI", ollama: "Ollama", bedrock_http_gateway: "Bedrock HTTP gateway", custom_openai_compatible: "Custom OpenAI-compatible"};
+        const llmNames = {openai: "OpenAI", openrouter: "OpenRouter", xai: "xAI", groq: "Groq", mistral: "Mistral", deepseek: "DeepSeek", together: "Together AI", ollama: "Ollama", bedrock_http_gateway: "Bedrock HTTP gateway", gemini_enterprise: "Gemini Enterprise", custom_openai_compatible: "Custom OpenAI-compatible"};
         llmProvider = editButton ? (llmNames[editButton.dataset.providerPreset] || "Custom OpenAI-compatible") : "OpenAI";
         document.getElementById("llm-provider-preset").value = editButton?.dataset.providerPreset || "openai";
         document
@@ -5201,6 +5263,11 @@
           document.getElementById("llm-final-provider-name").value = editButton.dataset.providerLabel;
           document.getElementById("llm-base-url").value = editButton.dataset.baseUrl;
           if (editButton.dataset.bedrockRegion) document.getElementById("llm-region").value = editButton.dataset.bedrockRegion;
+          document.getElementById("llm-google-project").value = editButton.dataset.googleProjectId || "";
+          document.getElementById("llm-google-location").value = editButton.dataset.googleLocation || "";
+          document.getElementById("llm-google-auth").value = editButton.dataset.googleAuthMethod || "application_default";
+          document.getElementById("llm-google-capacity").value = editButton.dataset.capacityMode || "auto";
+          llmFields({ resetValues: false });
           document.getElementById("llm-default-active").checked = editButton.dataset.isActive === "true";
         }
         document.getElementById("llm-model-grid").replaceChildren();
@@ -5241,7 +5308,8 @@
           clearWizardError("llm-wizard-error");
           const form = document.getElementById("llm-wizard-form"), value = (name) => form.elements.namedItem(name)?.value.trim() || undefined;
           try {
-            const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: value("team_id"), provider_preset: value("provider_preset"), label: value("label") || null, base_url: value("base_url"), bedrock_region: value("bedrock_region") || null, bearer_token: value("bearer_token") || null, revision_of_config_id: value("revision_of_config_id") || null }) });
+            const googleCredential = await llmServiceAccountJson();
+            const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: value("team_id"), provider_preset: value("provider_preset"), label: value("label") || null, base_url: value("base_url"), bedrock_region: value("bedrock_region") || null, bearer_token: value("bearer_token") || null, revision_of_config_id: value("revision_of_config_id") || null, google_project_id: value("google_project_id") || null, google_location: value("google_location") || null, google_auth_method: value("google_auth_method") || null, google_service_account_json: googleCredential, capacity_mode: value("capacity_mode") || "auto" }) });
             llmDraftId = result.config.id;
             document.getElementById("llm-draft-id").value = llmDraftId;
             document.getElementById("llm-api-key").value = "";
@@ -5291,6 +5359,7 @@
             "Together AI": "together",
             Ollama: "ollama",
             "Bedrock HTTP gateway": "bedrock_http_gateway",
+            "Gemini Enterprise": "gemini_enterprise",
             "Custom OpenAI-compatible": "custom_openai_compatible",
           }[llmProvider];
           document

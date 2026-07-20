@@ -110,7 +110,7 @@ What it does:
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section body without prepending the section heading
 - generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft and is revoked when the copyable note text changes; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
-- generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked
+- generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked; frontend source coverage keeps follow-up and quick-action controls usable while a note-generation request is in flight
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
@@ -470,3 +470,9 @@ Pending-provider browser tests verify the canonical workspace retains model fina
 # Provider-policy table
 
 `tests/test_admin_ui.py -k provider_policy` verifies six styled policy rows, real provider/model values, discovered-model data, inline save and state-dependent clear routes, representative STT/LLM POSTs, and JavaScript model-sync markers. Tests use provider metadata only; no transcript-derived content or credentials are rendered.
+
+# Gemini Enterprise
+
+Run `.venv/bin/pytest -q tests/test_gemini_enterprise_llm.py tests/test_gemini_enterprise_foundation.py` for mocked SDK, error mapping, client closure, discovery catalogs, model-aware thinking limits, the fixed 30,000-token Gemini output/quota ceiling across saved length selections, explicit JSON Schema snapshots, `MAX_TOKENS` handling, plain-text action mode, and Vault-envelope coverage. API lifecycle coverage lives in `tests/test_api.py -k "gemini_"`; admin wizard coverage lives in `tests/test_admin_ui.py -k "gemini"`. Standard CI must not use live Google credentials or make Google calls.
+
+Live smoke testing is a separate staging operation using a low-privilege identity. Verify ADC or service-account authentication, model listing, manual `count_tokens` validation, one minimal generation, token usage, and client cleanup in both `global` and the intended production location before rollout.

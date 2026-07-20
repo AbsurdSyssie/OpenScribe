@@ -130,6 +130,11 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     } == provider_cleanup_columns
     assert provider_cleanup_fks == []
     assert any(item["name"] == "ix_provider_secret_cleanup_jobs_next_attempt_at" for item in provider_cleanup_indexes)
+    team_llm_columns = {column["name"]: column for column in inspector.get_columns("team_llm_configs")}
+    generated_document_columns = {column["name"]: column for column in inspector.get_columns("generated_documents")}
+    assert team_llm_columns["provider_config_json"]["nullable"] is False
+    assert team_llm_columns["provider_config_json"]["default"] is None
+    assert generated_document_columns["llm_provider_config_json"]["nullable"] is True
     with engine.connect() as connection:
         stt_auth_modes = connection.execute(
             text(
@@ -142,7 +147,31 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
                 """
             )
         ).scalars().all()
+        llm_auth_modes = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'llmauthmode'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+        llm_adapter_kinds = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'llmadapterkind'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
     assert stt_auth_modes == ["bearer", "none"]
+    assert llm_auth_modes == ["bearer", "none", "google_adc", "google_service_account"]
+    assert llm_adapter_kinds == ["openai_chat", "ollama_chat", "bedrock_chat", "gemini_enterprise"]
 
 
 @pytest.mark.migration

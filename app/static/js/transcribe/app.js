@@ -2318,32 +2318,32 @@ let statusDetailsHideTimer = null;
         }
 
         if (runQuickActionSelect) {
-          runQuickActionSelect.disabled = generationBusy || !canRunQuickAction;
+          runQuickActionSelect.disabled = !canRunQuickAction;
         }
         if (runQuickActionTrigger) {
-          runQuickActionTrigger.disabled = generationBusy || !canUsePrimaryFollowupAction;
+          runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;
         }
         if (quickActionContextInput) {
-          quickActionContextInput.disabled = generationBusy || !canUseFollowupRequest;
+          quickActionContextInput.disabled = !canUseFollowupRequest;
         }
         if (quickActionContextRecordButton) {
-          quickActionContextRecordButton.disabled = generationBusy || !canUseFollowupRequest;
+          quickActionContextRecordButton.disabled = !canUseFollowupRequest;
         }
         if (recordCustomPromptButton) {
-          recordCustomPromptButton.disabled = generationBusy || !canUseFollowupRequest;
+          recordCustomPromptButton.disabled = !canUseFollowupRequest;
         }
         quickActionQuickPicks.forEach((button) => {
-          button.disabled = generationBusy || !canRunQuickAction;
+          button.disabled = !canRunQuickAction;
         });
         quickActionCardRunButtons.forEach((button) => {
-          button.disabled = generationBusy || !canRunQuickAction;
+          button.disabled = !canRunQuickAction;
         });
 
         if (generateFollowupPromptInput) {
-          generateFollowupPromptInput.disabled = generationBusy || !canGenerateFollowup;
+          generateFollowupPromptInput.disabled = !canGenerateFollowup;
         }
         if (generateFollowupTrigger) {
-          generateFollowupTrigger.disabled = generationBusy || !canGenerateFollowup;
+          generateFollowupTrigger.disabled = !canGenerateFollowup;
         }
       };
 

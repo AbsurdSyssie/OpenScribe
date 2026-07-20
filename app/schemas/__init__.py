@@ -40,6 +40,7 @@ from .deidentification import (
     DeidentificationSelectionUpsert,
 )
 from .llm import (
+    GeminiEnterpriseProviderConfig,
     HallucinationCheckSelectionDetail,
     HallucinationCheckSelectionUpsert,
     LlmConfigDraftCreate,
@@ -154,6 +155,7 @@ __all__ = [
     "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "GeminiEnterpriseProviderConfig",
     "HallucinationCheckSelectionDetail",
     "HallucinationCheckSelectionUpsert",
     "LlmConfigDraftCreate",

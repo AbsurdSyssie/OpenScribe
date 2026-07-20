@@ -456,6 +456,15 @@ Current limitations:
 - convert needed UI references into synthetic, OpenScribe-owned fixtures; keep local raw captures outside the repository and delete them when no longer needed
 - review generated artifacts for confidential content before staging; repository history is not a safe secret store
 
+## Gemini Enterprise credentials
+
+- ADC configurations store no provider secret and use the application's runtime identity.
+- Service-account JSON accepts only `type=service_account`, is capped at 64 KiB, and requires `client_email`, `private_key`, `private_key_id`, and `token_uri`.
+- Uploaded `external_account` configuration is rejected; WIF must be deployment-configured to avoid arbitrary credential-source file/URL access.
+- Service-account JSON is validated before a draft or Vault write, stored only in a typed Vault payload, never returned by APIs, and retired through the existing post-commit cleanup queue.
+- Google errors are translated from structured status/reason data. SDK exception text and credential contents are not logged or returned.
+- Generated-document and checker snapshots include only non-secret project/location/capacity metadata.
+
 ## Planned next hardening: lockouts and unlock workflow
 
 This is intentionally not implemented in the current slice.

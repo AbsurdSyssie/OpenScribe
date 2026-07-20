@@ -97,7 +97,7 @@ Template note output caps are adapter-specific:
 
 - OpenAI-compatible providers and the Bedrock HTTP gateway receive `max_completion_tokens`.
 - Ollama `/api/chat` receives `options.num_predict`.
-- Saved length presets map to `short=800`, `normal=1600`, and `long=3200`; absent preferences use `normal`.
+- Saved length selections map to `short=800`, `normal=1600`, and `long=3200`; absent preferences use `normal`. For Gemini, the selection remains saved and snapshotted as preference metadata, but currently neither adds a semantic prompt guard nor lowers the fixed `max_output_tokens=30000` provider ceiling.
 - Length/detail presets apply only to template note generation. Follow-ups and quick actions keep their existing request shape.
 
 ## Labels
@@ -105,3 +105,24 @@ Template note output caps are adapter-specific:
 LLM config labels are unique per team after trimming surrounding whitespace and comparing case-insensitively. Draft creation, finalization, and legacy save paths all return `409 conflict` with `An LLM provider with this name already exists for this team.` before saving duplicates.
 
 When a system admin supplies a label during draft creation, OpenScribe preserves it. If no label is supplied, the backend generates the default provider/team label.
+
+## Gemini Enterprise
+
+Gemini Enterprise is a native `gemini_enterprise` adapter using the stable `v1` Google Gen AI SDK. It does not use an editable base URL or an API key. Admins must provide a Google Cloud project, explicit location, capacity mode, and one credential source:
+
+- Application Default Credentials (recommended): uses the application's runtime identity and stores no Vault secret.
+- Service-account JSON (advanced): accepts only a bounded `service_account` JSON file, validates it before draft creation, and stores it in Vault as a typed secret. It is never rendered or logged.
+
+Workload Identity Federation belongs in deployment configuration and is consumed through ADC; the provider API rejects uploaded `external_account` configuration. Global locations may process data globally, so deployments with residency requirements must select an appropriate jurisdictional or regional location.
+
+Capacity mode maps to Google's request routing: `auto` sends no override header, `shared` forces pay-as-you-go, and `dedicated` forces Provisioned Throughput without spillover. Model availability, processing boundary, and consumption support are separate checks. In particular, a model can exist at `europe-west2` without Standard PayGo being offered there; consult the current model page and capacity contract before choosing `shared` or assuming `auto` can use on-demand capacity.
+
+Model discovery uses Google's `v1beta1` publisher-model catalog and filters it to Gemini text-generation model IDs. Because regional catalogs can lag jurisdictional catalogs, `europe-*` results are merged with `eu`, and US/North America regional results with `us`. PublisherModel action metadata is not used because `google-genai` does not expose it consistently. Empty or transiently unavailable discovery permits manual model entry, which is checked with a fixed synthetic stable-`v1` `count_tokens` request before finalization. Definitive credential, IAM, disabled-API, and location failures create neither draft nor secret.
+
+Queued jobs snapshot project, location, API version, and capacity mode. Credentials, Vault references, private-key identifiers, and access tokens are excluded. Gemini request snapshots use `contents` plus `system_instruction`; token usage maps into existing accounting fields. Template notes, structured notes, follow-ups, quick actions, and hallucination checks share this path.
+
+Gemini note generation applies a model-aware low-thinking policy. Every Gemini generation request uses a fixed `max_output_tokens=30000` provider ceiling so hidden reasoning and the response share enough output capacity. The user's short/normal/long choice remains saved and snapshotted as preference metadata, but does not yet add a semantic prompt guard or lower the Gemini provider cap. Quota reservation uses the same 30,000-token request ceiling and unused units are released during settlement. JSON-producing template and hallucination-check requests carry an explicit JSON Schema in the encrypted request snapshot and provider request; the existing backend parser remains authoritative. Follow-ups and quick actions use plain-text mode. A provider `MAX_TOKENS` finish is reported as `llm_generation_truncated` instead of being misclassified as malformed JSON.
+
+Set `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false` to hide and reject the preset during rollout. Default is enabled.
+
+See [Gemini Enterprise setup](gemini-enterprise-setup.md) for comprehensive bare-metal and Docker deployment instructions. Publisher-model discovery uses Google's `v1beta1` Model Garden catalog; token counting and generation use stable `v1`. Discovery failure still permits manual selection, with `count_tokens` providing the authoritative access check during finalization.

@@ -4480,6 +4480,7 @@ def test_llm_provider_preset_catalog_and_inference():
         "together",
         "ollama",
         "bedrock_http_gateway",
+        "gemini_enterprise",
         "custom_openai_compatible",
     ]
     assert LLM_PROVIDER_PRESETS["openrouter"].default_base_url == "https://openrouter.ai/api/v1"
@@ -4494,10 +4495,199 @@ def test_llm_provider_preset_catalog_and_inference():
     assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://api.together.xyz/v1") == "together"
     assert infer_llm_provider_preset(LlmAdapterKind.bedrock_chat, "https://bedrock-mantle.eu-west-2.api.aws/v1") == "bedrock_http_gateway"
     assert infer_llm_provider_preset(LlmAdapterKind.ollama_chat, "http://localhost:11434") == "ollama"
+    assert infer_llm_provider_preset(LlmAdapterKind.gemini_enterprise, "https://europe-west2-aiplatform.googleapis.com") == "gemini_enterprise"
     assert infer_llm_provider_preset(LlmAdapterKind.openai_chat, "https://llm.example.com/v1") == "custom_openai_compatible"
     assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="", bedrock_region="us-east-1")[2] == "https://bedrock-mantle.us-east-1.api.aws/v1"
     assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="http://localhost:11434", bedrock_region="us-west-2")[2] == "https://bedrock-mantle.us-west-2.api.aws/v1"
     assert apply_provider_defaults(provider_preset="bedrock_http_gateway", base_url="https://bedrock-mantle.eu-west-2.api.aws/v1", bedrock_region=None)[3] == "eu-west-2"
+
+
+def test_gemini_adc_draft_uses_runtime_identity_without_vault_secret(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Gemini ADC Clinic")
+    make_user(email="gemini-admin@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm.discover_gemini_models",
+        lambda **kwargs: ["publishers/google/models/gemini-test"],
+    )
+    writes = []
+    monkeypatch.setattr(
+        "app.services.llm.write_team_llm_secret",
+        lambda **kwargs: writes.append(kwargs) or "unexpected",
+    )
+
+    login(client, email="gemini-admin@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "gemini_enterprise",
+            "google_project_id": "clinical-platform-prod",
+            "google_location": "europe-west2",
+            "google_auth_method": "application_default",
+            "capacity_mode": "shared",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["config"]["auth_mode"] == "google_adc"
+    assert body["config"]["has_secret"] is False
+    assert body["config"]["google_project_id"] == "clinical-platform-prod"
+    assert "credential_json" not in str(body)
+    config = db_session.get(TeamLlmConfig, UUID(body["config"]["id"]))
+    assert config.provider_config_json == {
+        "project_id": "clinical-platform-prod",
+        "location": "europe-west2",
+        "api_version": "v1",
+        "capacity_mode": "shared",
+    }
+    assert config.vault_secret_ref == ""
+    assert writes == []
+
+
+def test_gemini_model_list_404_creates_manual_model_draft(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Gemini Manual Model Clinic")
+    make_user(email="gemini-manual-admin@example.com", password="password-1", is_system_admin=True)
+    monkeypatch.setattr(
+        "app.services.llm.discover_gemini_models",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AppError(
+                502,
+                "llm_model_discovery_unavailable",
+                "Gemini model discovery is unavailable for this endpoint.",
+                {"provider_http_status": 404},
+            )
+        ),
+    )
+
+    login(client, email="gemini-manual-admin@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "gemini_enterprise",
+            "google_project_id": "openscribe-503014",
+            "google_location": "europe-west2",
+            "google_auth_method": "application_default",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["discovery_status"] == "manual_required"
+    assert response.json()["available_models"] == []
+    assert "location is unavailable" not in response.text.lower()
+    config_id = UUID(response.json()["config"]["id"])
+
+    validation_calls = []
+
+    def reject_manual_model(**kwargs):
+        validation_calls.append(kwargs)
+        raise AppError(422, "llm_model_unavailable", "The Gemini model is unavailable.")
+
+    monkeypatch.setattr("app.services.llm.validate_gemini_model", reject_manual_model)
+    rejected = client.post(
+        f"/api/v1/llm-configs/{config_id}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": str(config_id),
+            "label": "Gemini Manual",
+            "model_name": "publishers/google/models/gemini-manual",
+            "is_active": True,
+        },
+    )
+
+    assert_error(
+        rejected,
+        status_code=422,
+        code="llm_model_unavailable",
+        message="The Gemini model is unavailable.",
+    )
+    persisted = db_session.get(TeamLlmConfig, config_id)
+    assert persisted.setup_status == LlmConfigSetupStatus.pending_model_selection.value
+    assert persisted.model_name is None
+    assert validation_calls == [
+        {
+            "project_id": "openscribe-503014",
+            "location": "europe-west2",
+            "credentials": None,
+            "capacity_mode": "auto",
+            "model": "publishers/google/models/gemini-manual",
+        }
+    ]
+
+    monkeypatch.setattr("app.services.llm.validate_gemini_model", lambda **kwargs: 4)
+    finalized = client.post(
+        f"/api/v1/llm-configs/{config_id}/finalize",
+        json={
+            "team_id": str(team.id),
+            "config_id": str(config_id),
+            "label": "Gemini Manual",
+            "model_name": "publishers/google/models/gemini-manual",
+            "is_active": True,
+        },
+    )
+
+    assert finalized.status_code == 200
+    db_session.refresh(persisted)
+    assert persisted.setup_status == LlmConfigSetupStatus.ready.value
+    assert persisted.model_name == "publishers/google/models/gemini-manual"
+    assert persisted.available_models_json == ["publishers/google/models/gemini-manual"]
+
+
+def test_gemini_service_account_draft_validates_before_vault_write_and_never_echoes_secret(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Gemini Service Account Clinic")
+    make_user(email="gemini-sa-admin@example.com", password="password-1", is_system_admin=True)
+    private_key = "-----BEGIN PRIVATE KEY-----SECRET-MATERIAL-----END PRIVATE KEY-----"
+    credential = {
+        "type": "service_account",
+        "client_email": "runtime@credential-home.iam.gserviceaccount.com",
+        "private_key": private_key,
+        "private_key_id": "key-id",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    order = []
+    monkeypatch.setattr(
+        "app.services.llm.service_account_credentials_from_info",
+        lambda value: order.append("validated") or object(),
+    )
+    monkeypatch.setattr(
+        "app.services.llm.discover_gemini_models",
+        lambda **kwargs: order.append("inspected") or ["publishers/google/models/gemini-test"],
+    )
+    writes = []
+
+    def write_secret(**kwargs):
+        order.append("written")
+        writes.append(kwargs["secret_payload"])
+        return f"secret:test/{kwargs['config_id']}"
+
+    monkeypatch.setattr("app.services.llm.write_team_llm_secret", write_secret)
+    login(client, email="gemini-sa-admin@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "gemini_enterprise",
+            "google_project_id": "clinical-platform-prod",
+            "google_location": "europe-west2",
+            "google_auth_method": "service_account_json",
+            "google_service_account_json": credential,
+        },
+    )
+
+    assert response.status_code == 200
+    assert order == ["validated", "inspected", "written"]
+    assert writes == [{"secret_type": "google_service_account_json", "credential_json": credential}]
+    assert private_key not in response.text
+    config = db_session.get(TeamLlmConfig, UUID(response.json()["config"]["id"]))
+    assert config.auth_mode is LlmAuthMode.google_service_account
+    assert config.vault_secret_ref.startswith("secret:test/")
 
 
 def test_llm_model_filtering_only_applies_openai_prefix_rules_to_openai():
@@ -7616,7 +7806,7 @@ def test_generation_without_pending_transcription_keeps_queued_snapshot(
     assert "Edited after queue click." not in provider_requests[0]["messages"][1]["content"]
 
 
-def test_generation_allows_multiple_queued_followups_and_blocks_active_recording(
+def test_generation_allows_queued_note_then_followups_and_blocks_active_recording(
     client,
     db_session,
     monkeypatch,
@@ -7645,13 +7835,17 @@ def test_generation_allows_multiple_queued_followups_and_blocks_active_recording
     assert started.status_code == 201
     transcript_id = started.json()["id"]
 
+    note = client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
+    assert note.status_code == 202
     first = client.post(f"/api/v1/transcripts/{transcript_id}/generate-followup", json={"prompt_text": "First queued follow-up"})
     assert first.status_code == 202
     second = client.post(f"/api/v1/transcripts/{transcript_id}/generate-followup", json={"prompt_text": "Second queued follow-up"})
     assert second.status_code == 202
     documents = list(db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id))))
-    assert len(documents) == 2
+    assert len(documents) == 3
     assert {document.status for document in documents} == {GeneratedDocumentStatus.queued}
+    assert [document.generator_type for document in documents].count(GeneratedDocumentGeneratorType.template) == 1
+    assert [document.generator_type for document in documents].count(GeneratedDocumentGeneratorType.followup) == 2
 
     db_session.query(GeneratedDocument).delete()
     transcript = db_session.get(Transcript, UUID(transcript_id))

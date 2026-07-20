@@ -19,7 +19,19 @@ from app.services.llm_presets import (
     reclassify_preset_for_base_url,
 )
 from app.services.security_audit import record_security_event
-from app.services.vault import delete_team_llm_bearer_token, read_team_llm_bearer_token, write_team_llm_bearer_token
+from app.services.vault import (
+    delete_team_llm_bearer_token,
+    read_team_llm_bearer_token,
+    read_team_llm_secret,
+    write_team_llm_bearer_token,
+    write_team_llm_secret,
+)
+from app.services.llm_adapters.gemini_enterprise import (
+    discover_gemini_models,
+    service_account_credentials_from_info,
+    validate_gemini_model,
+)
+from app.services.llm_credentials import google_service_account_secret, resolve_llm_runtime_credential
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 
 
@@ -36,6 +48,33 @@ def _record_llm_audit(db: Session, *, action: str, actor: User, team_id: UUID, c
 
 def _enum_value(value):
     return getattr(value, "value", value)
+
+
+def _gemini_provider_config(payload) -> dict[str, object]:
+    config = dict(getattr(payload, "provider_config_json", None) or {})
+    return {
+        "project_id": str(config.get("project_id") or payload.google_project_id),
+        "location": str(config.get("location") or payload.google_location),
+        "api_version": "v1",
+        "capacity_mode": str(config.get("capacity_mode") or payload.capacity_mode or "auto"),
+    }
+
+
+def _gemini_submission_credential(payload):
+    if payload.google_auth_method == "application_default":
+        return None
+    credential_json = payload.google_service_account_json
+    if not isinstance(credential_json, dict):
+        raise AppError(422, "business_rule_violation", "Service-account authentication requires credential JSON")
+    return service_account_credentials_from_info(credential_json)
+
+
+def _gemini_auth_mode(payload) -> LlmAuthMode:
+    return (
+        LlmAuthMode.google_adc
+        if payload.google_auth_method == "application_default"
+        else LlmAuthMode.google_service_account
+    )
 
 
 def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
@@ -453,6 +492,41 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
             warnings = ["Could not reach Ollama /api/tags. Verify the base URL and network access."]
             notes = ["Live Ollama model discovery failed. Verify the base URL and local Ollama host, or enter a model name manually."]
         model_options = _llm_model_options(models, source=source)
+    elif adapter_kind is LlmAdapterKind.gemini_enterprise:
+        provider_config = _gemini_provider_config(payload)
+        credentials = _gemini_submission_credential(payload)
+        try:
+            models = discover_gemini_models(
+                project_id=str(provider_config["project_id"]),
+                location=str(provider_config["location"]),
+                credentials=credentials,
+                capacity_mode=str(provider_config["capacity_mode"]),
+            )
+            source = "fetched" if models else "manual"
+            metadata = _successful_discovery_metadata(
+                provider_preset=preset_key,
+                models=models,
+                empty_warning="No compatible Gemini models were returned. Enter a model ID manually.",
+            )
+            discovery_status = str(metadata["discovery_status"])
+            default_model_source = str(metadata["default_model_source"])
+            warnings = list(metadata["warnings"])
+            notes = list(metadata["notes"])
+        except AppError as exc:
+            if exc.code in {
+                "llm_invalid_credential",
+                "llm_permission_denied",
+                "llm_provider_api_disabled",
+                "llm_location_unavailable",
+            }:
+                raise
+            models = []
+            source = "manual"
+            discovery_status = "manual_required"
+            default_model_source = "manual"
+            warnings = ["Gemini model discovery is temporarily unavailable. Enter a model ID manually."]
+            notes = []
+        model_options = _llm_model_options(models, source=source)
     else:  # pragma: no cover
         models = []
         source = "default"
@@ -478,6 +552,10 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
         supports_model_discovery=preset.supports_model_discovery,
         warnings=warnings,
         notes=notes,
+        google_project_id=getattr(payload, "google_project_id", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        google_location=getattr(payload, "google_location", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        google_auth_method=getattr(payload, "google_auth_method", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        capacity_mode=getattr(payload, "capacity_mode", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
     )
 
 
@@ -488,6 +566,14 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
         if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
         else None
     )
+    google_credential_json = None
+    if config.auth_mode is LlmAuthMode.google_service_account:
+        secret = read_team_llm_secret(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+        candidate = secret.get("credential_json")
+        if not isinstance(candidate, dict):
+            raise AppError(502, "vault_read_failed", "Vault secret read failed")
+        google_credential_json = candidate
+    provider_config = dict(config.provider_config_json or {})
     inspection = inspect_llm_contract(
         db,
         actor,
@@ -497,6 +583,15 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
             adapter_kind=config.adapter_kind,
             base_url=config.base_url,
             bearer_token=bearer_token,
+            google_project_id=provider_config.get("project_id"),
+            google_location=provider_config.get("location"),
+            google_auth_method=(
+                "application_default"
+                if config.auth_mode is LlmAuthMode.google_adc
+                else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else None
+            ),
+            google_service_account_json=google_credential_json,
+            capacity_mode=provider_config.get("capacity_mode", "auto"),
         ),
     )
     config.inspection_metadata_json = _inspection_metadata(inspection)
@@ -589,6 +684,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
     provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
     preset = get_llm_provider_preset(provider_preset)
     adapter_kind = preset.adapter_kind
+    is_gemini = adapter_kind is LlmAdapterKind.gemini_enterprise
     bearer_token = payload.bearer_token
     inherits_bearer_token = not bearer_token and preset.requires_bearer_token and target is not None and bool(target.vault_secret_ref)
     if inherits_bearer_token:
@@ -599,6 +695,25 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         )
     if preset.requires_bearer_token and not bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires an API key", {"field": "bearer_token"})
+    google_credential_json = payload.google_service_account_json
+    inherits_google_credential = (
+        adapter_kind is LlmAdapterKind.gemini_enterprise
+        and payload.google_auth_method == "service_account_json"
+        and google_credential_json is None
+        and target is not None
+        and target.auth_mode is LlmAuthMode.google_service_account
+        and bool(target.vault_secret_ref)
+    )
+    if inherits_google_credential:
+        inherited_secret = read_team_llm_secret(
+            team_id=team.id,
+            config_id=target.id,
+            secret_ref=target.vault_secret_ref,
+        )
+        candidate = inherited_secret.get("credential_json")
+        if not isinstance(candidate, dict):
+            raise AppError(502, "vault_read_failed", "Vault secret read failed")
+        google_credential_json = candidate
     raw_label = (payload.label or "").strip()
     inspection = inspect_llm_contract(
         db,
@@ -610,6 +725,11 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
             base_url=base_url,
             bearer_token=bearer_token,
             bedrock_region=region,
+            google_project_id=payload.google_project_id,
+            google_location=payload.google_location,
+            google_auth_method=payload.google_auth_method,
+            google_service_account_json=google_credential_json,
+            capacity_mode=payload.capacity_mode,
         ),
     )
     label = raw_label or (target.label if target is not None else default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name))
@@ -623,12 +743,17 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         provider_preset=inspection.provider_preset,
         adapter_kind=inspection.adapter_kind,
         base_url=inspection.base_url,
-        auth_mode=LlmAuthMode.bearer if preset.requires_bearer_token or payload.bearer_token else LlmAuthMode.none,
+        auth_mode=(
+            _gemini_auth_mode(payload)
+            if adapter_kind is LlmAdapterKind.gemini_enterprise
+            else LlmAuthMode.bearer if preset.requires_bearer_token or payload.bearer_token else LlmAuthMode.none
+        ),
         model_name=None,
         available_models_json=list(inspection.available_models),
         inspection_metadata_json=_inspection_metadata(inspection),
+        provider_config_json=(dict(payload.provider_config_json) if adapter_kind is LlmAdapterKind.gemini_enterprise else {}),
         setup_status=LlmConfigSetupStatus.pending_model_selection,
-        vault_secret_ref="pending" if bearer_token else "",
+        vault_secret_ref="pending" if bearer_token or google_credential_json else "",
         is_active=False,
         created_by_user_id=actor.id,
         updated_by_user_id=actor.id,
@@ -651,6 +776,14 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
                     config_id=config.id,
                     bearer_token=bearer_token,
                 )
+            config.vault_secret_ref = written_secret_ref
+        elif google_credential_json:
+            written_secret_ref = write_team_llm_secret(
+                team_id=team.id,
+                config_id=config.id,
+                secret_payload=google_service_account_secret(google_credential_json),
+                secret_id=uuid4() if inherits_google_credential else None,
+            )
             config.vault_secret_ref = written_secret_ref
         db.commit()
     except IntegrityError as exc:
@@ -686,6 +819,15 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     available = list(config.available_models_json or [])
     if available and model_name not in available:
         raise AppError(422, "business_rule_violation", "Selected model is not available for this provider", {"field": "model_name"})
+    if config.adapter_kind is LlmAdapterKind.gemini_enterprise and not available:
+        provider_config = dict(config.provider_config_json or {})
+        validate_gemini_model(
+            project_id=str(provider_config.get("project_id") or ""),
+            location=str(provider_config.get("location") or ""),
+            credentials=resolve_llm_runtime_credential(config),
+            capacity_mode=str(provider_config.get("capacity_mode") or "auto"),
+            model=model_name,
+        )
     label = payload.label.strip()
     _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=target.id if target is not None else config.id)
     metadata = dict(config.inspection_metadata_json or {})
@@ -710,15 +852,15 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
             revision_secret_ref = config.vault_secret_ref
             try:
-                bearer_token = read_team_llm_bearer_token(
+                secret_payload = read_team_llm_secret(
                     team_id=team.id,
                     config_id=config.id,
                     secret_ref=revision_secret_ref,
                 )
-                rebound_secret_ref = write_team_llm_bearer_token(
+                rebound_secret_ref = write_team_llm_secret(
                     team_id=team.id,
                     config_id=target.id,
-                    bearer_token=bearer_token,
+                    secret_payload=secret_payload,
                     secret_id=uuid4(),
                 )
             except Exception:
@@ -728,7 +870,7 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         if rebound_secret_ref:
             config.vault_secret_ref = rebound_secret_ref
         if target is not None:
-            for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "setup_status", "vault_secret_ref", "is_active"):
+            for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "provider_config_json", "setup_status", "vault_secret_ref", "is_active"):
                 setattr(target, field, getattr(config, field))
             target.updated_by_user_id = actor.id
             db.delete(config)
@@ -767,6 +909,12 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
+    is_gemini = config.adapter_kind is LlmAdapterKind.gemini_enterprise
+    if is_gemini and payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "Gemini Enterprise does not accept bearer tokens")
+    if not is_gemini and not payload.bearer_token:
+        raise AppError(422, "business_rule_violation", "This LLM provider requires a bearer token")
+    provider_config = dict(config.provider_config_json or {})
     has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
     was_ready = config.setup_status == LlmConfigSetupStatus.ready
     was_active = config.is_active
@@ -780,6 +928,11 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
             adapter_kind=config.adapter_kind,
             base_url=config.base_url,
             bearer_token=payload.bearer_token,
+            google_project_id=provider_config.get("project_id") if is_gemini else None,
+            google_location=provider_config.get("location") if is_gemini else None,
+            google_auth_method=payload.google_auth_method if is_gemini else None,
+            google_service_account_json=payload.google_service_account_json if is_gemini else None,
+            capacity_mode=provider_config.get("capacity_mode", "auto") if is_gemini else "auto",
         ),
     )
     if has_in_flight_jobs and was_ready and existing_model_name and existing_model_name not in inspection.available_models:
@@ -790,14 +943,29 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
             {"field": "bearer_token", "model_name": existing_model_name, "config_id": str(config.id)},
         )
     old_secret_ref = config.vault_secret_ref
-    new_secret_ref = write_team_llm_bearer_token(
-        team_id=team.id,
-        config_id=config.id,
-        bearer_token=payload.bearer_token,
-        secret_id=uuid4(),
-    )
+    new_secret_ref = ""
+    if payload.bearer_token:
+        new_secret_ref = write_team_llm_bearer_token(
+            team_id=team.id,
+            config_id=config.id,
+            bearer_token=payload.bearer_token,
+            secret_id=uuid4(),
+        )
+    elif payload.google_auth_method == "service_account_json":
+        new_secret_ref = write_team_llm_secret(
+            team_id=team.id,
+            config_id=config.id,
+            secret_payload=google_service_account_secret(payload.google_service_account_json or {}),
+            secret_id=uuid4(),
+        )
     try:
         config.vault_secret_ref = new_secret_ref
+        if is_gemini:
+            config.auth_mode = (
+                LlmAuthMode.google_adc
+                if payload.google_auth_method == "application_default"
+                else LlmAuthMode.google_service_account
+            )
         config.available_models_json = list(inspection.available_models)
         if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
             config.model_name = None
@@ -816,7 +984,8 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
         db.commit()
     except Exception:
         db.rollback()
-        queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=new_secret_ref)
+        if new_secret_ref:
+            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=new_secret_ref)
         raise
     db.refresh(config)
     _record_llm_audit(db, action="llm_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
@@ -834,21 +1003,22 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     provider_preset = reclassify_preset_for_base_url(provider_preset, base_url)
     preset = get_llm_provider_preset(provider_preset)
     adapter_kind = preset.adapter_kind
+    is_gemini = adapter_kind is LlmAdapterKind.gemini_enterprise
     config = None
     if payload.config_id is not None:
         config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
         if config is None:
             raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
     creating = config is None
-    replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token)
-    removing_secret = payload.credential_action == "remove"
+    replacing_secret = payload.credential_action == "replace" or bool(payload.bearer_token) or bool(payload.google_service_account_json)
+    removing_secret = payload.credential_action == "remove" or (is_gemini and payload.google_auth_method == "application_default")
     if removing_secret and payload.bearer_token:
         raise AppError(422, "business_rule_violation", "Bearer token cannot be supplied when credential_action is remove", {"field": "credential_action"})
-    if replacing_secret and not payload.bearer_token:
+    if replacing_secret and not payload.bearer_token and not payload.google_service_account_json:
         raise AppError(422, "business_rule_violation", "Bearer token is required when credential_action is replace", {"field": "bearer_token"})
     if removing_secret and preset.requires_bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "credential_action"})
-    requires_saved_secret = preset.requires_bearer_token
+    requires_saved_secret = preset.requires_bearer_token or (is_gemini and payload.google_auth_method == "service_account_json")
     has_existing_secret = config is not None and bool(config.vault_secret_ref)
     if requires_saved_secret and not replacing_secret and not has_existing_secret:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "bearer_token"})
@@ -859,6 +1029,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             (config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)) != provider_preset
             or config.adapter_kind != adapter_kind
             or config.base_url.rstrip("/") != base_url.rstrip("/")
+            or dict(config.provider_config_json or {}) != (dict(payload.provider_config_json) if is_gemini else {})
         )
     )
     has_in_flight_jobs = config is not None and _llm_config_has_in_flight_jobs(db, config_id=config.id)
@@ -892,7 +1063,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     _ensure_unique_llm_config_label(db, team_id=team.id, label=label, current_config_id=config.id if config is not None else None)
 
     existing_token_for_discovery: str | None = None
-    if provider_endpoint_changed and not replacing_secret and has_existing_secret:
+    if provider_endpoint_changed and not replacing_secret and has_existing_secret and not is_gemini:
         existing_token_for_discovery = read_team_llm_bearer_token(team_id=team.id, config_id=config.id, secret_ref=config.vault_secret_ref)
 
     available_models_json: list[str]
@@ -953,6 +1124,37 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         except AppError:
             available_models_json = []
             discovery_metadata = _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=["Live model discovery failed. Verify the endpoint, or enter a model name manually."], notes=[])
+    elif adapter_kind is LlmAdapterKind.gemini_enterprise:
+        if payload.google_service_account_json:
+            gemini_credential = service_account_credentials_from_info(payload.google_service_account_json)
+        elif config is not None and config.auth_mode is LlmAuthMode.google_service_account and config.vault_secret_ref:
+            gemini_credential = resolve_llm_runtime_credential(config)
+        else:
+            gemini_credential = None
+        provider_config = dict(payload.provider_config_json)
+        try:
+            available_models_json = discover_gemini_models(
+                project_id=str(provider_config.get("project_id") or ""),
+                location=str(provider_config.get("location") or ""),
+                credentials=gemini_credential,
+                capacity_mode=str(provider_config.get("capacity_mode") or "auto"),
+            )
+            discovery_metadata = _successful_discovery_metadata(
+                provider_preset=provider_preset,
+                models=available_models_json,
+                empty_warning="No compatible Gemini models were returned. Enter a model ID manually.",
+            )
+        except AppError as exc:
+            if exc.code in {"llm_invalid_credential", "llm_permission_denied", "llm_provider_api_disabled", "llm_location_unavailable"}:
+                raise
+            available_models_json = []
+            discovery_metadata = _discovery_metadata(
+                provider_preset=provider_preset,
+                discovery_status="manual_required",
+                default_model_source="manual",
+                warnings=["Gemini model discovery is temporarily unavailable. Enter a model ID manually."],
+                notes=[],
+            )
     elif config is not None and not provider_endpoint_changed:
         available_models_json = list(config.available_models_json or [])
     else:
@@ -972,7 +1174,9 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         discovery_metadata = discovery_metadata or _discovery_metadata(provider_preset=provider_preset, discovery_status="manual_required", default_model_source="manual", warnings=[], notes=[])
         discovery_metadata["manual_model_name"] = model_name
 
-    if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+    if adapter_kind is LlmAdapterKind.gemini_enterprise:
+        resolved_auth_mode = _gemini_auth_mode(payload)
+    elif adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         resolved_auth_mode = LlmAuthMode.bearer
     else:
         resolved_auth_mode = LlmAuthMode.bearer if replacing_secret or (config is not None and config.vault_secret_ref and not removing_secret) else LlmAuthMode.none
@@ -989,6 +1193,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             model_name=model_name,
             available_models_json=available_models_json,
             inspection_metadata_json=discovery_metadata,
+            provider_config_json=dict(payload.provider_config_json) if is_gemini else {},
             setup_status=LlmConfigSetupStatus.ready,
             vault_secret_ref="pending" if replacing_secret or adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat} else "",
             is_active=payload.is_active,
@@ -1011,6 +1216,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.model_name = model_name
         config.available_models_json = available_models_json
         config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
+        config.provider_config_json = dict(payload.provider_config_json) if is_gemini else {}
         config.setup_status = LlmConfigSetupStatus.ready
         config.is_active = config.is_active if credential_correction_during_in_flight else payload.is_active
         config.updated_by_user_id = actor.id
@@ -1028,11 +1234,19 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
                 secret_id=uuid4() if not creating else None,
             )
             config.vault_secret_ref = pending_secret_ref
+        elif replacing_secret and payload.google_service_account_json:
+            pending_secret_ref = write_team_llm_secret(
+                team_id=team.id,
+                config_id=config.id,
+                secret_payload=google_service_account_secret(payload.google_service_account_json),
+                secret_id=uuid4() if not creating else None,
+            )
+            config.vault_secret_ref = pending_secret_ref
         elif removing_secret:
             if config.vault_secret_ref:
                 deleted_secret_ref = config.vault_secret_ref
             config.vault_secret_ref = ""
-        elif adapter_kind is LlmAdapterKind.ollama_chat and creating:
+        elif adapter_kind in {LlmAdapterKind.ollama_chat, LlmAdapterKind.gemini_enterprise} and creating:
             config.vault_secret_ref = ""
         elif creating:
             raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})

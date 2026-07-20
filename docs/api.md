@@ -504,7 +504,7 @@ Current generation behavior:
 - generation currently supports both OpenAI chat-style providers and Ollama chat hosts
 - template note generation snapshots the current user's saved note options when the generated-document row is queued; later preference changes affect future queued notes only
 - the transcribe workspace waits for pending note option/model preference saves and retries each save once before queueing template note generation; if the retry still fails, the user is warned and the queued row snapshots the last saved options
-- `note_generation_length` maps to output-token caps: `short=800`, `normal=1600`, `long=3200`; absent preferences use `normal`
+- `note_generation_length` keeps the saved/snapshotted `short`, `normal`, or `long` preference metadata; absent preferences use `normal`; for Gemini, this selection currently adds no semantic prompt guard and every generation request sets `max_output_tokens=30000`, reserving quota against that 30,000-token ceiling and releasing unused units during settlement
 - OpenAI-compatible and Bedrock gateway request bodies use `max_completion_tokens`; Ollama `/api/chat` requests use `options.num_predict`
 - `llm_detail_level` adds format-neutral detail guidance to template-note system prompts only; quick actions, follow-ups, dictation cleanup, redaction, clinical extraction, and STT do not use it
 - generation now applies native PHI pseudonymisation before outbound LLM calls:
@@ -823,6 +823,12 @@ or confirmed already absent.
 - user LLM preferences must be chosen from the leader-approved allowed-model subset
 - STT team selection rejects model overrides outside the provider-discovered model list
 - if a provider does not return a selectable model list, the selection APIs reject free-text overrides rather than silently accepting them
+
+### Gemini Enterprise LLM fields
+
+LLM inspect, draft, and upsert requests accept `provider_preset=gemini_enterprise` with `google_project_id`, `google_location`, `google_auth_method` (`application_default` or `service_account_json`), optional input-only `google_service_account_json`, and `capacity_mode` (`auto`, `shared`, or `dedicated`). Gemini rejects `bearer_token` and ignores submitted base URLs by deriving audit metadata from location.
+
+LLM config responses expose only `google_project_id`, `google_location`, `google_auth_method`, and `capacity_mode`. They never expose the provider config wholesale, credential JSON, Vault reference, or access token. ADC responses report `has_secret=false`.
 
 ## Current uniqueness and onboarding rules
 

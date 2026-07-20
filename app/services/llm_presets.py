@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -33,6 +34,10 @@ class LlmProviderPresetDefinition:
     allow_manual_model: bool
     advanced: bool = False
     default_bedrock_region: str | None = None
+    auth_options: tuple[str, ...] = ("bearer",)
+    requires_base_url: bool = True
+    requires_project: bool = False
+    requires_location: bool = False
     help_text: str = ""
 
 
@@ -119,6 +124,23 @@ LLM_PROVIDER_PRESETS: dict[str, LlmProviderPresetDefinition] = {
         allow_manual_model=True,
         default_bedrock_region=DEFAULT_BEDROCK_CHAT_REGION,
     ),
+    LlmProviderPreset.gemini_enterprise.value: LlmProviderPresetDefinition(
+        key=LlmProviderPreset.gemini_enterprise.value,
+        display_name="Gemini Enterprise",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        default_base_url=None,
+        requires_bearer_token=False,
+        supports_model_discovery=True,
+        allow_manual_model=True,
+        auth_options=("google_adc", "google_service_account"),
+        requires_base_url=False,
+        requires_project=True,
+        requires_location=True,
+        help_text=(
+            "Uses a Google Cloud project, location, and Application Default Credentials "
+            "or a Vault-backed service-account credential."
+        ),
+    ),
     LlmProviderPreset.custom_openai_compatible.value: LlmProviderPresetDefinition(
         key=LlmProviderPreset.custom_openai_compatible.value,
         display_name="Custom OpenAI-compatible · advanced",
@@ -145,9 +167,24 @@ BRANDED_OPENAI_COMPATIBLE_PRESETS = {
 def get_llm_provider_preset(key: str | LlmProviderPreset | None) -> LlmProviderPresetDefinition:
     preset_key = (key.value if isinstance(key, LlmProviderPreset) else key) or LlmProviderPreset.openai.value
     try:
-        return LLM_PROVIDER_PRESETS[preset_key]
+        preset = LLM_PROVIDER_PRESETS[preset_key]
     except KeyError as exc:
         raise ValueError("Unsupported LLM provider preset") from exc
+    if preset_key == LlmProviderPreset.gemini_enterprise.value and not gemini_enterprise_provider_enabled():
+        raise ValueError("Gemini Enterprise provider is disabled")
+    return preset
+
+
+def gemini_enterprise_provider_enabled() -> bool:
+    return os.getenv("ENABLE_GEMINI_ENTERPRISE_PROVIDER", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def visible_llm_provider_presets() -> list[LlmProviderPresetDefinition]:
+    return [
+        preset
+        for preset in LLM_PROVIDER_PRESETS.values()
+        if preset.key != LlmProviderPreset.gemini_enterprise.value or gemini_enterprise_provider_enabled()
+    ]
 
 
 def default_llm_config_label(*, provider_display_name: str, team_name: str) -> str:
@@ -161,6 +198,8 @@ def infer_llm_provider_preset(adapter_kind: str | LlmAdapterKind, base_url: str 
         return LlmProviderPreset.ollama.value
     if adapter_value == LlmAdapterKind.bedrock_chat.value:
         return LlmProviderPreset.bedrock_http_gateway.value
+    if adapter_value == LlmAdapterKind.gemini_enterprise.value:
+        return LlmProviderPreset.gemini_enterprise.value
     if adapter_value == LlmAdapterKind.openai_chat.value:
         if host == "api.openai.com":
             return LlmProviderPreset.openai.value
@@ -185,6 +224,8 @@ def _preset_from_legacy_adapter(adapter_kind: str | LlmAdapterKind | None) -> st
         return LlmProviderPreset.bedrock_http_gateway.value
     if adapter_value == LlmAdapterKind.ollama_chat.value:
         return LlmProviderPreset.ollama.value
+    if adapter_value == LlmAdapterKind.gemini_enterprise.value:
+        return LlmProviderPreset.gemini_enterprise.value
     return LlmProviderPreset.openai.value
 
 
@@ -194,11 +235,16 @@ def apply_provider_defaults(
     base_url: str | None,
     bedrock_region: str | None,
     adapter_kind: str | LlmAdapterKind | None = None,
+    google_location: str | None = None,
 ) -> tuple[str, LlmAdapterKind, str, str | None]:
     preset = get_llm_provider_preset(provider_preset or _preset_from_legacy_adapter(adapter_kind))
     resolved_base_url = (base_url or "").strip()
     resolved_region = bedrock_region
-    if preset.key == LlmProviderPreset.bedrock_http_gateway.value:
+    if preset.key == LlmProviderPreset.gemini_enterprise.value:
+        location = (google_location or "").strip()
+        if location:
+            resolved_base_url = gemini_enterprise_base_url(location)
+    elif preset.key == LlmProviderPreset.bedrock_http_gateway.value:
         if resolved_base_url and not bedrock_region:
             resolved_region = bedrock_region_from_base_url(resolved_base_url)
         resolved_region = (resolved_region or preset.default_bedrock_region or DEFAULT_BEDROCK_CHAT_REGION).strip()
@@ -207,6 +253,13 @@ def apply_provider_defaults(
     elif preset.default_base_url and not resolved_base_url:
         resolved_base_url = preset.default_base_url
     return preset.key, preset.adapter_kind, resolved_base_url, resolved_region
+
+
+def gemini_enterprise_base_url(location: str) -> str:
+    normalized = location.strip().lower()
+    if normalized == "global":
+        return "https://aiplatform.googleapis.com"
+    return f"https://{normalized}-aiplatform.googleapis.com"
 
 
 def reclassify_preset_for_base_url(provider_preset: str, base_url: str) -> str:

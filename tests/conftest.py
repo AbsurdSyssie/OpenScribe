@@ -884,6 +884,15 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         return "test-llm-token"
 
+    def fake_write_team_llm_secret(*, team_id, config_id, secret_payload, secret_id=None, secret_ref=None):
+        if secret_ref is not None:
+            return secret_ref
+        suffix = f"/{secret_id}" if secret_id else ""
+        return f"secret:openscribe/llm/team/{team_id}/config/{config_id}{suffix}"
+
+    def fake_read_team_llm_secret(*, team_id, config_id, secret_ref=None):
+        return {"secret_type": "bearer_token", "bearer_token": "test-llm-token"}
+
     def fake_write_deidentification_bearer_token(*, provider_id, bearer_token, secret_id=None):
         suffix = f"/{secret_id}" if secret_id else ""
         return f"secret:openscribe/deidentification/provider/{provider_id}{suffix}"
@@ -900,7 +909,10 @@ def stub_vault_secret_write(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write_team_llm_bearer_token)
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete_team_llm_bearer_token)
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm.write_team_llm_secret", fake_write_team_llm_secret)
+    monkeypatch.setattr("app.services.llm.read_team_llm_secret", fake_read_team_llm_secret)
     monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
+    monkeypatch.setattr("app.services.llm_credentials.read_team_llm_secret", fake_read_team_llm_secret)
     monkeypatch.setattr("app.services.deidentification.write_deidentification_bearer_token", fake_write_deidentification_bearer_token)
     monkeypatch.setattr("app.services.deidentification.delete_deidentification_bearer_token", fake_delete_deidentification_bearer_token)
     monkeypatch.setattr("app.services.deidentification.read_deidentification_bearer_token", fake_read_deidentification_bearer_token)

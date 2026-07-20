@@ -37,7 +37,7 @@ def test_member_can_fork_same_team_quick_action_to_personal(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/settings?tab=quick-actions&scope=personal&quick_action_id=")
+    assert response.headers["location"].startswith("/workspace/library/quick-actions?scope=personal&quick_action_id=")
     forked_id = UUID(parse_qs(urlparse(response.headers["location"]).query)["quick_action_id"][0])
     forked = db_session.get(QuickAction, forked_id)
     assert forked is not None
@@ -198,7 +198,7 @@ def test_quick_action_settings_validation_retains_values_and_delete_clears_selec
         follow_redirects=False,
     )
     assert deleted.status_code == 303
-    assert deleted.headers["location"] == "/settings?tab=quick-actions"
+    assert deleted.headers["location"] == "/workspace/library/quick-actions"
 
 
 def test_quick_action_settings_partial_uses_master_detail_contract():

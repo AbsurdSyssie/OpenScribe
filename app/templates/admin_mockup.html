@@ -1380,6 +1380,31 @@
       .flash.error {
         border-left-color: var(--error);
       }
+      .toast-container {
+        position: fixed;
+        top: 24px;
+        right: 24px;
+        z-index: 200;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        pointer-events: none;
+      }
+      .toast {
+        max-width: 360px;
+        padding: 12px 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        box-shadow: 0 10px 28px rgba(26, 32, 44, 0.16);
+        font-weight: 500;
+        pointer-events: auto;
+      }
+      .toast.error {
+        border-color: rgba(197, 48, 48, 0.2);
+        background: #fff5f5;
+        color: var(--error);
+      }
       .operation-result p {
         margin: 6px 0 0;
       }
@@ -2840,6 +2865,7 @@
                     <strong>STT test {{ 'passed' if stt_test_result.success else 'failed' }}</strong>
                     <p>Health: {{ stt_test_result.health_status }} · {{ stt_test_result.duration_ms }} ms · Model: {{ stt_test_result.model_name or 'not set' }}</p>
                     {% if not stt_test_result.success %}<p>{{ stt_test_result.error_message }}{% if stt_test_result.error_code %} ({{ stt_test_result.error_code }}){% endif %}</p>{% endif %}
+                    {% if stt_test_result.provider_error_code or stt_test_result.provider_status_code %}<p>Provider error{% if stt_test_result.provider_error_code %}: {{ stt_test_result.provider_error_code }}{% endif %}{% if stt_test_result.provider_status_code %} · HTTP {{ stt_test_result.provider_status_code }}{% endif %}</p>{% endif %}
                   </div>
                   {% endif %}
                   <div class="stt-provider-table">
@@ -3070,13 +3096,18 @@
                         required /></label
                     ><label
                       >Default model
+                      {% if llm_config.available_models_json %}
                       <select name="provider_model" required>
                         {% for model in llm_config.available_models_json %}
                         <option value="{{ model }}"{% if llm_config.model_name == model %} selected{% endif %}>
                           {{ model }}
                         </option>
                         {% endfor %}
-                      </select></label
+                      </select>
+                      {% else %}
+                      <span class="field-help">Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong.</span>
+                      <input name="provider_model" value="{{ llm_config.model_name or '' }}" placeholder="Enter exact provider model ID" required />
+                      {% endif %}</label
                     ><label
                       ><input
                         type="checkbox"
@@ -3088,6 +3119,11 @@
                     ><button class="btn primary" type="submit">
                       Finish provider setup
                     </button>
+                  </form>
+                  <form method="post" action="/admin/llm-configs/{{ llm_config.id }}/replace-credential">
+                    <input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="llm">
+                    <label>Replacement API key <input type="password" name="bearer_token" required autocomplete="new-password"></label>
+                    <button class="btn" type="submit">Replace API key</button>
                   </form>
                   <form method="post" action="/admin/llm-configs/{{ llm_config.id }}/draft-cancel" data-confirm-submit="{% if llm_config.revision_of_config_id %}Discard change while active provider stays unchanged?{% else %}Cancel this LLM setup and delete its pending credential?{% endif %}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="llm"><button class="btn danger-action" type="submit">{% if llm_config.revision_of_config_id %}Discard change{% else %}Cancel setup{% endif %}</button></form>
                 </article>
@@ -3578,7 +3614,10 @@
                     <section><h3>Add allowance</h3><form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants"><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="operation_id" value="{{ quota_operation_ids.grant }}"><div class="form-grid"><label class="field">Resource<select name="resource"><option value="tokens"{% if quota_form_values.resource|default('tokens') == 'tokens' %} selected{% endif %}>Tokens</option><option value="audio_seconds"{% if quota_form_values.resource|default('') == 'audio_seconds' %} selected{% endif %}>Audio</option></select></label><fieldset><legend>Windows</legend><label><input type="checkbox" name="periods" value="daily"{% if 'daily' in quota_form_values.get('periods', []) %} checked{% endif %}> Daily</label><label><input type="checkbox" name="periods" value="monthly"{% if 'monthly' in quota_form_values.get('periods', []) %} checked{% endif %}> Monthly</label></fieldset><label class="field">Token amount<input type="number" min="1" name="amount" value="{{ quota_form_values.amount|default('') }}"></label><label class="field">Audio hours<input type="number" min=".01" step=".01" name="audio_hours" value="{{ quota_form_values.audio_hours|default('') }}"></label><label class="field">Expiry<select name="expiry_preset">{% for value, label in [('none', 'No expiry'), ('24h', '24 hours'), ('7d', '7 days'), ('end_today', 'End today (UTC)'), ('end_month', 'End month (UTC)'), ('custom', 'Custom UTC')] %}<option value="{{ value }}"{% if quota_form_values.expiry_preset|default('none') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label class="field">Custom UTC<input type="datetime-local" name="expires_at" value="{{ quota_form_values.expires_at|default('') }}"></label><label class="field">Reason code<select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}"{% if quota_form_values.reason_code|default('') == code %} selected{% endif %}>{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select></label><label class="field">Reason<input name="reason" maxlength="500" required value="{{ quota_form_values.reason|default('') }}"></label></div><button class="btn primary" type="submit">Add allowance</button></form></section>
                   </div>
                   <section><h3>Reset usage</h3><form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-resets" data-confirm-submit="Reset quota usage? Reporting telemetry stays and pending accepted work remains counted."><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="operation_id" value="{{ quota_operation_ids.reset }}"><label><input type="checkbox" name="windows" value="tokens:daily"> Daily tokens</label><label><input type="checkbox" name="windows" value="tokens:monthly"> Monthly tokens</label><label><input type="checkbox" name="windows" value="audio_seconds:daily"> Daily audio</label><label><input type="checkbox" name="windows" value="audio_seconds:monthly"> Monthly audio</label><label class="field">Reason code<select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}">{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select></label><label class="field">Reason<input name="reason" maxlength="500" required></label><button class="btn" type="submit">Reset selected</button><button class="btn danger" type="submit" name="reset_all" value="true">Reset all four</button></form></section>
-                  <section><h3>History</h3><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>When</th><th>Change</th><th>Window</th><th>Details</th><th>Actor</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody>{% for item in quota_detail.history %}<tr><td>{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ item.event_type.value|replace('_', ' ')|title }}</td><td>{{ item.resource.value|replace('_', ' ')|title }} / {{ item.period.value|title }}</td><td>{% if item.amount is not none %}{{ item.amount }}{% elif item.new_limit is not none or item.previous_limit is not none %}{{ item.previous_limit if item.previous_limit is not none else 'Unlimited' }} → {{ item.new_limit if item.new_limit is not none else 'Unlimited' }}{% else %}—{% endif %}{% if item.expires_at %}<br>Expires {{ item.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</td><td>{{ item.actor_email or item.actor_user_id_snapshot }}</td><td>{{ item.reason }}</td><td>{% if item.revoked_at %}Revoked{% elif item.expires_at and item.expires_at <= quota_now %}Expired{% elif item.event_type.value == 'grant' %}Active{% else %}Recorded{% endif %}</td><td>{% if item.event_type.value == 'grant' and not item.revoked_at and (not item.expires_at or item.expires_at > quota_now) %}<form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants/{{ item.id }}/revoke" data-confirm-submit="Revoke this active quota allowance? Telemetry stays and pending accepted work remains counted."><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="revocation_operation_id" value="{{ quota_operation_ids.revoke[item.id|string] }}"><select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}">{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select><input name="reason" maxlength="500" required aria-label="Revocation reason"><button class="btn small danger" type="submit">Revoke</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="8">No quota policy history.</td></tr>{% endfor %}</tbody></table></div></section>
+                  <section><h3>Active allowances</h3><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Created</th><th>Window</th><th>Amount</th><th>Expires</th><th>Actor</th><th>Reason</th><th></th></tr></thead><tbody>
+                    {% for item in quota_detail.active_grants %}<tr><td>{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ item.resource.value|replace('_', ' ')|title }} / {{ item.period.value|title }}</td><td>{{ item.amount|quota_units(item.resource.value) }}</td><td>{{ item.expires_at.strftime('%Y-%m-%d %H:%M UTC') if item.expires_at else 'No expiry' }}</td><td>{{ item.actor_email or item.actor_user_id_snapshot }}</td><td>{{ item.reason }}</td><td><form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants/{{ item.id }}/revoke" data-confirm-submit="Revoke this active quota allowance? Telemetry stays and pending accepted work remains counted."><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="revocation_operation_id" value="{{ quota_operation_ids.revoke[item.id|string] }}"><select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}">{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select><input name="reason" maxlength="500" required aria-label="Revocation reason"><button class="btn small danger" type="submit">Revoke</button></form></td></tr>{% else %}<tr><td colspan="7">No active quota allowances.</td></tr>{% endfor %}
+                  </tbody></table></div></section>
+                  <section><h3>History</h3><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>When</th><th>Change</th><th>Window</th><th>Details</th><th>Actor</th><th>Reason</th><th>Status</th></tr></thead><tbody>{% for item in quota_detail.history %}<tr><td>{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ item.event_type.value|replace('_', ' ')|title }}</td><td>{{ item.resource.value|replace('_', ' ')|title }} / {{ item.period.value|title }}</td><td>{% if item.amount is not none %}{{ item.amount }}{% elif item.new_limit is not none or item.previous_limit is not none %}{{ item.previous_limit if item.previous_limit is not none else 'Unlimited' }} → {{ item.new_limit if item.new_limit is not none else 'Unlimited' }}{% else %}—{% endif %}{% if item.expires_at %}<br>Expires {{ item.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</td><td>{{ item.actor_email or item.actor_user_id_snapshot }}</td><td>{{ item.reason }}</td><td>{% if item.revoked_at %}Revoked{% elif item.expires_at and item.expires_at <= quota_now %}Expired{% elif item.event_type.value == 'grant' %}Active{% else %}Recorded{% endif %}</td></tr>{% else %}<tr><td colspan="7">No quota policy history.</td></tr>{% endfor %}</tbody></table></div></section>
                 </article>
                 {% endif %}
               </section>
@@ -5304,6 +5343,7 @@
       });
     </script>
     {% endif %}
+    <div class="toast-container" data-toast-container></div>
     {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
     <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>
     <script src="/static/vendor/echarts/6.1.0/echarts.min.js"></script>
@@ -5311,6 +5351,22 @@
     {% endif %}
     <script nonce="{{ request.state.csp_nonce }}">
       (() => {
+        const toastContainer = document.querySelector("[data-toast-container]");
+        const showToast = (message, kind = "success", duration = 4000) => {
+          if (!toastContainer || !message) return;
+          const toast = document.createElement("div");
+          toast.className = `toast ${kind}`;
+          toast.textContent = message;
+          toastContainer.appendChild(toast);
+          window.setTimeout(() => toast.remove(), duration);
+        };
+        window.showToast = showToast;
+        document.querySelectorAll(".flash").forEach((flash) => {
+          const message = flash.textContent.trim();
+          const kind = flash.classList.contains("error") ? "error" : "success";
+          showToast(message, kind);
+          flash.hidden = true;
+        });
         const applyPercentageStyle = (selector, property, dataKey) => {
           document.querySelectorAll(selector).forEach((element) => {
             const value = Number(element.dataset[dataKey]);

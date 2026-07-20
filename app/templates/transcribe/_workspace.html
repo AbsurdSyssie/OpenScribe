@@ -66,6 +66,9 @@ data-transcript-title-input>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>
 {% endif %}
+{% if stt_selection %}
+<span class="text-sm text-slate" data-stt-provider-label>Speech service: {{ stt_selection.config.label }}</span>
+{% endif %}
 <button
 type="button"
 class="btn-upload"

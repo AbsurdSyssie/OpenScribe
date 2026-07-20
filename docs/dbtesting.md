@@ -521,6 +521,10 @@ Behavior in plain language:
 - quota-policy events enforce grant/reset/limit-change shapes, operation
   idempotency, revocation idempotency, actor/revoker snapshots, and safe
   deletion foreign keys
+- relative/calendar grant expiry is anchored once to the first accepted operation
+  and remains stable on exact browser retries, including across UTC day/month
+  boundaries; active grants remain independently visible and revocable after
+  they fall outside the bounded latest-50 history
 - provider attempts are metadata-only authoritative quota records, separate
   from `provider_usage_events` reporting telemetry; all LLM/STT call kinds and
   retries use them, while synthetic provider tests have no user quota owner

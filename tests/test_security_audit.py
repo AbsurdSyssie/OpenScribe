@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import select
 
 from app.models import SecurityAuditEvent, Team, TeamRole, TeamStatus
@@ -25,6 +27,16 @@ from app.models import TemplateMode, TemplateScope, TranscriptIngestionMode, Use
 
 def _audit_events(db_session, action: str) -> list[SecurityAuditEvent]:
     return list(db_session.scalars(select(SecurityAuditEvent).where(SecurityAuditEvent.action == action).order_by(SecurityAuditEvent.created_at.asc())))
+
+
+def test_raw_browser_capture_artifacts_are_not_tracked_in_prototype_tree():
+    prototype_root = Path("transcriber_changes")
+
+    assert not (prototype_root / "network_requests.json").exists()
+    assert not (prototype_root / "page.html").exists()
+    assert not (prototype_root / "index.html").exists()
+    assert not (prototype_root / "screenshot.png").exists()
+    assert not any((prototype_root / "css").glob("*"))
 
 
 def test_record_security_event_redacts_nested_sensitive_values_and_sanitizes_strings(db_session):

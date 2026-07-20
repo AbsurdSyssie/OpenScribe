@@ -691,27 +691,27 @@ MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
 ACCOUNT_SECURITY_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="account_security")
 ACCOUNT_REQUEST_RATE_LIMIT = limiter.shared_limit("3/hour", scope="account_request")
 LIVE_CHUNK_UPLOAD_RATE_LIMIT = limiter.shared_limit(
-    os.getenv("LIVE_CHUNK_UPLOAD_RATE_LIMIT", "10/10 seconds"),
+    os.getenv("LIVE_CHUNK_UPLOAD_RATE_LIMIT", "1/second"),
     scope="live_chunk_upload",
     key_func=whole_file_upload_rate_limit_key,
 )
 WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT = limiter.shared_limit(
-    os.getenv("WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT", "30/minute"),
+    os.getenv("WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT", "1/5 seconds"),
     scope="whole_file_upload_burst",
     key_func=whole_file_upload_rate_limit_key,
 )
 WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT = limiter.shared_limit(
-    os.getenv("WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT", "1000/day"),
+    os.getenv("WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT", "100/day"),
     scope="whole_file_upload_daily",
     key_func=whole_file_upload_rate_limit_key,
 )
 LLM_GENERATION_BURST_RATE_LIMIT = limiter.shared_limit(
-    os.getenv("LLM_GENERATION_BURST_RATE_LIMIT", "30/minute"),
+    os.getenv("LLM_GENERATION_BURST_RATE_LIMIT", "20/3 minutes"),
     scope="llm_generation_burst",
     key_func=whole_file_upload_rate_limit_key,
 )
 LLM_GENERATION_DAILY_RATE_LIMIT = limiter.shared_limit(
-    os.getenv("LLM_GENERATION_DAILY_RATE_LIMIT", "2000/day"),
+    os.getenv("LLM_GENERATION_DAILY_RATE_LIMIT", "200/day"),
     scope="llm_generation_daily",
     key_func=whole_file_upload_rate_limit_key,
 )

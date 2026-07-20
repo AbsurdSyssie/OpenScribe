@@ -232,8 +232,8 @@ def test_transcribe_sidebar_reuses_brand_lockup():
     assert 'class="brand transcribe-sidebar__brand"' in sidebar_template
     assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>' in sidebar_template
     assert '<span class="brand-name" data-sidebar-full>OpenScribe</span>' in sidebar_template
-    assert 'href="/settings" class="transcribe-sidebar-settings-link"' in sidebar_template
-    assert 'data-sidebar-settings-link aria-label="Open settings" title="Open settings"' in sidebar_template
+    assert 'href="/workspace/preferences" class="transcribe-sidebar-settings-link"' in sidebar_template
+    assert 'data-sidebar-settings-link aria-label="Open preferences" title="Open preferences"' in sidebar_template
     assert ".transcribe-sidebar__brand .brand-name {\nfont-size: 2rem;\n}" in transcribe_css
     assert ".transcribe-sidebar.is-collapsed .transcribe-sidebar-settings-link { justify-content: center;" in transcribe_css
 

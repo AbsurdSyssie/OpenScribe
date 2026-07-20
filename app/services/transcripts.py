@@ -49,7 +49,7 @@ from app.services.quotas import (
     settle_provider_attempt_audio,
 )
 from app.services.security_audit import record_security_event
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, transcribe_with_stt_snapshot
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, resolve_stt_snapshot_bearer_token, transcribe_with_stt_snapshot
 from app.services.task_outbox import add_pending_task_dispatch
 from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_transcripts
 from app.services.vault import (
@@ -58,10 +58,10 @@ from app.services.vault import (
     write_transcript_ingestion_source_audio,
 )
 
-LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", "0"))
+LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS", "3600"))
 LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS = float(os.getenv("LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS", "600"))
-WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
-WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", "0"))
+WHOLE_FILE_HOURLY_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_HOURLY_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS", str(4 * 60 * 60)))
 INGESTION_RESERVATION_VALIDITY_SECONDS = int(os.getenv("INGESTION_RESERVATION_VALIDITY_SECONDS", "900"))
 INGESTION_PROVIDER_DEADLINE_SECONDS = max(
     int(os.getenv("INGESTION_PROVIDER_DEADLINE_SECONDS", str(int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300))),
@@ -1858,6 +1858,7 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
 
 def _terminalize_ingestion_job_with_attempt(
     db: Session, *, job_id: UUID, code: str, message: str, outcome: AttemptOutcome,
+    preclaim_only: bool = False,
 ) -> TranscriptIngestionJob | None:
     """Terminalize one worker failure; never leave a reservation orphaned."""
     db.rollback()
@@ -1871,7 +1872,9 @@ def _terminalize_ingestion_job_with_attempt(
         if attempt_identity is not None and attempt_identity.owner_user_id is not None:
             db.scalar(select(User).where(User.id == attempt_identity.owner_user_id).with_for_update())
         attempt = _ingestion_attempt(db, job_id=job_id, lock=True)
-        if attempt is not None and attempt.status is AttemptStatus.submitted:
+        if attempt is not None and attempt.status is AttemptStatus.submitted and preclaim_only:
+            db.rollback()
+        elif attempt is not None and attempt.status is AttemptStatus.submitted:
             settle_provider_attempt_audio(db, attempt_id=attempt.id,
                                           measured_audio_seconds=attempt.measured_audio_seconds, outcome=outcome)
             db.commit()
@@ -1885,6 +1888,11 @@ def _terminalize_ingestion_job_with_attempt(
         _delete_expired_ingestion_transcript(db, transcript=transcript)
         return None
     if job.status in _TERMINAL_INGESTION_JOB_STATUSES:
+        return _return_released_ingestion_job(db, job)
+    if preclaim_only and (
+        job.status is not TranscriptIngestionJobStatus.queued
+        or (attempt is not None and attempt.status is not AttemptStatus.reserved)
+    ):
         return _return_released_ingestion_job(db, job)
     if attempt is None:
         _mark_job_failed(db, transcript, job, code="ingestion_attempt_missing", message="Ingestion accounting state is missing")
@@ -2105,6 +2113,29 @@ def process_transcript_ingestion_job(
         if preparation_job.job_kind is TranscriptIngestionJobKind.audio_file:
             enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
 
+        try:
+            bearer_token = resolve_stt_snapshot_bearer_token(
+                db,
+                team_id=preparation_job.team_id,
+                stt_config_id=preparation_job.stt_config_id,
+                provider_preset=preparation_job.stt_provider_preset,
+                adapter_kind=preparation_job.stt_adapter_kind,
+                base_url=preparation_job.stt_base_url,
+                transcribe_path=preparation_job.stt_transcribe_path,
+                file_field_name=preparation_job.stt_file_field_name,
+                response_text_path=preparation_job.stt_response_text_path,
+            )
+        except AppError as exc:
+            return _terminalize_ingestion_job_with_attempt(
+                db, job_id=job_id, code=exc.code, message=exc.message,
+                outcome=AttemptOutcome.failed, preclaim_only=True,
+            )
+        except Exception:
+            return _terminalize_ingestion_job_with_attempt(
+                db, job_id=job_id, code="ingestion_failed", message="Transcript ingestion job failed",
+                outcome=AttemptOutcome.unknown, preclaim_only=True,
+            )
+
         # Conditional claim is immediately before irreversible external STT
         # dispatch. If deletion or expiry commits before this succeeds, no
         # provider request is made.
@@ -2141,6 +2172,7 @@ def process_transcript_ingestion_job(
             audio_bytes=normalized_audio.data,
             filename=normalized_audio.filename,
             content_type=normalized_audio.content_type,
+            _resolved_bearer_token=bearer_token,
         )
         _release_ingestion_transaction(db)
         locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)

@@ -22,6 +22,14 @@ Add the first STT-management surface with:
 
 This configuration model now feeds the transcript-ingestion runtime. Users consume only the resolved active team STT selection during chunk or file upload.
 
+Runtime credential resolution and queued-snapshot validation complete before an STT
+attempt is marked submitted. The resolved credential is passed through the
+metered provider call rather than read from Vault a second time. A definite
+pre-dispatch credential failure cancels the reservation without consuming audio
+quota. If duplicate workers both observe a queued ingestion job, a credential
+failure from the worker that loses the atomic claim leaves the winner's
+processing job and submitted attempt unchanged.
+
 Credential replacement writes a versioned Vault secret, commits the new database reference and an outbox intent for the retired reference atomically, then lets the scheduled cleanup worker delete Vault data. Deletion, draft cancellation, revision promotion, and team deletion use the same FK-free durable cleanup path. The worker never deletes a reference still present in any provider configuration.
 
 ## Why this shape

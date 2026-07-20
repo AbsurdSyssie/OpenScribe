@@ -136,7 +136,8 @@ def test_audit_detection_summary_covers_full_window_above_previous_cap(db_sessio
 def test_parse_since_accepts_relative_and_iso_values():
     assert parse_since("24h") < utcnow()
     assert parse_since("7d") < utcnow()
-    assert parse_since("2026-06-15T12:00:00+00:00").isoformat() == "2026-06-15T12:00:00+00:00"
+    recent_iso = (utcnow() - timedelta(days=7)).replace(microsecond=0).isoformat()
+    assert parse_since(recent_iso).isoformat() == recent_iso
 
 
 def test_parse_since_clamps_extreme_lookback():

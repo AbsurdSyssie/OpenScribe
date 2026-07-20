@@ -7,10 +7,11 @@ is durable before its best-effort security audit is attempted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -41,6 +42,8 @@ _WINDOWS = (
     (QuotaResource.audio_seconds, QuotaPeriod.monthly, "monthly_audio_seconds_limit", MAX_MONTHLY_AUDIO_SECONDS),
 )
 _WINDOW_BY_KEY = {(resource, period): (field, maximum) for resource, period, field, maximum in _WINDOWS}
+GrantExpiryPolicy = Literal["24h", "7d", "end_today", "end_month"]
+_GRANT_EXPIRY_POLICIES = {"24h", "7d", "end_today", "end_month"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +75,7 @@ class UserQuotaHistoryItem:
 class AdminUserQuotaDetail:
     user_id: UUID
     windows: tuple[QuotaWindow, QuotaWindow, QuotaWindow, QuotaWindow]
+    active_grants: tuple[UserQuotaHistoryItem, ...]
     history: tuple[UserQuotaHistoryItem, ...]
 
 
@@ -146,6 +150,24 @@ def _validate_grant(value: int, resource: QuotaResource) -> None:
         raise AppError(422, "quota_grant_invalid", "Quota grant is invalid", {"max": maximum})
 
 
+def _grant_expiry_for_policy(effective_at: datetime, policy: GrantExpiryPolicy) -> datetime:
+    if policy == "24h":
+        return effective_at + timedelta(hours=24)
+    if policy == "7d":
+        return effective_at + timedelta(days=7)
+    if policy == "end_today":
+        return datetime(
+            effective_at.year, effective_at.month, effective_at.day, 23, 59, 59, 999999, tzinfo=UTC
+        )
+    next_month = datetime(
+        effective_at.year + (effective_at.month == 12),
+        1 if effective_at.month == 12 else effective_at.month + 1,
+        1,
+        tzinfo=UTC,
+    )
+    return next_month - timedelta(microseconds=1)
+
+
 def _events_for_operation(db: Session, *, target_id: UUID, operation_id: UUID) -> list[UserQuotaPolicyEvent]:
     return db.scalars(
         select(UserQuotaPolicyEvent)
@@ -176,33 +198,51 @@ def get_admin_user_quota_detail(
         calculate_quota_window(db, user=target, resource=resource, period=period, now=current)
         for resource, period, _, _ in _WINDOWS
     )
-    events = db.scalars(
+    history_events = db.scalars(
         select(UserQuotaPolicyEvent)
         .where(UserQuotaPolicyEvent.target_user_id == target.id)
         .order_by(UserQuotaPolicyEvent.created_at.desc(), UserQuotaPolicyEvent.id.desc())
         .limit(50)
     ).all()
-    live_ids = {event.actor_user_id for event in events if event.actor_user_id} | {
-        event.revoker_user_id for event in events if event.revoker_user_id
+    active_grant_events = db.scalars(
+        select(UserQuotaPolicyEvent)
+        .where(
+            UserQuotaPolicyEvent.target_user_id == target.id,
+            UserQuotaPolicyEvent.event_type == UserQuotaPolicyEventType.grant,
+            UserQuotaPolicyEvent.effective_at <= current,
+            UserQuotaPolicyEvent.revoked_at.is_(None),
+            or_(UserQuotaPolicyEvent.expires_at.is_(None), UserQuotaPolicyEvent.expires_at > current),
+        )
+        .order_by(UserQuotaPolicyEvent.created_at.desc(), UserQuotaPolicyEvent.id.desc())
+    ).all()
+    visible_events = (*active_grant_events, *history_events)
+    live_ids = {event.actor_user_id for event in visible_events if event.actor_user_id} | {
+        event.revoker_user_id for event in visible_events if event.revoker_user_id
     }
     live_emails = dict(db.execute(select(User.id, User.email).where(User.id.in_(live_ids))).all()) if live_ids else {}
-    history = tuple(
-        UserQuotaHistoryItem(
-            id=event.id, operation_id=event.operation_id, event_type=event.event_type,
-            resource=event.resource, period=event.period, reason_code=event.reason_code,
-            reason=event.reason, amount=event.amount, previous_limit=event.previous_limit,
-            new_limit=event.new_limit, effective_at=event.effective_at, expires_at=event.expires_at,
-            revoked_at=event.revoked_at, actor_user_id_snapshot=event.actor_user_id_snapshot,
-            actor_email=live_emails.get(event.actor_user_id),
-            revoker_user_id_snapshot=event.revoker_user_id_snapshot,
-            revoker_email=live_emails.get(event.revoker_user_id),
-            revocation_operation_id=event.revocation_operation_id,
-            revocation_reason_code=event.revocation_reason_code, revocation_reason=event.revocation_reason,
-            created_at=event.created_at,
+    def history_items(events: list[UserQuotaPolicyEvent]) -> tuple[UserQuotaHistoryItem, ...]:
+        return tuple(
+            UserQuotaHistoryItem(
+                id=event.id, operation_id=event.operation_id, event_type=event.event_type,
+                resource=event.resource, period=event.period, reason_code=event.reason_code,
+                reason=event.reason, amount=event.amount, previous_limit=event.previous_limit,
+                new_limit=event.new_limit, effective_at=event.effective_at, expires_at=event.expires_at,
+                revoked_at=event.revoked_at, actor_user_id_snapshot=event.actor_user_id_snapshot,
+                actor_email=live_emails.get(event.actor_user_id),
+                revoker_user_id_snapshot=event.revoker_user_id_snapshot,
+                revoker_email=live_emails.get(event.revoker_user_id),
+                revocation_operation_id=event.revocation_operation_id,
+                revocation_reason_code=event.revocation_reason_code, revocation_reason=event.revocation_reason,
+                created_at=event.created_at,
+            )
+            for event in events
         )
-        for event in events
+    return AdminUserQuotaDetail(
+        user_id=target.id,
+        windows=windows,  # type: ignore[arg-type]
+        active_grants=history_items(active_grant_events),
+        history=history_items(history_events),
     )
-    return AdminUserQuotaDetail(target.id, windows, history)  # type: ignore[arg-type]
 
 
 def update_user_base_quotas_batch(
@@ -268,7 +308,7 @@ def grant_user_quota_batch(
     db: Session, *, actor: User, user_id: UUID, resource: QuotaResource,
     periods: tuple[QuotaPeriod, ...] | list[QuotaPeriod] | set[QuotaPeriod], amount: int,
     expires_at: datetime | None, operation_id: UUID, reason_code: UserQuotaReasonCode,
-    reason: str, now: datetime | None = None,
+    reason: str, now: datetime | None = None, expiry_policy: GrantExpiryPolicy | None = None,
 ) -> UserQuotaMutationResult:
     clean_reason, code, effective_at = _reason(reason), _reason_code(reason_code), _now(now)
     if resource not in (QuotaResource.tokens, QuotaResource.audio_seconds):
@@ -277,18 +317,30 @@ def grant_user_quota_batch(
     if not selected or len(selected) > 2 or any(period not in (QuotaPeriod.daily, QuotaPeriod.monthly) for period in selected):
         raise AppError(422, "quota_periods_invalid", "Choose one or two quota periods")
     _validate_grant(amount, resource)
-    if expires_at is not None and _now(expires_at) <= effective_at:
-        raise AppError(422, "quota_expiry_invalid", "Quota grant expiry must be in future")
+    if expires_at is not None and expiry_policy is not None:
+        raise AppError(422, "quota_expiry_invalid", "Quota grant expiry is invalid")
+    if expiry_policy is not None and expiry_policy not in _GRANT_EXPIRY_POLICIES:
+        raise AppError(422, "quota_expiry_invalid", "Quota grant expiry is invalid")
+    absolute_expiry = _now(expires_at) if expires_at is not None else None
     target = _locked_target(db, actor=actor, user_id=user_id)
     existing = _events_for_operation(db, target_id=target.id, operation_id=operation_id)
     if existing:
         if (len(existing) == len(selected) and all(
             event.event_type is UserQuotaPolicyEventType.grant and event.actor_user_id_snapshot == actor.id
             and event.resource is resource and event.period in selected and event.amount == amount
-            and event.expires_at == expires_at and event.reason_code is code and event.reason == clean_reason for event in existing
+            and (
+                event.expires_at == absolute_expiry if expiry_policy is None
+                else event.expires_at == _grant_expiry_for_policy(event.effective_at, expiry_policy)
+            )
+            and event.reason_code is code and event.reason == clean_reason for event in existing
         )):
             return _result(target, operation_id, existing)
         raise AppError(409, "quota_operation_idempotency_conflict", "Quota operation conflicts with existing request")
+    resolved_expiry = (
+        _grant_expiry_for_policy(effective_at, expiry_policy) if expiry_policy is not None else absolute_expiry
+    )
+    if resolved_expiry is not None and resolved_expiry <= effective_at:
+        raise AppError(422, "quota_expiry_invalid", "Quota grant expiry must be in future")
     for period in selected:
         field, _ = _WINDOW_BY_KEY[(resource, period)]
         if getattr(target, field) is None:
@@ -297,7 +349,7 @@ def grant_user_quota_batch(
         operation_id=operation_id, target_user_id=target.id, actor_user_id=actor.id,
         actor_user_id_snapshot=actor.id, event_type=UserQuotaPolicyEventType.grant,
         resource=resource, period=period, reason_code=code, reason=clean_reason, amount=amount,
-        effective_at=effective_at, expires_at=expires_at,
+        effective_at=effective_at, expires_at=resolved_expiry,
     ) for period in selected]
     db.add_all(events)
     db.commit()
@@ -306,7 +358,7 @@ def grant_user_quota_batch(
     _audit("user_quota_grant_created", db, actor=actor, target=target, details={
         "operation_id": str(operation_id), "reason_code": code.value, "resource": resource.value,
         "periods": [period.value for period in selected], "amount": amount,
-        "expires_at": expires_at.isoformat() if expires_at else None,
+        "expires_at": resolved_expiry.isoformat() if resolved_expiry else None,
     })
     return _result(target, operation_id, events)
 

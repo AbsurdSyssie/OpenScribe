@@ -396,6 +396,45 @@ def test_grant_batch_validates_unlimited_and_enables_zero_atomically(db_session,
     assert error.value.code == "quota_expiry_invalid"
 
 
+@pytest.mark.parametrize(
+    ("expiry_policy", "first_now", "retry_now", "expected_expiry"),
+    (
+        ("24h", NOW, NOW + timedelta(hours=2), NOW + timedelta(hours=24)),
+        ("7d", NOW, NOW + timedelta(days=1), NOW + timedelta(days=7)),
+        (
+            "end_today", datetime(2026, 7, 15, 23, 59, tzinfo=UTC),
+            datetime(2026, 7, 16, 1, tzinfo=UTC), datetime(2026, 7, 15, 23, 59, 59, 999999, tzinfo=UTC),
+        ),
+        (
+            "end_month", datetime(2026, 7, 31, 23, 59, tzinfo=UTC),
+            datetime(2026, 8, 1, 1, tzinfo=UTC), datetime(2026, 7, 31, 23, 59, 59, 999999, tzinfo=UTC),
+        ),
+    ),
+)
+def test_preset_grant_expiry_is_stable_across_operation_retry(
+    db_session, make_user, expiry_policy, first_now, retry_now, expected_expiry,
+):
+    actor, target = _quota_admin(make_user), make_user(email="quota-relative-expiry@example.com")
+    target.daily_token_limit = 0
+    db_session.commit()
+    operation_id = uuid4()
+    first = grant_user_quota_batch(
+        db_session, actor=actor, user_id=target.id, resource=QuotaResource.tokens,
+        periods=(QuotaPeriod.daily,), amount=5, expires_at=None, expiry_policy=expiry_policy,
+        operation_id=operation_id, reason_code=UserQuotaReasonCode.temporary_allowance,
+        reason="preset grant", now=first_now,
+    )
+    retry = grant_user_quota_batch(
+        db_session, actor=actor, user_id=target.id, resource=QuotaResource.tokens,
+        periods=(QuotaPeriod.daily,), amount=5, expires_at=None, expiry_policy=expiry_policy,
+        operation_id=operation_id, reason_code=UserQuotaReasonCode.temporary_allowance,
+        reason="preset grant", now=retry_now,
+    )
+    event = db_session.get(UserQuotaPolicyEvent, first.event_ids[0])
+    assert retry == first
+    assert event.expires_at == expected_expiry
+
+
 def test_reset_batch_and_revoke_are_atomic_idempotent_and_keep_original_reason(db_session, make_user):
     actor, target = _quota_admin(make_user), make_user(email="quota-reset@example.com")
     _limits(db_session, actor=actor, target=target)
@@ -440,6 +479,13 @@ def test_quota_read_model_uses_live_actor_email_snapshot_and_safe_audit(db_sessi
     _limits(db_session, actor=actor, target=target)
     event = db_session.query(UserQuotaPolicyEvent).order_by(UserQuotaPolicyEvent.id).first()
     assert event is not None
+    active = grant_user_quota_batch(
+        db_session, actor=actor, user_id=target.id, resource=QuotaResource.tokens,
+        periods=(QuotaPeriod.daily,), amount=5, expires_at=None, operation_id=uuid4(),
+        reason_code=UserQuotaReasonCode.temporary_allowance, reason="old active allowance", now=NOW,
+    )
+    active_event = db_session.get(UserQuotaPolicyEvent, active.event_ids[0])
+    active_event.created_at = NOW + timedelta(seconds=1)
     # More than the UI limit proves latest-50 ordering stays deterministic.
     for index in range(51):
         db_session.add(UserQuotaPolicyEvent(
@@ -453,6 +499,8 @@ def test_quota_read_model_uses_live_actor_email_snapshot_and_safe_audit(db_sessi
     detail = get_admin_user_quota_detail(db_session, actor=actor, user_id=target.id, now=NOW)
     assert len(detail.windows) == 4
     assert len(detail.history) == 50
+    assert active_event.id not in {item.id for item in detail.history}
+    assert [item.id for item in detail.active_grants] == [active_event.id]
     assert [item.created_at for item in detail.history] == sorted(
         (item.created_at for item in detail.history), reverse=True
     )
@@ -463,6 +511,8 @@ def test_quota_read_model_uses_live_actor_email_snapshot_and_safe_audit(db_sessi
     detail = get_admin_user_quota_detail(db_session, actor=_quota_admin(make_user), user_id=target.id, now=NOW)
     assert all(item.actor_email is None for item in detail.history)
     assert all(item.actor_user_id_snapshot == actor.id for item in detail.history)
+    assert detail.active_grants[0].actor_email is None
+    assert detail.active_grants[0].actor_user_id_snapshot == actor.id
 
 
 def test_quota_audit_failure_does_not_rollback_mutation(db_session, make_user, monkeypatch):

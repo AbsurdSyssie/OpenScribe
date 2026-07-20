@@ -82,6 +82,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
 STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
 SYNC_STT_RESERVATION_GRACE_SECONDS = 60
+_STT_CREDENTIAL_UNRESOLVED = object()
 
 
 def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -615,7 +616,7 @@ def _read_stt_snapshot_bearer_token(
     config = db.get(TeamSttConfig, stt_config_id)
     if config is not None:
         return _read_saved_stt_bearer_token(team_id=team_id, config=config)
-    if adapter_kind is SttAdapterKind.openai_cloud:
+    if adapter_kind in STT_ADAPTERS_REQUIRING_BEARER_AUTH:
         raise _missing_stt_credential_error(team_id=team_id, config_id=stt_config_id)
     return None
 
@@ -1580,8 +1581,8 @@ def _transcribe_with_resolved_team_stt(
     audio_bytes: bytes,
     filename: str,
     content_type: str,
+    bearer_token: str | None,
 ) -> str:
-    bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
     provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
     if config.adapter_kind is SttAdapterKind.openai_cloud and provider_preset != SttProviderPreset.deepgram.value:
         if not bearer_token:
@@ -1706,7 +1707,7 @@ def transcribe_metered_team_stt(
 ) -> str:
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
     # Resolve credentials before reservation: missing credentials never dispatch.
-    _read_saved_stt_bearer_token(team_id=team_id, config=config)
+    bearer_token = _read_saved_stt_bearer_token(team_id=team_id, config=config)
     return _transcribe_metered_audio(
         db,
         team_id=team_id,
@@ -1719,6 +1720,7 @@ def transcribe_metered_team_stt(
         provider_call=lambda: _transcribe_with_resolved_team_stt(
             team_id=team_id, config=config, resolved_model_name=resolved_model_name,
             resolved_language=resolved_language, audio_bytes=audio_bytes, filename=filename, content_type=content_type,
+            bearer_token=bearer_token,
         ),
     )
 
@@ -1731,12 +1733,56 @@ def transcribe_with_team_stt(
     audio_bytes: bytes,
     filename: str,
     content_type: str,
+    _resolved_bearer_token: Any = _STT_CREDENTIAL_UNRESOLVED,
 ) -> str:
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=team_id, purpose=purpose)
+    bearer_token = (
+        _read_saved_stt_bearer_token(team_id=team_id, config=config)
+        if _resolved_bearer_token is _STT_CREDENTIAL_UNRESOLVED
+        else _resolved_bearer_token
+    )
     return _transcribe_with_resolved_team_stt(
         team_id=team_id, config=config, resolved_model_name=resolved_model_name,
         resolved_language=resolved_language, audio_bytes=audio_bytes, filename=filename, content_type=content_type,
+        bearer_token=bearer_token,
     )
+
+
+def resolve_stt_snapshot_bearer_token(
+    db: Session,
+    *,
+    team_id: UUID,
+    stt_config_id: UUID | None,
+    adapter_kind: str | None,
+    base_url: str | None,
+    transcribe_path: str | None,
+    file_field_name: str | None,
+    response_text_path: str | None,
+    provider_preset: str | None = None,
+) -> str | None:
+    """Validate queued snapshot and resolve its credential before dispatch claim."""
+    if not stt_config_id or not adapter_kind or not base_url:
+        _, config, _, _ = resolve_selected_team_stt(db, team_id=team_id, purpose=SttSelectionPurpose.conversation)
+        return _read_saved_stt_bearer_token(team_id=team_id, config=config)
+
+    resolved_adapter = SttAdapterKind(adapter_kind)
+    replay_provider_preset = resolve_stt_provider_preset(provider_preset, resolved_adapter, base_url)
+    if (
+        not (resolved_adapter is SttAdapterKind.openai_cloud and replay_provider_preset != SttProviderPreset.deepgram.value)
+        and (not transcribe_path or not file_field_name or not response_text_path)
+    ):
+        raise AppError(422, "business_rule_violation", "Queued STT snapshot is incomplete")
+
+    bearer_token = _read_stt_snapshot_bearer_token(
+        db,
+        team_id=team_id,
+        stt_config_id=stt_config_id,
+        adapter_kind=resolved_adapter,
+    )
+    if resolved_adapter is SttAdapterKind.openai_cloud and replay_provider_preset != SttProviderPreset.deepgram.value:
+        if not bearer_token:
+            raise _missing_stt_credential_error(team_id=team_id, config_id=stt_config_id)
+    return bearer_token
 
 
 def transcribe_with_stt_snapshot(
@@ -1763,6 +1809,7 @@ def transcribe_with_stt_snapshot(
     segment_start_field: str | None = None,
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
+    _resolved_bearer_token: Any = _STT_CREDENTIAL_UNRESOLVED,
 ) -> str:
     if not stt_config_id or not adapter_kind or not base_url:
         return transcribe_with_team_stt(
@@ -1771,14 +1818,24 @@ def transcribe_with_stt_snapshot(
             audio_bytes=audio_bytes,
             filename=filename,
             content_type=content_type,
+            _resolved_bearer_token=_resolved_bearer_token,
         )
     resolved_adapter = SttAdapterKind(adapter_kind)
     replay_provider_preset = resolve_stt_provider_preset(provider_preset, resolved_adapter, base_url)
-    bearer_token = _read_stt_snapshot_bearer_token(
-        db,
-        team_id=team_id,
-        stt_config_id=stt_config_id,
-        adapter_kind=resolved_adapter,
+    bearer_token = (
+        resolve_stt_snapshot_bearer_token(
+            db,
+            team_id=team_id,
+            stt_config_id=stt_config_id,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            transcribe_path=transcribe_path,
+            file_field_name=file_field_name,
+            response_text_path=response_text_path,
+            provider_preset=provider_preset,
+        )
+        if _resolved_bearer_token is _STT_CREDENTIAL_UNRESOLVED
+        else _resolved_bearer_token
     )
     if resolved_adapter is SttAdapterKind.openai_cloud and replay_provider_preset != SttProviderPreset.deepgram.value:
         if not bearer_token:

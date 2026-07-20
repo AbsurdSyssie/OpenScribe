@@ -1,6 +1,6 @@
 """Admin browser routes extracted from app.main."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
@@ -66,25 +66,18 @@ def _quota_audio_seconds(hours: str) -> int:
         raise AppError(422, "quota_limit_invalid", "Audio hours must be a number")
 
 
-def _quota_expiry(preset: str, custom: str) -> datetime | None:
-    now = datetime.now(UTC)
+def _quota_expiry(preset: str, custom: str) -> tuple[datetime | None, str | None]:
     if preset == "none":
-        return None
-    if preset == "24h":
-        return now + timedelta(hours=24)
-    if preset == "7d":
-        return now + timedelta(days=7)
-    if preset == "end_today":
-        return datetime(now.year, now.month, now.day, 23, 59, 59, 999999, tzinfo=UTC)
-    if preset == "end_month":
-        next_month = datetime(now.year + (now.month == 12), 1 if now.month == 12 else now.month + 1, 1, tzinfo=UTC)
-        return next_month - timedelta(microseconds=1)
+        return None, None
+    if preset in {"24h", "7d", "end_today", "end_month"}:
+        return None, preset
     if preset == "custom":
         try:
             parsed = datetime.fromisoformat(custom.replace("Z", "+00:00"))
         except ValueError:
             raise AppError(422, "quota_expiry_invalid", "Custom expiry must be a valid UTC date and time")
-        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+        absolute = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+        return absolute, None
     raise AppError(422, "quota_expiry_invalid", "Quota expiry preset is invalid")
 
 
@@ -211,10 +204,11 @@ def admin_grant_user_quota(
     try:
         selected_resource = QuotaResource(resource)
         grant_amount = int(amount) if selected_resource is QuotaResource.tokens else _quota_audio_seconds(audio_hours)
+        absolute_expiry, expiry_policy = _quota_expiry(expiry_preset, expires_at)
         result = grant_user_quota_batch(
             db, actor=context.user, user_id=user_id, resource=selected_resource,
             periods=tuple(QuotaPeriod(period) for period in periods), amount=grant_amount,
-            expires_at=_quota_expiry(expiry_preset, expires_at), operation_id=UUID(operation_id),
+            expires_at=absolute_expiry, expiry_policy=expiry_policy, operation_id=UUID(operation_id),
             reason_code=UserQuotaReasonCode(reason_code), reason=reason,
         )
     except (ValueError, AppError) as exc:

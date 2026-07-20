@@ -413,10 +413,10 @@ The current implementation uses DB-backed opaque sessions. Redis-backed server-s
   - login: `5 per 5 minutes`
   - TOTP challenge: `10 per 10 minutes`
   - public account requests: `3 per hour`
-  - live STT chunks: `10 per 10 seconds` by default
-  - whole-file STT: `30 per minute` and `1000 per day` by default
-  - LLM generation: `30 per minute` and `2000 per day` by default
-- auth limits remain fixed; provider-call safeguards are deployment-configurable safety valves set well above normal use because authoritative per-user quotas now meter billable STT/LLM work
+  - live STT chunks: `1 per second` by default
+  - whole-file STT: `1 per 5 seconds` and `100 per day` by default
+  - LLM generation: `20 per 3 minutes` and `200 per day` by default
+- provider-call safeguards remain deployment-configurable but default active at master-strength values because system-admin quotas are unlimited until configured
 - quota policy, usage, remaining allowance, proactive warnings, and reset times are system-admin-only abuse-monitoring metadata; normal user and team-leader UI does not expose them
 - route-level `rate_limited` responses include `Retry-After` and may be retried after that delay; internal `quota_exceeded` and `quota_disabled` outcomes are exposed as public `quota_exceeded` with safe contact-your-administrator copy, no quota metadata, and no retry
 - rate-limit hits are persisted in `security_audit_events` and may also be logged through the server logger `openscribe.security`
@@ -429,7 +429,7 @@ Current limitations:
 - auth/public limiter groups are IP-based; provider-call safeguards use authenticated user keys with hashed-session/IP fallback when user resolution is unavailable
 - rotating-IP attacks are still a future hardening area
 - rate-limit events are persisted in `security_audit_events`, not a separate security-events table
-- route safeguards remain defense-in-depth rather than expenditure accounting; changing them does not change system-admin quota policy
+- route and rolling-hour safeguards remain defense in depth rather than expenditure accounting; changing them does not change system-admin quota policy
 
 ## Transcript retry-audio deletion
 
@@ -448,6 +448,13 @@ Current limitations:
 - the cleanup worker rechecks all provider tables before deleting; a reference that became live again is preserved and its stale cleanup intent is removed
 - Vault failures retain the cleanup row and retry with bounded exponential backoff; an already-missing Vault path is idempotent success
 - cleanup logs contain cleanup IDs, provider kind, attempt counts, and error codes only; they never contain Vault references or credentials
+
+## Repository capture hygiene
+
+- never commit raw browser network logs, authenticated page dumps, screenshots, HAR files, or session-replay exports
+- browser captures can expose account identifiers, patient/resource IDs, OAuth state, PKCE challenges, session identifiers, and third-party telemetry even when request bodies and cookies are absent
+- convert needed UI references into synthetic, OpenScribe-owned fixtures; keep local raw captures outside the repository and delete them when no longer needed
+- review generated artifacts for confidential content before staging; repository history is not a safe secret store
 
 ## Planned next hardening: lockouts and unlock workflow
 

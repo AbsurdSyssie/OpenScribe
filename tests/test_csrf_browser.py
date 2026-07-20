@@ -95,7 +95,7 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
             pytest.fail("Browser sent a CSRF token different from the pre-request session token")
         assert response is not None
         assert response.status == 201
-        page.wait_for_url("**/transcribe?transcript_id=*")
+        page.wait_for_url("**/workspace?transcript_id=*")
         csrf_cookie_after = next(
             (cookie["value"] for cookie in context.cookies() if cookie["name"] == "openscribe_csrf"),
             "",

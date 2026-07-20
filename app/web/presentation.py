@@ -1050,7 +1050,7 @@ def render_admin(
             "limits": str(uuid4()),
             "grant": str(uuid4()),
             "reset": str(uuid4()),
-            "revoke": {str(item.id): str(uuid4()) for item in quota_detail.history if item.event_type.value == "grant"} if quota_detail else {},
+            "revoke": {str(item.id): str(uuid4()) for item in quota_detail.active_grants} if quota_detail else {},
         },
         "quota_reason_codes": ["policy_change", "temporary_allowance", "failed_job_correction", "administrative_correction", "other"],
         "quota_now": datetime.now(UTC),

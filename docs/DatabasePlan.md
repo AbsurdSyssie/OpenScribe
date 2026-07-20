@@ -1084,8 +1084,15 @@ snapshots. Live actor/revoker foreign keys use `ON DELETE SET NULL`; snapshots
 retain provenance without blocking required user deletion. Target-user deletion
 cascades its policy events.
 
+Browser relative/calendar-expiry grants persist one absolute expiry derived
+from the operation's first effective timestamp. Exact operation retries validate
+the requested preset against that persisted effective/expiry pair rather than
+deriving a new wall-clock or current UTC day/month expiry.
+
 Active grants are effective, unexpired, and not revoked. They add to finite
-base limits only. A reset changes only its selected resource/period: usage starts
+base limits only. The admin read model fetches all active grants independently
+from its bounded latest-50 policy history, keeping every effective allowance
+revocable. A reset changes only its selected resource/period: usage starts
 at the later of the natural UTC window start and latest reset in that window, so
 a daily reset does not reset monthly usage.
 

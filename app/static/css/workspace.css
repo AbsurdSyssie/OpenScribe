@@ -29,8 +29,8 @@
 .workspace-navigation-disabled,[data-recording-navigation][aria-disabled="true"] { cursor: not-allowed; opacity: .55; text-decoration: none; }
 @media (max-width: 767px) {
   .workspace-shell { display: block; }.workspace-mobile-header { display: flex; position: sticky; top: 0; z-index: 150; align-items: center; gap: .75rem; min-height: 3.5rem; padding: 0 1rem; border-bottom: 1px solid var(--border); background: var(--card); }.workspace-mobile-header button { width: 2.5rem; height: 2.5rem; }
+  .workspace-page--scribe .workspace-shell { flex-direction: column; }
   .workspace-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 180; width: min(88vw,22rem); transform: translateX(-105%); transition: transform 180ms ease; box-shadow: 24px 0 60px rgba(26,32,44,.18); }.workspace-drawer-open .workspace-sidebar { transform: translateX(0); }
   .workspace-drawer-scrim { position: fixed; inset: 0; z-index: 170; border: 0; background: rgba(26,32,44,.36); }.workspace-drawer-open .workspace-drawer-scrim { display: block; }.workspace-drawer-open { overflow: hidden; }
   .workspace-sidebar-resize { display: none; }.workspace-main { padding: 1.25rem 1rem 4rem; }
-  .workspace-page--scribe .workspace-mobile-header { display: none; }
 }

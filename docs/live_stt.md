@@ -161,8 +161,8 @@ The live browser path uses existing owner-only routes:
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `GET /api/v1/transcribe/workspace`
 
-The live chunk upload route is rate-limited to `10 requests/10 seconds` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`.
-The separate rolling hourly duration budget defaults disabled via `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`, because system-admin quota accounting meters server-measured audio. Set a positive value only when an additional deployment safety ceiling is wanted.
+The live chunk upload route is rate-limited to `1 request/second` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`.
+The rolling hourly duration budget remains enabled at `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=3600` by default, protecting users whose system-admin quota is unlimited while quota accounting remains authoritative when finite.
 Each queued live chunk now persists `source_audio_size_bytes` and `declared_duration_seconds` for later usage reporting.
 The browser paces live uploads so request starts are at least `1100ms` apart. It retries only structured `rate_limited` responses, honoring `Retry-After` and reusing the same `chunk_sequence_no`. Internal `quota_exceeded` and `quota_disabled` decisions are returned publicly as `quota_exceeded` with safe contact-your-administrator copy; they fail without retry and expose no quota usage/allowance details in normal UI.
 

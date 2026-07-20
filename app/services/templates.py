@@ -1415,7 +1415,7 @@ def _document_has_empty_allowed_source(db: Session, *, document: GeneratedDocume
 
 
 def _mark_generated_document_failed_before_llm(db: Session, *, document: GeneratedDocument, code: str, message: str) -> GeneratedDocument:
-    terminal = _terminalize_generation_after_unhandled_error(
+    terminal, _ = _terminalize_generation_after_unhandled_error(
         db,
         document_id=document.id,
         exc=AppError(422, code, message),
@@ -3661,7 +3661,8 @@ def _terminalize_generation_after_unhandled_error(
     *,
     document_id: UUID,
     exc: Exception,
-) -> GeneratedDocument | None:
+    preclaim_only: bool = False,
+) -> tuple[GeneratedDocument | None, bool]:
     """Close queued/submitted main work after a local unhandled error.
 
     This path deliberately does no provider work.  It is also used after an
@@ -3671,16 +3672,16 @@ def _terminalize_generation_after_unhandled_error(
     db.rollback()
     identity = db.get(GeneratedDocument, document_id)
     if identity is None:
-        return None
+        return None, False
     owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
     transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
     document = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == document_id).with_for_update())
     if owner is None or transcript is None or document is None:
         db.rollback()
-        return None
+        return None, False
     if document.status in {GeneratedDocumentStatus.ready, GeneratedDocumentStatus.failed}:
         db.commit()
-        return document
+        return document, False
     attempt = _main_generation_attempt(db, document_id=document.id, lock=True)
     if attempt is None:
         # Explicit legacy-row handling: it is failed before any new dispatch.
@@ -3691,7 +3692,14 @@ def _terminalize_generation_after_unhandled_error(
         db.add(document)
         db.commit()
         db.refresh(document)
-        return document
+        return document, True
+    if preclaim_only and (
+        document.status is not GeneratedDocumentStatus.queued
+        or attempt.status is not AttemptStatus.reserved
+    ):
+        db.commit()
+        db.refresh(document)
+        return document, False
     if attempt.status is AttemptStatus.reserved:
         cancel_provider_attempt(db, attempt_id=attempt.id)
         failure_code = exc.code if isinstance(exc, AppError) else "llm_generation_preparation_failed"
@@ -3708,7 +3716,15 @@ def _terminalize_generation_after_unhandled_error(
     db.add(document)
     db.commit()
     db.refresh(document)
-    return document
+    return document, True
+
+
+class _GeneratedDocumentPreclaimError(Exception):
+    """Credential preflight failed before this worker owned provider dispatch."""
+
+    def __init__(self, original: Exception):
+        super().__init__()
+        self.original = original
 
 
 def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDocument:
@@ -3717,11 +3733,26 @@ def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDo
         return _process_generated_document_impl(db, document_id=document_id)
     except GeneratedDocumentWaitingForTranscript:
         raise
+    except _GeneratedDocumentPreclaimError as wrapped:
+        exc = wrapped.original
+        terminal, terminalized = _terminalize_generation_after_unhandled_error(
+            db,
+            document_id=document_id,
+            exc=exc,
+            preclaim_only=True,
+        )
+        if terminalized and isinstance(exc, AppError):
+            raise exc
+        if terminal is not None:
+            return terminal
+        if isinstance(exc, AppError):
+            raise exc
+        raise AppError(500, "llm_generation_failed", "LLM generation failed") from exc
     except Exception as exc:
         db.rollback()
         attempt_before_terminal = _main_generation_attempt(db, document_id=document_id)
         preclaim = attempt_before_terminal is not None and attempt_before_terminal.status is AttemptStatus.reserved
-        terminal = _terminalize_generation_after_unhandled_error(db, document_id=document_id, exc=exc)
+        terminal, _ = _terminalize_generation_after_unhandled_error(db, document_id=document_id, exc=exc)
         # Preserve established synchronous preparation errors for direct callers;
         # task execution does not retry these errors and state is already closed.
         if preclaim and isinstance(exc, AppError):
@@ -3931,6 +3962,14 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         output_token_cap=output_token_cap,
     )
     try:
+        bearer_token = (
+            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
+            else None
+        )
+    except Exception as exc:
+        raise _GeneratedDocumentPreclaimError(exc) from exc
+    try:
         claimed_document = _claim_generated_document_for_dispatch(
             db,
             document_id=document.id,
@@ -3955,11 +3994,6 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
 
     try:
-        bearer_token = (
-            read_team_llm_bearer_token(team_id=document.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
-            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
-            else None
-        )
         request_body = llm_request_payload
         if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
             generated_text, usage = _generate_freeform_output_openai(

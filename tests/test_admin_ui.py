@@ -264,7 +264,7 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
 
     home_page = client.get("/home")
     assert home_page.status_code == 200
-    assert "Your OpenScribe home" in home_page.text
+    assert '<span class="brand-name">OpenScribe</span>' in home_page.text
     assert "Open consultation notes" in home_page.text
     assert "Guide" in home_page.text
     assert 'data-tour-overlay' in home_page.text
@@ -446,7 +446,16 @@ def test_admin_quota_limits_post_updates_all_windows_and_uses_safe_prg(client, d
     assert "Quota limits updated." in client.get(location).text
 
 
-def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safely(client, db_session, make_team, make_user):
+@pytest.mark.parametrize(
+    ("expiry_preset", "expected_duration"),
+    (
+        ("24h", timedelta(hours=24)), ("7d", timedelta(days=7)),
+        ("end_today", None), ("end_month", None),
+    ),
+)
+def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safely(
+    client, db_session, make_team, make_user, expiry_preset, expected_duration,
+):
     team = make_team(name="Quota Grant Team")
     admin = make_user(email="quota-grant-admin@example.com", password="password-1", is_system_admin=True)
     member = make_user(email="quota-grant-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -455,7 +464,7 @@ def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safel
     _login_quota_admin(client, admin)
     _, csrf = _quota_form(client, team, member)
     grant = client.post(f"/admin/users/{member.id}/quota-grants", data={
-        "_csrf_token": csrf, "operation_id": "22222222-2222-4222-8222-222222222222", "resource": "tokens", "periods": ["daily", "monthly"], "amount": "5", "audio_hours": "", "expiry_preset": "24h", "reason_code": "temporary_allowance", "reason": "allowance",
+        "_csrf_token": csrf, "operation_id": "22222222-2222-4222-8222-222222222222", "resource": "tokens", "periods": ["daily", "monthly"], "amount": "5", "audio_hours": "", "expiry_preset": expiry_preset, "reason_code": "temporary_allowance", "reason": "allowance",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert grant.status_code == 303
     grants = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("22222222-2222-4222-8222-222222222222"))).all()
@@ -464,6 +473,30 @@ def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safel
         (QuotaResource.tokens, QuotaPeriod.daily, 5), (QuotaResource.tokens, QuotaPeriod.monthly, 5),
     }
     assert len({event.effective_at for event in grants}) == 1
+    persisted_expiry = grants[0].expires_at
+    if expected_duration is not None:
+        assert persisted_expiry == grants[0].effective_at + expected_duration
+    elif expiry_preset == "end_today":
+        assert persisted_expiry == grants[0].effective_at.replace(hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        next_month = (grants[0].effective_at.replace(day=28) + timedelta(days=4)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        assert persisted_expiry == next_month - timedelta(microseconds=1)
+
+    retry_page = client.get(grant.headers["location"])
+    retry = client.post(f"/admin/users/{member.id}/quota-grants", data={
+        "_csrf_token": _admin_csrf(retry_page.text), "operation_id": "22222222-2222-4222-8222-222222222222",
+        "resource": "tokens", "periods": ["daily", "monthly"], "amount": "5", "audio_hours": "",
+        "expiry_preset": expiry_preset, "reason_code": "temporary_allowance", "reason": "allowance",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert retry.status_code == 303
+    db_session.expire_all()
+    retried_grants = db_session.scalars(select(UserQuotaPolicyEvent).where(
+        UserQuotaPolicyEvent.operation_id == UUID("22222222-2222-4222-8222-222222222222")
+    )).all()
+    assert len(retried_grants) == 2
+    assert {event.expires_at for event in retried_grants} == {persisted_expiry}
 
     page, csrf = _quota_form(client, team, member)
     unsafe_reason = '<script>alert("quota")</script>'
@@ -550,6 +583,51 @@ def test_admin_quota_revoke_uses_prg_and_rejects_revoked_or_expired_grants(clien
     }, headers={"Origin": "http://testserver"})
     assert expired_response.status_code == 409
     assert "Quota grant is not active" in expired_response.text
+
+
+def test_admin_quota_panel_keeps_old_active_grant_visible_and_revocable_beyond_history_cap(
+    client, db_session, make_team, make_user,
+):
+    team = make_team(name="Quota Active Grant Team")
+    admin = make_user(email="quota-old-grant-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(
+        email="quota-old-grant-member@example.com", password="password-1", team=team, team_role=TeamRole.user
+    )
+    member.daily_token_limit = 1
+    old_time = utcnow() - timedelta(days=2)
+    active_grant = UserQuotaPolicyEvent(
+        operation_id=UUID("12121212-1212-4212-8212-121212121212"), target_user_id=member.id,
+        actor_user_id=admin.id, actor_user_id_snapshot=admin.id,
+        event_type=UserQuotaPolicyEventType.grant, resource=QuotaResource.tokens,
+        period=QuotaPeriod.daily, reason_code=UserQuotaReasonCode.temporary_allowance,
+        reason="old active allowance", amount=5, effective_at=old_time, created_at=old_time,
+    )
+    db_session.add(active_grant)
+    for index in range(51):
+        db_session.add(UserQuotaPolicyEvent(
+            operation_id=UUID(int=index + 1000), target_user_id=member.id, actor_user_id=admin.id,
+            actor_user_id_snapshot=admin.id, event_type=UserQuotaPolicyEventType.reset,
+            resource=QuotaResource.tokens, period=QuotaPeriod.daily,
+            reason_code=UserQuotaReasonCode.other, reason=f"newer history {index}",
+            effective_at=old_time + timedelta(days=1), created_at=old_time + timedelta(days=1, seconds=index),
+        ))
+    db_session.commit()
+
+    _login_quota_admin(client, admin)
+    page = client.get(_quota_panel_url(team, member))
+    revoke_path = f"/admin/users/{member.id}/quota-grants/{active_grant.id}/revoke"
+    assert page.status_code == 200
+    assert "Active allowances" in page.text
+    assert revoke_path in page.text
+
+    response = client.post(revoke_path, data={
+        "_csrf_token": _admin_csrf(page.text),
+        "revocation_operation_id": "34343434-3434-4434-8434-343434343434",
+        "reason_code": "administrative_correction", "reason": "revoke old active allowance",
+    }, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert response.status_code == 303
+    db_session.refresh(active_grant)
+    assert active_grant.revoked_at is not None
 
 
 def test_admin_quota_posts_require_system_admin_and_history_escapes_reason_after_actor_deletion(client, db_session, make_team, make_user):
@@ -967,6 +1045,39 @@ def test_settings_account_section_renders_owner_profile_and_security_forms(clien
     assert 'action="/settings/account/password"' in page.text
     assert 'autocomplete="current-password"' in page.text
     assert 'autocomplete="new-password"' in page.text
+
+
+def test_workspace_settings_new_consultation_uses_preferred_recording_mode(
+    client,
+    make_team,
+    make_user,
+    make_user_app_preference,
+):
+    team = make_team(name="Clinic Account Recording Preference")
+    member = make_user(
+        email="account-recording-preference@example.com",
+        password="Password123",
+        team=team,
+    )
+    make_user_app_preference(
+        user=member,
+        preferences_json={"preferred_recording_mode": "live_chunked"},
+    )
+    client.post(
+        "/login",
+        data={"email": member.email, "password": "Password123"},
+        follow_redirects=False,
+    )
+
+    for path in ("/workspace/account", "/workspace/preferences"):
+        page = client.get(path)
+
+        assert page.status_code == 200
+        assert (
+            '<form id="new-session-form" method="post" action="/transcribe/sessions" hidden>'
+            '<input type="hidden" name="ingestion_mode" value="live_chunked">'
+            "</form>"
+        ) in page.text
 
 
 def test_settings_account_updates_name_and_audits_without_profile_values(client, db_session, make_team, make_user):
@@ -1446,12 +1557,15 @@ def test_admin_deidentification_inspect_does_not_render_bearer_token(
             "response_score_field": "score",
             "sample_text": "Jane Smith attended on 22 April 2026.",
             "is_active": "true",
+            "return_view": "workspace",
+            "return_tab": "deid-providers",
         },
     )
 
     assert inspect.status_code == 200
     assert "Shared NLP endpoint ping succeeded." in inspect.text
-    assert 'data-default-provider-tab="deidentification"' in inspect.text
+    assert "Add global provider" in inspect.text
+    assert 'value="Web Inspect Deid"' in inspect.text
     assert "secret-token" not in inspect.text
     assert 'name="preserved_bearer_token" value="secret-token"' not in inspect.text
     assert captured["headers"] == {"Authorization": "Bearer secret-token"}
@@ -1898,7 +2012,7 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get("/home")
     assert "Your writing assistant preference" in page.text
-    assert "Clinic OpenAI" in page.text
+    assert '<p class="preference-detail"><strong>Clinic OpenAI</strong></p>' in page.text
     assert "Short (up to ~1 page)" in page.text
     assert "Detailed" in page.text
     assert "Team allows:" not in page.text
@@ -3229,8 +3343,8 @@ def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
     page = client.get(f"/admin?team_id={team.id}&team_tab=llm&llm_config_id={config.id}")
 
     assert page.status_code == 200
-    assert "Setup incomplete" in page.text
-    assert "Finish" in page.text
+    assert f"Finish {config.label}" in page.text
+    assert "Finish provider setup" in page.text
     assert f'action="/admin/llm-configs/{config.id}/finalize"' in page.text
     assert f'action="/admin/llm-configs/{config.id}/replace-credential"' in page.text
     assert "Available for team selection" in page.text
@@ -3259,8 +3373,8 @@ def test_admin_llm_check_key_creates_draft_and_redirects_to_model_step(
             "provider_preset": "openrouter",
             "base_url": "",
             "bearer_token": "ui-secret",
-            "return_view": "admin",
-            "return_tab": "providers",
+            "return_view": "workspace",
+            "return_tab": "stt",
         },
         follow_redirects=False,
     )
@@ -3316,7 +3430,7 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
     page = client.get(created.headers["location"])
     assert page.status_code == 200
     assert team.name in page.text, created.headers["location"]
-    assert "Setup incomplete" in page.text, created.headers["location"]
+    assert f"Finish {saved.label}" in page.text, created.headers["location"]
     assert f'action="/admin/stt-configs/{saved.id}/finalize"' in page.text, page.text[:4000]
     finalize_form = page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
     assert '<select name="provider_model">' in finalize_form
@@ -3346,12 +3460,21 @@ def test_admin_llm_bad_key_stays_on_credential_step_without_ready_state(client, 
     client.post("/login", data={"email": "admin-llm-bad-key-ui@example.com", "password": "password-1"}, follow_redirects=False)
     response = client.post(
         "/admin/llm-configs/drafts",
-        data={"team_id": str(team.id), "label": "Bad Router", "provider_preset": "openrouter", "base_url": "", "bearer_token": "bad-key"},
+        data={
+            "team_id": str(team.id),
+            "label": "Bad Router",
+            "provider_preset": "openrouter",
+            "base_url": "",
+            "bearer_token": "bad-key",
+            "return_view": "workspace",
+            "return_tab": "llm",
+        },
     )
 
     assert response.status_code == 401
     assert "The API key was rejected by the provider. Check the key and try again." in response.text
-    assert "Check API key and find models" in response.text
+    assert 'action="/admin/llm-configs/drafts"' in response.text
+    assert 'name="bearer_token"' in response.text
     assert "Ready · unavailable" not in response.text
     assert "Setup incomplete" not in response.text
     assert db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id)) is None
@@ -3735,36 +3858,26 @@ def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(
             retention_days_applied=30,
             retention_expires_at=utcnow() + timedelta(days=30),
         )
-        for upload_no in range(1, 32)
+        for upload_no in range(1, 3)
     ]
     db_session.add_all(transcripts)
     db_session.commit()
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
 
-    api_uploads = [
-        client.post(
-            f"/api/v1/transcripts/{transcript.id}/audio-file",
-            files={"audio": (f"visit-{upload_no}.wav", b"fake-audio", "audio/wav")},
-        )
-        for upload_no, transcript in enumerate(transcripts[:29], start=1)
-    ]
-    assert [response.status_code for response in api_uploads] == [202] * 29
+    api_upload = client.post(
+        f"/api/v1/transcripts/{transcripts[0].id}/audio-file",
+        files={"audio": ("visit-1.wav", b"fake-audio", "audio/wav")},
+    )
+    assert api_upload.status_code == 202
 
-    browser_upload = client.post(
+    blocked_browser_upload = client.post(
         "/transcribe/upload",
-        data={"title": "Visit 30", "transcript_id": str(transcripts[29].id)},
-        files={"audio": ("visit-30.wav", b"fake-audio", "audio/wav")},
+        data={"title": "Visit 2", "transcript_id": str(transcripts[1].id)},
+        files={"audio": ("visit-2.wav", b"fake-audio", "audio/wav")},
         follow_redirects=False,
     )
-    assert browser_upload.status_code == 303
-
-    blocked_api_upload = client.post(
-        f"/api/v1/transcripts/{transcripts[30].id}/audio-file",
-        files={"audio": ("visit-31.wav", b"fake-audio", "audio/wav")},
-    )
-    assert blocked_api_upload.status_code == 429
-    assert blocked_api_upload.json()["error"]["code"] == "rate_limited"
+    assert blocked_browser_upload.status_code == 429
 
 
 def test_browser_transcribe_upload_rejects_missing_csrf_token(
@@ -4349,6 +4462,30 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
     assert 'data-workspace-endpoint="' in page.text
 
 
+def test_user_transcribe_page_keeps_shared_mobile_navigation_reachable(client, make_team, make_user):
+    team = make_team(name="Clinic Mobile Workspace Navigation")
+    make_user(
+        email="member-mobile-workspace@example.com",
+        password="password-3",
+        team=team,
+        team_role=TeamRole.user,
+    )
+
+    client.post(
+        "/login",
+        data={"email": "member-mobile-workspace@example.com", "password": "password-3"},
+        follow_redirects=False,
+    )
+    page = client.get("/workspace")
+    workspace_css = Path("app/static/css/workspace.css").read_text()
+
+    assert page.status_code == 200
+    assert 'data-workspace-drawer-toggle' in page.text
+    assert 'src="/static/js/workspace/app.js' in page.text
+    assert ".workspace-page--scribe .workspace-mobile-header { display: none; }" not in workspace_css
+    assert ".workspace-page--scribe .workspace-shell { flex-direction: column; }" in workspace_css
+
+
 def test_user_transcribe_page_namespaces_legacy_note_tabs(client, make_team, make_user):
     team = make_team(name="Clinic Legacy Note Tabs")
     make_user(email="legacy-note-tabs@example.com", password="password-3", team=team, team_role=TeamRole.user)
@@ -4439,7 +4576,7 @@ def test_transcribe_template_editor_save_returns_to_transcribe(client, db_sessio
     )
 
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/transcribe?transcript_id={transcript.id}&tab=output"
+    assert saved.headers["location"] == f"/workspace?transcript_id={transcript.id}&tab=output"
 
 
 def test_transcribe_quick_action_editor_save_returns_to_transcribe(client, db_session, make_team, make_user):
@@ -4476,7 +4613,7 @@ def test_transcribe_quick_action_editor_save_returns_to_transcribe(client, db_se
     )
 
     assert saved.status_code == 303
-    assert saved.headers["location"] == f"/transcribe?transcript_id={transcript.id}&tab=followups"
+    assert saved.headers["location"] == f"/workspace?transcript_id={transcript.id}&tab=followups"
 
 
 def test_user_transcribe_claude_page_uses_alternate_template(client, make_team, make_user):
@@ -5005,7 +5142,7 @@ def test_user_transcribe_page_can_create_and_rename_session(client, db_session, 
     )
 
     assert created.status_code == 303
-    assert created.headers["location"].startswith("/transcribe?transcript_id=")
+    assert created.headers["location"].startswith("/workspace?transcript_id=")
     transcript = db_session.scalar(select(Transcript).where(Transcript.title == "Untitled session"))
     assert transcript is not None
     assert transcript.ingestion_mode is TranscriptIngestionMode.whole_file
@@ -5016,7 +5153,7 @@ def test_user_transcribe_page_can_create_and_rename_session(client, db_session, 
         follow_redirects=False,
     )
     assert renamed.status_code == 303
-    assert renamed.headers["location"] == f"/transcribe?transcript_id={transcript.id}"
+    assert renamed.headers["location"] == f"/workspace?transcript_id={transcript.id}"
     db_session.refresh(transcript)
     assert transcript.title == "Renamed review"
 
@@ -5174,7 +5311,7 @@ def test_user_transcribe_page_can_switch_blank_live_session_to_whole_file(client
     )
 
     assert switched.status_code == 303
-    assert switched.headers["location"] == f"/transcribe?transcript_id={transcript.id}"
+    assert switched.headers["location"] == f"/workspace?transcript_id={transcript.id}"
     db_session.refresh(transcript)
     assert transcript.ingestion_mode is TranscriptIngestionMode.whole_file
 
@@ -5548,7 +5685,7 @@ def test_user_transcribe_page_can_bulk_delete_selected_sessions(client, db_sessi
     )
 
     assert deleted.status_code == 303
-    assert deleted.headers["location"] == "/transcribe"
+    assert deleted.headers["location"] == "/workspace"
     assert db_session.get(Transcript, keep.id) is not None
     assert db_session.get(Transcript, delete_one.id) is None
     assert db_session.get(Transcript, delete_two.id) is None
@@ -7314,7 +7451,7 @@ def test_user_transcribe_page_can_queue_followup_generation(
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
     assert "Generating your follow-up" in page.text
-    assert "We're preparing your follow-up..." in page.text
+    assert "preparing your follow-up..." in page.text
     assert "queued" in page.text
 
 
@@ -7429,7 +7566,7 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert 'data-note-delete' not in page.text
     assert re.search(r'data-note-selector-row[\s\S]*data-note-selector[\s\S]*data-note-hover-delete', page.text)
     assert re.search(r'Visit summary v2[\s\S]*?ready · \d{2}-\d{2}-\d{2} \d{2}:\d{2}', page.text)
-    assert "Delete selected note permanently" in page.text
+    assert "Delete note permanently" in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text
     assert 'data-document-kind="followup"' in page.text
@@ -7659,7 +7796,7 @@ def test_admin_page_can_save_team_stt_config_for_selected_team(client, db_sessio
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
     page = client.get(f"/admin?team_id={team.id}&team_tab=stt")
     assert page.status_code == 200
-    assert "Add speech provider" in page.text
+    assert "Add STT provider" in page.text
 
     save = client.post(
         "/admin/stt-configs",
@@ -8171,6 +8308,8 @@ def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team,
             "adapter_kind": "openai_cloud",
             "base_url": "",
             "bearer_token": "secret-token",
+            "return_view": "legacy",
+            "return_tab": "providers",
         },
     )
 
@@ -8236,7 +8375,7 @@ def test_admin_page_can_save_stt_config_after_inspect_with_retyped_token(client,
     )
 
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
+    assert save.headers["location"] == f"/admin?team_id={team.id}&team_tab=stt"
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
     assert saved_config.label == "Admin STT"
@@ -8474,7 +8613,10 @@ def test_admin_page_renders_saved_stt_provider_error_details(client, make_team, 
     )
 
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
-    tested = client.post(f"/admin/stt-configs/{config.id}/test", data={"team_id": str(team.id)})
+    tested = client.post(
+        f"/admin/stt-configs/{config.id}/test",
+        data={"team_id": str(team.id), "return_view": "workspace", "return_tab": "stt"},
+    )
 
     assert tested.status_code == 200
     assert "Provider error" in tested.text

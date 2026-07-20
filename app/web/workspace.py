@@ -7,6 +7,7 @@ from typing import Final
 from sqlalchemy.orm import Session
 
 from ..models import TeamRole, User
+from ..services.preferences import get_user_app_preferences
 from .transcribe_workspace import TRANSCRIPT_HISTORY_DEFAULT_LIMIT, list_transcript_history_page
 from .templates import templates
 
@@ -61,11 +62,13 @@ def build_workspace_shell_context(
     """Load shell-only data; never decrypt transcript-derived content."""
     if active_section not in WORKSPACE_SECTION_PATHS:
         raise ValueError("Unknown workspace section")
-    recent_page = list_transcript_history_page(
-        db,
-        current_user,
-        limit=TRANSCRIPT_HISTORY_DEFAULT_LIMIT,
-    )
+    recent_page: dict[str, object] = {"items": [], "has_more": False}
+    if active_section == WORKSPACE_SCRIBE:
+        recent_page = list_transcript_history_page(
+            db,
+            current_user,
+            limit=TRANSCRIPT_HISTORY_DEFAULT_LIMIT,
+        )
     recent_transcripts = recent_page["items"]
     return {
         "active_workspace_section": active_section,
@@ -107,6 +110,18 @@ def render_workspace(
         ),
         **(section_context or {}),
     }
+    user_app_preferences_json = context.get("user_app_preferences_json")
+    if not isinstance(user_app_preferences_json, dict):
+        user_app_preference = get_user_app_preferences(db, current_user)
+        user_app_preferences_json = (
+            user_app_preference.preferences_json
+            if user_app_preference is not None
+            and isinstance(user_app_preference.preferences_json, dict)
+            else {}
+        )
+    context["preferred_recording_mode"] = user_app_preferences_json.get(
+        "preferred_recording_mode"
+    )
     # Shell authority wins over legacy section context.
     context["active_workspace_section"] = active_section
     context["workspace_content_template"] = WORKSPACE_SECTION_TEMPLATES.get(active_section)

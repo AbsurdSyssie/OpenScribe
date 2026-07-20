@@ -34,7 +34,7 @@ def test_smart_phrase_settings_uses_master_detail_page_not_drawer():
     assert 'aria-label="Smart phrase library"' in PARTIAL
     assert 'id="personal-smart-phrase-heading">Personal</h3>' in PARTIAL
     assert 'class="smart-phrase-library-detail"' in PARTIAL
-    assert 'class="smart-phrase-library-back" href="/settings?tab=smart-phrases"' in PARTIAL
+    assert 'class="smart-phrase-library-back" href="/workspace/library/smart-phrases"' in PARTIAL
     assert "smart-phrase-drawer" not in PARTIAL
     assert ".smart-phrase-library-shell.has-selection .smart-phrase-library-sidebar" in STYLES
     assert ".smart-phrase-library-shell.has-selection .smart-phrase-library-detail" in STYLES
@@ -43,7 +43,7 @@ def test_smart_phrase_settings_uses_master_detail_page_not_drawer():
 def test_smart_phrase_selection_is_canonical_and_owner_list_resolved():
     assert "request.query_params.get('smart_phrase_id', '')" in PARTIAL
     assert "phrase.id|string == requested_smart_phrase_id" in PARTIAL
-    assert "/settings?tab=smart-phrases&amp;smart_phrase_id=new" in PARTIAL
+    assert "/workspace/library/smart-phrases?smart_phrase_id=new" in PARTIAL
     assert "personal_smart_phrases|sort(attribute='trigger')" in PARTIAL
     assert "team_smart_phrases" not in PARTIAL
     assert "smart_phrase_id" in SCRIPT

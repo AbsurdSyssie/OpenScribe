@@ -133,9 +133,9 @@ What it does:
 
 - **Migration constraints and downgrade:** `tests/test_migrations.py` verifies quota-accounting metadata-only constraints and foreign keys, including composite checks written as `IS TRUE` so SQL `UNKNOWN`/`NULL` cannot bypass their shape rules, `upgrade head`, and a fail-closed downgrade that only removes an empty quota schema. Provider/audio cleanup downgrade guards remain covered where durable Vault references exist.
 - **Race-safe concurrent reservation:** `tests/test_user_quotas.py` uses competing PostgreSQL reservations to verify the owner lock permits only one reservation; exact reservation expansion, measurement matching, and idempotent provider-attempt increments are also covered.
-- **Activation, reset, grants, and idempotency:** quota tests cover activation/reset boundaries, future/expired/revoked grants, atomic limit/grant/reset/revoke batches, stable original reasons, and durable idempotency history.
+- **Activation, reset, grants, and idempotency:** quota tests cover activation/reset boundaries, future/expired/revoked grants, atomic limit/grant/reset/revoke batches, stable original reasons, durable idempotency history, stable first-operation expiry for all retried relative/calendar presets across UTC boundaries, and independently loaded revocation controls for active grants older than the latest-50 history cap.
 - **Outbox atomicity, retry, and duplicate claims:** `tests/test_task_outbox.py` and lifecycle coverage verify source-attempt-dispatch creation is transactional and deterministic, no direct broker publish occurs, payload mismatches reject, retry/backoff and terminal failure work, duplicate dispatches remain idempotent, one claimed outbox row is published per transaction, and bounded `SKIP LOCKED` claims avoid duplicate worker delivery or outbox-first lifecycle lock inversion.
-- **LLM/STT settlement:** API and lifecycle tests cover quota rejection rollback, authoritative settlement for duplicate delivery, invalid JSON, provider errors, deadline expiry, and source deletion; LLM reservation expansion occurs before dispatch, while STT/audio attempts require validated measured duration before settlement.
+- **LLM/STT settlement:** API and lifecycle tests cover quota rejection rollback, authoritative settlement for duplicate delivery, invalid JSON, provider errors, deadline expiry, and source deletion; LLM and queued STT credential failures cancel before submission without quota usage, losing duplicate-worker preflight failures preserve the winner's processing/submitted state, metered STT reuses its preflight credential, LLM reservation expansion occurs before dispatch, and STT/audio attempts require validated measured duration before settlement.
 - **Sync and provider behavior:** provider tests cover discovery/allowlists, Vault-backed credential use without exposure, snapshotting selected STT configuration for queued work, blocked config changes while referenced work is in flight, provider-attempt owner/team/content-reference scope validation, controlled provider-error metadata, STT base-URL credential/query/fragment rejection with sanitized legacy response URLs, and provider-cleanup retry/reference rechecks.
 - **Admin authorization, CSRF, and XSS:** admin quota mutations require authorized targets, CSRF, and same-origin requests; browser/admin regressions protect team scope; security suites cover CSP, escaped rendering, no unsafe template rendering, and sensitive audit redaction.
 - **Deletion, retention, and team lifecycle:** lifecycle/retention tests terminalize active attempts, remove dispatches with deleted roots/users/teams, retain only permitted metadata, hard-delete expired transcript roots in bounded idempotent batches, preserve retry cleanup intents, atomically transfer retry-audio Vault references without duplicate secrets, and block unsafe team/provider cleanup paths.
@@ -331,6 +331,7 @@ What it does:
 - owner transcription workspace exposing both `whole_file` and `live_chunked` new-session entry points
 - owner transcription workspace exposing client-side session-rail links for workspace refresh without full-page navigation
 - owner transcription workspace exposes an infinite-scroll sentinel for metadata-only consultation history pages and preserves loaded older rows across workspace refreshes
+- permanent-workspace shell tests verify only Scribe loads owner-filtered consultation history; Account, Preferences, Library, and Team sections never invoke the transcript-history/decryption loader
 - owner transcription workspace keeps a fully visible active consultation at the same rail position, minimally reveals clipped rows, and preserves loaded rail nodes for metadata-only status/title updates
 - owner transcription workspace preserves all loaded rail rows when an older selected consultation is appended to the newest-page workspace payload
 - owner transcription workspace persists desktop Recent consultations open/closed preference while mobile always starts closed and leaves the desktop preference untouched
@@ -346,6 +347,7 @@ What it does:
 - `live_chunked` sessions surfacing the latest live-chunk STT failure message instead of immediately reverting to generic ready copy
 - GLM 2 transcribe route rendering the full EMIS section editor surface and the output/follow-up/history assistant pane against real workspace data
 - GLM 2 transcribe route keeping the restored GLM shell while wiring real session switching, title editing, and provider labels through the existing runtime
+- canonical Scribe rendering keeps the selected STT provider label visible, and canonical admin flash messages are promoted to top-right toasts
 - owner transcription workspace post/redirect/get upload flow so refresh does not resubmit the form
 - owner transcription workspace session header showing the resolved user LLM model instead of the raw team default when a user preference is active
 - leader home page team-template management form
@@ -461,6 +463,8 @@ Run `.venv/bin/pytest -q tests/test_admin_ui.py -k "provider_redesign or change_
 # Admin provider wizard
 
 `tests/test_admin_ui.py::test_admin_workspace_provider_redesign_has_explicit_safe_actions` checks API draft/finalize wiring, response-driven rendering, named controls, removal of fabricated model data, and absence of credential references.
+
+Pending-provider browser tests verify the canonical workspace retains model finalization, manual-model fallback, and write-only credential replacement without exposing saved keys.
 
 `tests/test_admin_ui.py::test_admin_provider_wizards_render_safe_contextual_errors` checks both provider wizards use assertive, focusable alerts; retain only safe structured API status/code/field metadata; map failures to concise guidance; highlight explicitly named controls; and never serialize arbitrary error details.
 # Provider-policy table

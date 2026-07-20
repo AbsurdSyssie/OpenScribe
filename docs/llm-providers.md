@@ -50,6 +50,7 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 - Successful discovery that returns zero compatible chat models is treated as `manual_required`, not `fetched`, so admins must enter an explicit model name before save.
 - When successful discovery returns models, the saved `model_name` must be one of those discovered models. If no model is submitted, OpenScribe uses the first discovered model.
 - Failed non-auth discovery returns `manual_required` and allows a system admin to enter a model name manually. The browser warns that generation may fail if the endpoint, key, or model name is wrong. When saved, that manual model is stored as the only selectable model so team selection and user preference validation keep working.
+- The canonical admin workspace and its server-rendered completion fallback both expose manual model entry when discovery returns no models. Pending setup also permits API-key replacement without ever rendering the saved credential.
 - Save without a model name remains invalid.
 - Editing a saved provider's preset, adapter, or base URL while keeping the existing Vault-backed secret triggers fresh model discovery with that saved secret. If rediscovery fails, OpenScribe clears stale provider models and stores only the submitted manual model.
 - OpenAI-specific model prefix filtering applies only to the OpenAI preset. Other OpenAI-compatible providers keep valid non-OpenAI model IDs after removing non-chat categories such as embeddings, transcription, TTS, moderation, and image models.
@@ -73,6 +74,14 @@ When a ready provider's model catalog changes, OpenScribe reconciles dependent s
 Replacing a saved key reruns discovery, marks the config `pending_model_selection`, disables team availability, and requires the admin to save a default model again.
 
 Queued or processing generated documents block normal provider edits and provider deletion so runtime snapshots stay stable. Credential correction is the exception: a system admin may replace the Vault-backed key for the same provider endpoint while generated documents are queued or processing, because an invalid key can otherwise leave failed or stuck generation work blocking the fix. During in-flight work, the replacement is rejected unless live inspection confirms that the corrected credential exposes the saved default model used by those queued documents. This prevents swapping to a different account/provider that cannot run the snapshotted model. If the corrected key still exposes the saved default model, the provider remains `ready` and keeps its current availability instead of being moved back to incomplete setup. If the full edit form submits incidental label/model/availability changes during this correction, OpenScribe keeps those existing provider fields unchanged and updates only the credential/discovery metadata. A provider already left in `pending_model_selection` by an earlier credential correction may be finalized while generated documents remain queued or processing. A ready provider may also be toggled between available/unavailable during queued or processing generations when label, endpoint, and model stay unchanged.
+
+Queued generation resolves its Vault-backed credential before the provider
+attempt is marked submitted. A definite credential-read failure therefore
+fails the generated document and cancels its reservation without quota usage;
+only work that reaches the provider-dispatch boundary may consume quota. If
+duplicate workers both observe queued work, a preflight failure from the worker
+that loses the atomic dispatch claim cannot fail or settle the winner's already
+submitted attempt.
 
 ## Generated Document Request Payloads
 

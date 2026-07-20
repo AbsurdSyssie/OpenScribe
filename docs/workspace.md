@@ -16,9 +16,10 @@ shared shell. System administration remains separate at `/admin`.
 - `/workspace/team/members`
 - `/workspace/team/account-requests`
 
-The shell loads owner-filtered consultation metadata only. Non-Scribe routes do
-not receive transcript text through shell context. Scribe continues to use the
-existing owner-authorized workspace resolver for transcript-derived content.
+Only the Scribe section loads owner-filtered consultation history. Non-Scribe
+routes do not query or decrypt transcript history through shell context. Scribe
+continues to use the existing owner-authorized workspace resolver for
+transcript-derived content.
 Team routes enforce leader access on the server; hiding sidebar links is not an
 authorization control.
 
@@ -31,6 +32,10 @@ remain authoritative. Non-Scribe pages never replace the remembered UUID.
 
 `open_recent=1` opens the existing consultation rail, then is removed from the
 visible URL with `history.replaceState`.
+
+Create-new-consultation controls in every workspace section use the signed-in
+user's normalized preferred recording mode. They fall back to whole-file upload
+only when no supported preference is set.
 
 ## Recording navigation lock
 
@@ -65,6 +70,10 @@ standalone layout.
 
 My Library split views remove the generic workspace main padding so their
 selection rails sit directly beside the permanent sidebar.
+
+At mobile widths, including Scribe, the shared workspace header remains visible
+and opens the off-canvas navigation drawer. The closed drawer is inert until the
+user opens it.
 
 ## Transitional compatibility
 

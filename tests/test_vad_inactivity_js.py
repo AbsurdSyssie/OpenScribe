@@ -66,6 +66,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
 
               const sandbox = {{
                 Blob,
+                CustomEvent: class CustomEvent {{ constructor(type) {{ this.type = type; }} }},
                 Date: {{ now: () => now }},
                 Error,
                 Float32Array,
@@ -80,6 +81,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
                   createDocumentFragment: () => ({{ appendChild() {{}} }}),
                   createElement: () => makeElement(),
                   addEventListener(type, listener) {{ documentListeners[type] = listener; }},
+                  dispatchEvent() {{ return true; }},
                 }},
                 navigator: {{ mediaDevices: {{ getUserMedia: async () => ({{ getTracks: () => [] }}) }} }},
                 window: null,

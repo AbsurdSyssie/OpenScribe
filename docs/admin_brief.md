@@ -3,6 +3,7 @@
 ## Admin release routing
 
 - `/admin` renders `admin_mockup.html`; this is the user-facing canonical admin route.
+- Canonical mutation feedback is promoted from inline flash markup into top-right toasts; error text remains server-supplied and safely rendered as text.
 - `/legacy-admin` retains deprecated `admin.html` as an untested compatibility route.
 - `/admin2` remains unchanged as a secondary developer reference.
 - `admin_mockup.html` has passed its release decision and replaced the deprecated admin page.
@@ -318,7 +319,8 @@ Notes:
 - quota management is system-admin-only. It excludes system-admin accounts, the acting admin, and users without normal team membership. Normal users and team leaders have no quota policy, usage, remaining-allowance, proactive warning, or reset-time UI; rejected requests show only safe quota-used-up contact-your-administrator copy.
 - quota panel shows four UTC windows: daily/monthly Tokens and daily/monthly Audio. Each shows Used, Reserved, Base, Temporary, Effective, Remaining, and reset time. `NULL` base/effective/remaining is labelled **Unlimited**; zero base/effective is **Disabled**.
 - base-limit, allowance, reset, and active-grant revocation forms require a controlled reason code and non-empty free reason. Free reasons must not contain patient or clinical data.
-- every mutation has a UUID operation id for idempotent browser retry, CSRF protection, and POST/303/GET return to same member panel. No JSON quota-management API exists.
+- every mutation has a UUID operation id for idempotent browser retry, CSRF protection, and POST/303/GET return to same member panel. Relative/calendar presets (`24 hours`, `7 days`, `End today`, and `End month`) are anchored to the first accepted operation timestamp, so an exact retry reuses its persisted absolute expiry even after a UTC day/month boundary. No JSON quota-management API exists.
+- active unexpired/permanent allowances are loaded independently of the latest-50 policy history and always remain visible with revocation controls.
 - quota ledger preserves actor/revoker UUID snapshots if an actor is deleted. Security audit records reason code and safe operation metadata only; it excludes free reason text.
 
 ### Account requests

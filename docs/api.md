@@ -305,8 +305,8 @@ metadata. Clients must not retry them as transient `rate_limited` responses.
 - completed MFA-enabled users may receive `auth_level = pending_mfa` after password success
 - login is rate-limited at `5 per 5 minutes` per client IP
 - whole-file transcript uploads are rate-limited at:
-  - `30 per minute` by default via `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT`
-  - `1000 per day` by default via `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT`
+  - `1 per 5 seconds` by default via `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT`
+  - `100 per day` by default via `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT`
 - whole-file upload throttling is shared across:
   - `POST /api/v1/transcripts/{transcript_id}/audio-file`
   - `POST /transcribe/upload`
@@ -589,8 +589,8 @@ Current generation behavior:
   - source version references may be cleared when the source asset is deleted
   - already queued work still has enough context to run
 - generation routes are throttled per authenticated user:
-  - `30 per minute` by default via `LLM_GENERATION_BURST_RATE_LIMIT`
-  - `2000 per day` by default via `LLM_GENERATION_DAILY_RATE_LIMIT`
+  - `20 per 3 minutes` by default via `LLM_GENERATION_BURST_RATE_LIMIT`
+  - `200 per day` by default via `LLM_GENERATION_DAILY_RATE_LIMIT`
 - browser and JSON generation routes share the same authenticated limiter bucket
 - generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
 - generation metadata now carries team/user IDs, provider/model names, statuses, durations, input/output/total token counts, and safe provider error metadata when available
@@ -678,8 +678,8 @@ Current transcript-start behavior:
 Current live chunk-ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks` accepts multipart audio upload for owner-only live chunked transcripts
-- live chunk upload is rate-limited to `10 requests/10 seconds` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`
-- the separate rolling hourly audio budget is disabled by default (`LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=0`) because system-admin quota accounting meters server-measured audio; a positive deployment value re-enables this additional safety ceiling
+- live chunk upload is rate-limited to `1 request/second` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`
+- the rolling hourly audio budget remains enabled by default (`LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=3600`) as defense in depth for users whose system-admin quota is unlimited
 - the route currently requires:
   - `audio`
   - `chunk_sequence_no`
@@ -718,8 +718,8 @@ Current whole-file ingestion behavior:
 
 - `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
 - whole-file queueing now records both `source_audio_size_bytes` and `source_audio_duration_seconds` on the ingestion job for later upload reporting
-- whole-file queueing keeps a rolling hourly upload-byte safety budget per authenticated owner via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `1073741824`, or 1 GiB/hour)
-- the separate rolling source-duration budget is disabled by default (`WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=0`) because system-admin quota accounting meters server-measured audio; a positive deployment value re-enables it
+- whole-file queueing keeps a rolling hourly upload-byte safety budget per authenticated owner via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `209715200`, or 200 MiB/hour)
+- the rolling source-duration budget remains enabled by default (`WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=14400`, or 4 hours) as defense in depth for users whose system-admin quota is unlimited
 - whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
 - whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
 - newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row

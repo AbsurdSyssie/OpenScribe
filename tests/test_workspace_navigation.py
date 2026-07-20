@@ -4,7 +4,8 @@ from app.models import TeamRole
 from app.schemas import TranscriptStart
 from app.services.transcripts import start_transcript
 from app.web.workspace import (
-    WORKSPACE_ACCOUNT,
+    WORKSPACE_SCRIBE,
+    WORKSPACE_SECTION_PATHS,
     WORKSPACE_SECTION_TEMPLATES,
     build_workspace_shell_context,
 )
@@ -98,7 +99,7 @@ def test_workspace_routes_keep_system_admin_separate(client, make_user):
         assert response.headers["location"] == "/admin"
 
 
-def test_workspace_shell_context_lists_only_owner_consultations(
+def test_scribe_workspace_shell_context_lists_only_owner_consultations(
     db_session, make_team, make_user
 ):
     team = make_team(name="Workspace Ownership")
@@ -110,14 +111,52 @@ def test_workspace_shell_context_lists_only_owner_consultations(
     context = build_workspace_shell_context(
         db_session,
         current_user=owner,
-        active_section=WORKSPACE_ACCOUNT,
+        active_section=WORKSPACE_SCRIBE,
     )
 
     listed_ids = {str(item.id) for item in context["workspace_recent_transcripts"]}
     assert str(owned.id) in listed_ids
     assert str(foreign.id) not in listed_ids
     assert context["active_transcript_id"] is None
-    assert context["workspace_content_template"] == WORKSPACE_SECTION_TEMPLATES[WORKSPACE_ACCOUNT]
+    assert context["workspace_content_template"] is None
+
+
+@pytest.mark.parametrize(
+    "active_section",
+    tuple(
+        section
+        for section in WORKSPACE_SECTION_PATHS
+        if section != WORKSPACE_SCRIBE
+    ),
+)
+def test_non_scribe_workspace_shell_does_not_load_transcript_history(
+    monkeypatch,
+    db_session,
+    make_user,
+    active_section,
+):
+    user = make_user(email=f"no-history-{active_section}@example.com")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("non-Scribe workspace loaded transcript history")
+
+    monkeypatch.setattr(
+        "app.web.workspace.list_transcript_history_page",
+        fail_if_called,
+    )
+
+    context = build_workspace_shell_context(
+        db_session,
+        current_user=user,
+        active_section=active_section,
+    )
+
+    assert context["workspace_recent_transcripts"] == []
+    assert context["workspace_recent_has_more"] is False
+    assert (
+        context["workspace_content_template"]
+        == WORKSPACE_SECTION_TEMPLATES[active_section]
+    )
 
 
 def test_workspace_shell_context_rejects_untrusted_section(db_session, make_user):

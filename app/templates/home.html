@@ -184,6 +184,7 @@
 {% if llm_selection %}
 <div>
 <h3 class="preference-heading">Writing assistant</h3>
+<p class="preference-detail"><strong>{{ llm_selection.config.label }}</strong></p>
 <form method="post" action="/home/llm-preference">
 <input type="hidden" name="return_view" value="{{ home_return_view }}">
 <input type="hidden" name="return_tab" value="overview">

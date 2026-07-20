@@ -150,7 +150,7 @@ from app.services.clinical_nlp import clinical_entity_value, ensure_clinical_ent
 from app.services.llm import _list_mistral_chat_models, _list_together_chat_models, create_llm_config_draft, read_active_team_llm_bearer_token, upsert_llm_config as upsert_llm_config_service
 from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs, queue_provider_secret_cleanup
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
-from app.services.stt import transcribe_with_team_stt
+from app.services.stt import transcribe_metered_team_stt, transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
     DICTATION_SOURCE_SPLIT_MARKER,
@@ -748,15 +748,15 @@ def _configured_rate_limit_value(decorator) -> str:
     return inspect.getclosurevars(decorator).nonlocals["limit_value"]
 
 
-def test_rate_limit_defaults_keep_auth_strict_and_relax_provider_actions():
+def test_rate_limit_defaults_keep_auth_and_provider_safeguards_strict():
     assert _configured_rate_limit_value(LOGIN_RATE_LIMIT) == "5/5 minutes"
     assert _configured_rate_limit_value(MFA_RATE_LIMIT) == "10/10 minutes"
     assert _configured_rate_limit_value(ACCOUNT_REQUEST_RATE_LIMIT) == "3/hour"
-    assert _configured_rate_limit_value(LIVE_CHUNK_UPLOAD_RATE_LIMIT) == "10/10 seconds"
-    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT) == "30/minute"
-    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT) == "1000/day"
-    assert _configured_rate_limit_value(LLM_GENERATION_BURST_RATE_LIMIT) == "30/minute"
-    assert _configured_rate_limit_value(LLM_GENERATION_DAILY_RATE_LIMIT) == "2000/day"
+    assert _configured_rate_limit_value(LIVE_CHUNK_UPLOAD_RATE_LIMIT) == "1/second"
+    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT) == "1/5 seconds"
+    assert _configured_rate_limit_value(WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT) == "100/day"
+    assert _configured_rate_limit_value(LLM_GENERATION_BURST_RATE_LIMIT) == "20/3 minutes"
+    assert _configured_rate_limit_value(LLM_GENERATION_DAILY_RATE_LIMIT) == "200/day"
 
 
 def test_provider_action_rate_limits_accept_environment_overrides():
@@ -9497,7 +9497,7 @@ def test_member_forks_latest_same_team_template_version_to_owned_personal_copy(
     )
     assert forked is not None
     assert response.headers["location"] == (
-        f"/settings?tab=templates&scope=personal&template_id={forked.id}"
+        f"/workspace/library/templates?scope=personal&template_id={forked.id}"
     )
     assert forked.team_id is None
     assert forked.description == "Shared description"
@@ -11995,11 +11995,11 @@ def test_generate_output_is_rate_limited_per_authenticated_user(
 
     responses = [
         client.post(f"/api/v1/transcripts/{transcript_id}/generate-output", json={"template_id": str(template.id)})
-        for _ in range(31)
+        for _ in range(21)
     ]
 
-    assert [response.status_code for response in responses[:30]] == [202] * 30
-    assert_error(responses[30], status_code=429, code="rate_limited", message="Too many requests")
+    assert [response.status_code for response in responses[:20]] == [202] * 20
+    assert_error(responses[20], status_code=429, code="rate_limited", message="Too many requests")
 
 
 def test_process_generated_document_logs_usage_metadata(
@@ -15074,19 +15074,19 @@ def test_live_audio_chunk_upload_is_rate_limited_per_authenticated_user(
             files={"audio": (f"chunk-{sequence_no}.webm", b"raw-audio", "audio/webm")},
             data={"chunk_sequence_no": str(sequence_no), "declared_duration_seconds": "1"},
         )
-        for sequence_no in range(1, 12)
+        for sequence_no in range(1, 3)
     ]
-    assert [response.status_code for response in responses[:10]] == [202] * 10
-    assert_error(responses[10], status_code=429, code="rate_limited", message="Too many requests")
+    assert responses[0].status_code == 202
+    assert_error(responses[1], status_code=429, code="rate_limited", message="Too many requests")
 
     client.post("/api/v1/auth/logout")
     login(client, email="owner-live-two@example.com", password="password-3")
-    third = client.post(
+    other_owner_response = client.post(
         f"/api/v1/transcripts/{transcript_two.id}/audio-chunks",
         files={"audio": ("chunk-three.webm", b"raw-audio-3", "audio/webm")},
         data={"chunk_sequence_no": "1", "declared_duration_seconds": "1"},
     )
-    assert third.status_code == 202
+    assert other_owner_response.status_code == 202
 
 
 def test_live_audio_chunk_upload_enforces_hourly_duration_budget(
@@ -15327,10 +15327,12 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         audio_bytes,
         filename,
         content_type,
+        _resolved_bearer_token,
     ):
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
+        assert _resolved_bearer_token == "test-stt-token"
         assert content_type == "audio/wav"
         assert segments_path is None
         assert segment_text_field is None
@@ -15764,6 +15766,7 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
         "app.services.transcripts.normalize_audio_to_wav_16k_mono",
         lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
     )
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
 
     def fake_transcribe(db, **kwargs):
         nonlocal provider_calls
@@ -15786,6 +15789,76 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
     assert attempt.status is AttemptStatus.settled
     assert attempt.outcome is AttemptOutcome.succeeded
     assert attempt.settlement_basis is ProviderSettlementBasis.measured
+
+
+def test_ingestion_preflight_loser_does_not_fail_concurrently_claimed_job(
+    db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Ingestion preflight race team")
+    owner = make_user(email="owner-ingestion-preflight-race@example.com", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.transcribing,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk-race.webm",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+    reserve_provider_attempt(
+        db_session,
+        team_id=team.id,
+        owner_user_id=owner.id,
+        resource=QuotaResource.audio_seconds,
+        attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id,
+        attempt_number=1,
+        reserved_units=1,
+        reservation_valid_until=utcnow() + timedelta(minutes=10),
+        transcript_id=transcript.id,
+        transcript_ingestion_job_id=job.id,
+        measured_audio_seconds=1,
+    )
+    db_session.commit()
+
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"audio")
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="chunk-race.wav", content_type="audio/wav", data=b"normalized"),
+    )
+
+    def losing_preflight(*args, **kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as winner_db:
+            claimed = transcript_service._claim_queued_ingestion_job(winner_db, job_id=job.id)
+            assert isinstance(claimed, tuple)
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", losing_preflight)
+    monkeypatch.setattr(
+        "app.services.transcripts.transcribe_with_stt_snapshot",
+        lambda *args, **kwargs: pytest.fail("losing worker must not dispatch STT"),
+    )
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
+
+    assert processed is not None
+    assert processed.status is TranscriptIngestionJobStatus.processing
+    assert processed.error_code is None
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.submitted
+    assert attempt.outcome is None
+    assert attempt.settled_units is None
 
 
 def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim(
@@ -15838,6 +15911,7 @@ def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_af
         raise AssertionError("root deleted before claim must not reach STT provider")
 
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize)
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.services.transcripts._claim_queued_ingestion_job", delete_root_before_claim)
     monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fail_if_provider_called)
 
@@ -15879,6 +15953,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
         lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
     )
     monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-audio")
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
     job.source_audio_vault_ref = "secret:openscribe/transcript-ingestion/midflight/source-audio"
     db_session.add(job)
     db_session.commit()
@@ -15946,6 +16021,7 @@ def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight
         lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
     )
     monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
 
     def expire_during_provider_call(db, **kwargs):
         with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
@@ -16015,6 +16091,7 @@ def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provide
         lambda **kwargs: NormalizedAudio(filename="chunk-1.wav", content_type="audio/wav", data=b"normalized"),
     )
     monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"raw-audio")
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
 
     def delete_during_provider_call(db, **kwargs):
         with Session(bind=db_session.get_bind(), future=True) as concurrent_db:
@@ -16702,7 +16779,7 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
             retention_days_applied=30,
             retention_expires_at=utcnow() + timedelta(days=30),
         )
-        for upload_no in range(1, 32)
+        for upload_no in range(1, 3)
     ]
     db_session.add_all(transcripts)
     db_session.commit()
@@ -16717,16 +16794,16 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
         for upload_no, transcript in enumerate(transcripts, start=1)
     ]
 
-    assert [response.status_code for response in responses[:30]] == [202] * 30
-    assert_error(responses[30], status_code=429, code="rate_limited", message="Too many requests")
+    assert responses[0].status_code == 202
+    assert_error(responses[1], status_code=429, code="rate_limited", message="Too many requests")
 
 
-def test_audio_upload_default_caps_leave_quota_as_primary_usage_control():
+def test_audio_upload_default_caps_protect_users_without_configured_quotas():
     assert WHOLE_FILE_MAX_UPLOAD_BYTES == 200 * 1024 * 1024
     assert WHOLE_FILE_MAX_DURATION_SECONDS == 4 * 60 * 60
-    assert LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS == 0
-    assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 1024 * 1024 * 1024
-    assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 0
+    assert LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS == 3600
+    assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 4 * 60 * 60
     assert AUDIO_FFMPEG_TIMEOUT_SECONDS == 30 * 60
     assert STT_TRANSCRIPTION_TIMEOUT_SECONDS == 4 * 60 * 60
 
@@ -17080,10 +17157,12 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         audio_bytes,
         filename,
         content_type,
+        _resolved_bearer_token,
     ):
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
+        assert _resolved_bearer_token == "test-stt-token"
         assert adapter_kind == config.adapter_kind.value
         assert base_url == config.base_url
         assert transcribe_path == config.transcribe_path
@@ -17286,10 +17365,12 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         audio_bytes,
         filename,
         content_type,
+        _resolved_bearer_token,
     ):
         assert team_id == team.id
         assert stt_config_id == config_one.id
         assert provider_preset == config_one.provider_preset
+        assert _resolved_bearer_token == "test-stt-token"
         assert base_url == config_one.base_url
         assert transcribe_path == config_one.transcribe_path
         assert model_name == "whisper-1"
@@ -17459,16 +17540,7 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
             data=make_test_wav_bytes(duration_seconds=1.0),
         )
 
-    def fake_transcribe_with_stt_snapshot(db, **kwargs):
-        raise AppError(
-            409,
-            "stt_config_secret_missing",
-            "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth.",
-            {"team_id": str(team.id), "config_id": str(config.id)},
-        )
-
     monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", fake_normalize_audio_to_wav_16k_mono)
-    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", fake_transcribe_with_stt_snapshot)
     monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
 
     uploaded = client.post(
@@ -17476,6 +17548,14 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
         files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
     )
     job_id = UUID(uploaded.json()["job"]["id"])
+    monkeypatch.setattr(
+        "app.services.stt.read_team_stt_bearer_token",
+        lambda **kwargs: (_ for _ in ()).throw(AppError(502, "vault_read_failed", "Vault secret read failed")),
+    )
+    monkeypatch.setattr(
+        "app.services.stt._transcribe_via_http",
+        lambda **kwargs: pytest.fail("missing queued credential must fail before provider dispatch"),
+    )
 
     processed = process_transcript_ingestion_job(db_session, job_id=job_id)
 
@@ -17483,9 +17563,9 @@ def test_processing_audio_file_job_marks_failed_cleanly_when_stt_secret_is_missi
     assert processed.error_code == "stt_config_secret_missing"
     attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job_id))
     assert attempt is not None
-    assert attempt.status is AttemptStatus.settled
-    assert attempt.outcome is AttemptOutcome.failed
-    assert attempt.settlement_basis is ProviderSettlementBasis.measured
+    assert attempt.status is AttemptStatus.cancelled
+    assert attempt.outcome is AttemptOutcome.cancelled
+    assert attempt.settled_units is None
     assert processed.error_message == "The selected STT configuration is missing its saved credential. Ask a system admin to re-save the STT endpoint, or save it without a credential if the endpoint does not require auth."
     assert processed.source_audio_blob is None
     assert processed.source_audio_vault_ref is not None
@@ -18369,6 +18449,131 @@ def test_generation_queue_creates_linked_attempt_and_deterministic_outbox(
     assert dispatch is not None and dispatch.dispatch_kind is TaskDispatchKind.generation
     assert document.celery_task_id == str(dispatch.task_id)
     assert UUID(document.celery_task_id) == dispatch.task_id
+
+
+def test_generation_vault_failure_cancels_before_provider_dispatch(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, suffix="vault-preflight"
+    )
+    document = queue_document_generation_from_template_service(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id
+    )
+    monkeypatch.setattr(
+        "app.services.templates.read_team_llm_bearer_token",
+        lambda **kwargs: (_ for _ in ()).throw(AppError(502, "vault_read_failed", "Vault secret read failed")),
+    )
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: pytest.fail("Vault failure must stop before provider dispatch"),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        process_generated_document(db_session, document_id=document.id)
+
+    assert exc_info.value.code == "vault_read_failed"
+    db_session.refresh(document)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert document.status is GeneratedDocumentStatus.failed
+    assert document.error_code == "vault_read_failed"
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.cancelled
+    assert attempt.outcome is AttemptOutcome.cancelled
+    assert attempt.settled_units is None
+
+
+def test_generation_preflight_loser_does_not_fail_concurrently_claimed_document(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    from app.services import templates as template_service
+
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template,
+        suffix="vault-preflight-race",
+    )
+    document = queue_document_generation_from_template_service(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id
+    )
+
+    def losing_preflight(**kwargs):
+        with Session(bind=db_session.get_bind(), future=True) as winner_db:
+            claimed = template_service._claim_generated_document_for_dispatch(
+                winner_db,
+                document_id=document.id,
+                llm_request_payload={"model": document.model_used or "synthetic"},
+                system_message="Synthetic system message",
+                user_message="Synthetic user message",
+                output_token_cap=32,
+            )
+            assert claimed is not None
+            assert claimed.status is GeneratedDocumentStatus.processing
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+
+    monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", losing_preflight)
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **kwargs: pytest.fail("losing worker must not dispatch LLM"),
+    )
+
+    processed = process_generated_document(db_session, document_id=document.id)
+
+    assert processed.status is GeneratedDocumentStatus.processing
+    assert processed.error_code is None
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id))
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.submitted
+    assert attempt.outcome is None
+    assert attempt.settled_units is None
+
+
+def test_metered_team_stt_reuses_preflight_credential_for_provider_dispatch(
+    db_session, monkeypatch, make_team, make_user, make_stt_config, make_stt_selection
+):
+    team = make_team(name="STT credential reuse")
+    admin = make_user(email="admin-stt-credential-reuse@example.com", is_system_admin=True)
+    owner = make_user(email="owner-stt-credential-reuse@example.com", team=team)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Credential reuse",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    credential_reads = 0
+
+    def read_credential(**kwargs):
+        nonlocal credential_reads
+        credential_reads += 1
+        return "single-use-token"
+
+    monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", read_credential)
+    monkeypatch.setattr(
+        "app.services.stt._transcribe_via_http",
+        lambda **kwargs: "transcribed" if kwargs["bearer_token"] == "single-use-token" else pytest.fail("wrong token"),
+    )
+
+    result = transcribe_metered_team_stt(
+        db_session,
+        team_id=team.id,
+        owner_user_id=owner.id,
+        transcript_id=transcript.id,
+        attempt_kind=AttemptKind.stt_conversation,
+        measured_duration_seconds=1.0,
+        purpose=SttSelectionPurpose.conversation,
+        audio_bytes=b"synthetic audio",
+        filename="audio.wav",
+        content_type="audio/wav",
+    )
+
+    assert result == "transcribed"
+    assert credential_reads == 1
 
 
 def test_generation_duplicate_delivery_settles_once_and_preserves_reported_usage(

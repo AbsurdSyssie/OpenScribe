@@ -89,6 +89,7 @@ Contained information:
 - duration timer
 - ingest failure messages
 - toast-only blocked navigation/session creation feedback
+- visible selected speech-service label beside recording controls, using provider metadata only
 
 User can change:
 - choose recording mode

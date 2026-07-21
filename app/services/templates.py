@@ -99,7 +99,7 @@ from app.services.quotas import (
     settle_provider_attempt_tokens,
     settle_provider_attempt_unknown_tokens,
 )
-from app.services.task_outbox import add_pending_task_dispatch
+from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.vault import read_team_llm_bearer_token
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quota_lifecycle import (
@@ -3382,6 +3382,8 @@ def _queue_generated_document_with_quota(
     except Exception:
         db.rollback()
         raise
+
+    try_publish_task_dispatch_safely(dispatch.task_id)
     db.refresh(document)
     return document
 

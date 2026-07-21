@@ -9,10 +9,17 @@ from sqlalchemy.orm import sessionmaker
 
 from app.celery_app import celery_app
 from app.models import (
+    GeneratedDocument,
     TaskDispatchKind,
     TaskDispatchOutbox,
     TaskDispatchSourceKind,
     TaskDispatchState,
+    Transcript,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobStatus,
+    TranscriptIngestionMode,
+    TranscriptStatus,
+    TranscriptVersion,
     utcnow,
 )
 from app.services.task_outbox import (
@@ -21,7 +28,10 @@ from app.services.task_outbox import (
     TaskDispatchPayloadMismatchError,
     add_pending_task_dispatch,
     cancel_pending_task_dispatch,
+    find_waiting_generation_dispatches_for_transcript,
     publish_pending_task_dispatches,
+    publish_task_dispatch,
+    try_publish_task_dispatch_safely,
 )
 
 
@@ -249,9 +259,198 @@ def test_celery_outbox_task_is_registered_and_scheduled():
     import app.tasks  # noqa: F401 - triggers Celery task registration
 
     assert "openscribe.process_task_dispatch_outbox" in celery_app.tasks
-    schedule = celery_app.conf.beat_schedule["publish-task-dispatch-outbox-every-10-seconds"]
+    schedule = celery_app.conf.beat_schedule["publish-task-dispatch-outbox-every-1-second"]
     assert schedule == {
         "task": "openscribe.process_task_dispatch_outbox",
-        "schedule": 10.0,
-        "options": {"expires": 10.0},
+        "schedule": 1.0,
+        "options": {"expires": 1.0},
     }
+
+
+def test_publish_task_dispatch_claims_and_publishes_single_row(db_session):
+    generation = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    other = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    db_session.commit()
+
+    publisher = RecordingPublisher()
+    publish_task_dispatch(db_session, task_id=generation.task_id, publisher=publisher)
+    db_session.commit()
+    db_session.refresh(generation)
+    db_session.refresh(other)
+
+    assert generation.state is TaskDispatchState.published
+    assert generation.published_at is not None
+    assert other.state is TaskDispatchState.pending
+    assert publisher.dispatches == [generation]
+
+
+def test_publish_task_dispatch_skips_already_published(db_session):
+    dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    dispatch.state = TaskDispatchState.published
+    dispatch.published_at = utcnow()
+    db_session.commit()
+
+    publisher = RecordingPublisher()
+    publish_task_dispatch(db_session, task_id=dispatch.task_id, publisher=publisher)
+    assert publisher.dispatches == []
+
+
+def test_publish_task_dispatch_handles_failure(db_session):
+    dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    db_session.commit()
+
+    publisher = RecordingPublisher(fail=True)
+    publish_task_dispatch(db_session, task_id=dispatch.task_id, publisher=publisher)
+    db_session.commit()
+    db_session.refresh(dispatch)
+
+    assert dispatch.state is TaskDispatchState.pending
+    assert dispatch.attempt_count == 1
+    assert dispatch.last_error_code == PUBLISH_ERROR_CODE
+
+
+def _insert_generated_document(db_session, *, make_user, transcript_id=None, **overrides):
+    """Insert a minimal generated_documents row via a real user+team+transcript."""
+    from datetime import timedelta
+
+    user = make_user()
+    transcript = Transcript(
+        owner_user_id=user.id,
+        team_id=user.team_id,
+        title="Test transcript",
+        current_draft_text_encrypted="draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="version text",
+    )
+    db_session.add(version)
+    db_session.flush()
+
+    now = utcnow()
+    doc_id = overrides.pop("id", uuid4())
+    t_id = transcript_id or transcript.id
+    defaults = dict(
+        id=doc_id,
+        owner_user_id=user.id,
+        team_id=user.team_id,
+        transcript_id=t_id,
+        transcript_version_id=version.id,
+        generator_type="template",
+        source_template_name="Test",
+        status="queued",
+        title="Test doc",
+        document_mode="freeform",
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        is_edited=False,
+        retention_expires_at=now,
+        hallucination_check_status="not_applicable",
+        created_at=now,
+        updated_at=now,
+    )
+    defaults.update(overrides)
+    db_session.execute(postgresql.insert(GeneratedDocument.__table__).values(**defaults))
+    db_session.commit()
+    return defaults["id"], transcript.id
+
+
+def test_find_waiting_generation_dispatches_returns_pending_for_transcript(db_session, make_user):
+    job_id = uuid4()
+    generation = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=job_id,
+    )
+    db_session.commit()
+
+    doc_id, transcript_id = _insert_generated_document(db_session, make_user=make_user, id=job_id)
+
+    results = find_waiting_generation_dispatches_for_transcript(db_session, transcript_id=transcript_id)
+    assert len(results) == 1
+    assert results[0].task_id == generation.task_id
+
+
+def test_find_waiting_generation_dispatches_excludes_nonpending(db_session, make_user):
+    job_id = uuid4()
+    generation = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=job_id,
+    )
+    generation.state = TaskDispatchState.published
+    generation.published_at = utcnow()
+    db_session.commit()
+
+    doc_id, transcript_id = _insert_generated_document(db_session, make_user=make_user, id=job_id)
+
+    assert find_waiting_generation_dispatches_for_transcript(db_session, transcript_id=transcript_id) == []
+
+
+def test_try_publish_task_dispatch_safely_publishes_pending_row(db_session, monkeypatch):
+    dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    db_session.commit()
+
+    published_ids = []
+
+    def fake_publish(dbsession, *, task_id):
+        published_ids.append(task_id)
+
+    monkeypatch.setattr("app.services.task_outbox.publish_task_dispatch", fake_publish)
+    try_publish_task_dispatch_safely(str(dispatch.task_id))
+    db_session.refresh(dispatch)
+
+    assert published_ids == [str(dispatch.task_id)]
+
+
+def test_try_publish_task_dispatch_safely_logs_and_returns_on_failure(db_session, monkeypatch):
+    dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
+    db_session.commit()
+
+    def boom(dbsession, *, task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.services.task_outbox.publish_task_dispatch", boom)
+    # Should not raise
+    try_publish_task_dispatch_safely(str(dispatch.task_id))
+    db_session.refresh(dispatch)
+
+    # Should remain pending
+    assert dispatch.state is TaskDispatchState.pending
+
+
+def test_worker_received_at_stamp_on_generation_task(db_session, make_user):
+    """Stamp worker_received_at is set by _stamp_worker_received on first call."""
+    from app.tasks import _stamp_worker_received
+
+    doc_id, _ = _insert_generated_document(db_session, make_user=make_user)
+
+    before = utcnow()
+    _stamp_worker_received(db_session, model_class=GeneratedDocument, record_id=doc_id)
+    db_session.commit()
+
+    row = db_session.get(GeneratedDocument, doc_id)
+    assert row.worker_received_at is not None
+    assert row.worker_received_at >= before
+
+
+def test_worker_received_at_not_overwritten_on_reentry(db_session, make_user):
+    from app.tasks import _stamp_worker_received
+
+    doc_id, _ = _insert_generated_document(db_session, make_user=make_user)
+
+    _stamp_worker_received(db_session, model_class=GeneratedDocument, record_id=doc_id)
+    db_session.commit()
+    row = db_session.get(GeneratedDocument, doc_id)
+    first_stamp = row.worker_received_at
+
+    import time; time.sleep(0.01)
+
+    _stamp_worker_received(db_session, model_class=GeneratedDocument, record_id=doc_id)
+    db_session.commit()
+    row = db_session.get(GeneratedDocument, doc_id)
+
+    assert row.worker_received_at == first_stamp

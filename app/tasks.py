@@ -3,6 +3,7 @@ from uuid import UUID
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
+from app.models import GeneratedDocument, TranscriptIngestionJob, utcnow
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
@@ -10,10 +11,20 @@ from app.services.task_outbox import publish_pending_task_dispatches
 from app.services.quota_lifecycle import process_quota_lifecycle
 
 
+def _stamp_worker_received(db, *, model_class, record_id: UUID) -> None:
+    """Set worker_received_at once on first task execution, not on retries."""
+    record = db.get(model_class, record_id)
+    if record is not None and record.worker_received_at is None:
+        record.worker_received_at = utcnow()
+        db.add(record)
+        db.commit()
+
+
 @celery_app.task(name="openscribe.process_transcript_ingestion_job")
 def process_transcript_ingestion_job_task(*, job_id: str, audio_b64: str | None = None) -> None:
     legacy_audio_bytes = base64.b64decode(audio_b64.encode("ascii")) if audio_b64 else None
     with SessionLocal() as db:
+        _stamp_worker_received(db, model_class=TranscriptIngestionJob, record_id=UUID(job_id))
         process_transcript_ingestion_job(db, job_id=UUID(job_id), legacy_audio_bytes=legacy_audio_bytes)
 
 
@@ -24,6 +35,7 @@ def enqueue_transcript_ingestion_job(*, job_id: UUID):
 @celery_app.task(name="openscribe.process_generated_document", bind=True, max_retries=None)
 def process_generated_document_task(self, *, document_id: str) -> None:
     with SessionLocal() as db:
+        _stamp_worker_received(db, model_class=GeneratedDocument, record_id=UUID(document_id))
         try:
             process_generated_document(db, document_id=UUID(document_id))
         except GeneratedDocumentWaitingForTranscript as exc:

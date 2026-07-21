@@ -70,6 +70,10 @@ def test_smart_phrase_editor_reuses_csrf_protected_owner_api_and_preserves_error
     assert 'pattern="[A-Z0-9_]+"' in PARTIAL
 
 
+def test_smart_phrase_trigger_prefix_has_space_before_input():
+    assert ".smart-phrase-trigger-field > span { padding: 0 7px 0 12px;" in STYLES
+
+
 def test_smart_phrase_rows_offer_edit_duplicate_and_hard_delete_actions():
     assert 'aria-label="Edit {{ phrase.trigger }}"' in PARTIAL
     assert "data-smart-phrase-duplicate-row" in PARTIAL

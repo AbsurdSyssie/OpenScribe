@@ -92,16 +92,14 @@ Contained information:
 - visible selected speech-service label beside recording controls, using provider metadata only
 
 User can change:
-- choose recording mode
 - upload audio file
 - record audio
 - retry failed file ingestion when retry audio still exists
 - choose whether a new microphone recording should continue the current ready consultation or start a fresh consultation when the previous transcript completed more than 30 seconds ago
 
 How:
-- choose available recording mode
-- start/stop recording
-- upload file
+- start/stop recording using the current consultation recording mode
+- open the Start Recording dropdown and choose `Upload Audio File`
 - trigger retry
 - try blocked navigation/session creation and receive a toast without sidebar layout changes
 - if recording into a stale ready consultation with transcript content, answer the local confirmation prompt; choosing a new consultation creates a fresh transcript root and starts recording there

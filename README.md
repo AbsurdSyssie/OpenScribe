@@ -27,7 +27,8 @@ Primary local URLs:
 - Login / bootstrap: `http://127.0.0.1:8080/login`
 - Onboarding: `http://127.0.0.1:8080/onboarding`
 - MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
-- User home: `http://127.0.0.1:8080/home`
+- User workspace: `http://127.0.0.1:8080/workspace`
+- Legacy settings home: `http://127.0.0.1:8080/home`
 - User and leader settings: `http://127.0.0.1:8080/settings`
 - Restyled home preview: `http://127.0.0.1:8080/home-restyled`
 - Transcription workspace: `http://127.0.0.1:8080/transcribe`

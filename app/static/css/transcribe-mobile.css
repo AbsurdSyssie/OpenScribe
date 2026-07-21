@@ -102,8 +102,7 @@
 
   [data-active-status-pill],
   .record-split-button,
-  .dictation-global-cta,
-  .btn-upload {
+  .dictation-global-cta {
     width: 100%;
   }
 

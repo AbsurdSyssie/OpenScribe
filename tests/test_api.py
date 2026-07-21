@@ -12658,7 +12658,7 @@ def test_completed_user_requires_mfa_on_next_login_without_trusted_device(client
     challenge = complete_mfa_challenge(client, start.json()["secret"])
     assert challenge.status_code == 200
     assert challenge.json()["auth_level"] == "full"
-    assert challenge.json()["redirect_to"] == "/home"
+    assert challenge.json()["redirect_to"] == "/workspace"
 
     assert client.get("/api/v1/auth/me").json()["auth_level"] == "full"
 
@@ -12738,7 +12738,7 @@ def test_remembered_device_skips_mfa_within_freshness_window(client, db_session,
     third_login = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
     assert third_login.status_code == 200
     assert third_login.json()["auth_level"] == "full"
-    assert third_login.json()["redirect_to"] == "/home"
+    assert third_login.json()["redirect_to"] == "/workspace"
 
 
 def test_expired_trusted_device_requires_mfa_again(client, db_session, make_team, make_user):

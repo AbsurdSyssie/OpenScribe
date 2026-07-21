@@ -51,17 +51,17 @@ data-transcript-title-input>
 {% set active_status_display = 'idle' %}
 {% endif %}
 {% if active_status_display == 'ready' %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-teal-pale rounded-full" data-active-status-pill>
+<div class="inline-flex items-center gap-2 w-fit px-3 py-1.5 bg-teal-pale rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-teal-deep rounded-full"></span>
 <span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
 </div>
 {% elif active_status_display == 'failed' %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-coral/15 rounded-full" data-active-status-pill>
+<div class="inline-flex items-center gap-2 w-fit px-3 py-1.5 bg-coral/15 rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-coral rounded-full"></span>
 <span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
 </div>
 {% else %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-white border border-stone rounded-full" data-active-status-pill>
+<div class="inline-flex items-center gap-2 w-fit px-3 py-1.5 bg-white border border-stone rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-slate rounded-full"></span>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>
@@ -69,16 +69,6 @@ data-transcript-title-input>
 {% if stt_selection %}
 <span class="text-sm text-slate" data-stt-provider-label>Speech service: {{ stt_selection.config.label }}</span>
 {% endif %}
-<button
-type="button"
-class="btn-upload"
-data-audio-action-trigger
-data-local-busy-protected
-{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
-{% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
-<i class="w-4 h-4" data-lucide="upload"></i>
-Upload
-</button>
 <div class="record-split-button"
 data-record-split-button
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) %}data-disabled{% endif %}>
@@ -88,7 +78,7 @@ class="record-split-button__main"
 data-record-toggle
 {% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
 <i class="w-4 h-4" data-record-toggle-icon data-lucide="disc"></i>
-<span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Start recording{% endif %}</span>
+<span data-record-toggle-label>{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}Start live{% else %}Start Recording{% endif %}</span>
 </button>
 <div class="mic-visualizer" data-mic-visualizer data-vad-active="false" aria-hidden="true"></div>
 <button
@@ -101,11 +91,15 @@ aria-expanded="false"
 <i class="w-4 h-4" data-lucide="chevron-down"></i>
 </button>
 <div class="record-split-button__menu" data-record-mode-menu hidden>
-<button type="button" class="record-split-button__option{% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %} active{% endif %}" data-mode="whole_file">
-<span class="record-split-button__option-label">Recorded upload</span>
-</button>
-<button type="button" class="record-split-button__option{% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %} active{% endif %}" data-mode="live_chunked">
-<span class="record-split-button__option-label">Live capture</span>
+<button
+type="button"
+class="record-split-button__option record-split-button__option--upload"
+data-audio-action-trigger
+data-local-busy-protected
+{% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
+{% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
+<i class="w-4 h-4" data-lucide="upload"></i>
+<span class="record-split-button__option-label">Upload Audio File</span>
 </button>
 </div>
 </div>

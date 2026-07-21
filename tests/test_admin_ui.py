@@ -177,6 +177,17 @@ def test_login_page_exposes_bootstrap_when_database_is_empty(client):
     assert "Create the first system admin" in page.text
 
 
+def test_login_form_has_spacing_before_footer_rule(client, make_user):
+    make_user(email="login-layout@example.com", password="password-1")
+
+    page = client.get("/login")
+
+    assert page.status_code == 200
+    assert '<form method="post" action="/login" class="login-form">' in page.text
+    assert ".auth-page--login .login-form .submit-row" in Path("app/static/css/auth.css").read_text()
+    assert "padding-bottom: 18px" in Path("app/static/css/auth.css").read_text()
+
+
 def test_request_access_page_submits_public_account_request(client):
     page = client.get("/request-access")
     assert page.status_code == 200
@@ -249,7 +260,7 @@ def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
     assert "Recovery codes" in verify.text
 
 
-def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, make_team, make_user, make_account_request):
+def test_non_admin_login_redirects_to_workspace_and_leader_sees_review_tools(client, make_team, make_user, make_account_request):
     team = make_team(name="Clinic North")
     make_account_request(requested_name="Alice Example", requested_email="alice@example.com", requested_team_name="Clinic North")
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -260,7 +271,7 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
         follow_redirects=False,
     )
     assert login_response.status_code == 303
-    assert login_response.headers["location"] == "/home"
+    assert login_response.headers["location"] == "/workspace"
 
     home_page = client.get("/home")
     assert home_page.status_code == 200
@@ -3941,6 +3952,13 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "Create new consultation" in page.text
     assert 'data-record-toggle' in page.text
     assert 'data-audio-action-trigger' in page.text
+    assert 'class="btn-upload"' not in page.text
+    assert "Upload Audio File" in page.text
+    assert ">Start Recording</span>" in page.text
+    record_menu = page.text.split('data-record-mode-menu hidden>', 1)[1].split('</div>', 1)[0]
+    assert "Upload Audio File" in record_menu
+    assert "Recorded upload" not in record_menu
+    assert "Live capture" not in record_menu
     assert 'data-recording-mode-select' in page.text
     assert 'data-active-draft' in page.text
     assert 'data-active-status' in page.text
@@ -6465,6 +6483,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "min-height: 100%;" in transcribe_css
     assert ".record-split-button {" in transcribe_css
     assert "overflow: visible;" in transcribe_css
+    assert "border-radius: 0.5rem 0 0 0.5rem;" in transcribe_css
+    assert "border-radius: 0 0.5rem 0.5rem 0;" in transcribe_css
+    assert ".record-split-button__main {" in transcribe_css
+    assert ".dictation-global-cta {" in transcribe_css
+    assert transcribe_css.index("height: 2.25rem;", transcribe_css.index(".record-split-button__main {")) < transcribe_css.index(".record-split-button__main:hover")
+    assert transcribe_css.index("height: 2.25rem;", transcribe_css.index(".dictation-global-cta {")) < transcribe_css.index(".dictation-global-cta:hover")
     assert ".structured-workspace {" in transcribe_css
     assert "flex: 1;" in transcribe_css
     assert ".dictation-global-cta" in transcribe_css

@@ -70,7 +70,7 @@
         <h2>Sign in to OpenScribe</h2>
         <p class="muted">If this is a new account, you may be asked to finish setup or enter a code from your authenticator app.</p>
       </div>
-      <form method="post" action="/login">
+      <form method="post" action="/login" class="login-form">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <label>
           Email

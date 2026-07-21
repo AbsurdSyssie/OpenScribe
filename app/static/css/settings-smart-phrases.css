@@ -54,7 +54,7 @@
 .smart-phrase-editor-form > label > span > small { color: var(--muted); font-weight: 400; }
 .smart-phrase-editor-form textarea { min-height: 260px; background: #efe7da; }
 .smart-phrase-trigger-field { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm); background: white; }
-.smart-phrase-trigger-field > span { padding-left: 12px; color: var(--muted); }
+.smart-phrase-trigger-field > span { padding: 0 7px 0 12px; color: var(--muted); }
 .smart-phrase-trigger-field input { border: 0; border-radius: 0; }
 .smart-phrase-trigger-field:focus-within { outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 1px; }
 .smart-phrase-editor-error { padding: 12px 14px; border: 1px solid #c87979; border-radius: 8px; color: #762b2b; background: #fff2f2; }

@@ -17,7 +17,7 @@ Frontend direction and longer-term migration planning remain in [frontend-roadma
 
 - `/` renders the public OpenScribe splash page for anonymous browser users
 - signed-in users visiting `/` are redirected through the existing post-login destination logic
-- normal users land on `/home`, system administrators land on `/admin`, and partial sessions remain routed to onboarding or MFA challenge pages
+- normal users land on `/workspace`, system administrators land on `/admin`, and partial sessions remain routed to onboarding or MFA challenge pages
 - splash page calls to action link only to implemented browser routes: `/login` and `/request-access`
 
 ## End-to-end onboarding flow
@@ -98,6 +98,8 @@ For users whose onboarding is already complete:
 - digit-fill motion respects the browser's reduced-motion preference
 - verify and sign-out actions share one visual row with clear spacing from the remembered-browser control, but remain separate forms so code validation cannot block sign-out
 - `POST /api/v1/auth/mfa/totp` is the JSON challenge endpoint
+
+After a normal user reaches a full-access session, browser and API login flows use `/workspace` as the default destination. System administrators continue to use `/admin`.
 - successful TOTP verification rotates the `pending_mfa` session into a normal `full` session
 - if the user opts in to remembering the browser, the app also issues a trusted-device cookie
 

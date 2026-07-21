@@ -9,6 +9,7 @@ Smart phrases are personal note-editor shortcuts. They are configuration, not tr
 - Each normal team user gets the starter `CESRF` phrase when the account is created or when the migration backfills existing users.
 - Deleting a phrase is immediate. Deleted starter phrases are not recreated on login or list calls.
 - Usage counters update only after a browser expansion calls the `used` endpoint.
+- The trigger editor keeps a small visual gap between the `/` prefix and the trigger input.
 
 ## Editor Reordering
 

@@ -730,7 +730,7 @@ async def browser_not_found_handler(request: Request, exc: HTTPException):
     session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
     with session_factory() as db:
         context = _current_context_optional(request, db)
-    redirect_to = "/home" if context is not None else "/login"
+    redirect_to = _post_login_redirect(context) if context is not None else "/login"
     return RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -964,14 +964,14 @@ def _post_login_redirect(context: AuthenticatedContext) -> str:
         return "/onboarding"
     if context.session.auth_level.value == "pending_mfa":
         return "/mfa/challenge"
-    return "/admin" if context.user.is_system_admin else "/home"
+    return "/admin" if context.user.is_system_admin else "/workspace"
 
 
 def _post_login_redirect_for_user(user: User) -> str:
     auth_level = determine_auth_level(user)
     if auth_level.value == "onboarding":
         return "/onboarding"
-    return "/admin" if user.is_system_admin else "/home"
+    return "/admin" if user.is_system_admin else "/workspace"
 
 
 def _user_count(db: Session) -> int:

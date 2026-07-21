@@ -2346,7 +2346,7 @@ let statusDetailsHideTimer = null;
           if (isRecording) {
             recordToggleLabel.textContent = 'Stop';
           } else {
-            recordToggleLabel.textContent = liveMode ? 'Start live capture' : 'Start recording';
+            recordToggleLabel.textContent = liveMode ? 'Start live capture' : 'Start Recording';
           }
         }
         const recordToggleIcon = getRecordToggleIcon();

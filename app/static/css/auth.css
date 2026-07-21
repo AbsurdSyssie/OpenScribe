@@ -273,6 +273,10 @@
   margin-top: 18px;
 }
 
+.auth-page--login .login-form .submit-row {
+  padding-bottom: 18px;
+}
+
 .auth-page input,
 .auth-page textarea {
   border-radius: 10px;

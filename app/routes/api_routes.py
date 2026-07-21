@@ -112,7 +112,7 @@ def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get
     body = LoginResponse(
         authenticated=True,
         auth_level=auth_level,
-        redirect_to="/onboarding" if auth_level.value == "onboarding" else ("/mfa/challenge" if auth_level.value == "pending_mfa" else ("/admin" if user.is_system_admin else "/home")),
+        redirect_to="/onboarding" if auth_level.value == "onboarding" else ("/mfa/challenge" if auth_level.value == "pending_mfa" else ("/admin" if user.is_system_admin else "/workspace")),
     )
     response = JSONResponse(body.model_dump(mode="json"))
     _set_session_cookie(request, response, token)
@@ -248,7 +248,7 @@ def api_login_mfa_totp(
         LoginResponse(
             authenticated=True,
             auth_level=determine_auth_level(user),
-            redirect_to="/admin" if user.is_system_admin else "/home",
+            redirect_to="/admin" if user.is_system_admin else "/workspace",
         ).model_dump(mode="json")
     )
     _set_session_cookie(request, response, token)
@@ -367,7 +367,7 @@ def api_skip_recovery_codes(request: Request, context: AuthenticatedContext = De
     token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
     record_security_event(db, action="recovery_codes_skipped", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
     response = JSONResponse(
-        LoginResponse(authenticated=True, auth_level=determine_auth_level(user), redirect_to="/admin" if user.is_system_admin else "/home").model_dump(mode="json")
+        LoginResponse(authenticated=True, auth_level=determine_auth_level(user), redirect_to="/admin" if user.is_system_admin else "/workspace").model_dump(mode="json")
     )
     _set_session_cookie(request, response, token)
     return response

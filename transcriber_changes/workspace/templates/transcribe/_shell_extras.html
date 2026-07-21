@@ -75,23 +75,6 @@ recordModeDropdown.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
 return;
 }
 
-var recordModeOption = e.target.closest('[data-mode]');
-if (recordModeOption) {
-e.preventDefault();
-var mode = recordModeOption.getAttribute('data-mode');
-var modeSelect = document.querySelector('[data-recording-mode-select]');
-var menu = document.querySelector('[data-record-mode-menu]');
-var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
-if (modeSelect && mode) {
-modeSelect.value = mode;
-modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-}
-if (menu) menu.hidden = true;
-if (dropdownBtn) dropdownBtn.setAttribute('aria-expanded', 'false');
-syncRecordButtonLabel();
-return;
-}
-
 var menu = document.querySelector('[data-record-mode-menu]');
 var dropdownBtn = document.querySelector('[data-record-mode-dropdown]');
 if (menu && !menu.hidden && !e.target.closest('[data-record-split-button]')) {
@@ -157,13 +140,9 @@ return;
 function syncRecordButtonLabel() {
 var modeSelect = document.querySelector('[data-recording-mode-select]');
 var labelEl = document.querySelector('[data-record-toggle-label]');
-var options = document.querySelectorAll('[data-record-mode-menu] [data-mode]');
 if (!modeSelect || !labelEl) return;
 var mode = modeSelect.value;
-labelEl.textContent = mode === 'live_chunked' ? 'Start live' : 'Start recording';
-options.forEach(function(opt) {
-opt.classList.toggle('active', opt.getAttribute('data-mode') === mode);
-});
+labelEl.textContent = mode === 'live_chunked' ? 'Start live' : 'Start Recording';
 }
 syncRecordButtonLabel();
 document.addEventListener('change', function(e) {

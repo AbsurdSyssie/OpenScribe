@@ -37,6 +37,11 @@ Create-new-consultation controls in every workspace section use the signed-in
 user's normalized preferred recording mode. They fall back to whole-file upload
 only when no supported preference is set.
 
+In the Scribe action row, audio upload is available from the Start Recording
+dropdown as `Upload Audio File`; there is no separate Upload button. The menu
+uses the same owner-authorized file-upload flow as before. Start Recording and
+Add dictation use the same control height.
+
 ## Recording navigation lock
 
 The media controller emits recording lifecycle events. Shared workspace code

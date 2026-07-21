@@ -695,6 +695,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "hallucination_check_provider_snapshot_json",
         "hallucination_check_completed_at",
         "hallucination_check_applied_edit_count",
+        "worker_received_at",
         "started_at",
         "completed_at",
     } <= generated_document_columns
@@ -842,6 +843,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "stt_segment_end_field",
         "stt_segment_speaker_field",
         "stt_extra_form_fields_json",
+        "worker_received_at",
     } <= transcript_ingestion_job_columns
     assert {
         "user_id",

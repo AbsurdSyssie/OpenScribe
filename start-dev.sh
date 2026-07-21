@@ -138,11 +138,16 @@ trap cleanup EXIT INT TERM
 
 if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   if [[ "${DEV_PURGE_CELERY_QUEUE}" == "true" ]]; then
-    echo "Purging stale Celery tasks from the dev queue..."
+    echo "Purging stale Celery tasks from all dev queues..."
     .venv/bin/celery -A app.celery_app:celery_app purge -f >/dev/null 2>&1 || true
   fi
-  echo "Starting Celery worker..."
-  .venv/bin/celery -A app.celery_app:celery_app worker --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
+  # Production: run separate workers per queue for isolation:
+  #   celery ... worker -Q control  -n control@%%h
+  #   celery ... worker -Q generation -n generation@%%h
+  #   celery ... worker -Q ingestion -n ingestion@%%h
+  # Dev: single worker consuming all queues is sufficient.
+  echo "Starting Celery worker (all queues: control, generation, ingestion)..."
+  .venv/bin/celery -A app.celery_app:celery_app worker -Q control,generation,ingestion --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_WORKER_PID=$!
   echo "Starting Celery Beat for scheduled retention and Vault cleanup..."
   .venv/bin/celery -A app.celery_app:celery_app beat --loglevel "${CELERY_LOG_LEVEL:-INFO}" &

@@ -300,6 +300,16 @@ def test_home_and_template_editor_reuse_shared_visual_tokens():
     assert "body.home2" in home2_css
 
 
+def test_workspace_template_freeform_editor_uses_compact_structured_prompt_metrics():
+    workspace = Path("app/templates/_template_editor_workspace.html").read_text()
+    settings_css = Path("app/static/css/settings.css").read_text()
+
+    assert 'class="template-prompt-field"' in workspace
+    assert ".template-library-detail .template-prompt-field" in settings_css
+    assert ".template-library-detail textarea[name=\"prompt_text\"] { min-height: 120px; }" in settings_css
+    assert ".template-library-detail .workspace-shell { align-items: start; }" in settings_css
+
+
 def test_template_editor_extracts_reusable_body_without_nested_page_shell():
     template_editor = Path("app/templates/template_editor.html").read_text()
     workspace = Path("app/templates/_template_editor_workspace.html").read_text()

@@ -230,6 +230,7 @@ def test_legacy_transcript_ingestion_task_payload_is_accepted(monkeypatch):
             return False
 
     monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(tasks, "_stamp_worker_received", lambda *a, **kw: None)
     monkeypatch.setattr(
         tasks,
         "process_transcript_ingestion_job",

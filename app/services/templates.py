@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
 from datetime import timedelta, timezone
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
@@ -3981,8 +3982,44 @@ class _GeneratedDocumentPreclaimError(Exception):
         self.original = original
 
 
+def _generation_preparation_lock_key(document_id: UUID) -> int:
+    """Map a document UUID to PostgreSQL's signed 64-bit advisory-lock key."""
+    value = (document_id.int >> 64) ^ (document_id.int & ((1 << 64) - 1))
+    return value - (1 << 64) if value >= (1 << 63) else value
+
+
+@contextmanager
+def _generation_preparation_lock(db: Session, *, document_id: UUID):
+    """Best-effort single-worker guard spanning snapshot commits and provider work."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        yield True
+        return
+    key = _generation_preparation_lock_key(document_id)
+    lock_engine = bind.engine if hasattr(bind, "engine") else bind
+    with lock_engine.connect() as lock_connection:
+        acquired = bool(lock_connection.scalar(select(func.pg_try_advisory_lock(key))))
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock_connection.execute(select(func.pg_advisory_unlock(key)))
+
+
 def process_generated_document(db: Session, *, document_id: UUID) -> GeneratedDocument:
     """Public worker boundary: never retry a non-waiting generation failure."""
+    with _generation_preparation_lock(db, document_id=document_id) as acquired:
+        if not acquired:
+            db.rollback()
+            document = db.get(GeneratedDocument, document_id)
+            if document is None:
+                raise AppError(404, "not_found", "Generated document not found", {"resource": "generated_document", "generated_document_id": str(document_id)})
+            return document
+        return _process_generated_document_with_error_handling(db, document_id=document_id)
+
+
+def _process_generated_document_with_error_handling(db: Session, *, document_id: UUID) -> GeneratedDocument:
+    """Run one lock-owning generation delivery with established terminalization."""
     try:
         return _process_generated_document_impl(db, document_id=document_id)
     except GeneratedDocumentWaitingForTranscript:

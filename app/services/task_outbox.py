@@ -268,29 +268,63 @@ def publish_task_dispatch(
 def find_waiting_generation_dispatches_for_transcript(
     db: Session, *, transcript_id: UUID
 ) -> list[TaskDispatchOutbox]:
-    """Return generation dispatches still pending for one transcript.
+    """Return active generation dispatches for one transcript.
 
     Used by the transcript-completion trigger to fan generation out without
-    each generation having to poll.
+    waiting for each generation task's scheduled retry. Normally these rows
+    are already ``published`` before the worker discovers that transcription
+    is still in progress; ``pending`` rows cover broker publication failures.
     """
     # Imported lazily to avoid an import cycle: app.models -> app.services.*
     # callers already depend on this module.
-    from app.models import GeneratedDocument
+    from app.models import GeneratedDocument, GeneratedDocumentStatus
 
     return list(
         db.scalars(
             select(TaskDispatchOutbox)
             .where(
                 TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.generation,
-                TaskDispatchOutbox.state == TaskDispatchState.pending,
+                TaskDispatchOutbox.state.in_(
+                    (TaskDispatchState.pending, TaskDispatchState.published)
+                ),
             )
             .join(
                 GeneratedDocument,
                 GeneratedDocument.id == TaskDispatchOutbox.source_id,
             )
-            .where(GeneratedDocument.transcript_id == transcript_id)
+            .where(
+                GeneratedDocument.transcript_id == transcript_id,
+                GeneratedDocument.status == GeneratedDocumentStatus.queued,
+            )
         )
     )
+
+
+def wake_published_generation_task_dispatch(
+    db: Session,
+    *,
+    task_id: UUID,
+    publisher: TaskDispatchPublisher | None = None,
+) -> bool:
+    """Republish one already-dispatched generation task as a readiness wake-up.
+
+    This deliberately does not reopen or mutate the durable outbox lifecycle.
+    Duplicate delivery is safe because generation workers take a per-document
+    preparation guard before redaction, credential resolution, or provider
+    dispatch. The task's scheduled retry remains the fallback if this
+    best-effort broker publish fails.
+    """
+    dispatch = db.scalar(
+        select(TaskDispatchOutbox).where(
+            TaskDispatchOutbox.task_id == task_id,
+            TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.generation,
+            TaskDispatchOutbox.state == TaskDispatchState.published,
+        )
+    )
+    if dispatch is None:
+        return False
+    (publisher or CeleryTaskDispatchPublisher()).publish(dispatch)
+    return True
 
 
 def try_publish_task_dispatch_safely(task_id) -> None:
@@ -310,4 +344,19 @@ def try_publish_task_dispatch_safely(task_id) -> None:
         logger.warning(
             "task_dispatch_fast_path_skipped",
             extra={"event": "task_dispatch_fast_path_skipped"},
+        )
+
+
+def try_wake_published_generation_task_dispatch_safely(task_id) -> None:
+    """Best-effort wake-up for generation work already sent to Celery."""
+    import logging
+
+    logger = logging.getLogger("openscribe.task_outbox")
+    try:
+        with SessionLocal() as db:
+            wake_published_generation_task_dispatch(db, task_id=task_id)
+    except Exception:
+        logger.warning(
+            "generation_dispatch_wake_skipped",
+            extra={"event": "generation_dispatch_wake_skipped"},
         )

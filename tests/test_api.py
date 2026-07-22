@@ -14,6 +14,8 @@ from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID, uuid4
 import wave
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 import httpx
 import pytest
@@ -18940,6 +18942,73 @@ def test_generation_preflight_loser_does_not_fail_concurrently_claimed_document(
     assert attempt.status is AttemptStatus.submitted
     assert attempt.outcome is None
     assert attempt.settled_units is None
+
+
+@pytest.mark.real_db_connections
+def test_generation_duplicate_delivery_serializes_before_provider_bound_preparation(
+    db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
+):
+    from app.services import templates as template_service
+
+    owner, _, template, transcript = _quota_generation_fixture(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template,
+        suffix="duplicate-preparation",
+    )
+    document = queue_document_generation_from_template_service(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id
+    )
+    original_redaction = template_service.ensure_redaction_run_for_transcript_version
+    redaction_calls = 0
+    provider_calls = 0
+    calls_lock = Lock()
+    first_preparation_started = Event()
+    release_first_preparation = Event()
+    duplicate_reached_preparation = Event()
+
+    def count_redaction(*args, **kwargs):
+        nonlocal redaction_calls
+        with calls_lock:
+            redaction_calls += 1
+            call_number = redaction_calls
+        if call_number == 1:
+            first_preparation_started.set()
+            assert release_first_preparation.wait(timeout=5)
+        else:
+            duplicate_reached_preparation.set()
+        return original_redaction(*args, **kwargs)
+
+    def generate(**kwargs):
+        nonlocal provider_calls
+        with calls_lock:
+            provider_calls += 1
+        return '{"title":"Synthetic","content":"Output"}', {
+            "input_tokens": 10,
+            "output_tokens": 7,
+            "total_tokens": 17,
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(template_service, "ensure_redaction_run_for_transcript_version", count_redaction)
+    monkeypatch.setattr(template_service, "_generate_freeform_output_openai", generate)
+
+    def deliver():
+        with Session(bind=db_session.get_bind(), future=True) as worker_db:
+            return process_generated_document(worker_db, document_id=document.id).status
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(deliver)
+        assert first_preparation_started.wait(timeout=5)
+        duplicate = executor.submit(deliver)
+        duplicate_entered_preparation = duplicate_reached_preparation.wait(timeout=1)
+        release_first_preparation.set()
+        first_status = first.result(timeout=10)
+        duplicate_status = duplicate.result(timeout=10)
+
+    assert duplicate_entered_preparation is False
+    assert first_status is GeneratedDocumentStatus.ready
+    assert duplicate_status in {GeneratedDocumentStatus.queued, GeneratedDocumentStatus.ready}
+    assert redaction_calls == 1
+    assert provider_calls == 1
 
 
 def test_metered_team_stt_reuses_preflight_credential_for_provider_dispatch(

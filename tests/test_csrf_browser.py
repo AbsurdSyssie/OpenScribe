@@ -6,6 +6,8 @@ from sqlalchemy.orm import sessionmaker
 
 playwright_sync = pytest.importorskip("playwright.sync_api")
 
+pytestmark = pytest.mark.real_db_connections
+
 from app.db import get_db
 from app.main import app
 from app.models import TeamRole

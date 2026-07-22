@@ -102,7 +102,7 @@
           <input type="text" name="description" value="{{ editor_form_values.get('description', '') if editor_form_values else (current_template.description if current_template else '') }}">
         </label>
       </div>
-      <label>
+      <label class="template-prompt-field">
         What should be written
         <textarea name="prompt_text" rows="10" required>{{ editor_form_values.get('prompt_text', '') if editor_form_values else (current_version.prompt_text if current_version else '') }}</textarea>
       </label>

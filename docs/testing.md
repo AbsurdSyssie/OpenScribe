@@ -24,7 +24,23 @@ export HSTS_SOURCE=app
 pytest
 ```
 
-The test harness now takes a session-level file lock on `/tmp/openscribe_pytest.lock`.
+The test harness supports explicit xdist runs without enabling xdist by default:
+
+```bash
+pytest -q -n 4
+```
+
+Keep focused one-test or small-file runs sequential to avoid worker startup cost.
+On the current development machine, the full suite measured 2m41s sequential,
+1m30s with two workers, 60.32s with four workers, and 45.01s with eight
+workers. Four workers are the balanced default; eight was fastest in this
+measurement but remains host-dependent. Xdist stays opt-in rather than a
+`pytest.ini` default.
+
+Sequential and xdist controller processes retain the session-level lock at
+`/tmp/openscribe_pytest.lock`. Xdist workers inherit the controller's protected
+run and do not acquire competing locks. Any second pytest invocation exits
+rather than sharing PostgreSQL or Redis test infrastructure.
 
 Why:
 
@@ -35,6 +51,13 @@ Current behavior:
 
 - the first pytest run acquires the lock and proceeds
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
+- xdist workers use derived PostgreSQL databases (for example,
+  `ambient_scribe_test_gw0`) and isolated SlowAPI key namespaces; the Redis DB
+  itself remains the configured test Redis DB
+- first test resolving `db_session` directly or through another fixture rebuilds that run's `public` schema; later ordinary DB tests reuse it under a single connection-root transaction and roll that transaction back at fixture teardown
+- tests marked `real_db_connections` retain full trusted-metadata `TRUNCATE ... RESTART IDENTITY CASCADE` cleanup before and after the test so independent committed sessions, threads, locks, and live servers remain real
+- pure and static tests that do not resolve `db_session` skip PostgreSQL and Redis reset work
+- migration-marked tests keep their separate schema lifecycle; teardown invalidates the canonical-schema readiness flag and clears this worker's rate-limit keys even if the test body fails. The next ordinary DB test rebuilds canonical metadata lazily before opening its rollback-isolated connection
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
 - admin UI static regressions verify no-team Admin home safely skips member-modal listeners when member controls are not rendered
@@ -110,7 +133,7 @@ What it does:
 - GLM 2 structured-note copy groups selected lines by section so the section heading is emitted once per section in clipboard output, with a trailing `:`
 - structured-note section headers expose individual copy buttons for copying a whole section body without prepending the section heading
 - generated-note copy actions expose a review gate: users can copy generated structured sections only after viewing that section bottom, and can copy generated freeform notes only after viewing the note bottom; review-required state follows the rendered generated draft and is revoked when the copyable note text changes; hidden output panes, pre-layout render geometry, and setup-time sentinels do not count as reviewed; blocked copy attempts now surface as toasts rather than inline alerts; manual pre-generation note input remains unrestricted
-- generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked
+- generation queue tests verify users can queue multiple follow-ups for the same transcript while recording-active generation remains blocked; frontend source coverage keeps follow-up and quick-action controls usable while a note-generation request is in flight
 - transcript history shows an owner-only right-side PII table sourced from the latest successful redaction run without changing transcript ownership rules
 - note switching refreshes the right-side PII table from the selected note's redaction entities without a full page reload
 - transcript text highlights selected-note PII matches and persisted owner-created manual PII values in the owner workspace
@@ -470,3 +493,9 @@ Pending-provider browser tests verify the canonical workspace retains model fina
 # Provider-policy table
 
 `tests/test_admin_ui.py -k provider_policy` verifies six styled policy rows, real provider/model values, discovered-model data, inline save and state-dependent clear routes, representative STT/LLM POSTs, and JavaScript model-sync markers. Tests use provider metadata only; no transcript-derived content or credentials are rendered.
+
+# Gemini Enterprise
+
+Run `.venv/bin/pytest -q tests/test_gemini_enterprise_llm.py tests/test_gemini_enterprise_foundation.py` for mocked SDK, error mapping, client closure, discovery catalogs, model-aware thinking limits, the fixed 30,000-token Gemini output/quota ceiling across saved length selections, explicit JSON Schema snapshots, `MAX_TOKENS` handling, plain-text action mode, and Vault-envelope coverage. API lifecycle coverage lives in `tests/test_api.py -k "gemini_"`; admin wizard coverage lives in `tests/test_admin_ui.py -k "gemini"`. Standard CI must not use live Google credentials or make Google calls.
+
+Live smoke testing is a separate staging operation using a low-privilege identity. Verify ADC or service-account authentication, model listing, manual `count_tokens` validation, one minimal generation, token usage, and client cleanup in both `global` and the intended production location before rollout.

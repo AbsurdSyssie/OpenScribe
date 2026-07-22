@@ -14,6 +14,7 @@ from ..models import (
     GeneratedDocument,
     HallucinationCheckStatus,
     LlmAdapterKind,
+    LlmAuthMode,
     LlmConfigSetupStatus,
     LlmProviderPreset,
     PromptTemplate,
@@ -32,7 +33,7 @@ from ..models import (
     User,
     UserStatus,
 )
-from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, get_llm_provider_preset, infer_llm_provider_preset
+from ..services.llm_presets import LLM_PROVIDER_PRESETS, BEDROCK_HTTP_GATEWAY_REGIONS, get_llm_provider_preset, infer_llm_provider_preset, visible_llm_provider_presets
 from ..services.stt_presets import STT_PROVIDER_PRESETS, get_stt_provider_preset, infer_stt_provider_preset, resolve_stt_provider_preset
 from ..schemas import (
     ClinicalNlpSelectionDetail,
@@ -194,9 +195,10 @@ def stt_selection_response(selection) -> SttSelectionDetail:
 
 def llm_config_response(config) -> LlmConfigDetail:
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     setup_status = config.setup_status or LlmConfigSetupStatus.ready
     setup_status_label = "Setup incomplete" if setup_status == LlmConfigSetupStatus.pending_model_selection else None
+    provider_config = dict(config.provider_config_json or {})
     return LlmConfigDetail(
         id=config.id,
         team_id=config.team_id,
@@ -213,6 +215,14 @@ def llm_config_response(config) -> LlmConfigDetail:
         setup_status_label=setup_status_label,
         is_active=config.is_active,
         has_secret=bool(config.vault_secret_ref),
+        google_project_id=provider_config.get("project_id") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        google_location=provider_config.get("location") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        google_auth_method=(
+            "application_default"
+            if config.auth_mode is LlmAuthMode.google_adc
+            else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else None
+        ),
+        capacity_mode=provider_config.get("capacity_mode") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
         created_by_user_id=config.created_by_user_id,
         updated_by_user_id=config.updated_by_user_id,
         created_at=config.created_at,
@@ -227,7 +237,7 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
     if resolved_model_name and allowed_models_json and resolved_model_name not in allowed_models_json:
         resolved_model_name = allowed_models_json[0]
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     return LlmSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,
@@ -251,7 +261,7 @@ def hallucination_check_selection_response(selection) -> HallucinationCheckSelec
     config = selection.config
     resolved_model_name = selection.model_name_override or config.model_name
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     return HallucinationCheckSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,
@@ -669,17 +679,22 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             "credential_action": default_credential_action(inspection.adapter_kind),
             "setup_status": "",
             "has_secret": False,
+            "google_project_id": inspection.google_project_id or "",
+            "google_location": inspection.google_location or "",
+            "google_auth_method": inspection.google_auth_method or "application_default",
+            "capacity_mode": inspection.capacity_mode or "auto",
             "is_setup_incomplete": False,
             "show_credential_step": True,
             "show_model_step": False,
             "can_finalize": False,
-            "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+            "llm_provider_presets": visible_llm_provider_presets(),
             "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
     if config is not None:
         bedrock_region = bedrock_region_from_base_url(config.base_url) if config.adapter_kind is LlmAdapterKind.bedrock_chat else ""
         provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
         setup_status = config.setup_status or LlmConfigSetupStatus.ready
+        provider_config = dict(config.provider_config_json or {})
         return {
             "config_id": str(config.id),
             "label": config.label,
@@ -701,11 +716,19 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
             "credential_action": "keep",
             "setup_status": setup_status.value if hasattr(setup_status, "value") else str(setup_status),
             "has_secret": bool(config.vault_secret_ref),
+            "google_project_id": provider_config.get("project_id", ""),
+            "google_location": provider_config.get("location", ""),
+            "google_auth_method": (
+                "application_default"
+                if config.auth_mode is LlmAuthMode.google_adc
+                else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else ""
+            ),
+            "capacity_mode": provider_config.get("capacity_mode", "auto"),
             "is_setup_incomplete": setup_status == LlmConfigSetupStatus.pending_model_selection,
             "show_credential_step": False,
             "show_model_step": setup_status == LlmConfigSetupStatus.pending_model_selection,
             "can_finalize": setup_status == LlmConfigSetupStatus.pending_model_selection,
-            "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+            "llm_provider_presets": visible_llm_provider_presets(),
             "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
         }
     return {
@@ -723,11 +746,15 @@ def llm_form_defaults(config, inspection: LlmConfigInspectResult | None) -> dict
         "credential_action": default_credential_action(LlmAdapterKind.openai_chat),
         "setup_status": "",
         "has_secret": False,
+        "google_project_id": "",
+        "google_location": "",
+        "google_auth_method": "",
+        "capacity_mode": "auto",
         "is_setup_incomplete": False,
         "show_credential_step": True,
         "show_model_step": False,
         "can_finalize": False,
-        "llm_provider_presets": list(LLM_PROVIDER_PRESETS.values()),
+        "llm_provider_presets": visible_llm_provider_presets(),
         "bedrock_regions": BEDROCK_HTTP_GATEWAY_REGIONS,
     }
 

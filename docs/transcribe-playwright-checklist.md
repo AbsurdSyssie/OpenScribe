@@ -81,6 +81,8 @@ Recommended seeded account:
 ## Follow-ups and quick actions
 
 - open the `Follow-ups` tab
+- start note generation, then verify the follow-up context, quick-action choices, and Generate control remain enabled while that note request is in flight
+- submit a custom follow-up before the note request completes and verify both requests are queued independently
 - run a quick action
 - verify latest follow-up moves through `queued`/`processing`/`ready`
 - submit a custom follow-up request

@@ -27,6 +27,15 @@ celery_app.conf.update(
     task_always_eager=_env_flag("CELERY_TASK_ALWAYS_EAGER", default=False),
     task_eager_propagates=True,
     timezone="UTC",
+    task_routes={
+        "openscribe.process_task_dispatch_outbox": {"queue": "control"},
+        "openscribe.process_quota_lifecycle": {"queue": "control"},
+        "openscribe.delete_expired_transcripts": {"queue": "control"},
+        "openscribe.process_transcript_audio_cleanup_jobs": {"queue": "control"},
+        "openscribe.process_provider_secret_cleanup_jobs": {"queue": "control"},
+        "openscribe.process_generated_document": {"queue": "generation"},
+        "openscribe.process_transcript_ingestion_job": {"queue": "ingestion"},
+    },
     beat_schedule={
         "delete-expired-transcripts-every-10-seconds": {
             "task": "openscribe.delete_expired_transcripts",
@@ -46,7 +55,7 @@ celery_app.conf.update(
         "publish-task-dispatch-outbox-every-1-second": {
             "task": "openscribe.process_task_dispatch_outbox",
             "schedule": 1.0,
-            "options": {"expires": 10.0},
+            "options": {"expires": 1.0},
         },
         "process-quota-lifecycle-every-10-seconds": {
             "task": "openscribe.process_quota_lifecycle",

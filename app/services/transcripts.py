@@ -30,6 +30,7 @@ from app.models import (
     ProviderAttempt,
     QuotaResource,
     TaskDispatchKind,
+    TaskDispatchState,
     transcript_expiry,
     utcnow,
 )
@@ -50,7 +51,12 @@ from app.services.quotas import (
 )
 from app.services.security_audit import record_security_event
 from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, resolve_stt_snapshot_bearer_token, transcribe_with_stt_snapshot
-from app.services.task_outbox import add_pending_task_dispatch
+from app.services.task_outbox import (
+    add_pending_task_dispatch,
+    find_waiting_generation_dispatches_for_transcript,
+    try_publish_task_dispatch_safely,
+    try_wake_published_generation_task_dispatch_safely,
+)
 from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_transcripts
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
@@ -1451,6 +1457,9 @@ def queue_audio_chunk_ingestion(
         if source_audio_vault_ref is not None:
             queue_orphan_transcript_audio_after_rollback(db, secret_ref=source_audio_vault_ref)
         raise
+
+    if job.celery_task_id:
+        try_publish_task_dispatch_safely(job.celery_task_id)
     db.refresh(transcript)
     db.refresh(job)
     record_security_event(
@@ -1583,6 +1592,9 @@ def queue_audio_file_ingestion(
         if source_audio_vault_ref is None and persisted_source_audio_vault_ref is not None:
             queue_orphan_transcript_audio_after_rollback(db, secret_ref=persisted_source_audio_vault_ref)
         raise
+
+    if job.celery_task_id:
+        try_publish_task_dispatch_safely(job.celery_task_id)
     db.refresh(transcript)
     db.refresh(job)
     record_security_event(
@@ -2089,6 +2101,21 @@ def finalize_live_capture(
     return transcript
 
 
+def _trigger_waiting_generation_dispatches(db: Session, *, transcript_id: UUID) -> None:
+    """Publish generation dispatches waiting for this transcript to become ready.
+
+    This wakes already-published tasks immediately instead of waiting for their
+    next 2-second Celery retry. Each publish is best-effort; pending rows retain
+    the Beat publisher and published rows retain their scheduled retry fallback.
+    """
+    dispatches = find_waiting_generation_dispatches_for_transcript(db, transcript_id=transcript_id)
+    for dispatch in dispatches:
+        if dispatch.state is TaskDispatchState.pending:
+            try_publish_task_dispatch_safely(str(dispatch.task_id))
+        else:
+            try_wake_published_generation_task_dispatch_safely(str(dispatch.task_id))
+
+
 def process_transcript_ingestion_job(
     db: Session,
     *,
@@ -2240,6 +2267,7 @@ def process_transcript_ingestion_job(
             db.add(job)
             db.add(transcript)
             db.commit()
+            _trigger_waiting_generation_dispatches(db, transcript_id=transcript.id)
             _attempt_preview_redaction(db, transcript_version=transcript_version)
             if job.source_audio_vault_ref:
                 try:
@@ -2270,6 +2298,8 @@ def process_transcript_ingestion_job(
                     pass
             db.refresh(transcript)
             _apply_completed_live_chunks(db, transcript)
+            if transcript.status is TranscriptStatus.ready:
+                _trigger_waiting_generation_dispatches(db, transcript_id=transcript.id)
     except AppError as exc:
         return _terminalize_ingestion_job_with_attempt(
             db, job_id=job_id, code=exc.code, message=exc.message,

@@ -305,14 +305,16 @@ def team_llm_secret_ref(team_id: UUID, config_id: UUID, *, secret_id: UUID | Non
     return f"{VAULT_KV_MOUNT}:{team_llm_secret_path(team_id, config_id, secret_id=secret_id)}"
 
 
-def write_team_llm_bearer_token(
+def write_team_llm_secret(
     *,
     team_id: UUID,
     config_id: UUID,
-    bearer_token: str,
+    secret_payload: dict[str, object],
     secret_id: UUID | None = None,
     secret_ref: str | None = None,
 ) -> str:
+    if not isinstance(secret_payload, dict) or not secret_payload:
+        raise AppError(500, "vault_secret_invalid", "Vault secret payload is invalid")
     if secret_ref is not None and secret_id is not None:
         raise AppError(500, "vault_reference_invalid", "Vault secret reference is invalid")
     path = (
@@ -325,7 +327,7 @@ def write_team_llm_bearer_token(
         response = httpx.post(
             url,
             headers=_vault_headers(),
-            json={"data": {"bearer_token": bearer_token}},
+            json={"data": secret_payload},
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -333,6 +335,23 @@ def write_team_llm_bearer_token(
     if response.status_code >= 400:
         raise AppError(502, "vault_write_failed", "Vault secret write failed")
     return f"{VAULT_KV_MOUNT}:{path}"
+
+
+def write_team_llm_bearer_token(
+    *,
+    team_id: UUID,
+    config_id: UUID,
+    bearer_token: str,
+    secret_id: UUID | None = None,
+    secret_ref: str | None = None,
+) -> str:
+    return write_team_llm_secret(
+        team_id=team_id,
+        config_id=config_id,
+        secret_payload={"secret_type": "bearer_token", "bearer_token": bearer_token},
+        secret_id=secret_id,
+        secret_ref=secret_ref,
+    )
 
 
 def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
@@ -348,7 +367,7 @@ def _team_llm_path_from_ref(*, team_id: UUID, config_id: UUID, secret_ref: str |
     return path
 
 
-def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+def read_team_llm_secret(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> dict[str, object]:
     path = _team_llm_path_from_ref(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
     url = f"{VAULT_ADDR.rstrip('/')}/v1/{VAULT_KV_MOUNT}/data/{path}"
     try:
@@ -365,7 +384,18 @@ def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: st
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
     payload = response.json()
-    bearer_token = (((payload.get("data") or {}).get("data") or {}).get("bearer_token"))
+    secret_payload = ((payload.get("data") or {}).get("data") or {})
+    if not isinstance(secret_payload, dict) or not secret_payload:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    return secret_payload
+
+
+def read_team_llm_bearer_token(*, team_id: UUID, config_id: UUID, secret_ref: str | None = None) -> str:
+    secret_payload = read_team_llm_secret(team_id=team_id, config_id=config_id, secret_ref=secret_ref)
+    secret_type = secret_payload.get("secret_type")
+    bearer_token = secret_payload.get("bearer_token")
+    if secret_type not in {None, "bearer_token"}:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
     if not bearer_token:
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
     return str(bearer_token)

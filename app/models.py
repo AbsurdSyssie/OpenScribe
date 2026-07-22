@@ -136,6 +136,8 @@ class SttSelectionPurpose(str, enum.Enum):
 class LlmAuthMode(str, enum.Enum):
     none = "none"
     bearer = "bearer"
+    google_adc = "google_adc"
+    google_service_account = "google_service_account"
 
 
 class LlmAdapterKind(str, enum.Enum):
@@ -145,6 +147,7 @@ class LlmAdapterKind(str, enum.Enum):
     openai_chat = "openai_chat"
     bedrock_chat = "bedrock_chat"
     ollama_chat = "ollama_chat"
+    gemini_enterprise = "gemini_enterprise"
 
 
 class LlmProviderPreset(str, enum.Enum):
@@ -158,6 +161,7 @@ class LlmProviderPreset(str, enum.Enum):
     ollama = "ollama"
     bedrock_http_gateway = "bedrock_http_gateway"
     custom_openai_compatible = "custom_openai_compatible"
+    gemini_enterprise = "gemini_enterprise"
 
 
 class LlmConfigSetupStatus(str, enum.Enum):
@@ -741,6 +745,7 @@ class TeamLlmConfig(Base):
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     available_models_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     inspection_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    provider_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     setup_status: Mapped[LlmConfigSetupStatus] = mapped_column(
         String(64),
         default=LlmConfigSetupStatus.ready,
@@ -1401,6 +1406,7 @@ class TranscriptIngestionJob(Base):
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    worker_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1489,6 +1495,7 @@ class GeneratedDocument(Base):
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
     llm_adapter_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     llm_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    llm_provider_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1512,6 +1519,7 @@ class GeneratedDocument(Base):
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    worker_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

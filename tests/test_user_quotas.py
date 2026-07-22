@@ -262,6 +262,7 @@ def test_utf8_estimator_and_bounded_reconciliation(db_session, make_user):
     assert db_session.get(ProviderAttempt, audio.id).outcome is AttemptOutcome.unknown
 
 
+@pytest.mark.real_db_connections
 def test_postgres_user_lock_allows_only_one_competing_reservation(db_session, make_user):
     """Real independent sessions: second reservation reads first after FOR UPDATE release."""
     user = make_user()

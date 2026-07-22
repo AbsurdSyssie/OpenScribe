@@ -209,6 +209,7 @@ def test_publisher_respects_batch_bound(db_session):
     assert len(db_session.scalars(select(TaskDispatchOutbox).where(TaskDispatchOutbox.state == TaskDispatchState.pending)).all()) == 1
 
 
+@pytest.mark.real_db_connections
 def test_concurrent_publishers_claim_and_commit_one_row_at_a_time(db_session):
     """A first publisher cannot unlock a preselected second row before it sends it."""
     first = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())

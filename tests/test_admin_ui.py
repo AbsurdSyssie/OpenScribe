@@ -27,6 +27,7 @@ from app.models import (
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
     LlmAdapterKind,
+    LlmAuthMode,
     ProviderSecretCleanupJob,
     ProviderSecretCleanupKind,
     ProviderFeatureType,
@@ -3980,7 +3981,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260719-partial-render-v6"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260720-concurrent-followup"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4881,7 +4882,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260720-concurrent-followup" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6667,7 +6668,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260720-concurrent-followup" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -8689,6 +8690,59 @@ def test_admin_page_can_inspect_and_save_llm_provider_with_retyped_api_key(clien
     assert save.headers["location"] == f"/admin?team_id={team.id}&tab=providers"
 
 
+def test_admin_reinspects_persisted_gemini_when_new_gemini_setup_is_disabled(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Admin Disabled Gemini Clinic")
+    admin = make_user(email="admin-disabled-gemini-ui@example.com", password="password-1", is_system_admin=True)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Persisted Gemini",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        base_url="https://global-aiplatform.googleapis.com",
+        model_name="publishers/google/models/gemini-old",
+        available_models_json=["publishers/google/models/gemini-old"],
+    )
+    secret = {
+        "type": "service_account",
+        "client_email": "saved@admin-disabled-gemini.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN PRIVATE KEY-----ADMIN-PERSISTED-SECRET-----END PRIVATE KEY-----",
+        "private_key_id": "saved-key",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    config.auth_mode = LlmAuthMode.google_service_account
+    config.provider_config_json = {
+        "project_id": "admin-disabled-gemini-prod",
+        "location": "global",
+        "api_version": "v1",
+        "capacity_mode": "shared",
+    }
+    db_session.add(config)
+    db_session.commit()
+    monkeypatch.setenv("ENABLE_GEMINI_ENTERPRISE_PROVIDER", "false")
+    monkeypatch.setattr("app.services.llm.read_team_llm_secret", lambda **kwargs: {"credential_json": secret})
+    monkeypatch.setattr("app.services.llm.service_account_credentials_from_info", lambda value: object())
+    monkeypatch.setattr(
+        "app.services.llm.discover_gemini_models",
+        lambda **kwargs: ["publishers/google/models/gemini-new"],
+    )
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&team_tab=llm&llm_config_id={config.id}")
+    inspected = client.post(
+        f"/admin/llm-configs/{config.id}/inspect",
+        data={"team_id": str(team.id), "return_tab": "providers"},
+    )
+
+    assert page.status_code == 200
+    assert "Persisted Gemini" in page.text
+    assert 'value="gemini_enterprise"' not in page.text
+    assert inspected.status_code == 200
+    assert "LLM provider re-inspected using saved credential." in inspected.text
+    assert "ADMIN-PERSISTED-SECRET" not in inspected.text
+
+
 def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Bedrock")
     make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
@@ -9197,8 +9251,8 @@ def test_new_admin_team_usage_tab_scopes_charts_and_user_table(client, db_sessio
     assert "User usage breakdown" in page.text
     assert "scoped-user@example.com" in page.text
     assert "other-user@example.com" not in page.text
-    assert "321" in page.text
-    assert "987" not in page.text
+    assert re.search(r'"current_input"\s*:\s*321\b', page.text)
+    assert not re.search(r'"current_input"\s*:\s*987\b', page.text)
     assert '<option value="90d" selected>Last 90 days</option>' in page.text
     assert f'name="team_id" value="{team.id}"' in page.text
     assert 'name="team_tab" value="usage"' in page.text

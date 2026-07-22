@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from redis import Redis
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -61,9 +62,14 @@ from app.normalization import normalize_email, normalize_team_name_key
 from app.services.admin import hash_password
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from tests.db_utils import (
+    DEFAULT_RATE_LIMIT_STORAGE_URL,
+    ORIGINAL_RATE_LIMIT_STORAGE_URL_ENV,
     ensure_database_exists,
     ensure_safe_test_database_url,
     ensure_safe_test_rate_limit_storage_url,
+    PYTEST_XDIST_WORKER_ID,
+    rate_limit_key_pattern,
+    rate_limit_key_prefix,
 )
 
 from app.db import Base, get_db
@@ -71,9 +77,15 @@ from app.services.auth import SESSION_COOKIE_NAME, TRUSTED_DEVICE_COOKIE_NAME
 from app.services.llm_presets import infer_llm_provider_preset
 
 
+os.environ.setdefault(
+    ORIGINAL_RATE_LIMIT_STORAGE_URL_ENV,
+    os.getenv("RATE_LIMIT_STORAGE_URL", DEFAULT_RATE_LIMIT_STORAGE_URL),
+)
 TEST_RATE_LIMIT_STORAGE_URL = ensure_safe_test_rate_limit_storage_url()
+TEST_RATE_LIMIT_KEY_PREFIX = rate_limit_key_prefix()
 os.environ.setdefault("APP_ENV", "test")
 os.environ["RATE_LIMIT_STORAGE_URL"] = TEST_RATE_LIMIT_STORAGE_URL
+os.environ["RATE_LIMIT_KEY_PREFIX"] = TEST_RATE_LIMIT_KEY_PREFIX
 
 from app.main import CSRF_COOKIE_NAME, app
 
@@ -84,6 +96,7 @@ test_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
 TestingSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False, future=True)
 rate_limit_redis = Redis.from_url(TEST_RATE_LIMIT_STORAGE_URL)
 TEST_RUN_LOCK_PATH = "/tmp/openscribe_pytest.lock"
+canonical_schema_ready = False
 
 
 def reset_public_schema() -> None:
@@ -95,46 +108,159 @@ def reset_public_schema() -> None:
         connection.execute(text("GRANT ALL ON SCHEMA public TO CURRENT_USER"))
 
 
-@pytest.fixture(scope="session", autouse=True)
-def test_run_lock() -> Generator[None, None, None]:
+def rebuild_canonical_schema() -> None:
+    global canonical_schema_ready
+
+    canonical_schema_ready = False
+    reset_public_schema()
+    Base.metadata.create_all(bind=test_engine)
+    canonical_schema_ready = True
+
+
+def truncate_application_tables() -> None:
+    table_names = sorted(
+        test_engine.dialect.identifier_preparer.format_table(table)
+        for table in Base.metadata.sorted_tables
+    )
+    if not table_names:
+        return
+
+    statement = text(f"TRUNCATE {', '.join(table_names)} RESTART IDENTITY CASCADE")
+    with test_engine.begin() as connection:
+        connection.execute(statement)
+
+
+def prepare_canonical_schema() -> str:
+    if not canonical_schema_ready:
+        rebuild_canonical_schema()
+        return "rebuild"
+
+    return "ready"
+
+
+def clear_test_rate_limit_storage(redis_client: Redis, *, key_pattern: str | None = None) -> None:
+    """Clear this worker's SlowAPI keys without touching another worker's keys."""
+    if key_pattern is None:
+        redis_client.flushdb()
+        return
+
+    cursor = 0
+    while True:
+        cursor, keys = redis_client.scan(cursor=cursor, match=key_pattern, count=100)
+        if keys:
+            redis_client.delete(*keys)
+        if cursor == 0:
+            return
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if PYTEST_XDIST_WORKER_ID is not None:
+        return
+
     lock_handle = open(TEST_RUN_LOCK_PATH, "w")
     try:
-        try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            pytest.exit(
-                "Another pytest run is already using the shared OpenScribe test database. "
-                "Wait for it to finish before starting another test run.",
-                returncode=2,
-            )
-        yield
-    finally:
-        try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            lock_handle.close()
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_handle.close()
+        pytest.exit(
+            "Another pytest run is already using the shared OpenScribe test infrastructure. "
+            "Wait for it to finish before starting another test run.",
+            returncode=2,
+        )
+    config._openscribe_test_run_lock = lock_handle
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    lock_handle = getattr(config, "_openscribe_test_run_lock", None)
+    if lock_handle is None:
+        return
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    lock_handle.close()
 
 
 @pytest.fixture(autouse=True)
-def reset_database(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+def reset_database(request: pytest.FixtureRequest) -> Generator[str, None, None]:
+    global canonical_schema_ready
+
     if request.node.get_closest_marker("migration"):
-        yield
+        clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
+        try:
+            yield "migration"
+        finally:
+            # Migration tests own and may leave behind any schema revision. Do
+            # not treat it as canonical; the next ordinary DB test rebuilds
+            # lazily through prepare_canonical_schema() before opening its
+            # rollback-isolated connection.
+            canonical_schema_ready = False
+            clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
         return
 
-    rate_limit_redis.flushdb()
-    reset_public_schema()
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    rate_limit_redis.flushdb()
+    if "db_session" not in request.fixturenames:
+        yield "skipped"
+        return
+
+    requires_real_connections = request.node.get_closest_marker("real_db_connections") is not None
+    clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
+    try:
+        lifecycle = prepare_canonical_schema()
+        if requires_real_connections and lifecycle == "ready":
+            truncate_application_tables()
+            lifecycle = "truncate"
+        yield lifecycle
+    finally:
+        if requires_real_connections:
+            truncate_application_tables()
+        clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
 
 
 @pytest.fixture
-def db_session() -> Generator[Session, None, None]:
-    session = TestingSessionLocal()
+def db_session(request: pytest.FixtureRequest, reset_database: str) -> Generator[Session, None, None]:
+    if request.node.get_closest_marker("real_db_connections") is not None:
+        session = TestingSessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+        return
+
+    connection = test_engine.connect()
+    outer_transaction = connection.begin()
+    session = sessionmaker(
+        bind=connection,
+        autoflush=False,
+        autocommit=False,
+        future=True,
+        join_transaction_mode="create_savepoint",
+    )()
     try:
         yield session
     finally:
         session.close()
+        transaction_was_active = outer_transaction.is_active
+        if transaction_was_active:
+            outer_transaction.rollback()
+        connection.close()
+        if not transaction_was_active:
+            pytest.fail(
+                "The ordinary test database outer transaction became inactive; "
+                "test data may have committed outside rollback isolation."
+            )
+
+
+def session_factory_for_test_session(db_session: Session) -> sessionmaker:
+    """Return app-created sessions bound to the fixture's transaction when available."""
+    bind = db_session.get_bind()
+    if not isinstance(bind, Connection):
+        return TestingSessionLocal
+
+    options = {
+        "bind": bind,
+        "autoflush": False,
+        "autocommit": False,
+        "future": True,
+        "join_transaction_mode": "create_savepoint",
+    }
+    return sessionmaker(**options)
 
 
 @pytest.fixture
@@ -147,7 +273,7 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     original_session_factory = getattr(app.state, "db_session_factory", None)
-    app.state.db_session_factory = TestingSessionLocal
+    app.state.db_session_factory = session_factory_for_test_session(db_session)
     with TestClient(app) as test_client:
         original_request = test_client.request
 
@@ -191,7 +317,7 @@ def raw_client(db_session: Session) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     original_session_factory = getattr(app.state, "db_session_factory", None)
-    app.state.db_session_factory = TestingSessionLocal
+    app.state.db_session_factory = session_factory_for_test_session(db_session)
     with TestClient(app) as test_client:
         yield test_client
     app.state.db_session_factory = original_session_factory
@@ -951,13 +1077,12 @@ def stub_transcript_ingestion_source_audio_vault(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture(autouse=True)
-def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session):
-    def fake_ensure_redaction_run_for_transcript_version(*, transcript_version: TranscriptVersion):
-        existing = db_session.query(RedactionRun).filter(RedactionRun.transcript_version_id == transcript_version.id).first()
+def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch):
+    def fake_ensure_redaction_run_for_transcript_version(db: Session, *, transcript_version: TranscriptVersion):
+        existing = db.query(RedactionRun).filter(RedactionRun.transcript_version_id == transcript_version.id).first()
         if existing is not None:
             return existing
         run_id = uuid4()
-        plaintext = transcript_version.text_encrypted
         run = RedactionRun(
             id=run_id,
             transcript_id=transcript_version.transcript_id,
@@ -966,14 +1091,14 @@ def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session
             team_id=transcript_version.transcript.team_id,
             status=RedactionRunStatus.succeeded,
             redacted_text_encrypted=encrypt_text_for_owner(
-                db_session,
+                db,
                 owner_user_id=transcript_version.transcript.owner_user_id,
                 table="redaction_runs",
                 field="redacted_text_encrypted",
                 record_id=run_id,
                 plaintext=(
                     decrypt_text_for_owner(
-                        db_session,
+                        db,
                         owner_user_id=transcript_version.transcript.owner_user_id,
                         table="transcript_versions",
                         field="text_encrypted",
@@ -988,9 +1113,9 @@ def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session
             api_provider="stub_redaction",
             api_model_or_version="stub",
         )
-        db_session.add(run)
-        db_session.commit()
-        db_session.refresh(run)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
         return run
 
     def fake_redact_transient_text(db, text: str, *, team_id, start_index: int):
@@ -1005,7 +1130,10 @@ def stub_redaction_pipeline(monkeypatch: pytest.MonkeyPatch, db_session: Session
 
     monkeypatch.setattr(
         "app.services.templates.ensure_redaction_run_for_transcript_version",
-        lambda db, *, transcript_version: fake_ensure_redaction_run_for_transcript_version(transcript_version=transcript_version),
+        lambda db, *, transcript_version: fake_ensure_redaction_run_for_transcript_version(
+            db,
+            transcript_version=transcript_version,
+        ),
     )
     monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact_transient_text)
     monkeypatch.setattr(

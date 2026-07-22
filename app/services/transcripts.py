@@ -30,6 +30,7 @@ from app.models import (
     ProviderAttempt,
     QuotaResource,
     TaskDispatchKind,
+    TaskDispatchState,
     transcript_expiry,
     utcnow,
 )
@@ -54,6 +55,7 @@ from app.services.task_outbox import (
     add_pending_task_dispatch,
     find_waiting_generation_dispatches_for_transcript,
     try_publish_task_dispatch_safely,
+    try_wake_published_generation_task_dispatch_safely,
 )
 from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_transcripts
 from app.services.vault import (
@@ -2102,13 +2104,16 @@ def finalize_live_capture(
 def _trigger_waiting_generation_dispatches(db: Session, *, transcript_id: UUID) -> None:
     """Publish generation dispatches waiting for this transcript to become ready.
 
-    This removes the need for the 2-second Celery retry poll on the generation
-    worker side.  Each publish is best-effort; rows that fail here remain pending
-    for the Beat fallback publisher.
+    This wakes already-published tasks immediately instead of waiting for their
+    next 2-second Celery retry. Each publish is best-effort; pending rows retain
+    the Beat publisher and published rows retain their scheduled retry fallback.
     """
     dispatches = find_waiting_generation_dispatches_for_transcript(db, transcript_id=transcript_id)
     for dispatch in dispatches:
-        try_publish_task_dispatch_safely(str(dispatch.task_id))
+        if dispatch.state is TaskDispatchState.pending:
+            try_publish_task_dispatch_safely(str(dispatch.task_id))
+        else:
+            try_wake_published_generation_task_dispatch_safely(str(dispatch.task_id))
 
 
 def process_transcript_ingestion_job(

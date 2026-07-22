@@ -32,6 +32,7 @@ from app.services.task_outbox import (
     publish_pending_task_dispatches,
     publish_task_dispatch,
     try_publish_task_dispatch_safely,
+    wake_published_generation_task_dispatch,
 )
 
 
@@ -296,6 +297,25 @@ def test_publish_task_dispatch_skips_already_published(db_session):
     assert publisher.dispatches == []
 
 
+def test_wake_published_generation_task_dispatch_republishes_without_reopening_outbox(db_session):
+    dispatch = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4(),
+    )
+    dispatch.state = TaskDispatchState.published
+    dispatch.published_at = utcnow()
+    db_session.commit()
+
+    publisher = RecordingPublisher()
+    assert wake_published_generation_task_dispatch(
+        db_session, task_id=dispatch.task_id, publisher=publisher,
+    )
+    db_session.refresh(dispatch)
+
+    assert publisher.dispatches == [dispatch]
+    assert dispatch.state is TaskDispatchState.published
+    assert dispatch.published_at is not None
+
+
 def test_publish_task_dispatch_handles_failure(db_session):
     dispatch = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
     db_session.commit()
@@ -377,7 +397,7 @@ def test_find_waiting_generation_dispatches_returns_pending_for_transcript(db_se
     assert results[0].task_id == generation.task_id
 
 
-def test_find_waiting_generation_dispatches_excludes_nonpending(db_session, make_user):
+def test_find_waiting_generation_dispatches_returns_published_for_transcript(db_session, make_user):
     job_id = uuid4()
     generation = add_pending_task_dispatch(
         db_session, dispatch_kind=TaskDispatchKind.generation, source_id=job_id,
@@ -388,7 +408,51 @@ def test_find_waiting_generation_dispatches_excludes_nonpending(db_session, make
 
     doc_id, transcript_id = _insert_generated_document(db_session, make_user=make_user, id=job_id)
 
-    assert find_waiting_generation_dispatches_for_transcript(db_session, transcript_id=transcript_id) == []
+    results = find_waiting_generation_dispatches_for_transcript(db_session, transcript_id=transcript_id)
+    assert [dispatch.task_id for dispatch in results] == [generation.task_id]
+
+
+def test_transcript_completion_wakes_published_generation_dispatch(db_session, make_user, monkeypatch):
+    from app.services.transcripts import _trigger_waiting_generation_dispatches
+
+    document_id = uuid4()
+    generation = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=document_id,
+    )
+    generation.state = TaskDispatchState.published
+    generation.published_at = utcnow()
+    db_session.commit()
+    _, transcript_id = _insert_generated_document(db_session, make_user=make_user, id=document_id)
+    woken_ids = []
+    monkeypatch.setattr(
+        "app.services.transcripts.try_wake_published_generation_task_dispatch_safely",
+        woken_ids.append,
+    )
+    monkeypatch.setattr(
+        "app.services.transcripts.try_publish_task_dispatch_safely",
+        lambda task_id: pytest.fail("published dispatch must use the wake path"),
+    )
+
+    _trigger_waiting_generation_dispatches(db_session, transcript_id=transcript_id)
+
+    assert woken_ids == [str(generation.task_id)]
+
+
+def test_find_waiting_generation_dispatches_excludes_terminal_document(db_session, make_user):
+    document_id = uuid4()
+    generation = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=document_id,
+    )
+    generation.state = TaskDispatchState.published
+    generation.published_at = utcnow()
+    db_session.commit()
+    _, transcript_id = _insert_generated_document(
+        db_session, make_user=make_user, id=document_id, status="failed",
+    )
+
+    assert find_waiting_generation_dispatches_for_transcript(
+        db_session, transcript_id=transcript_id,
+    ) == []
 
 
 def test_try_publish_task_dispatch_safely_publishes_pending_row(db_session, monkeypatch):

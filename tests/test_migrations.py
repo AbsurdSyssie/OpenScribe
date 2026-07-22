@@ -1634,7 +1634,7 @@ def test_alembic_head_supports_llm_adapter_values():
                 """
                 INSERT INTO team_llm_configs (
                     id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
-                    available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    available_models_json, inspection_metadata_json, provider_config_json, setup_status, vault_secret_ref,
                     is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
                 )
                 VALUES (
@@ -1647,6 +1647,7 @@ def test_alembic_head_supports_llm_adapter_values():
                     'none',
                     'llama3.2',
                     '[]'::json,
+                    '{}'::json,
                     '{}'::json,
                     'ready',
                     '',
@@ -1721,7 +1722,7 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                 """
                 INSERT INTO team_llm_configs (
                     id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
-                    available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    available_models_json, inspection_metadata_json, provider_config_json, setup_status, vault_secret_ref,
                     is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
                 )
                 VALUES (
@@ -1734,6 +1735,7 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                     'bearer',
                     'anthropic.claude-3-7-sonnet-20250219-v1:0',
                     '[]'::json,
+                    '{}'::json,
                     '{}'::json,
                     'ready',
                     'secret:openscribe/llm/team/1/config/2',

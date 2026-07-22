@@ -195,7 +195,7 @@ def stt_selection_response(selection) -> SttSelectionDetail:
 
 def llm_config_response(config) -> LlmConfigDetail:
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     setup_status = config.setup_status or LlmConfigSetupStatus.ready
     setup_status_label = "Setup incomplete" if setup_status == LlmConfigSetupStatus.pending_model_selection else None
     provider_config = dict(config.provider_config_json or {})
@@ -237,7 +237,7 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
     if resolved_model_name and allowed_models_json and resolved_model_name not in allowed_models_json:
         resolved_model_name = allowed_models_json[0]
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     return LlmSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,
@@ -261,7 +261,7 @@ def hallucination_check_selection_response(selection) -> HallucinationCheckSelec
     config = selection.config
     resolved_model_name = selection.model_name_override or config.model_name
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
-    provider_display_name = get_llm_provider_preset(provider_preset).display_name
+    provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     return HallucinationCheckSelectionDetail(
         id=selection.id,
         team_id=selection.team_id,

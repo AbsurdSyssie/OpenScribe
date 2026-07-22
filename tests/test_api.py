@@ -4230,22 +4230,31 @@ def test_llm_replacement_revision_rebinds_secret_and_supports_blank_followup_rev
         available_models_json=["model-a"],
     )
     make_llm_selection(config=active, actor=admin)
-    secret_store: dict[str, str] = {}
+    secret_store: dict[str, dict[str, object]] = {}
 
-    def secret_ref(config_id, secret_id=None):
+    def build_secret_ref(config_id, secret_id=None):
         suffix = f"/{secret_id}" if secret_id else ""
         return f"secret:openscribe/llm/team/{team.id}/config/{config_id}{suffix}"
 
-    active.vault_secret_ref = secret_ref(active.id, uuid4())
-    secret_store[active.vault_secret_ref] = "old-llm-key"
+    active.vault_secret_ref = build_secret_ref(active.id, uuid4())
+    secret_store[active.vault_secret_ref] = {"secret_type": "bearer_token", "bearer_token": "old-llm-key"}
     db_session.commit()
 
     def fake_write(*, team_id, config_id, bearer_token, secret_id=None):
-        ref = secret_ref(config_id, secret_id)
-        secret_store[ref] = bearer_token
+        ref = build_secret_ref(config_id, secret_id)
+        secret_store[ref] = {"secret_type": "bearer_token", "bearer_token": bearer_token}
         return ref
 
     def fake_read(*, team_id, config_id, secret_ref=None):
+        assert f"/config/{config_id}" in secret_ref
+        return str(secret_store[secret_ref]["bearer_token"])
+
+    def fake_write_secret(*, team_id, config_id, secret_payload, secret_id=None, secret_ref=None):
+        ref = secret_ref or build_secret_ref(config_id, secret_id)
+        secret_store[ref] = dict(secret_payload)
+        return ref
+
+    def fake_read_secret(*, team_id, config_id, secret_ref=None):
         assert f"/config/{config_id}" in secret_ref
         return secret_store[secret_ref]
 
@@ -4255,6 +4264,8 @@ def test_llm_replacement_revision_rebinds_secret_and_supports_blank_followup_rev
 
     monkeypatch.setattr("app.services.llm.write_team_llm_bearer_token", fake_write)
     monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", fake_read)
+    monkeypatch.setattr("app.services.llm.write_team_llm_secret", fake_write_secret)
+    monkeypatch.setattr("app.services.llm.read_team_llm_secret", fake_read_secret)
     monkeypatch.setattr("app.services.llm.delete_team_llm_bearer_token", fake_delete)
     monkeypatch.setattr("app.services.llm._list_openai_compatible_chat_models", lambda **kwargs: ["model-a"])
     login(client, email=admin.email, password="password-1")
@@ -5236,6 +5247,124 @@ def test_system_admin_cannot_keep_missing_secret_when_switching_llm_to_required_
     assert config.vault_secret_ref == ""
 
 
+@pytest.mark.parametrize("target_provider", ["openai", "ollama"])
+def test_system_admin_must_replace_gemini_service_account_when_switching_to_bearer_auth(
+    target_provider, client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name=f"Clinic LLM Service Account To {target_provider.title()}")
+    admin = make_user(
+        email=f"admin-service-account-to-{target_provider}@example.com",
+        password="password-1",
+        is_system_admin=True,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        provider_preset="gemini_enterprise",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        base_url="https://europe-west2-aiplatform.googleapis.com",
+        model_name="publishers/google/models/gemini-2.5-pro",
+        available_models_json=["publishers/google/models/gemini-2.5-pro"],
+        has_secret=True,
+    )
+    config.auth_mode = LlmAuthMode.google_service_account
+    config.provider_config_json = {
+        "project_id": "source-gemini-project",
+        "location": "europe-west2",
+        "api_version": "v1",
+        "capacity_mode": "auto",
+    }
+    original_secret_ref = config.vault_secret_ref
+    db_session.commit()
+
+    def unexpected_credential_read(**kwargs):
+        raise AssertionError("incompatible credential transition must fail before reading Vault")
+
+    monkeypatch.setattr("app.services.llm.read_team_llm_bearer_token", unexpected_credential_read)
+    login(client, email=admin.email, password="password-1")
+    payload = {
+        "config_id": str(config.id),
+        "team_id": str(team.id),
+        "label": f"Target {target_provider.title()}",
+        "provider_preset": target_provider,
+        "credential_action": "keep",
+        "model_name": "target-model",
+        "is_active": True,
+    }
+    if target_provider == "ollama":
+        payload["base_url"] = "http://localhost:11434"
+    response = client.post("/api/v1/llm-configs", json=payload)
+
+    assert_error(
+        response,
+        status_code=422,
+        code="business_rule_violation",
+        message="Replace the saved credential when changing authentication type",
+    )
+    db_session.refresh(config)
+    assert config.adapter_kind is LlmAdapterKind.gemini_enterprise
+    assert config.auth_mode is LlmAuthMode.google_service_account
+    assert config.vault_secret_ref == original_secret_ref
+
+
+def test_system_admin_must_replace_bearer_token_when_switching_to_gemini_service_account(
+    client, db_session, make_team, make_user, make_llm_config, monkeypatch
+):
+    team = make_team(name="Clinic LLM Bearer To Service Account")
+    admin = make_user(
+        email="admin-bearer-to-service-account@example.com",
+        password="password-1",
+        is_system_admin=True,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        provider_preset="openai",
+        adapter_kind=LlmAdapterKind.openai_chat,
+        base_url="https://api.openai.com/v1",
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini"],
+        has_secret=True,
+    )
+    original_secret_ref = config.vault_secret_ref
+
+    def unexpected_discovery(**kwargs):
+        raise AssertionError("incompatible credential transition must fail before provider discovery")
+
+    monkeypatch.setattr("app.services.llm.discover_gemini_models", unexpected_discovery)
+    login(client, email=admin.email, password="password-1")
+    response = client.post(
+        "/api/v1/llm-configs",
+        json={
+            "config_id": str(config.id),
+            "team_id": str(team.id),
+            "label": "Target Gemini",
+            "provider_preset": "gemini_enterprise",
+            "google_project_id": "target-gemini-project",
+            "google_location": "europe-west2",
+            "google_auth_method": "service_account_json",
+            "credential_action": "keep",
+            "model_name": "publishers/google/models/gemini-2.5-pro",
+            "is_active": True,
+        },
+    )
+
+    assert_error(
+        response,
+        status_code=422,
+        code="business_rule_violation",
+        message="Replace the saved credential when changing authentication type",
+    )
+    db_session.refresh(config)
+    assert config.adapter_kind is LlmAdapterKind.openai_chat
+    assert config.auth_mode is LlmAuthMode.bearer
+    assert config.vault_secret_ref == original_secret_ref
+
+
 def test_system_admin_can_inspect_bedrock_chat_models(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Bedrock")
     make_user(email="admin-bedrock@example.com", password="password-1", is_system_admin=True)
@@ -5322,6 +5451,91 @@ def test_system_admin_saved_llm_inspection_uses_vault_key_and_updates_models(cli
     assert config.available_models_json == ["gpt-4.1", "gpt-4.1-mini"]
     assert config.model_name == "gpt-4.1"
     assert config.inspection_metadata_json["inspected_at"]
+
+
+def test_disabled_gemini_blocks_new_configs_but_reinspects_persisted_service_account_config(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection, monkeypatch
+):
+    team = make_team(name="Disabled Gemini Clinic")
+    admin = make_user(email="admin-disabled-gemini@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(
+        email="leader-disabled-gemini@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Persisted Gemini",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        base_url="https://europe-west2-aiplatform.googleapis.com",
+        model_name="publishers/google/models/gemini-old",
+        available_models_json=["publishers/google/models/gemini-old"],
+    )
+    secret = {
+        "type": "service_account",
+        "client_email": "saved@disabled-gemini.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN PRIVATE KEY-----PERSISTED-SECRET-----END PRIVATE KEY-----",
+        "private_key_id": "saved-key",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    config.auth_mode = LlmAuthMode.google_service_account
+    config.provider_config_json = {
+        "project_id": "disabled-gemini-prod",
+        "location": "europe-west2",
+        "api_version": "v1",
+        "capacity_mode": "dedicated",
+    }
+    db_session.add(config)
+    db_session.commit()
+    make_llm_selection(config=config, actor=leader)
+    monkeypatch.setenv("ENABLE_GEMINI_ENTERPRISE_PROVIDER", "false")
+    monkeypatch.setattr(
+        "app.services.llm.read_team_llm_secret",
+        lambda **kwargs: {"credential_json": secret},
+    )
+    monkeypatch.setattr("app.services.llm.service_account_credentials_from_info", lambda value: object())
+
+    def discover_saved_gemini(**kwargs):
+        assert kwargs == {
+            "project_id": "disabled-gemini-prod",
+            "location": "europe-west2",
+            "credentials": kwargs["credentials"],
+            "capacity_mode": "dedicated",
+        }
+        assert kwargs["credentials"] is not None
+        return ["publishers/google/models/gemini-new"]
+
+    monkeypatch.setattr("app.services.llm.discover_gemini_models", discover_saved_gemini)
+    login(client, email="admin-disabled-gemini@example.com", password="password-1")
+
+    blocked = client.post(
+        "/api/v1/llm-configs/drafts",
+        json={
+            "team_id": str(team.id),
+            "provider_preset": "gemini_enterprise",
+            "google_project_id": "new-gemini-prod",
+            "google_location": "global",
+            "google_auth_method": "application_default",
+        },
+    )
+    listed = client.get(f"/api/v1/llm-configs?team_id={team.id}")
+    inspected = client.post(f"/api/v1/llm-configs/{config.id}/inspect?team_id={team.id}")
+
+    assert blocked.status_code == 422
+    assert listed.status_code == 200
+    assert listed.json()[0]["provider_display_name"] == "Gemini Enterprise"
+    assert inspected.status_code == 200
+    assert inspected.json()["available_models"] == ["publishers/google/models/gemini-new"]
+    assert "PERSISTED-SECRET" not in inspected.text
+    db_session.refresh(config)
+    assert config.available_models_json == ["publishers/google/models/gemini-new"]
+
+    login(client, email=leader.email, password="password-1")
+    selected = client.get("/api/v1/llm-selection")
+    assert selected.status_code == 200
+    assert selected.json()["selected_config_provider_display_name"] == "Gemini Enterprise"
 
 
 def test_llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_service_owned(client, db_session, make_team, make_user, monkeypatch):
@@ -15921,6 +16135,7 @@ def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session
     assert processed.error_code == "ingestion_processing_stale"
 
 
+@pytest.mark.real_db_connections
 def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_call(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -15986,6 +16201,7 @@ def test_processing_transcript_ingestion_job_claims_queued_job_before_provider_c
     assert attempt.settlement_basis is ProviderSettlementBasis.measured
 
 
+@pytest.mark.real_db_connections
 def test_ingestion_preflight_loser_does_not_fail_concurrently_claimed_job(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -16056,6 +16272,7 @@ def test_ingestion_preflight_loser_does_not_fail_concurrently_claimed_job(
     assert attempt.settled_units is None
 
 
+@pytest.mark.real_db_connections
 def test_processing_transcript_ingestion_job_skips_provider_when_root_deleted_after_preparation_before_claim(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -16180,6 +16397,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
     assert refreshed_transcript.status is TranscriptStatus.failed
 
 
+@pytest.mark.real_db_connections
 def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -16251,6 +16469,7 @@ def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight
     assert attempt.outcome is AttemptOutcome.unknown
 
 
+@pytest.mark.real_db_connections
 def test_processing_transcript_ingestion_job_ignores_root_deleted_during_provider_call(
     db_session, make_team, make_user, monkeypatch
 ):
@@ -18678,6 +18897,7 @@ def test_generation_vault_failure_cancels_before_provider_dispatch(
     assert attempt.settled_units is None
 
 
+@pytest.mark.real_db_connections
 def test_generation_preflight_loser_does_not_fail_concurrently_claimed_document(
     db_session, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template
 ):

@@ -186,7 +186,7 @@ def generate_gemini_text(
             temperature=request.temperature,
             max_output_tokens=request.max_output_tokens,
             response_mime_type="application/json" if request.expect_json else None,
-            response_schema=request.response_schema if request.expect_json else None,
+            response_json_schema=request.response_json_schema if request.expect_json else None,
             thinking_config=_gemini_thinking_config(request.model),
         )
         contents = [
@@ -249,8 +249,8 @@ def gemini_request_snapshot(request: LlmGenerationRequest) -> dict[str, object]:
     }
     if request.expect_json:
         config["response_mime_type"] = "application/json"
-        if request.response_schema is not None:
-            config["response_schema"] = request.response_schema
+        if request.response_json_schema is not None:
+            config["response_json_schema"] = request.response_json_schema
     return {
         "model": request.model,
         "contents": [

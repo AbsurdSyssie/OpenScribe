@@ -342,8 +342,9 @@ def _discovery_metadata(
     warnings: list[str],
     notes: list[str],
     manual_model_name: str | None = None,
+    allow_disabled_provider: bool = False,
 ) -> dict[str, object]:
-    preset = get_llm_provider_preset(provider_preset)
+    preset = get_llm_provider_preset(provider_preset, allow_disabled_provider=allow_disabled_provider)
     metadata: dict[str, object] = {
         "provider_preset": preset.key,
         "provider_display_name": preset.display_name,
@@ -358,16 +359,31 @@ def _discovery_metadata(
     return metadata
 
 
-def _successful_discovery_metadata(*, provider_preset: str, models: list[str], empty_warning: str, fetched_note: str | None = None) -> dict[str, object]:
+def _successful_discovery_metadata(
+    *,
+    provider_preset: str,
+    models: list[str],
+    empty_warning: str,
+    fetched_note: str | None = None,
+    allow_disabled_provider: bool = False,
+) -> dict[str, object]:
     if models:
         notes = [fetched_note] if fetched_note else []
-        return _discovery_metadata(provider_preset=provider_preset, discovery_status="fetched", default_model_source="provider", warnings=[], notes=notes)
+        return _discovery_metadata(
+            provider_preset=provider_preset,
+            discovery_status="fetched",
+            default_model_source="provider",
+            warnings=[],
+            notes=notes,
+            allow_disabled_provider=allow_disabled_provider,
+        )
     return _discovery_metadata(
         provider_preset=provider_preset,
         discovery_status="manual_required",
         default_model_source="manual",
         warnings=[empty_warning],
         notes=[],
+        allow_disabled_provider=allow_disabled_provider,
     )
 
 
@@ -393,15 +409,26 @@ def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list
     return sorted(set(models))
 
 
-def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectResult:
+def inspect_llm_contract(
+    db: Session,
+    actor: User,
+    payload,
+    *,
+    allow_disabled_provider: bool = False,
+) -> LlmConfigInspectResult:
     _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     preset_key, adapter_kind, base_url, _region = apply_provider_defaults(
         provider_preset=getattr(payload, "provider_preset", None),
         base_url=payload.base_url,
         bedrock_region=getattr(payload, "bedrock_region", None),
+        allow_disabled_provider=allow_disabled_provider,
     )
-    preset_key = reclassify_preset_for_base_url(preset_key, base_url)
-    preset = get_llm_provider_preset(preset_key)
+    preset_key = reclassify_preset_for_base_url(
+        preset_key,
+        base_url,
+        allow_disabled_provider=allow_disabled_provider,
+    )
+    preset = get_llm_provider_preset(preset_key, allow_disabled_provider=allow_disabled_provider)
     adapter_kind = preset.adapter_kind
     if adapter_kind is LlmAdapterKind.openai_chat:
         if payload.bearer_token:
@@ -507,6 +534,7 @@ def inspect_llm_contract(db: Session, actor: User, payload) -> LlmConfigInspectR
                 provider_preset=preset_key,
                 models=models,
                 empty_warning="No compatible Gemini models were returned. Enter a model ID manually.",
+                allow_disabled_provider=allow_disabled_provider,
             )
             discovery_status = str(metadata["discovery_status"])
             default_model_source = str(metadata["default_model_source"])
@@ -573,26 +601,15 @@ def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_
         if not isinstance(candidate, dict):
             raise AppError(502, "vault_read_failed", "Vault secret read failed")
         google_credential_json = candidate
-    provider_config = dict(config.provider_config_json or {})
     inspection = inspect_llm_contract(
         db,
         actor,
-        LlmInspectRequest(
-            team_id=config.team_id,
-            provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
-            adapter_kind=config.adapter_kind,
-            base_url=config.base_url,
+        LlmInspectRequest.from_persisted_config(
+            config,
             bearer_token=bearer_token,
-            google_project_id=provider_config.get("project_id"),
-            google_location=provider_config.get("location"),
-            google_auth_method=(
-                "application_default"
-                if config.auth_mode is LlmAuthMode.google_adc
-                else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else None
-            ),
             google_service_account_json=google_credential_json,
-            capacity_mode=provider_config.get("capacity_mode", "auto"),
         ),
+        allow_disabled_provider=True,
     )
     config.inspection_metadata_json = _inspection_metadata(inspection)
     if inspection.available_models:
@@ -914,7 +931,6 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
         raise AppError(422, "business_rule_violation", "Gemini Enterprise does not accept bearer tokens")
     if not is_gemini and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a bearer token")
-    provider_config = dict(config.provider_config_json or {})
     has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
     was_ready = config.setup_status == LlmConfigSetupStatus.ready
     was_active = config.is_active
@@ -922,18 +938,13 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     inspection = inspect_llm_contract(
         db,
         actor,
-        LlmInspectRequest(
-            team_id=team.id,
-            provider_preset=config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url),
-            adapter_kind=config.adapter_kind,
-            base_url=config.base_url,
+        LlmInspectRequest.from_persisted_config(
+            config,
             bearer_token=payload.bearer_token,
-            google_project_id=provider_config.get("project_id") if is_gemini else None,
-            google_location=provider_config.get("location") if is_gemini else None,
+            google_service_account_json=payload.google_service_account_json,
             google_auth_method=payload.google_auth_method if is_gemini else None,
-            google_service_account_json=payload.google_service_account_json if is_gemini else None,
-            capacity_mode=provider_config.get("capacity_mode", "auto") if is_gemini else "auto",
         ),
+        allow_disabled_provider=is_gemini,
     )
     if has_in_flight_jobs and was_ready and existing_model_name and existing_model_name not in inspection.available_models:
         raise AppError(
@@ -1020,6 +1031,19 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "credential_action"})
     requires_saved_secret = preset.requires_bearer_token or (is_gemini and payload.google_auth_method == "service_account_json")
     has_existing_secret = config is not None and bool(config.vault_secret_ref)
+    if has_existing_secret and not replacing_secret and not removing_secret:
+        retained_secret_auth_mode = (
+            LlmAuthMode.google_service_account
+            if is_gemini and payload.google_auth_method == "service_account_json"
+            else LlmAuthMode.bearer
+        )
+        if config.auth_mode is not retained_secret_auth_mode:
+            raise AppError(
+                422,
+                "business_rule_violation",
+                "Replace the saved credential when changing authentication type",
+                {"field": "credential_action"},
+            )
     if requires_saved_secret and not replacing_secret and not has_existing_secret:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a saved bearer token", {"field": "bearer_token"})
 

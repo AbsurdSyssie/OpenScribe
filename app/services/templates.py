@@ -2163,7 +2163,7 @@ def _generation_request_snapshot(
                 temperature=0.2,
                 max_output_tokens=provider_output_token_cap,
                 expect_json=response_json_schema is not None,
-                response_schema=response_json_schema,
+                response_json_schema=response_json_schema,
             )
         )
     else:  # pragma: no cover
@@ -2184,16 +2184,16 @@ def _gemini_request_from_snapshot(request_body: dict[str, object]) -> LlmGenerat
     system_message = config.get("system_instruction")
     max_output_tokens = config.get("max_output_tokens")
     temperature = config.get("temperature")
-    response_schema = config.get("response_schema")
-    if response_schema is None:
+    response_json_schema = config.get("response_json_schema")
+    if response_json_schema is None:
         # Compatibility for encrypted request snapshots created before Gemini
-        # Enterprise switched to the documented responseSchema field.
-        response_schema = config.get("response_json_schema")
+        # Enterprise standardized on response_json_schema.
+        response_json_schema = config.get("response_schema")
     if not isinstance(model, str) or not isinstance(system_message, str) or not isinstance(user_message, str):
         raise AppError(500, "llm_request_invalid", "Stored Gemini request is invalid")
     if not isinstance(max_output_tokens, int) or not isinstance(temperature, (int, float)):
         raise AppError(500, "llm_request_invalid", "Stored Gemini request is invalid")
-    if response_schema is not None and not isinstance(response_schema, dict):
+    if response_json_schema is not None and not isinstance(response_json_schema, dict):
         raise AppError(500, "llm_request_invalid", "Stored Gemini response schema is invalid")
     return LlmGenerationRequest(
         model=model,
@@ -2202,7 +2202,7 @@ def _gemini_request_from_snapshot(request_body: dict[str, object]) -> LlmGenerat
         temperature=float(temperature),
         max_output_tokens=max_output_tokens,
         expect_json=config.get("response_mime_type") == "application/json",
-        response_schema=response_schema,
+        response_json_schema=response_json_schema,
     )
 
 

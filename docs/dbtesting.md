@@ -11,6 +11,19 @@ By default:
 - app and manual UI data live in `ambient_scribe`
 - automated tests reset only `ambient_scribe_test`
 
+When explicitly running xdist (for example, `pytest -q -n 2`), each worker
+derives a stable database from the configured base URL: worker `gw0` uses
+`ambient_scribe_test_gw0`. Credentials, host, port, and query parameters are
+unchanged. The base database name plus worker suffix must fit PostgreSQL's
+63-byte identifier limit. Sequential runs (unset/`master`) use the exact base
+`TEST_DATABASE_URL`.
+
+Use `pytest -q -n 4` as the balanced full-suite command on the current
+development host. Measured full-suite times were 2m41s sequential, 1m30s with
+two workers, 60.32s with four workers, and 45.01s with eight workers. Worker
+startup makes sequential execution preferable for focused one-test or
+small-file runs; the best full-suite worker count remains host-dependent.
+
 This is enforced by:
 
 - [tests/db_utils.py](/home/oscar/Documents/Code_Projects/OpenScribe/tests/db_utils.py)
@@ -19,21 +32,33 @@ This is enforced by:
 
 ## Safety guard
 
-If `TEST_DATABASE_URL` matches `DATABASE_URL`, pytest fails immediately before any reset logic runs.
+If `TEST_DATABASE_URL` or its derived worker URL matches `DATABASE_URL`, pytest
+fails immediately before any reset logic runs. `PYTEST_XDIST_WORKER` is read at
+test-helper import and accepts only unset/`master` or xdist names of the form
+`gw<digits>`; malformed values fail closed.
 
 ## Test database lifecycle
 
 - the test helper creates `ambient_scribe_test` automatically if it does not exist
-- normal API and UI tests reset the `public` schema in the test database before each test
+- the first normal test whose resolved fixture closure contains `db_session` resets the `public` schema and runs `Base.metadata.create_all()`
+- later ordinary DB tests reuse that canonical schema: `db_session` is bound to one connection with a root transaction, and uses SQLAlchemy `join_transaction_mode="create_savepoint"` so application `commit()` and `rollback()` calls remain usable while fixture teardown rolls back the root transaction
+- `client` and `raw_client` bind app-created sessions to that same fixture connection with `create_savepoint`, so request-side commits are also isolated by the root rollback
+- tests marked `real_db_connections` retain engine-bound sessions and run PostgreSQL `TRUNCATE` over all trusted `Base.metadata` application tables with `RESTART IDENTITY CASCADE` both before and after the test; use this marker only for independent committed connections/threads/live servers/cross-session locks. `alembic_version` is excluded because it is not application metadata
 - test engines use `NullPool` so Postgres connections do not hold stale cached plans across schema drops
-- normal API and UI tests flush the test Redis rate-limit store only
-- migration tests reset the `public` schema in the test database only
+- sequential database-backed tests flush the test Redis rate-limit store before and after each test
+- xdist database-backed tests use a per-worker SlowAPI `key_prefix` and clear
+  only that worker's `LIMITS:LIMITER/<prefix>/*` keys with Redis `SCAN` in
+  bounded batches; they never flush another worker's keys
+- pure and static tests without `db_session` skip PostgreSQL and Redis reset work
+- migration tests skip the normal pre-test schema path, retain their own `public` schema lifecycle, and invalidate canonical-schema readiness in fixture teardown (including after a failure). The next ordinary DB test then lazily resets `public` and runs `Base.metadata.create_all()` before opening its rollback-isolated connection
+- the sequential process or xdist controller holds the global test-infrastructure lock; workers run under that controller lock, preventing concurrent sequential and xdist invocations from interfering through shared Redis
 - the application database is not dropped or recreated by pytest
 
 Why this matters:
 
 - plain `drop_all()/create_all()` on a reused pooled Postgres connection can leave enum and cached-plan state behind after interrupted runs
-- recreating the whole `public` schema is the more reliable isolation boundary for this repo’s Postgres test setup
+- recreating the whole `public` schema remains the reliable recovery boundary after migration tests or a fresh pytest process; ordinary tests avoid per-test DDL/DML cleanup through root-transaction rollback, while real-connection tests use trusted-metadata `TRUNCATE`
+- checking pytest's resolved fixture closure avoids that schema work for tests with no database dependency
 
 ## What we test at the DB boundary
 
@@ -605,4 +630,10 @@ By default:
 - app limiter storage lives in Redis DB `0`
 - test limiter storage lives in Redis DB `15`
 
-The test harness flushes the test limiter store before and after each non-migration test so counters do not leak between cases.
+Sequential tests flush the test limiter store before and after each database-backed
+test, including migration tests, so counters do not leak between cases. xdist
+workers share that safe test Redis DB but set `RATE_LIMIT_KEY_PREFIX` to their
+stable worker namespace (for example, `openscribe_pytest_gw0`) and delete only
+that namespace with `SCAN`; this preserves other workers' counters. The
+application accepts `RATE_LIMIT_KEY_PREFIX` for this isolation wiring, but it
+defaults to empty so non-test behavior is unchanged.

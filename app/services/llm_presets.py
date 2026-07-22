@@ -164,13 +164,21 @@ BRANDED_OPENAI_COMPATIBLE_PRESETS = {
 }
 
 
-def get_llm_provider_preset(key: str | LlmProviderPreset | None) -> LlmProviderPresetDefinition:
+def get_llm_provider_preset(
+    key: str | LlmProviderPreset | None,
+    *,
+    allow_disabled_provider: bool = False,
+) -> LlmProviderPresetDefinition:
     preset_key = (key.value if isinstance(key, LlmProviderPreset) else key) or LlmProviderPreset.openai.value
     try:
         preset = LLM_PROVIDER_PRESETS[preset_key]
     except KeyError as exc:
         raise ValueError("Unsupported LLM provider preset") from exc
-    if preset_key == LlmProviderPreset.gemini_enterprise.value and not gemini_enterprise_provider_enabled():
+    if (
+        preset_key == LlmProviderPreset.gemini_enterprise.value
+        and not allow_disabled_provider
+        and not gemini_enterprise_provider_enabled()
+    ):
         raise ValueError("Gemini Enterprise provider is disabled")
     return preset
 
@@ -236,8 +244,12 @@ def apply_provider_defaults(
     bedrock_region: str | None,
     adapter_kind: str | LlmAdapterKind | None = None,
     google_location: str | None = None,
+    allow_disabled_provider: bool = False,
 ) -> tuple[str, LlmAdapterKind, str, str | None]:
-    preset = get_llm_provider_preset(provider_preset or _preset_from_legacy_adapter(adapter_kind))
+    preset = get_llm_provider_preset(
+        provider_preset or _preset_from_legacy_adapter(adapter_kind),
+        allow_disabled_provider=allow_disabled_provider,
+    )
     resolved_base_url = (base_url or "").strip()
     resolved_region = bedrock_region
     if preset.key == LlmProviderPreset.gemini_enterprise.value:
@@ -262,8 +274,13 @@ def gemini_enterprise_base_url(location: str) -> str:
     return f"https://{normalized}-aiplatform.googleapis.com"
 
 
-def reclassify_preset_for_base_url(provider_preset: str, base_url: str) -> str:
-    preset = get_llm_provider_preset(provider_preset)
+def reclassify_preset_for_base_url(
+    provider_preset: str,
+    base_url: str,
+    *,
+    allow_disabled_provider: bool = False,
+) -> str:
+    preset = get_llm_provider_preset(provider_preset, allow_disabled_provider=allow_disabled_provider)
     if provider_preset in BRANDED_OPENAI_COMPATIBLE_PRESETS and preset.default_base_url:
         if base_url.rstrip("/") != preset.default_base_url.rstrip("/"):
             return LlmProviderPreset.custom_openai_compatible.value

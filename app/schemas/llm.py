@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import UUID
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from app.llm_provider_defaults import normalize_bedrock_region
 from app.models import LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset
@@ -486,7 +486,7 @@ class LlmInspectRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def apply_provider_defaults(cls, data: object) -> object:
+    def apply_provider_defaults(cls, data: object, info: ValidationInfo) -> object:
         if not isinstance(data, dict):
             return data
         normalized = _normalize_gemini_input(data)
@@ -497,6 +497,7 @@ class LlmInspectRequest(BaseModel):
             base_url=normalized.get("base_url"),
             bedrock_region=normalized.get("bedrock_region"),
             adapter_kind=normalized.get("adapter_kind"),
+            allow_disabled_provider=bool((info.context or {}).get("allow_disabled_provider")),
         )
         normalized["provider_preset"] = preset
         normalized["adapter_kind"] = adapter_kind
@@ -507,6 +508,41 @@ class LlmInspectRequest(BaseModel):
     @model_validator(mode="after")
     def validate_gemini_fields(self) -> "LlmInspectRequest":
         return _validate_gemini_input(self, credential_required=True)
+
+    @classmethod
+    def from_persisted_config(
+        cls,
+        config,
+        *,
+        bearer_token: str | None = None,
+        google_service_account_json: dict[str, object] | None = None,
+        google_auth_method: GoogleAuthMethod | None = None,
+    ) -> "LlmInspectRequest":
+        from app.services.llm_presets import infer_llm_provider_preset
+
+        provider_config = dict(config.provider_config_json or {})
+        return cls.model_validate(
+            {
+                "team_id": config.team_id,
+                "provider_preset": config.provider_preset
+                or infer_llm_provider_preset(config.adapter_kind, config.base_url),
+                "adapter_kind": config.adapter_kind,
+                "base_url": config.base_url,
+                "bearer_token": bearer_token,
+                "provider_config_json": provider_config,
+                "google_project_id": provider_config.get("project_id"),
+                "google_location": provider_config.get("location"),
+                "google_auth_method": google_auth_method
+                or (
+                    "application_default"
+                    if config.auth_mode is LlmAuthMode.google_adc
+                    else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else None
+                ),
+                "google_service_account_json": google_service_account_json,
+                "capacity_mode": provider_config.get("capacity_mode", "auto"),
+            },
+            context={"allow_disabled_provider": True},
+        )
 
     @field_validator("base_url")
     @classmethod

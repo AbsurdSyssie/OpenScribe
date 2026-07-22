@@ -24,7 +24,23 @@ export HSTS_SOURCE=app
 pytest
 ```
 
-The test harness now takes a session-level file lock on `/tmp/openscribe_pytest.lock`.
+The test harness supports explicit xdist runs without enabling xdist by default:
+
+```bash
+pytest -q -n 4
+```
+
+Keep focused one-test or small-file runs sequential to avoid worker startup cost.
+On the current development machine, the full suite measured 2m41s sequential,
+1m30s with two workers, 60.32s with four workers, and 45.01s with eight
+workers. Four workers are the balanced default; eight was fastest in this
+measurement but remains host-dependent. Xdist stays opt-in rather than a
+`pytest.ini` default.
+
+Sequential and xdist controller processes retain the session-level lock at
+`/tmp/openscribe_pytest.lock`. Xdist workers inherit the controller's protected
+run and do not acquire competing locks. Any second pytest invocation exits
+rather than sharing PostgreSQL or Redis test infrastructure.
 
 Why:
 
@@ -35,6 +51,13 @@ Current behavior:
 
 - the first pytest run acquires the lock and proceeds
 - a second concurrent run exits immediately with a clear message instead of colliding with the shared test DB
+- xdist workers use derived PostgreSQL databases (for example,
+  `ambient_scribe_test_gw0`) and isolated SlowAPI key namespaces; the Redis DB
+  itself remains the configured test Redis DB
+- first test resolving `db_session` directly or through another fixture rebuilds that run's `public` schema; later ordinary DB tests reuse it under a single connection-root transaction and roll that transaction back at fixture teardown
+- tests marked `real_db_connections` retain full trusted-metadata `TRUNCATE ... RESTART IDENTITY CASCADE` cleanup before and after the test so independent committed sessions, threads, locks, and live servers remain real
+- pure and static tests that do not resolve `db_session` skip PostgreSQL and Redis reset work
+- migration-marked tests keep their separate schema lifecycle; teardown invalidates the canonical-schema readiness flag and clears this worker's rate-limit keys even if the test body fails. The next ordinary DB test rebuilds canonical metadata lazily before opening its rollback-isolated connection
 - the browser-style `client` fixture also auto-injects the CSRF token for non-API state-changing routes so existing UI tests behave like a rendered browser page
 - admin UI regression tests verify the redesigned sidebar workspace, provider subtabs, card-style provider metadata, and de-identification management controls render without exposing transcript-derived content
 - admin UI static regressions verify no-team Admin home safely skips member-modal listeners when member controls are not rendered

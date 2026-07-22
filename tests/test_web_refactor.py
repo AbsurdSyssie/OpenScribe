@@ -177,7 +177,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml({ label: 'follow-up'" in app_js
     assert "structured.js?v=20260718-note-pill-datetime" in app_js
     assert "documents.js?v=20260718-note-pill-datetime" in app_js
-    assert "/static/js/transcribe/app.js?v=20260719-partial-render-v6" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260720-concurrent-followup" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -307,7 +307,7 @@ def test_workspace_template_freeform_editor_uses_compact_structured_prompt_metri
     assert 'class="template-prompt-field"' in workspace
     assert ".template-library-detail .template-prompt-field" in settings_css
     assert ".template-library-detail textarea[name=\"prompt_text\"] { min-height: 120px; }" in settings_css
-    assert ".template-library-detail .workspace-shell { align-items: start; }" in settings_css
+    assert ".template-library-detail .workspace-shell { display: grid; align-items: start; }" in settings_css
 
 
 def test_template_editor_extracts_reusable_body_without_nested_page_shell():

@@ -9,7 +9,7 @@ class LlmGenerationRequest:
     temperature: float
     max_output_tokens: int
     expect_json: bool
-    response_schema: dict[str, object] | None = None
+    response_json_schema: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

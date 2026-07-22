@@ -2,325 +2,256 @@
 
 ## Purpose
 
-Ambient Scribing system repo.
+OpenScribe is privacy-sensitive and architecture-sensitive.
 
-All coding agents follow architecture + process rules here. Project is privacy-sensitive and architecture-sensitive. Do not improvise around ownership, content access, deletion semantics, or encryption.
+Preserve established ownership, content-access, deletion, retention, encryption, provider, authentication, and structured-output contracts. Do not silently redesign them.
 
-All coding agents must always use the `caveman` skill for communication unless a higher-priority safety or clarity requirement makes normal phrasing necessary for that specific message. Daily notes may also be written in caveman style.
+## Sources of truth
 
----
+Read only the documentation relevant to the change.
 
-## Core architecture rules
+Not every Markdown file describes current behaviour. Files named `plan`, `brief`, `refactor`, or similar may be historical or superseded.
 
-### Privacy and content visibility
-- All transcript-derived content private, non-shareable.
-- Only owning user may access transcript-derived content.
-- Team leaders + system admins may manage accounts, providers, templates, metadata, but may not read transcript/note content by default.
-- Metadata access is not content access.
-- Security paramount. Never allow user entered data in SQL queries.
+Use these as evidence of current behaviour, in this order:
 
-### Team and role model
-- Each normal user belongs to exactly one team.
-- `users.team_id` and `users.team_role` define team scope.
-- `users.is_system_admin` is separate from `team_role`.
-- System admin accounts are admin-only in MVP, do not own transcript-derived content.
+1. database migrations and constraints
+2. implemented service and route behaviour
+3. focused passing tests
+4. current runtime configuration
+5. documentation explicitly describing current behaviour
 
-### Transcript model
-- Create transcript row when recording starts.
-- Realtime partial transcript updates write into `transcripts.current_draft_text_encrypted`.
-- Create committed transcript versions only on blur, explicit save, or action execution.
-- Redaction is lazy. Only run when action requires it.
-- Transcript root is retention root.
+When these disagree:
 
-### Generated documents
-- Allow multiple outputs for same transcript version/template/action.
-- Owner user may edit generated documents.
-- Generated documents support:
-  - full document text
-  - optional structured sections
-- Structured notes use JSON output with `title` and `content`.
-- Quick actions/follow-ups are freeform text in MVP.
+* do not choose silently
+* preserve the stricter privacy and security boundary
+* identify the conflict
+* establish the implemented behaviour from code, migrations, and tests
+* update or retire stale documentation
+* escalate if an architectural invariant is affected
 
-### Structured note rules
-- Initial structured profile is EMIS.
-- Allowed EMIS section keys:
-  - `problem`
-  - `history`
-  - `family_history`
-  - `social_history`
-  - `examination`
-  - `comment`
-  - `tasks`
-  - `investigations`
-- EMIS templates may remove/reorder allowed sections.
-- Structured templates support global + per-section instructions.
-- Omit empty sections.
+Relevant references include:
 
-### Asset sharing model
-- Templates and quick actions are normal config unless they intentionally contain transcript-derived text.
-- Team assets available in team scope; not auto-added to user libraries.
-- Personal user-shared assets are same-team only, discoverable, must be explicitly watched.
-- Watching is live reference.
-- Forking creates ownership.
-- Renaming/customizing shared assets requires fork.
-- Deleting watched original removes watcher access immediately; existing forks survive.
+* `docs/security.md`
+* `docs/auth.md`
+* `docs/api.md`
+* `docs/setup.md`
+* `docs/testing.md`
+* `docs/DatabasePlan.md`
+* `docs/transcript-capture.md`
+* `docs/stt-config.md`
+* `docs/llm-providers.md`
 
-### Deletion rules
-- Deletion means deletion.
-- Manual deletion is immediate once confirmed.
-- No undo grace period in MVP.
-- User may delete:
-  - own generated documents
-  - own transcript roots
-- Transcript-root deletion cascades to all transcript-derived children.
-- Retention expiry fixed once, does not extend on later edits.
-- Expired transcript-derived content hard-delete immediately.
-- Team leaders can lock/deactivate users but cannot fully delete them.
-- Locking revokes sessions immediately, does not alter content state.
-- System-level user deletion immediately deletes:
-  - transcript-derived content
-  - personal templates/actions
-- Team deletion requires explicit system-admin confirmation and explicit cleanup.
-- Team hard-delete may proceed only when the cleanup path enumerates and removes team users, transcript-derived content, team-scoped assets, provider config/selection rows, usage metadata, linked account requests, and provider credential references.
-- Team deletion must block rather than silently skip unresolved blockers, including any system-admin account still linked to the team.
+## Architecture invariants
 
-### Encryption and secrets
-- HashiCorp Vault is KEK/master-key layer.
-- One DEK per user, created at account creation.
-- Encrypt user-owned confidential content with user DEK.
-- Store provider credentials as Vault references in DB, not raw secrets.
-- Provider credential cleanup must not delete Vault secrets before the DB commit that removes the corresponding references unless compensation or retry cleanup is implemented.
-- Do not log or expose confidential fields.
-- Use OWASP recommendations for security related tasks, never hand roll if there is something we can use already.
+### Privacy and ownership
 
-### Provider rules
-- System admin provisions provider credentials per team.
-- For STT in MVP, system admins provision available team STT endpoints + credentials.
-- Team leaders may choose active admin-provisioned STT service/model for team and may clear team-level selection, but may not view or recover raw provider secrets.
-- Multiple LLM providers/models may be allowed per team.
-- User chooses one active LLM for all LLM actions until changed.
-- If invalid, fallback is team default.
-- Transcription provider fixed per team in MVP, but active team policy may be selected from admin-provisioned STT options for that team.
-- De-identification/pseudonymisation providers are system-admin provisioned. Team leaders may select an assigned active provider for their own team.
-- If no valid team de-identification selection exists, use the built-in legacy/native Presidio provider.
-- Remote de-identification endpoints must use HTTPS unless the endpoint is localhost, LAN/private, or link-local. Raw provider secrets must use Vault-backed bearer-token storage, not arbitrary headers or DB fields.
+* Transcript-derived content belongs only to its owning user.
+* Transcript-derived content is not team-shareable.
+* Administrative or team-leader authority does not grant access to transcripts, audio, dictation, working notes, generated notes, prompts, or redaction originals.
+* Metadata access is not content access.
+* System-administrator accounts must not own transcript-derived content.
+* Each normal user belongs to one team.
+* Team leaders may act only within their own team.
 
----
+### Transcript lifecycle
 
-## Required engineering workflow
+* Create the transcript root before ingesting transcript-derived content.
+* The transcript root is the retention and deletion root.
+* Persist draft and committed transcript content through the established encrypted fields and version boundaries.
+* Retention expiry is fixed when assigned and must not be extended by later edits.
+* Transcript deletion must remove all transcript-derived children through established cascades and cleanup paths.
+* Working notes and post-consultation dictation remain separate transcript-owned sources.
 
-Every change must include:
+### Redaction and generation
 
-1. **Checklist before coding**
-   - target behavior
-   - affected schema/modules/endpoints
-   - affected tests
-   - architecture risks
-   - refer to docs/ .md files
-   - Decide where extra code can be avoided by re-using or refining existing code
-   - Minimise hand rolling code, reuse high quality, secure libraries when possible. 
-2. **Checkpoint updates during coding**
-   - schema checkpoint
-   - auth/ownership checkpoint
-   - lifecycle/deletion checkpoint
-   - docs/tests checkpoint
+* Run redaction only at defined workflow boundaries.
+* Capture finalisation or ingestion reconciliation may create or reuse a redaction preview.
+* Provider-bound workflows must use the appropriate source snapshot and redaction boundary.
+* Fail closed when required redaction fails.
+* Generated-document edits must not mutate transcripts, working notes, dictation, templates, or other source material.
+* Preserve generated-document provenance when source assets are deleted.
 
-3. **Checklist completion after coding**
-   - code complete
-   - tests added/updated
-   - When fixing test failures, do not chase green, think about why the test failed, and if that test is now irrelevant, cut it. If it's still needed, think about why and adapt.
-   - docs added/updated
-   - open issues noted
+### Structured output
 
-Do not skip checklist/checkpoint workflow.
+* Treat `app/schemas/templates.py` and `app/schemas/transcripts.py` as the structured-output contracts.
+* Validate provider output before persistence or display.
+* Do not add profiles, section keys, or incompatible response shapes without architectural approval.
+* Do not weaken validation to accept malformed model output.
 
----
+### Shared assets
 
-## Mandatory tests for every change
+* Team assets remain team-scoped.
+* Watching is a live reference; forking creates ownership.
+* Customising a shared asset requires a fork.
+* Deleting an original removes watcher access; existing forks survive.
+* Never convert a reference into ownership implicitly.
 
-Every meaningful change needs relevant tests. 
+### Account lifecycle and deletion
 
-Run pytest from the project virtualenv, not the system Python:
+* Suspension is reversible; deletion is immediate and destructive.
+* Suspension, locking, or disabling must revoke sessions and trusted-device authority as required by the existing lifecycle.
+* Team leaders may suspend, reactivate, and hard-delete non-system-administrator users in their own team.
+* System administrators may perform those actions across teams, subject to protected-account safeguards.
+* Managers may not suspend or delete themselves through manager routes.
+* Do not remove the final active system-administrator account.
+* User and team deletion must use the established deletion services.
+* Block deletion rather than silently skipping unresolved cleanup.
+
+### Encryption and provider secrets
+
+* Vault is the KEK and provider-secret layer.
+* Encrypt confidential user-owned content with the owning user’s DEK.
+* Store provider credentials in Vault; store only references and non-secret metadata in the database.
+* Never expose raw credentials or Vault references through normal responses.
+* Never delete a live Vault secret before the database transaction removing or replacing its reference commits.
+* Record retired-reference cleanup durably with the database change.
+* Cleanup must retry failures and verify that a reference is no longer live.
+* Use existing encryption, Vault, and cleanup services.
+
+### Provider policy
+
+* System administrators provision providers and credentials.
+* Team leaders select only providers assigned to their team.
+* STT selection is purpose-specific, including conversation transcription and post-consultation dictation.
+* Provider configuration never grants access to transcript-derived content.
+* Preserve team LLM policy, user preference fallback, provider setup state, credential status, and selection rules.
+* PII-redaction and clinical-NLP selections remain separate.
+* Use the established native de-identification fallback when no valid team selection exists.
+
+## Security
+
+* Never interpolate user-controlled values into raw SQL.
+* Use SQLAlchemy expressions or parameterised statements.
+* Allowlist identifiers, sort fields, operators, and query fragments.
+* Reuse maintained libraries and existing project security services.
+* Do not hand-roll cryptography, authentication, authorisation, CSRF, hashing, secret storage, or rate limiting.
+* Use synthetic data for tests and provider inspection.
+* Never weaken a constraint or test merely to make it pass.
+
+Do not log:
+
+* transcript-derived content
+* prompts or provider responses containing user data
+* audio content
+* redaction originals or manual PII
+* passwords, cookies, sessions, tokens, or credentials
+* sensitive request or response bodies
+
+## Workflow
+
+Before coding, identify:
+
+* intended behaviour
+* affected modules, routes, schemas, migrations, workers, and configuration
+* relevant tests and current documentation
+* privacy, ownership, lifecycle, encryption, and provider risks
+* existing code that can be reused
+* documentation conflicts
+
+During implementation, check:
+
+* schema and migration safety
+* authentication and authorisation
+* owner and team scope
+* deletion and retention
+* encryption and Vault lifecycle
+* provider selection and fallback
+* asynchronous idempotency and retries
+* logging and audit safety
+* structured-output validation
+
+Prefer small vertical changes over broad refactors.
+
+After implementation:
+
+* add or update focused tests
+* run focused checks first
+* run broader checks when risk warrants them
+* update tracked documentation
+* retire or mark superseded documentation
+* report unverified behaviour and remaining risks
+
+Do not change a failing test until determining whether the implementation, expectation, fixture, environment, or documentation is wrong.
+
+## Testing
+
+Run tests through the project virtual environment:
 
 ```bash
-.venv/bin/pytest -q
-```
-You don't need to run the full suite for every change, however a focused test suite should be carried out after changes. 
-
-For focused checks, keep the same virtualenv entrypoint:
-
-```bash
-.venv/bin/pytest -q tests/test_api.py -k "finalize_live_capture"
+.venv/bin/pytest -q <target>
 ```
 
-### Add/update as applicable
-- unit tests
-- integration/API tests
-- authorization tests
-- migration/schema tests
-- deletion/cascade tests
-- structured-output validation tests
-- provider-resolution tests
+Add targeted tests for changes affecting:
 
-### Especially important
-Changes affecting any item below need targeted tests:
-- ownership filtering
-- transcript deletion
-- user deletion
-- watcher/fork behavior
-- provider fallback
-- structured-note JSON validation
-- encryption/decryption paths
-- MFA/auth flows
+* authentication, MFA, onboarding, or recovery
+* ownership or team filtering
+* manager or administrator authority
+* deletion, retention, or cascades
+* migrations and constraints
+* encryption or Vault cleanup
+* provider policy and fallback
+* redaction or structured output
+* asynchronous dispatch, retries, or idempotency
+* logging and audit sanitisation
 
----
+Follow `docs/testing.md` for shared infrastructure and environment requirements.
 
-## Mandatory documentation for every change
+## Documentation
 
-Every change must update docs as needed.
+Update tracked documentation when behaviour, API, schema, setup, operations, security, or lifecycle contracts change.
 
-Daily progress notes under `docs/progress/` are local scratch records. The directory is ignored intentionally: never stage or force-add these files. Daily-note updates do not satisfy the tracked documentation requirement below.
+Local files under `docs/progress/` are scratch notes and must not be staged. They do not replace tracked documentation.
 
-Update one or more of:
-- README
-- architecture notes
-- migration notes
-- API docs
-- developer setup docs
-- feature-specific docs/checklists
+## Subagents
 
-No feature complete without docs.
+Delegate only bounded work where isolated context or parallel execution helps.
 
----
+Every delegation must define the objective, permitted scope, constraints, required evidence, tests, and escalation condition.
 
-## Database and schema guidance
+* **Luna:** Narrow, low-risk, mechanically verifiable work. Prefer read-only searches, inventories, extraction, triage, formatting, and source-grounded documentation. Never assign architecture-sensitive decisions.
+* **Terra:** Default for bounded implementation, fixes, tests, refactors, and documentation when behaviour and acceptance criteria are defined. Escalate ambiguity or architectural consequences.
+* **Sol:** Ambiguous, cross-cutting, or high-consequence work; architecture, privacy, security, deletion, encryption, provider-secret lifecycle, migrations, complex debugging, and final sensitive review.
 
-### Prefer database constraints for structural truths
-Use DB to enforce:
-- foreign keys
-- uniqueness
-- scope invariants
-- cascade relationships
-- required ownership/team references
+Prefer parallel read-heavy tasks. Avoid overlapping writes unless isolated workspaces and an integration plan are used.
 
-### Keep workflow nuance in application logic
-Use service logic for:
-- provider fallback
-- same-team discoverability checks
-- admin-only account behavior
-- “one successful reusable redaction run” behavior
-- forced MFA setup flow
-- team deletion eligibility
+The parent remains responsible for correctness. Review delegated changes, verify claims, resolve conflicts, and run relevant tests.
 
-### Do not weaken these invariants
-- transcript-derived records must carry `owner_user_id`
-- transcript-derived records must carry `team_id` where architecturally defined
-- transcript root cascades must remain intact
-- template/action scope rules must remain valid
-- generated document provenance must not break if source templates/actions are hard-deleted
+Require subagents to report:
 
----
+* files reviewed or changed
+* commands and tests with results
+* assumptions and decisions
+* limitations, risks, and blockers
 
-## Logging and observability rules
+Subagents must not delegate further unless explicitly authorised.
 
-Allowed in logs:
-- event types
-- IDs
-- statuses
-- timestamps
-- token counts
-- provider/model names
-- error codes
-- durations
-- counts
-- cost estimates
+## Escalation
 
-Forbidden in logs:
-- transcript text
-- note text
-- prompts
-- model responses containing user data
-- redaction original values
-- provider secrets
-- invite/reset tokens
-- plaintext session identifiers
+Do not silently alter:
 
----
+* ownership or content visibility
+* transcript shareability
+* deletion or retention
+* encryption or key management
+* Vault credential lifecycle
+* provider selection or fallback
+* redaction boundaries
+* structured-output contracts
+* account-lifecycle authority
+* quota-accounting semantics
 
-## Change review expectations
+Implement only a safe independent portion when possible, preserve the existing boundary, identify the blocker, and request architectural direction.
 
-Final change summary must include:
+## Final report
 
-### 1. Scope
-What was implemented.
+Report:
 
-### 2. Checklist
-Completed and remaining items.
+1. behaviour implemented
+2. files changed
+3. migrations or configuration changes
+4. tests run and results
+5. documentation updated or retired
+6. architecture and security impact
+7. risks, assumptions, blockers, and remaining work
 
-### 3. Files changed
-With brief purpose.
-
-### 4. Tests
-What was added/updated and what it verifies.
-
-### 5. Documentation
-What was added/updated.
-
-### 6. Risks / assumptions
-Anything needing architect review.
-
-### 7. Architecture checkpoint summary
-Explain how implementation preserved:
-- privacy boundaries
-- ownership rules
-- deletion semantics
-- provider rules
-- structured-note contract
-
-Add this to the local daily note in `docs/progress/YYYY/MM/DD Daily Progress Note.md`, but do not stage or commit that note.
----
-
-## Escalation rule
-
-If requested change would alter any item below, do not silently redesign it:
-- ownership model
-- privacy model
-- deletion model
-- encryption/key model
-- provider resolution model
-- structured-note JSON contract
-- shareability of transcript-derived content
-
-Instead:
-- implement only safe portion if possible
-- clearly note blocker
-- ask for architectural direction in change summary
-
----
-## Agents
-- You may delegate very light tasks to the luna agent. This agent is fast and good for easy tasks, if there are nuances to the task you need to be direct in explaining them
--- You may delegate easier or lighter tasks to the terra agent. This agent is capable and can reason on its own, make sure to explain any nuances.
-- Heavy or complex tasks should be done by sol, this is the most capable agent.
--- Most documentation can be done by terra or luna, with a final review by sol with the aim of correcting anything that is inaccurate
----
-
-## Practical bias
-
-Prefer:
-- small vertical slices
-- explicit code over clever code
-- reusable code over novel code
-- stable interfaces
-- deterministic behavior
-- synthetic test data
-- easy-to-review migrations
-- strict validation on structured LLM output
-- keep code modular, ideally files no longer than 1k lines
-
-Avoid:
-- speculative abstraction
-- hidden side effects
-- broad refactors without tests
-- content-bearing debug logs
-- weakening constraints for convenience
-- long monolithic files/modules
+Do not claim anything was verified unless it was actually checked.

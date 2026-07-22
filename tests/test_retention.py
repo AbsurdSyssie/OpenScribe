@@ -244,6 +244,7 @@ def test_ingestion_worker_deletes_already_expired_root_and_queues_retry_audio_cl
     assert cleanup_job.attempt_count == 1
 
 
+@pytest.mark.real_db_connections
 @pytest.mark.parametrize("failure_kind", ["app_error", "unexpected"])
 def test_ingestion_failure_deletes_root_expired_during_failure_path(
     db_session, make_team, make_user, monkeypatch, failure_kind

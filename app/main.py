@@ -682,6 +682,7 @@ api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_csrf)])
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=os.getenv("RATE_LIMIT_STORAGE_URL", "redis://localhost:6379/0"),
+    key_prefix=os.getenv("RATE_LIMIT_KEY_PREFIX", ""),
     headers_enabled=False,
 )
 app.state.limiter = limiter
@@ -744,6 +745,7 @@ app.mount(
 
 
 SENSITIVE_NO_STORE_PATH_PREFIXES = (
+    "/admin",
     "/api/v1/transcribe",
     "/api/v1/transcripts",
     "/api/v1/generated-documents",

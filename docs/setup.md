@@ -68,11 +68,12 @@ alembic upgrade head
 
 This starts Docker services, initializes or unseals the persistent local Vault, loads `.env`, applies migrations, and runs the FastAPI dev server.
 
-It also starts a local Celery worker and Celery Beat scheduler by default. Queued transcript-ingestion jobs are processed during manual testing, and Beat queues transcript-retention, retry-audio Vault, provider-secret Vault cleanup, task-dispatch outbox publishing, and quota lifecycle cleanup every 10 seconds.
+It also starts a local Celery worker and Celery Beat scheduler by default. Queued transcript-ingestion jobs are processed during manual testing. Beat publishes the task-dispatch outbox every 1 second; transcript retention, retry-audio Vault cleanup, provider-secret Vault cleanup, and quota lifecycle cleanup remain scheduled every 10 seconds.
+The dev worker starts with all three queues (`control`, `generation`, `ingestion`) on a single process; production deployments should run separate workers per queue for isolation.
 Before launching, it now proactively stops any existing OpenScribe FastAPI dev server, Celery worker, and Celery Beat processes so stale processes do not keep consuming or scheduling jobs with old Python code.
 It also checks the configured FastAPI port before starting Celery or Brave; if another process still owns the port, it exits with a direct `APP_PORT`/stop-process message instead of leaving a worker running after server startup fails.
 It exports derived dev defaults such as `APP_PORT` and `APP_BIND_HOST` before running child Python checks, so missing optional `.env` values still use the documented defaults.
-It also purges stale queued Celery tasks by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
+It also purges stale queued Celery tasks from all queues by default before starting the fresh dev worker, so old Redis jobs do not replay against newer code or deleted dev rows.
 The default dev configuration keeps FastAPI, Postgres, Redis, and Vault on localhost. Off-box FastAPI access requires explicit `APP_HOST=0.0.0.0` and `DEV_ALLOW_REMOTE_BIND=true` configuration.
 Before the server starts, `./start-dev.sh` now also checks the live Docker port bindings for Postgres, Redis, and Vault and prints an error to the terminal if any of them are published beyond localhost.
 
@@ -83,8 +84,12 @@ Important:
 - FastAPI reload watches `app/` only. Prototype files under `transcriber_changes/`, tests, and docs are served/read directly and no longer trigger disruptive Python reloads.
 - expired transcript roots become inaccessible at their fixed `retention_expires_at` timestamp; cleanup physically deletes roots and cascading transcript-derived children on the next 10-second scheduler pass
 - retention cleanup drains expired roots in locked 100-row batches; queued cleanup messages expire after 10 seconds so a stopped worker does not later replay stale scheduler backlog
-- production deployments must run both a Celery worker and Celery Beat with the same application configuration; a worker without Beat does not schedule retention or durable Vault cleanup
-- quota accounting also requires both processes: Beat publishes pending task-dispatch outbox rows and terminalizes stale quota reservations/submissions every 10 seconds; workers execute those tasks and provider work. Each publisher transaction claims/publishes one outbox row, so concurrent publishers cannot reuse released batch locks. Outbox publish retries are safe through deterministic task IDs, and lifecycle cleanup locks normal owner/source parents before attempts (never outbox-first), safely cancels stale undispatched reservations, or conservatively settles stale submitted token attempts.
+- production deployments must run separate Celery workers per queue (`control`, `generation`, `ingestion`) and a shared Beat scheduler with the same application configuration; workers without Beat do not schedule retention or durable Vault cleanup
+- queue routing is defined in `app/celery_app.py`: `control` handles retention/Vault/outbox/quota lifecycle tasks, `generation` handles document generation, `ingestion` handles transcript ingestion. The `task_routes` dict ensures tasks land on the correct queue regardless of which worker picks them up.
+- outbox dispatch fast-path: after committing a transcript version or generation, the service attempts an immediate `publish_task_dispatch` for the associated outbox row instead of waiting for Beat. Beat remains the fallback and publishes the remainder every 1 second.
+- completion-triggered dispatch: when a transcript ingestion job completes and the transcript transitions to `ready`, pending generation dispatches are published and already-published waiting generation tasks are woken immediately instead of waiting for their next 2-second retry; the scheduled retry remains a fallback if the wake publish fails. Generation workers take a non-blocking PostgreSQL advisory lock per generated document before redaction, clinical-NLP/prompt preparation, credential resolution, or provider dispatch, so an overlapping wake and scheduled retry do not duplicate provider-bound preparation. A delivery that does not acquire the guard exits without changing document, outbox, or quota state.
+- quota accounting also requires both processes: Beat publishes pending task-dispatch outbox rows every 1 second and terminalizes stale quota reservations/submissions every 10 seconds; workers execute those tasks and provider work. Each publisher transaction claims/publishes one outbox row, so concurrent publishers cannot reuse released batch locks. Outbox publish retries are safe through deterministic task IDs, and lifecycle cleanup locks normal owner/source parents before attempts (never outbox-first), safely cancels stale undispatched reservations, or conservatively settles stale submitted token attempts.
+- worker timing: both `process_transcript_ingestion_job` and `process_generated_document` stamp `worker_received_at` on the associated row (transcript job or generated document) before running provider work, giving visibility into Celery scheduling latency.
 - if port `APP_PORT` is owned by an unrelated process, stop it or change `APP_PORT` in `.env`
 - `APP_HOST` defaults to `127.0.0.1`
 - `./start-dev.sh` keeps the FastAPI frontend localhost-only by default; off-box access requires explicit `APP_HOST=0.0.0.0` and `DEV_ALLOW_REMOTE_BIND=true`
@@ -427,6 +432,16 @@ Long whole-file processing has separate timeout knobs:
 
 - `AUDIO_FFMPEG_TIMEOUT_SECONDS` default: `1800`
 - `STT_TRANSCRIPTION_TIMEOUT_SECONDS` default: `14400`
+
+### Gemini Enterprise credentials
+
+Enable `aiplatform.googleapis.com` and grant the runtime identity `roles/aiplatform.user` or a narrower approved custom role in the wizard project. For production on Google Cloud, prefer an attached service account. For local development, configure ADC with `gcloud auth application-default login`. If ADC deliberately uses a different quota project, the identity also needs `serviceusage.services.use` and the API enabled on that quota project.
+
+Workloads outside Google Cloud should configure Workload Identity Federation in the deployment environment, then select Application Default Credentials in OpenScribe. Do not upload WIF `external_account` files through the admin wizard. Service-account key JSON is an advanced fallback and is stored in Vault.
+
+Complete bare-metal, current Compose-layout, fully-containerized app/worker, networking, location, verification, and troubleshooting instructions are in [Gemini Enterprise setup](gemini-enterprise-setup.md).
+
+Rollout control: `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false` hides and rejects new Gemini provider submissions. Standard tests mock all Google calls; use a separate low-privilege staging project for live smoke checks in `global` and the intended production location.
 
 ### Database reset
 

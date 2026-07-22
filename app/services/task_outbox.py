@@ -16,6 +16,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.db import SessionLocal
 from app.models import (
     TaskDispatchKind,
     TaskDispatchOutbox,
@@ -206,3 +207,156 @@ def publish_pending_task_dispatches(
         db.commit()
         published += 1
     return published
+
+
+def publish_task_dispatch(
+    db: Session,
+    *,
+    task_id: UUID,
+    publisher: TaskDispatchPublisher | None = None,
+    max_attempts: int | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Publish exactly one outbox row immediately, claiming it with FOR UPDATE.
+
+    Returns True if the row was successfully published. Returns False if it is
+    missing, already terminal, or the publish attempt failed and the row was
+    left for the Beat fallback publisher.
+
+    Unlike ``publish_pending_task_dispatches`` this only touches the single row
+    identified by ``task_id`` and never advances the cursor past it. The caller
+    owns the surrounding transaction boundary: the function commits each
+    individual publish attempt (success or failure) before returning so a network
+    failure cannot leave a half-published row visible to consumers.
+    """
+    now = now or utcnow()
+    publisher = publisher or CeleryTaskDispatchPublisher()
+    max_attempts_setting = max_attempts if max_attempts is not None else _configured_max_attempts()
+    max_attempts_setting = max(1, max_attempts_setting)
+    dispatch = db.scalar(
+        select(TaskDispatchOutbox)
+        .where(TaskDispatchOutbox.task_id == task_id)
+        .with_for_update()
+    )
+    if dispatch is None:
+        return False
+    if dispatch.state is not TaskDispatchState.pending:
+        # Already published, cancelled, or failed by an earlier round. Do not
+        # duplicate or replay; the Beat fallback remains the recovery lane.
+        return False
+    try:
+        publisher.publish(dispatch)
+    except Exception:
+        # Exception details can contain provider/task content. Persist code only.
+        dispatch.attempt_count += 1
+        dispatch.last_error_code = PUBLISH_ERROR_CODE
+        if dispatch.attempt_count >= max_attempts_setting:
+            dispatch.state = TaskDispatchState.failed
+            dispatch.failed_at = now
+        else:
+            dispatch.next_attempt_at = _retry_at(now, dispatch.attempt_count)
+        db.commit()
+        return False
+
+    dispatch.state = TaskDispatchState.published
+    dispatch.published_at = now
+    dispatch.last_error_code = None
+    db.commit()
+    return True
+
+
+def find_waiting_generation_dispatches_for_transcript(
+    db: Session, *, transcript_id: UUID
+) -> list[TaskDispatchOutbox]:
+    """Return active generation dispatches for one transcript.
+
+    Used by the transcript-completion trigger to fan generation out without
+    waiting for each generation task's scheduled retry. Normally these rows
+    are already ``published`` before the worker discovers that transcription
+    is still in progress; ``pending`` rows cover broker publication failures.
+    """
+    # Imported lazily to avoid an import cycle: app.models -> app.services.*
+    # callers already depend on this module.
+    from app.models import GeneratedDocument, GeneratedDocumentStatus
+
+    return list(
+        db.scalars(
+            select(TaskDispatchOutbox)
+            .where(
+                TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.generation,
+                TaskDispatchOutbox.state.in_(
+                    (TaskDispatchState.pending, TaskDispatchState.published)
+                ),
+            )
+            .join(
+                GeneratedDocument,
+                GeneratedDocument.id == TaskDispatchOutbox.source_id,
+            )
+            .where(
+                GeneratedDocument.transcript_id == transcript_id,
+                GeneratedDocument.status == GeneratedDocumentStatus.queued,
+            )
+        )
+    )
+
+
+def wake_published_generation_task_dispatch(
+    db: Session,
+    *,
+    task_id: UUID,
+    publisher: TaskDispatchPublisher | None = None,
+) -> bool:
+    """Republish one already-dispatched generation task as a readiness wake-up.
+
+    This deliberately does not reopen or mutate the durable outbox lifecycle.
+    Duplicate delivery is safe because generation workers take a per-document
+    preparation guard before redaction, credential resolution, or provider
+    dispatch. The task's scheduled retry remains the fallback if this
+    best-effort broker publish fails.
+    """
+    dispatch = db.scalar(
+        select(TaskDispatchOutbox).where(
+            TaskDispatchOutbox.task_id == task_id,
+            TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.generation,
+            TaskDispatchOutbox.state == TaskDispatchState.published,
+        )
+    )
+    if dispatch is None:
+        return False
+    (publisher or CeleryTaskDispatchPublisher()).publish(dispatch)
+    return True
+
+
+def try_publish_task_dispatch_safely(task_id) -> None:
+    """Best-effort immediate publish from the request/commit path.
+
+    A failure here is non-fatal: the durable outbox row stays pending and the
+    Beat-driven publisher remains the fallback. Caller context is logged with
+    tones that never leak confidential content.
+    """
+    import logging
+
+    logger = logging.getLogger("openscribe.task_outbox")
+    try:
+        with SessionLocal() as db:
+            publish_task_dispatch(db, task_id=task_id)
+    except Exception:
+        logger.warning(
+            "task_dispatch_fast_path_skipped",
+            extra={"event": "task_dispatch_fast_path_skipped"},
+        )
+
+
+def try_wake_published_generation_task_dispatch_safely(task_id) -> None:
+    """Best-effort wake-up for generation work already sent to Celery."""
+    import logging
+
+    logger = logging.getLogger("openscribe.task_outbox")
+    try:
+        with SessionLocal() as db:
+            wake_published_generation_task_dispatch(db, task_id=task_id)
+    except Exception:
+        logger.warning(
+            "generation_dispatch_wake_skipped",
+            extra={"event": "generation_dispatch_wake_skipped"},
+        )

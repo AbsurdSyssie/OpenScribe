@@ -1121,9 +1121,13 @@ deterministic task id, marks success `published`, or records only
 retries become `failed`; lifecycle reconciliation fails still-queued source work
 and terminalizes unused reservations. Lifecycle locks owner/source parents before
 attempts and never takes an outbox-first lock, avoiding inversion with normal
-worker paths. Workers atomically claim a queued source immediately before
-irreversible provider dispatch, so duplicate delivery cannot call a provider
-twice.
+worker paths. Generation workers also take a non-blocking, per-document
+PostgreSQL advisory lock across transcript snapshot refresh, provider-bound
+preparation, the atomic quota/source claim, and provider dispatch. This makes
+completion wake-ups and scheduled retries safe to overlap: a delivery that
+does not acquire the guard exits without changing source, outbox, or quota
+state. The atomic queued-source claim remains the durable boundary immediately
+before irreversible provider dispatch.
 
 ---
 

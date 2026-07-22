@@ -37,7 +37,7 @@ from app.services.templates import (
 BUILTIN_DEFAULT_TEMPLATE = {
     "name": "Sectioned EMIS note",
     "description": "Starter structured consultation note for EMIS transfer.",
-    "prompt_text": "Write a concise EMIS-ready consultation note from the transcript. Return structured JSON with a title and content mapped to the configured sections. Omit empty sections.",
+    "prompt_text": "Write a concise EMIS-ready consultation note from the provided clinical sources. Include only clinically supported information and omit empty sections.",
     "mode": TemplateMode.structured,
     "config_json": {
         "profile": "emis",

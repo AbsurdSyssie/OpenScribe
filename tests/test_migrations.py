@@ -130,6 +130,11 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     } == provider_cleanup_columns
     assert provider_cleanup_fks == []
     assert any(item["name"] == "ix_provider_secret_cleanup_jobs_next_attempt_at" for item in provider_cleanup_indexes)
+    team_llm_columns = {column["name"]: column for column in inspector.get_columns("team_llm_configs")}
+    generated_document_columns = {column["name"]: column for column in inspector.get_columns("generated_documents")}
+    assert team_llm_columns["provider_config_json"]["nullable"] is False
+    assert team_llm_columns["provider_config_json"]["default"] is None
+    assert generated_document_columns["llm_provider_config_json"]["nullable"] is True
     with engine.connect() as connection:
         stt_auth_modes = connection.execute(
             text(
@@ -142,7 +147,31 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
                 """
             )
         ).scalars().all()
+        llm_auth_modes = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'llmauthmode'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+        llm_adapter_kinds = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'llmadapterkind'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
     assert stt_auth_modes == ["bearer", "none"]
+    assert llm_auth_modes == ["bearer", "none", "google_adc", "google_service_account"]
+    assert llm_adapter_kinds == ["openai_chat", "ollama_chat", "bedrock_chat", "gemini_enterprise"]
 
 
 @pytest.mark.migration
@@ -666,6 +695,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "hallucination_check_provider_snapshot_json",
         "hallucination_check_completed_at",
         "hallucination_check_applied_edit_count",
+        "worker_received_at",
         "started_at",
         "completed_at",
     } <= generated_document_columns
@@ -813,6 +843,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "stt_segment_end_field",
         "stt_segment_speaker_field",
         "stt_extra_form_fields_json",
+        "worker_received_at",
     } <= transcript_ingestion_job_columns
     assert {
         "user_id",
@@ -1603,7 +1634,7 @@ def test_alembic_head_supports_llm_adapter_values():
                 """
                 INSERT INTO team_llm_configs (
                     id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
-                    available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    available_models_json, inspection_metadata_json, provider_config_json, setup_status, vault_secret_ref,
                     is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
                 )
                 VALUES (
@@ -1616,6 +1647,7 @@ def test_alembic_head_supports_llm_adapter_values():
                     'none',
                     'llama3.2',
                     '[]'::json,
+                    '{}'::json,
                     '{}'::json,
                     'ready',
                     '',
@@ -1690,7 +1722,7 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                 """
                 INSERT INTO team_llm_configs (
                     id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
-                    available_models_json, inspection_metadata_json, setup_status, vault_secret_ref,
+                    available_models_json, inspection_metadata_json, provider_config_json, setup_status, vault_secret_ref,
                     is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
                 )
                 VALUES (
@@ -1703,6 +1735,7 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                     'bearer',
                     'anthropic.claude-3-7-sonnet-20250219-v1:0',
                     '[]'::json,
+                    '{}'::json,
                     '{}'::json,
                     'ready',
                     'secret:openscribe/llm/team/1/config/2',

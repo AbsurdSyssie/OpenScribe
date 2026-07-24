@@ -147,6 +147,8 @@ Before coding, identify:
 * privacy, ownership, lifecycle, encryption, and provider risks
 * existing code that can be reused
 * documentation conflicts
+* In Code Mode, within each bounded stage, run independent, functions.exec-available tool calls concurrently in one functions.exec call. Use await Promise.allSettled([...]) when partial results are useful, and inspect every result; use await Promise.all([...]) only when any failure should abort the batch. Keep dependencies, waits/resumes, approvals, conflicting or interdependent mutations, and adaptive investigations where each result may change the next step sequential. Do not split otherwise batchable inspections across outer tool calls.
+
 
 During implementation, check:
 

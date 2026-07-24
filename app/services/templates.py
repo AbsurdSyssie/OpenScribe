@@ -14,6 +14,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.errors import AppError
 from app.models import (
@@ -59,6 +60,7 @@ from app.schemas.templates import (
     EMIS_SECTION_LABELS,
     GeneratedDocumentUpdateRequest,
     PromptTemplateUpsert,
+    TemplateBundleEntry,
     QuickActionUpsert,
     StructuredTemplateConfig,
 )
@@ -112,6 +114,10 @@ from app.services.quota_lifecycle import (
 usage_logger = logging.getLogger("openscribe.usage")
 
 TEMPLATE_NAME_CONSTRAINTS = {"uq_templates_team_name_lower", "uq_templates_owner_name_lower"}
+TEMPLATE_BUNDLE_FORMAT = "openscribe-template-bundle"
+TEMPLATE_BUNDLE_FORMAT_VERSION = 1
+TEMPLATE_BUNDLE_MAX_BYTES = 1024 * 1024
+TEMPLATE_BUNDLE_MAX_ENTRIES = 100
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
 QUICK_ACTION_CONTEXT_MARKER = "\n\nAdditional context:\n"
@@ -687,6 +693,261 @@ def list_available_templates_for_user(db: Session, actor: User) -> list[PromptTe
             .order_by(PromptTemplate.scope.asc(), PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
         )
     )
+
+
+def export_template_bundle(db: Session, actor: User, *, template_ids: list[UUID]) -> dict[str, object]:
+    """Export latest versions of explicitly selected templates visible to the actor."""
+    _require_team_member(actor)
+    if not template_ids or len(template_ids) > TEMPLATE_BUNDLE_MAX_ENTRIES or len(set(template_ids)) != len(template_ids):
+        raise AppError(422, "business_rule_violation", "Select between 1 and 100 distinct templates")
+    visible = list(
+        db.scalars(
+            select(PromptTemplate).where(
+                PromptTemplate.id.in_(template_ids),
+                (
+                    ((PromptTemplate.scope == TemplateScope.user) & (PromptTemplate.owner_user_id == actor.id))
+                    | ((PromptTemplate.scope == TemplateScope.team) & (PromptTemplate.team_id == actor.team_id))
+                ),
+            )
+        )
+    )
+    by_id = {template.id: template for template in visible}
+    if any(template_id not in by_id for template_id in template_ids):
+        raise AppError(404, "not_found", "One or more templates were not found", {"resource": "template"})
+    entries: list[dict[str, object]] = []
+    for template_id in template_ids:
+        template = by_id[template_id]
+        version = _latest_template_version(db, template_id=template.id)
+        entries.append(
+            {
+                "name": template.name,
+                "description": template.description,
+                "latest_version": {
+                    "mode": version.mode.value,
+                    "prompt_text": version.prompt_text,
+                    "config_json": version.config_json,
+                },
+            }
+        )
+    record_security_event(db, action="template_bundle_exported", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "template_count": len(entries), "object_ids": [str(template_id) for template_id in template_ids]})
+    return {"format": TEMPLATE_BUNDLE_FORMAT, "format_version": TEMPLATE_BUNDLE_FORMAT_VERSION, "templates": entries}
+
+
+def parse_template_bundle(raw_bundle: bytes) -> tuple[list[TemplateBundleEntry | None], list[dict[str, str]], list[list[dict[str, str]]]]:
+    if len(raw_bundle) > TEMPLATE_BUNDLE_MAX_BYTES:
+        raise AppError(413, "payload_too_large", "Template bundle must not exceed 1 MiB")
+    try:
+        decoded = raw_bundle.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AppError(422, "validation_error", "Template bundle must be UTF-8 JSON") from exc
+    try:
+        payload = json.loads(decoded)
+    except json.JSONDecodeError as exc:
+        raise AppError(422, "validation_error", "Template bundle is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise AppError(422, "validation_error", "Template bundle root must be an object")
+    if payload.get("format") != TEMPLATE_BUNDLE_FORMAT:
+        raise AppError(422, "validation_error", "Unsupported template bundle format", {"field": "format"})
+    if not isinstance(payload.get("format_version"), int) or isinstance(payload.get("format_version"), bool) or payload.get("format_version") != TEMPLATE_BUNDLE_FORMAT_VERSION:
+        raise AppError(422, "validation_error", "Unsupported template bundle version", {"field": "format_version"})
+    raw_entries = payload.get("templates")
+    if not isinstance(raw_entries, list) or not raw_entries or len(raw_entries) > TEMPLATE_BUNDLE_MAX_ENTRIES:
+        raise AppError(422, "validation_error", "Template bundle must contain between 1 and 100 templates", {"field": "templates"})
+
+    warnings = [
+        {"path": key, "message": "Field was not recognised and will not be imported"}
+        for key in payload
+        if key not in {"format", "format_version", "templates"}
+    ]
+    entries: list[TemplateBundleEntry | None] = []
+    entry_issues: list[list[dict[str, str]]] = []
+    for index, raw_entry in enumerate(raw_entries):
+        issues: list[dict[str, str]] = []
+        if isinstance(raw_entry, dict):
+            for key in raw_entry:
+                if key not in {"name", "description", "latest_version"}:
+                    warnings.append({"path": f"templates[{index}].{key}", "message": "Field was not recognised and will not be imported"})
+            raw_version = raw_entry.get("latest_version")
+            if isinstance(raw_version, dict):
+                for key in raw_version:
+                    if key not in {"mode", "prompt_text", "config_json"}:
+                        warnings.append({"path": f"templates[{index}].latest_version.{key}", "message": "Field was not recognised and will not be imported"})
+                raw_config = raw_version.get("config_json")
+                if isinstance(raw_config, dict):
+                    for key in raw_config:
+                        if key not in {"profile", "sections"}:
+                            issues.append({"path": f"templates[{index}].latest_version.config_json.{key}", "message": "Unknown structured configuration field"})
+                    raw_sections = raw_config.get("sections")
+                    if isinstance(raw_sections, list):
+                        for section_index, raw_section in enumerate(raw_sections):
+                            if isinstance(raw_section, dict):
+                                for key in raw_section:
+                                    if key not in {"section_key", "section_label", "instruction", "section_order"}:
+                                        issues.append({"path": f"templates[{index}].latest_version.config_json.sections[{section_index}].{key}", "message": "Unknown structured section field"})
+            cleaned = {
+                "name": raw_entry.get("name"),
+                "description": raw_entry.get("description"),
+                "latest_version": {
+                    key: raw_version.get(key)
+                    for key in ("mode", "prompt_text", "config_json")
+                } if isinstance(raw_version, dict) else raw_version,
+            }
+        else:
+            cleaned = raw_entry
+        try:
+            if issues:
+                raise AppError(422, "validation_error", issues[0]["message"])
+            entry = TemplateBundleEntry.model_validate(cleaned)
+            if entry.latest_version.mode is TemplateMode.structured and entry.latest_version.config_json is not None:
+                for section_index, section in enumerate(entry.latest_version.config_json.sections, start=1):
+                    if section.section_label != EMIS_SECTION_LABELS.get(section.section_key):
+                        raise AppError(422, "validation_error", "Structured section label does not match its key", {"field": f"config_json.sections.{section_index - 1}.section_label"})
+                    if section.section_order != section_index:
+                        raise AppError(422, "validation_error", "Structured section order must be consecutive and one-based", {"field": f"config_json.sections.{section_index - 1}.section_order"})
+            normalized_payload = PromptTemplateUpsert(
+                scope=TemplateScope.user,
+                name=entry.name,
+                description=entry.description,
+                prompt_text=entry.latest_version.prompt_text,
+                mode=entry.latest_version.mode,
+                config_json=entry.latest_version.config_json,
+            )
+            _serialize_asset_name(normalized_payload.name)
+            _serialize_prompt_text(normalized_payload.prompt_text)
+            if normalized_payload.mode is TemplateMode.freeform and normalized_payload.config_json is not None:
+                raise AppError(422, "validation_error", "Freeform template config_json must be null", {"field": "config_json"})
+            _serialize_template_config(normalized_payload)
+        except (ValidationError, AppError) as exc:
+            if isinstance(exc, ValidationError):
+                issues.extend(
+                    {"path": f"templates[{index}]." + ".".join(str(part) for part in error["loc"]), "message": error["msg"]}
+                    for error in exc.errors()
+                )
+            else:
+                if not issues:
+                    field = str((exc.details or {}).get("field") or "")
+                    issues.append({"path": f"templates[{index}]" + (f".latest_version.{field}" if field else ""), "message": exc.message})
+            entry = None
+        entries.append(entry)
+        entry_issues.append(issues)
+    return entries, warnings, entry_issues
+
+
+def _destination_templates(db: Session, actor: User, *, destination: TemplateScope) -> list[PromptTemplate]:
+    if destination is TemplateScope.team:
+        _require_team_leader(actor)
+        return list(db.scalars(select(PromptTemplate).where(PromptTemplate.scope == destination, PromptTemplate.team_id == actor.team_id)))
+    if destination is TemplateScope.user:
+        _require_team_member(actor)
+        return list(db.scalars(select(PromptTemplate).where(PromptTemplate.scope == destination, PromptTemplate.owner_user_id == actor.id)))
+    raise AppError(422, "validation_error", "Import destination must be personal or team", {"field": "destination"})
+
+
+def _import_content(entry: TemplateBundleEntry) -> tuple[object, ...]:
+    payload = PromptTemplateUpsert(
+        scope=TemplateScope.user,
+        name=entry.name,
+        description=entry.description,
+        prompt_text=entry.latest_version.prompt_text,
+        mode=entry.latest_version.mode,
+        config_json=entry.latest_version.config_json,
+    )
+    config = _serialize_template_config(payload)
+    return (
+        (entry.description or "").strip() or None,
+        entry.latest_version.mode.value,
+        _serialize_prompt_text(entry.latest_version.prompt_text),
+        json.dumps(config, sort_keys=True, separators=(",", ":")) if config is not None else None,
+    )
+
+
+def _stored_template_content(db: Session, template: PromptTemplate) -> tuple[object, ...]:
+    version = _latest_template_version(db, template_id=template.id)
+    return (
+        (template.description or "").strip() or None,
+        version.mode.value,
+        version.prompt_text.strip(),
+        json.dumps(version.config_json, sort_keys=True, separators=(",", ":")) if version.config_json is not None else None,
+    )
+
+
+def plan_template_bundle_import(db: Session, actor: User, *, destination: TemplateScope, raw_bundle: bytes) -> dict[str, object]:
+    entries, warnings, entry_issues = parse_template_bundle(raw_bundle)
+    existing = _destination_templates(db, actor, destination=destination)
+    by_name = {template.name.strip().lower(): template for template in existing}
+    reserved = set(by_name)
+    preview: list[dict[str, object]] = []
+    counts = {"total": len(entries), "importable": 0, "exact_copies": 0, "invalid": 0, "renamed": 0, "unknown_fields": len(warnings)}
+    for index, entry in enumerate(entries):
+        if entry is None:
+            preview.append({"index": index, "source_name": None, "proposed_name": None, "status": "invalid", "selected_by_default": False, "selectable": False, "errors": entry_issues[index], "warnings": []})
+            counts["invalid"] += 1
+            continue
+        name = _serialize_asset_name(entry.name)
+        normalized = name.lower()
+        matched = by_name.get(normalized)
+        exact = bool(matched and matched.is_active and _stored_template_content(db, matched) == _import_content(entry))
+        proposed_name = name
+        status = "ready"
+        if normalized in reserved:
+            base = name
+            copy_no = 2
+            suffix = f" copy {copy_no}"
+            proposed_name = f"{base[:255-len(suffix)].rstrip()}{suffix}"
+            while proposed_name.lower() in reserved:
+                copy_no += 1
+                suffix = f" copy {copy_no}"
+                proposed_name = f"{base[:255-len(suffix)].rstrip()}{suffix}"
+            status = "exact_copy" if exact else "renamed"
+        reserved.add(proposed_name.lower())
+        if status == "exact_copy":
+            counts["exact_copies"] += 1
+        elif status == "renamed":
+            counts["renamed"] += 1
+        counts["importable"] += 1
+        preview.append({"index": index, "source_name": name, "proposed_name": proposed_name, "status": status, "selected_by_default": not exact, "selectable": True, "errors": [], "warnings": []})
+    return {"entries": preview, "warnings": warnings, "summary": counts}
+
+
+def import_template_bundle(db: Session, actor: User, *, destination: TemplateScope, raw_bundle: bytes, selected_indexes: list[int]) -> dict[str, object]:
+    plan = plan_template_bundle_import(db, actor, destination=destination, raw_bundle=raw_bundle)
+    selected = list(dict.fromkeys(selected_indexes))
+    if not selected:
+        raise AppError(422, "validation_error", "Select at least one template to import", {"field": "selected_indexes"})
+    preview_by_index = {item["index"]: item for item in plan["entries"]}
+    if any(index not in preview_by_index or not preview_by_index[index]["selectable"] for index in selected):
+        raise AppError(422, "validation_error", "Selected template indexes include an invalid entry", {"field": "selected_indexes"})
+    entries, warnings, _ = parse_template_bundle(raw_bundle)
+    created: list[dict[str, object]] = []
+    try:
+        for index in selected:
+            entry = entries[index]
+            assert entry is not None
+            planned = preview_by_index[index]
+            config = _serialize_template_config(PromptTemplateUpsert(scope=destination, name=entry.name, description=entry.description, prompt_text=entry.latest_version.prompt_text, mode=entry.latest_version.mode, config_json=entry.latest_version.config_json))
+            template = PromptTemplate(
+                id=uuid4(), scope=destination,
+                owner_user_id=actor.id if destination is TemplateScope.user else None,
+                team_id=actor.team_id if destination is TemplateScope.team else None,
+                name=planned["proposed_name"], description=(entry.description or "").strip() or None,
+                is_active=True, created_by_user_id=actor.id,
+            )
+            db.add(template)
+            db.flush()
+            db.add(PromptTemplateVersion(id=uuid4(), template_id=template.id, version_no=1, mode=entry.latest_version.mode, prompt_text=_serialize_prompt_text(entry.latest_version.prompt_text), config_json=config, created_by_user_id=actor.id))
+            created.append({"index": index, "template_id": str(template.id), "name": template.name})
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        _translate_template_integrity_error(exc)
+    except Exception:
+        db.rollback()
+        raise
+    record_security_event(
+        db, action="template_bundle_imported", actor=actor, team_id=actor.team_id,
+        details={"category": "template", "outcome": "success", "destination": destination.value, "selected_count": len(selected), "imported_count": len(created), "skipped_count": len(entries) - len(selected), "warning_count": len(warnings), "object_ids": [item["template_id"] for item in created]},
+    )
+    return {"created": created, "skipped_indexes": [index for index in range(len(entries)) if index not in selected], "warnings": warnings, "summary": {"selected": len(selected), "imported": len(created), "skipped": len(entries) - len(selected), "warning_count": len(warnings)}}
 
 
 def list_team_quick_actions(db: Session, actor: User) -> list[QuickAction]:

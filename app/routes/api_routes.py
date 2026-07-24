@@ -1,5 +1,7 @@
 """JSON/API routes extracted from app.main."""
 
+import json
+
 from fastapi import Body
 
 from .. import main as main_module
@@ -23,6 +25,8 @@ from ..schemas import (
     SttConfigFinalizeBody,
     TranscriptListPage,
 )
+from ..schemas.smart_phrase_io import SmartPhraseBundleExportRequest
+from ..schemas.quick_action_io import QuickActionBundleExportRequest
 from ..services.llm import (
     clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
@@ -36,6 +40,18 @@ from ..services.smart_phrases import (
     list_personal_smart_phrases as list_personal_smart_phrases_service,
     mark_personal_smart_phrase_used as mark_personal_smart_phrase_used_service,
     update_personal_smart_phrase as update_personal_smart_phrase_service,
+)
+from ..services.smart_phrase_io import (
+    SMART_PHRASE_BUNDLE_MAX_BYTES,
+    export_smart_phrase_bundle as export_smart_phrase_bundle_service,
+    import_smart_phrase_bundle as import_smart_phrase_bundle_service,
+    plan_smart_phrase_bundle_import as plan_smart_phrase_bundle_import_service,
+)
+from ..services.quick_action_io import (
+    QUICK_ACTION_BUNDLE_MAX_BYTES,
+    export_quick_action_bundle as export_quick_action_bundle_service,
+    import_quick_action_bundle as import_quick_action_bundle_service,
+    plan_quick_action_bundle_import as plan_quick_action_bundle_import_service,
 )
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..models import AttemptKind
@@ -917,9 +933,151 @@ def delete_personal_template(template_id: UUID, context: AuthenticatedContext = 
     delete_personal_template_service(db, context.user, template_id=template_id)
 
 
+@api.post("/templates/export", responses=error_responses)
+def export_template_bundle(payload: TemplateBundleExportRequest, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    bundle = export_template_bundle_service(db, context.user, template_ids=payload.template_ids)
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition": 'attachment; filename="openscribe-templates.json"'},
+    )
+
+
+def _template_import_destination(raw_destination: str) -> TemplateScope:
+    if raw_destination == "personal":
+        return TemplateScope.user
+    if raw_destination == "team":
+        return TemplateScope.team
+    raise AppError(422, "validation_error", "Import destination must be personal or team", {"field": "destination"})
+
+
+async def _read_template_bundle_upload(bundle: UploadFile) -> bytes:
+    raw_bundle = await bundle.read(TEMPLATE_BUNDLE_MAX_BYTES + 1)
+    if len(raw_bundle) > TEMPLATE_BUNDLE_MAX_BYTES:
+        raise AppError(413, "payload_too_large", "Template bundle must not exceed 1 MiB")
+    return raw_bundle
+
+
+@api.post("/templates/import/preflight", responses=error_responses)
+async def preflight_template_bundle_import(
+    destination: str = Form(...),
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    raw_bundle = await _read_template_bundle_upload(bundle)
+    return plan_template_bundle_import_service(db, context.user, destination=_template_import_destination(destination), raw_bundle=raw_bundle)
+
+
+@api.post("/templates/import", responses=error_responses)
+async def commit_template_bundle_import(
+    destination: str = Form(...),
+    selected_indexes: str = Form(...),
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    try:
+        parsed_indexes = json.loads(selected_indexes)
+    except json.JSONDecodeError as exc:
+        raise AppError(422, "validation_error", "Selected template indexes must be a JSON array", {"field": "selected_indexes"}) from exc
+    if not isinstance(parsed_indexes, list) or any(not isinstance(index, int) or isinstance(index, bool) for index in parsed_indexes):
+        raise AppError(422, "validation_error", "Selected template indexes must be a JSON array of integers", {"field": "selected_indexes"})
+    raw_bundle = await _read_template_bundle_upload(bundle)
+    return import_template_bundle_service(db, context.user, destination=_template_import_destination(destination), raw_bundle=raw_bundle, selected_indexes=parsed_indexes)
+
+
 @api.get("/quick-actions/available", response_model=list[QuickActionDetail], responses=error_responses)
 def list_available_quick_actions(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [quick_action_response(quick_action) for quick_action in list_available_quick_actions_for_user_service(db, context.user)]
+
+
+@api.post("/quick-actions/export", responses=error_responses)
+def export_quick_action_bundle(
+    payload: QuickActionBundleExportRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    bundle = export_quick_action_bundle_service(
+        db,
+        context.user,
+        quick_action_ids=payload.quick_action_ids,
+    )
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition": 'attachment; filename="openscribe-quick-actions.json"'},
+    )
+
+
+def _quick_action_import_destination(raw_destination: str) -> TemplateScope:
+    if raw_destination == "personal":
+        return TemplateScope.user
+    if raw_destination == "team":
+        return TemplateScope.team
+    raise AppError(
+        422,
+        "validation_error",
+        "Quick action import destination must be personal or team",
+        {"field": "destination"},
+    )
+
+
+async def _read_quick_action_bundle_upload(bundle: UploadFile) -> bytes:
+    raw_bundle = await bundle.read(QUICK_ACTION_BUNDLE_MAX_BYTES + 1)
+    if len(raw_bundle) > QUICK_ACTION_BUNDLE_MAX_BYTES:
+        raise AppError(413, "payload_too_large", "Quick action bundle must not exceed 1 MiB")
+    return raw_bundle
+
+
+@api.post("/quick-actions/import/preflight", responses=error_responses)
+async def preflight_quick_action_bundle_import(
+    destination: str = Form(...),
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    raw_bundle = await _read_quick_action_bundle_upload(bundle)
+    return plan_quick_action_bundle_import_service(
+        db,
+        context.user,
+        destination=_quick_action_import_destination(destination),
+        raw_bundle=raw_bundle,
+    )
+
+
+@api.post("/quick-actions/import", responses=error_responses)
+async def commit_quick_action_bundle_import(
+    destination: str = Form(...),
+    selected_indexes: str = Form(...),
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    try:
+        parsed_indexes = json.loads(selected_indexes)
+    except json.JSONDecodeError as exc:
+        raise AppError(
+            422,
+            "validation_error",
+            "Selected quick action indexes must be a JSON array",
+            {"field": "selected_indexes"},
+        ) from exc
+    if not isinstance(parsed_indexes, list) or any(
+        not isinstance(index, int) or isinstance(index, bool) for index in parsed_indexes
+    ):
+        raise AppError(
+            422,
+            "validation_error",
+            "Selected quick action indexes must be a JSON array of integers",
+            {"field": "selected_indexes"},
+        )
+    raw_bundle = await _read_quick_action_bundle_upload(bundle)
+    return import_quick_action_bundle_service(
+        db,
+        context.user,
+        destination=_quick_action_import_destination(destination),
+        raw_bundle=raw_bundle,
+        selected_indexes=parsed_indexes,
+    )
 
 
 @api.get("/quick-actions/team", response_model=list[QuickActionDetail], responses=error_responses)
@@ -945,6 +1103,74 @@ def list_personal_quick_actions(context: AuthenticatedContext = Depends(require_
 @api.get("/smart-phrases/available", response_model=list[SmartPhraseDetail], responses=error_responses)
 def list_available_smart_phrases(context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [smart_phrase_response(phrase) for phrase in list_available_smart_phrases_service(db, context.user)]
+
+
+@api.post("/smart-phrases/export", responses=error_responses)
+def export_smart_phrase_bundle(
+    payload: SmartPhraseBundleExportRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    bundle = export_smart_phrase_bundle_service(
+        db,
+        context.user,
+        smart_phrase_ids=payload.smart_phrase_ids,
+    )
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition": 'attachment; filename="openscribe-smart-phrases.json"'},
+    )
+
+
+async def _read_smart_phrase_bundle_upload(bundle: UploadFile) -> bytes:
+    raw_bundle = await bundle.read(SMART_PHRASE_BUNDLE_MAX_BYTES + 1)
+    if len(raw_bundle) > SMART_PHRASE_BUNDLE_MAX_BYTES:
+        raise AppError(413, "payload_too_large", "Smart phrase bundle must not exceed 1 MiB")
+    return raw_bundle
+
+
+@api.post("/smart-phrases/import/preflight", responses=error_responses)
+async def preflight_smart_phrase_bundle_import(
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    raw_bundle = await _read_smart_phrase_bundle_upload(bundle)
+    return plan_smart_phrase_bundle_import_service(db, context.user, raw_bundle=raw_bundle)
+
+
+@api.post("/smart-phrases/import", responses=error_responses)
+async def commit_smart_phrase_bundle_import(
+    selected_indexes: str = Form(...),
+    bundle: UploadFile = File(...),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    try:
+        parsed_indexes = json.loads(selected_indexes)
+    except json.JSONDecodeError as exc:
+        raise AppError(
+            422,
+            "validation_error",
+            "Selected smart phrase indexes must be a JSON array",
+            {"field": "selected_indexes"},
+        ) from exc
+    if not isinstance(parsed_indexes, list) or any(
+        not isinstance(index, int) or isinstance(index, bool) for index in parsed_indexes
+    ):
+        raise AppError(
+            422,
+            "validation_error",
+            "Selected smart phrase indexes must be a JSON array of integers",
+            {"field": "selected_indexes"},
+        )
+    raw_bundle = await _read_smart_phrase_bundle_upload(bundle)
+    return import_smart_phrase_bundle_service(
+        db,
+        context.user,
+        raw_bundle=raw_bundle,
+        selected_indexes=parsed_indexes,
+    )
 
 
 @api.get("/smart-phrases/personal", response_model=list[SmartPhraseDetail], responses=error_responses)

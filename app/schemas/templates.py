@@ -41,6 +41,28 @@ class StructuredTemplateConfig(BaseModel):
     sections: list[StructuredTemplateSectionConfig]
 
 
+class TemplateBundleVersion(BaseModel):
+    mode: TemplateMode
+    prompt_text: str = Field(min_length=1)
+    config_json: StructuredTemplateConfig | None
+
+
+class TemplateBundleEntry(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None
+    latest_version: TemplateBundleVersion
+
+
+class TemplateBundle(BaseModel):
+    format: str
+    format_version: int
+    templates: list[TemplateBundleEntry] = Field(min_length=1, max_length=100)
+
+
+class TemplateBundleExportRequest(BaseModel):
+    template_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
 class PromptTemplateUpsert(BaseModel):
     template_id: UUID | None = None
     scope: TemplateScope

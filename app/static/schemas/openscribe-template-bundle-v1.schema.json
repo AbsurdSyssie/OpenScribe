@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenScribe template bundle version 1",
+  "type": "object",
+  "required": ["format", "format_version", "templates"],
+  "properties": {
+    "format": {"const": "openscribe-template-bundle"},
+    "format_version": {"const": 1},
+    "templates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {"$ref": "#/$defs/template"}
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "template": {
+      "type": "object",
+      "required": ["name", "description", "latest_version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 255},
+        "description": {"type": ["string", "null"]},
+        "latest_version": {"$ref": "#/$defs/version"}
+      },
+      "additionalProperties": true
+    },
+    "version": {
+      "type": "object",
+      "required": ["mode", "prompt_text", "config_json"],
+      "properties": {
+        "mode": {"enum": ["freeform", "structured"]},
+        "prompt_text": {"type": "string", "minLength": 1},
+        "config_json": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/structured_config"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "freeform"}}},
+          "then": {"properties": {"config_json": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"mode": {"const": "structured"}}},
+          "then": {"properties": {"config_json": {"$ref": "#/$defs/structured_config"}}}
+        }
+      ],
+      "additionalProperties": true
+    },
+    "structured_config": {
+      "type": "object",
+      "required": ["profile", "sections"],
+      "properties": {
+        "profile": {"const": "emis"},
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/section"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "section": {
+      "type": "object",
+      "required": ["section_key", "section_label", "instruction", "section_order"],
+      "properties": {
+        "section_key": {"enum": ["problem", "history", "family_history", "social_history", "examination", "comment", "tasks", "investigations"]},
+        "section_label": {"type": "string"},
+        "instruction": {"type": "string", "minLength": 1},
+        "section_order": {"type": "integer", "minimum": 1, "maximum": 8}
+      },
+      "oneOf": [
+        {"properties": {"section_key": {"const": "problem"}, "section_label": {"const": "Problem"}}},
+        {"properties": {"section_key": {"const": "history"}, "section_label": {"const": "History"}}},
+        {"properties": {"section_key": {"const": "family_history"}, "section_label": {"const": "Family history"}}},
+        {"properties": {"section_key": {"const": "social_history"}, "section_label": {"const": "Social history"}}},
+        {"properties": {"section_key": {"const": "examination"}, "section_label": {"const": "Examination"}}},
+        {"properties": {"section_key": {"const": "comment"}, "section_label": {"const": "Comment"}}},
+        {"properties": {"section_key": {"const": "tasks"}, "section_label": {"const": "Tasks"}}},
+        {"properties": {"section_key": {"const": "investigations"}, "section_label": {"const": "Investigations"}}}
+      ],
+      "additionalProperties": false
+    }
+  }
+}

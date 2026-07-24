@@ -1,3 +1,7 @@
+import { initTemplateIO } from './template-io.js?v=20260724-import-success-countdown';
+import { initQuickActionIO } from './quick-action-io.js?v=20260724-ai-instructions';
+import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260724-ai-instructions';
+
 function snapshot(form) {
   const data = new FormData(form); data.delete('_csrf_token'); return new URLSearchParams(data).toString();
 }
@@ -8,3 +12,6 @@ document.querySelectorAll('[data-llm-selection-form]').forEach((form) => { const
 document.querySelector('[data-recovery-copy]')?.addEventListener('click', async () => { const input = document.querySelector('[data-recovery-temp-password]'); const status = document.querySelector('[data-recovery-copy-status]'); if (!input || !status) return; try { await navigator.clipboard.writeText(input.value); } catch (_) { input.select(); document.execCommand('copy'); } status.textContent = 'Copied'; });
 document.querySelectorAll('[data-dirty-guard]').forEach((form) => { const initial = snapshot(form); let submitting = false; form.addEventListener('submit', () => { submitting = true; }); window.addEventListener('beforeunload', (event) => { if (submitting || snapshot(form) === initial) return; event.preventDefault(); event.returnValue = ''; }); });
 window.lucide?.createIcons();
+initTemplateIO();
+initQuickActionIO();
+initSmartPhraseIO();

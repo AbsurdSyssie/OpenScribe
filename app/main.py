@@ -104,6 +104,7 @@ from .schemas import (
     PasswordResetRequest,
     PromptTemplateDetail,
     PromptTemplateUpsert,
+    TemplateBundleExportRequest,
     QuickActionDetail,
     QuickActionUpsert,
     RecoveryCodesResponse,
@@ -148,6 +149,7 @@ from .schemas import (
 )
 from .llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from .services.templates import (
+    TEMPLATE_BUNDLE_MAX_BYTES,
     attach_generated_document_task_id as attach_generated_document_task_id_service,
     delete_generated_document as delete_generated_document_service,
     delete_personal_quick_action as delete_personal_quick_action_service,
@@ -159,6 +161,9 @@ from .services.templates import (
     duplicate_team_quick_action as duplicate_team_quick_action_service,
     duplicate_team_template as duplicate_team_template_service,
     fork_team_template_to_personal as fork_team_template_to_personal_service,
+    export_template_bundle as export_template_bundle_service,
+    import_template_bundle as import_template_bundle_service,
+    plan_template_bundle_import as plan_template_bundle_import_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,

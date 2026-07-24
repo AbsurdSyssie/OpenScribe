@@ -60,6 +60,20 @@ from .llm import (
 )
 from .preferences import LlmDetailLevel, NoteGenerationLength, UserAppPreferencesDetail, UserAppPreferencesUpsert
 from .smart_phrases import SmartPhraseCreate, SmartPhraseDetail, SmartPhraseUpdate
+from .smart_phrase_io import SmartPhraseBundle, SmartPhraseBundleEntry, SmartPhraseBundleExportRequest
+from .quick_action_io import (
+    ImportedQuickAction,
+    QuickActionBundle,
+    QuickActionBundleCommitSummary,
+    QuickActionBundleEntry,
+    QuickActionBundleExportRequest,
+    QuickActionBundleImportEntry,
+    QuickActionBundleImportResponse,
+    QuickActionBundleImportSummary,
+    QuickActionBundleIssue,
+    QuickActionBundlePreflightResponse,
+    QuickActionBundleVersion,
+)
 from .stt import (
     SttConfigDraftCreate,
     SttConfigDraftCreateResult,
@@ -94,6 +108,7 @@ from .templates import (
     PromptTemplateDetail,
     PromptTemplateUpsert,
     PromptTemplateVersionDetail,
+    TemplateBundleExportRequest,
     QuickActionDetail,
     QuickActionUpsert,
     QuickActionVersionDetail,
@@ -173,6 +188,9 @@ __all__ = [
     "LlmDetailLevel",
     "NoteGenerationLength",
     "SmartPhraseCreate",
+    "SmartPhraseBundle",
+    "SmartPhraseBundleEntry",
+    "SmartPhraseBundleExportRequest",
     "SmartPhraseDetail",
     "SmartPhraseUpdate",
     "SttConfigDraftCreate",
@@ -208,6 +226,18 @@ __all__ = [
     "PromptTemplateDetail",
     "PromptTemplateUpsert",
     "PromptTemplateVersionDetail",
+    "ImportedQuickAction",
+    "QuickActionBundle",
+    "QuickActionBundleCommitSummary",
+    "QuickActionBundleEntry",
+    "QuickActionBundleExportRequest",
+    "QuickActionBundleImportEntry",
+    "QuickActionBundleImportResponse",
+    "QuickActionBundleImportSummary",
+    "QuickActionBundleIssue",
+    "QuickActionBundlePreflightResponse",
+    "QuickActionBundleVersion",
+    "TemplateBundleExportRequest",
     "QuickActionDetail",
     "QuickActionUpsert",
     "QuickActionVersionDetail",

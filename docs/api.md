@@ -143,6 +143,106 @@ response without exposing quota policy to users.
 - `GET /api/v1/templates/personal`
 - `POST /api/v1/templates/personal`
 - `DELETE /api/v1/templates/personal/{template_id}`
+- `POST /api/v1/templates/export`
+- `POST /api/v1/templates/import/preflight`
+- `POST /api/v1/templates/import`
+
+Template bundles use the public version 1 JSON contract in
+[`openscribe-template-bundle-v1.schema.json`](../app/static/schemas/openscribe-template-bundle-v1.schema.json).
+The format carries portable template content, not database authority: each entry
+contains its name, description, and latest version mode, prompt text, and
+configuration. Scope, active state, UUIDs, ownership, creator identity, version
+numbers, and timestamps are omitted.
+
+`POST /api/v1/templates/export` accepts JSON containing 1 to 100 distinct
+`template_ids`. A bundle may combine the caller's Personal templates and Team
+templates visible in the caller's current team. If any requested identifier is not
+visible, the whole request fails. The response downloads as
+`openscribe-templates.json`.
+
+Both import endpoints accept multipart form data containing `destination` and a
+`bundle` file. The workspace submits an uploaded file or converts pasted JSON
+into the same browser-held file payload; pasted input does not use a separate
+parser, endpoint, or authorisation path. For pasted input only, the client may
+remove one surrounding Markdown code fence before submission; it does not repair
+the enclosed JSON. The client first performs a strict JSON parse and gives
+actionable guidance for malformed text, including unescaped quotation marks;
+only valid JSON is submitted for server preflight. `destination` is `personal` or `team`; file contents cannot
+select or transfer scope. Personal is the workspace default. Personal import
+creates roots owned by the normal user. Team import requires current-team leader
+authority and creates roots in that team. System administrators cannot own or
+import these user/team templates.
+
+Bundles must be UTF-8 JSON, no larger than 1 MiB, and contain 1 to 100 entries.
+Unsupported formats or versions and malformed required fields are rejected.
+Unknown additive fields at bundle, template, and latest-version level are ignored
+with path-specific warnings. Structured `config_json` is strict: unknown fields,
+unsupported profiles or section keys, incorrect labels/order, duplicate sections,
+and empty instructions invalidate the entry. Freeform entries require
+`config_json: null`.
+
+Each structured EMIS key has one canonical label: `problem` → `Problem`,
+`history` → `History`, `family_history` → `Family history`,
+`social_history` → `Social history`, `examination` → `Examination`, `comment` →
+`Comment`, `tasks` → `Tasks`, and `investigations` → `Investigations`. The public
+JSON Schema encodes these fixed pairs so external template generators cannot
+mistake `section_label` for a custom heading.
+
+`POST /api/v1/templates/import/preflight` performs no writes. It returns source
+indexes, proposed names, default selections, entry errors, ignored-field warnings,
+and counts. An existing active template with the same trimmed, case-insensitive
+name and canonical content is an `exact_copy`: deselected by default but still
+selectable. Other collisions receive a deterministic ` copy N` suffix, including
+collisions reserved earlier in the bundle.
+
+`POST /api/v1/templates/import` also accepts `selected_indexes` as a JSON array in
+the multipart form. It reparses, reauthorises, revalidates, and replans the original
+file. The selected subset is created atomically as active independent roots at
+version 1; an invalid selection creates nothing. Unselected entries are reported
+as skipped. Because confirmation replans current destination state, concurrent
+changes can alter a suffix or cause the uniqueness constraint to reject the
+transaction.
+
+The workspace submits the commit immediately after preflight only when the
+response contains exactly one `ready`, selectable, default-selected entry and no
+bundle-level or entry-level warning. Validation failures are shown without a
+commit; exact-copy and renamed results and every multi-template bundle remain in
+the review step. This is only a client interaction shortcut: the commit endpoint
+still performs its full reparse, authorisation, validation, duplicate planning,
+and atomic creation.
+
+The workspace help dialog explains import and export and can copy a
+vendor-neutral prompt that asks an external AI assistant to produce the public
+bundle format. The prompt treats the user's description as a brief, asks only
+about unresolved requirements, defaults to one template, and requires
+clarification when freeform versus supported structured EMIS output is unclear.
+It does not expand the schema or accepted structured section keys. The dialog
+warns users not to include patient information, transcripts, clinical notes,
+credentials, or other confidential data; clipboard failure reveals the same
+instructions for manual copying.
+
+### Quick Actions
+
+- `GET /api/v1/quick-actions/available`
+- `GET /api/v1/quick-actions/team`
+- `POST /api/v1/quick-actions/team`
+- `DELETE /api/v1/quick-actions/team/{quick_action_id}`
+- `GET /api/v1/quick-actions/personal`
+- `POST /api/v1/quick-actions/personal`
+- `DELETE /api/v1/quick-actions/personal/{quick_action_id}`
+- `POST /api/v1/quick-actions/export`
+- `POST /api/v1/quick-actions/import/preflight`
+- `POST /api/v1/quick-actions/import`
+
+Quick Action bundles use
+[`openscribe-quick-action-bundle-v1.schema.json`](../app/static/schemas/openscribe-quick-action-bundle-v1.schema.json).
+They contain 1 to 100 names, descriptions, and latest freeform prompts. Export
+accepts visible Personal and current-Team action IDs. Import uses the same
+Personal-default or leader-authorised Team destination rules, preflight,
+duplicate planning, atomic selected-subset commit, 1 MiB limit, and original-file
+resubmission as template import. Imported actions are active independent roots at
+version 1. Additive unknown bundle fields are reported and ignored; authority and
+database metadata are never portable.
 
 ### Smart Phrases
 
@@ -152,6 +252,18 @@ response without exposing quota policy to users.
 - `PATCH /api/v1/smart-phrases/personal/{smart_phrase_id}`
 - `DELETE /api/v1/smart-phrases/personal/{smart_phrase_id}`
 - `POST /api/v1/smart-phrases/personal/{smart_phrase_id}/used`
+- `POST /api/v1/smart-phrases/export`
+- `POST /api/v1/smart-phrases/import/preflight`
+- `POST /api/v1/smart-phrases/import`
+
+Smart Phrase bundles use
+[`openscribe-smart-phrase-bundle-v1.schema.json`](../app/static/schemas/openscribe-smart-phrase-bundle-v1.schema.json).
+They are Personal-only and contain 1 to 100 triggers, expansions, and optional
+descriptions. IDs, ownership, timestamps, usage counts, and last-used state are
+excluded. Import reuses the maintained trigger and text validation, resets usage
+metadata, and proposes deterministic `_COPY`, `_COPY_2`, and later suffixes for
+collisions while remaining within the 64-character trigger limit. Unknown fields
+are rejected. Selected entries are revalidated and created atomically.
 
 ### Team transcription configuration
 

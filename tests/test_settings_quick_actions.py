@@ -238,3 +238,89 @@ def test_system_admin_cannot_fork_team_quick_action(
         fork_team_quick_action_to_personal(db_session, admin, quick_action_id=shared.id)
 
     assert caught.value.status_code == 403
+
+
+def test_quick_action_library_renders_portability_controls_and_authorized_destinations(
+    client,
+    make_team,
+    make_user,
+    make_quick_action,
+):
+    team = make_team(name="Quick action portability")
+    member = make_user(email="quick-action-portable-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    leader = make_user(email="quick-action-portable-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    personal = make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="Portable personal action")
+    shared = make_quick_action(scope=TemplateScope.team, team=team, actor=leader, name="Portable team action")
+
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+    member_page = client.get("/settings?tab=quick-actions")
+    assert member_page.status_code == 200
+    assert member_page.text.count("data-quick-action-export-checkbox") == 2
+    assert f'value="{personal.id}" data-quick-action-export-checkbox' in member_page.text
+    assert f'value="{shared.id}" data-quick-action-export-checkbox' in member_page.text
+    assert 'name="quick-action-import-destination" value="personal" checked data-quick-action-import-destination' in member_page.text
+    assert 'name="quick-action-import-destination" value="team" data-quick-action-import-destination' not in member_page.text
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
+    leader_page = client.get("/settings?tab=quick-actions")
+    assert 'name="quick-action-import-destination" value="team" data-quick-action-import-destination' in leader_page.text
+
+
+def test_quick_action_io_frontend_uses_safe_preflight_and_original_file_reupload():
+    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
+    markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")
+
+    for endpoint in (
+        "/api/v1/quick-actions/export",
+        "/api/v1/quick-actions/import/preflight",
+        "/api/v1/quick-actions/import",
+    ):
+        assert endpoint in script
+    assert "document.querySelector('[data-quick-action-import-dialog]')" in script
+    assert "data.append('bundle', currentFile, currentFile.name)" in script
+    assert "data.append('selected_indexes', JSON.stringify(indexes))" in script
+    assert "JSON.parse(json)" in script
+    assert "new File([json]" in script
+    assert ".textContent =" in script
+    assert "innerHTML" not in script
+    assert "const isCleanSingleQuickAction = (body)" in script
+    assert "await importCurrent([body.entries[0].index]);" in script
+    assert 'class="template-library-utilities" aria-label="Quick action import and export"' in markup
+    assert "Quick actions give OpenScribe a reusable instruction for the current consultation" in markup
+
+
+def test_quick_action_import_shows_success_state_before_library_refresh():
+    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
+    markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")
+
+    assert "data-quick-action-import-success hidden" in markup
+    assert 'data-lucide="party-popper"' in markup
+    assert "data-quick-action-import-continue hidden" in markup
+    assert "quick action${imported === 1 ? '' : 's'} imported and ready to use." in script
+    assert "continueButton.focus()" in script
+    assert "let seconds = 5" in script
+    assert "continueButton.textContent = `Close (${seconds})`" in script
+    assert "continueButton.addEventListener('click', finishImport)" in script
+
+
+def test_quick_action_help_copies_schema_aware_ai_instructions():
+    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
+    markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")
+
+    assert "Create a quick action with AI" in markup
+    assert "Copy instructions for AI" in markup
+    for hook in (
+        "data-quick-action-help-copy",
+        "data-quick-action-help-status",
+        "data-quick-action-help-fallback",
+        "data-quick-action-help-prompt",
+    ):
+        assert hook in markup
+        assert f"[{hook}]" in script
+    assert "Ask only the questions needed to resolve information that is missing or unclear." in script
+    assert 'Every latest_version must have mode "freeform".' in script
+    assert "use only information supported by the consultation" in script
+    assert "openscribe-quick-action-bundle-v1.schema.json" in script
+    assert "navigator.clipboard.writeText" in script
+    assert ".select()" in script

@@ -100,3 +100,76 @@ def test_smart_phrase_partial_opens_blank_creator_for_canonical_new_selection():
     assert "New smart phrase" in rendered
     assert 'data-smart-phrase-id=""' in rendered
     assert "smart-phrase-drawer" not in rendered
+
+
+def test_smart_phrase_library_renders_personal_portability_controls():
+    rendered = _render_partial([_phrase()])
+
+    assert 'class="smart-phrase-library-utilities" aria-label="Smart phrase import and export"' in rendered
+    assert 'data-smart-phrase-export-checkbox' in rendered
+    assert 'data-smart-phrase-import-dialog' in rendered
+    assert 'data-smart-phrase-import-file' in rendered
+    assert 'data-smart-phrase-import-json' in rendered
+    assert 'data-smart-phrase-import-destination' not in rendered
+    assert "Imported smart phrases are personal to you." in rendered
+
+
+def test_smart_phrase_io_frontend_keeps_personal_import_and_safe_rendering():
+    script = Path("app/static/js/settings/smart-phrase-io.js").read_text(encoding="utf-8")
+
+    for endpoint in (
+        "/api/v1/smart-phrases/export",
+        "/api/v1/smart-phrases/import/preflight",
+        "/api/v1/smart-phrases/import",
+    ):
+        assert endpoint in script
+    assert "document.querySelector('[data-smart-phrase-import-dialog]')" in script
+    assert "smart_phrase_ids" in script
+    assert "data.append('bundle', currentFile, currentFile.name)" in script
+    assert "data.append('selected_indexes', JSON.stringify(indexes))" in script
+    assert "JSON.parse(json)" in script
+    assert "new File([json]" in script
+    assert "source_trigger" in script
+    assert "proposed_trigger" in script
+    assert ".textContent =" in script
+    assert "innerHTML" not in script
+    assert "const isCleanSingleSmartPhrase = (body)" in script
+    assert "search.disabled = true;" in script
+    assert "search.disabled = false;" in script
+    assert "search.value = priorSearchValue;" in script
+    assert "search.dispatchEvent(new Event('input'));" in script
+
+
+def test_smart_phrase_import_shows_success_state_before_library_refresh():
+    script = Path("app/static/js/settings/smart-phrase-io.js").read_text(encoding="utf-8")
+
+    assert "data-smart-phrase-import-success hidden" in PARTIAL
+    assert 'data-lucide="party-popper"' in PARTIAL
+    assert "data-smart-phrase-import-continue hidden" in PARTIAL
+    assert "smart phrase${imported === 1 ? '' : 's'} imported and ready to use." in script
+    assert "continueButton.focus()" in script
+    assert "let seconds = 5" in script
+    assert "continueButton.textContent = `Close (${seconds})`" in script
+    assert "continueButton.addEventListener('click', finishImport)" in script
+
+
+def test_smart_phrase_help_copies_schema_aware_ai_instructions():
+    script = Path("app/static/js/settings/smart-phrase-io.js").read_text(encoding="utf-8")
+
+    assert "Create a smart phrase with AI" in PARTIAL
+    assert "Copy instructions for AI" in PARTIAL
+    for hook in (
+        "data-smart-phrase-help-copy",
+        "data-smart-phrase-help-status",
+        "data-smart-phrase-help-fallback",
+        "data-smart-phrase-help-prompt",
+    ):
+        assert hook in PARTIAL
+        assert f"[{hook}]" in script
+    assert "Ask only the questions needed to resolve information that is missing or unclear." in script
+    assert "Store trigger without the leading slash" in script
+    assert "only uppercase A-Z, numbers, and underscores" in script
+    assert "Smart phrase bundles reject unknown fields." in script
+    assert "openscribe-smart-phrase-bundle-v1.schema.json" in script
+    assert "navigator.clipboard.writeText" in script
+    assert ".select()" in script
